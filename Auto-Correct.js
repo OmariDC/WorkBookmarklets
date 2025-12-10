@@ -9,114 +9,394 @@ AC.storage = {
     try {
       const raw = localStorage.getItem(this.prefix + key);
       return raw ? JSON.parse(raw) : fallback;
-    } catch (e) {
-      return fallback;
-    }
+    } catch (e) { return fallback; }
   },
   write(key, value) {
+    try { localStorage.setItem(this.prefix + key, JSON.stringify(value)); } catch (e) {}
+  },
+  readRaw(key, fallback) {
     try {
-      localStorage.setItem(this.prefix + key, JSON.stringify(value));
-    } catch (e) {
-      // ignore
-    }
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch (e) { return fallback; }
+  },
+  writeRaw(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
   }
 };
 
 // ===================== AC.state initialisation =====================
 AC.state = {
   enabled: AC.storage.read('enabled', true),
-  customWords: AC.storage.read('customWords', {}),
-  customPhrases: AC.storage.read('customPhrases', {}),
+  customMap: AC.storage.readRaw('ac_custom_map_v2', {}),
+  customList: AC.storage.readRaw('ac_custom_dict_v2', []),
+  capsRules: AC.storage.readRaw('ac_caps_rules_v2', []),
+  customWordsNew: AC.storage.read('customWords', {}),
+  customPhrasesNew: AC.storage.read('customPhrases', {}),
   logs: AC.storage.read('logs', []),
   stats: AC.storage.read('stats', { corrections: 0, lastCorrection: null }),
   recent: [],
-  mergedWords: {},
-  mergedPhrases: {},
+  flatMap: {},
+  multi: {},
+  canonicals: [],
   lastAction: null,
   editors: new WeakSet(),
   keyListeners: new WeakMap(),
   observer: null,
-  ui: { root: null, overlay: null, open: false, tab: 'log' }
+  ui: { root: null, mapping: null, content: null, tabs: [], open: false, tab: 'log' }
 };
 
 // ===================== Dictionary loading + merging =====================
-AC.builtinWords = {
-  teh: 'the',
-  adn: 'and',
-  seperate: 'separate',
-  recieve: 'receive',
-  adress: 'address',
-  definate: 'definite',
-  definately: 'definitely',
-  ocurred: 'occurred',
-  occured: 'occurred',
-  occurence: 'occurrence',
-  occurance: 'occurrence',
-  embarass: 'embarrass',
-  embarassed: 'embarrassed',
-  goverment: 'government',
-  enviroment: 'environment',
-  responce: 'response',
-  writting: 'writing',
-  arguement: 'argument',
-  beleive: 'believe',
-  wierd: 'weird',
-  existance: 'existence',
-  firey: 'fiery',
-  gratefull: 'grateful',
-  independant: 'independent',
-  liase: 'liaise',
-  ocassion: 'occasion',
-  ocasion: 'occasion',
-  occassion: 'occasion',
-  recieveing: 'receiving',
-  recieveed: 'received',
-  occurd: 'occurred',
-  untill: 'until',
-  wich: 'which',
-  alot: 'a lot',
-  kinda: 'kind of',
-  sorta: 'sort of',
-  cant: "can't",
-  dont: "don't",
-  wont: "won't",
-  wouldnt: "wouldn't",
-  couldnt: "couldn't",
-  shouldnt: "shouldn't",
-  wasnt: "wasn't",
-  werent: "weren't",
-  isnt: "isn't",
-  im: "I'm",
-  ive: "I've",
-  ill: "I'll",
-  id: "I'd",
-  lets: "let's",
-  youre: "you're",
-  theyre: "they're",
-  its: "it's",
-  doesnt: "doesn't",
-  didnt: "didn't",
-  wouldntve: "wouldn't’ve",
-  couldntve: "couldn’t’ve",
-  shouldntve: "shouldn’t’ve"
-};
-
-AC.builtinPhrases = {
-  infront: 'in front',
-  eachother: 'each other',
-  aswell: 'as well',
-  atleast: 'at least',
-  bytheway: 'by the way',
-  thankyou: 'thank you',
-  iloveyou: 'I love you',
-  forsure: 'for sure',
-  whatare: 'what are',
-  dontknow: "don't know"
+AC.baseDict = {
+  'Abarth': ['abart','abarht','abarth?'],
+  'Alfa Romeo': ['alfaromeo','alpha romeo','alfa romo','alfaromeo','alfa romieo','alf aromeo','alpharomeo','alfa romio','alfa romero','alfa romeao','alfa romeo','alfa romeo','alfar omeo','alfa romeo','alfa romeo','alfaromeoo','alfa romeeo','alfa rome0','alfa r omeo','alfa romeo'],
+  'Citroën': ['citroen','citreon','citroean','citroan','citroin','citoren','citroem'],
+  'DS': ['ds','d.s.'],
+  'DS Automobiles': ['ds automoblies','ds automobils','ds autom'],
+  'Fiat': ['fiatt','fiadt'],
+  'Jeep': ['jepp','jeap','jepe','jep'],
+  'Leapmotor': ['leap motor','leapmotors'],
+  'Peugeot': ['peugot','peugeut','peuguot','pegeot','pugeot','peugoet','peugeoet','pegueot'],
+  'Vauxhall': ['vauxel','vauxall','vaxhall','vauxhal','vaulxhall','vauxheel'],
+  'Stellantis': ['stellantus','stellentis','stellantis'],
+  'Stellantis &You': ['stellantis and you','stellantis & you','stellantis &you','stellantis andyou'],
+  'Birmingham Central': ['birmingam central','birmingham cental','birmingham centreal','brum central'],
+  'Birmingham': ['brum'],
+  'Birmingham North': ['birmingam north','birmingham nrth','birmingham northh','brum north'],
+  'Birmingham South': ['birmingam south','birmingham soouth','birmingham southh','brum south'],
+  'Bristol Cribbs': ['bristol cribs','bristolcribbs','bristol cribbb'],
+  'Chelmsford': ['chelsford','chelmsord','chelmsfrod'],
+  'Chingford': ['chingferd','chingfor','chingfrod'],
+  'Coventry': ['coverty','coventary','covenrty'],
+  'Crawley': ['crawely','crawly','crawlley'],
+  'Croydon': ['croyden','croydun','croyodon'],
+  'Edgware': ['edgeware','edgwer','edgwarre'],
+  'Guildford': ['guilford','guild ford','guildfrod'],
+  'Hatfield': ['hatfeild','hatfiled','hattfield'],
+  'Leicester': ['lester','leister','liestter'],
+  'Liverpool': ['liverpol','liverpoool','liverpoll'],
+  'Maidstone': ['maidston','maidstoen','maidstoon'],
+  'Manchester': ['manchestor','manchster','mannchester','manny'],
+  'Newport': ['new port','newpport','newprot'],
+  'Nottingham': ['nottingam','nottinghum','nothtingham'],
+  'Preston': ['prestan','prestron','prestonn'],
+  'Redditch': ['reditch','reddich','reddittch'],
+  'Romford': ['romferd','romfor','romfford'],
+  'Sale': ['sael','sal','salle'],
+  'Sheffield': ['shefffield','sheffied','sheffild'],
+  'Stockport': ['stcokport','stockprt','stookport'],
+  'Walton': ['waltom','waltn','waulton'],
+  'West London': ['westlondon','west londn','west londom'],
+  'Wimbledon': ['wimbeldon','wimbeldun','wimbeldoon'],
+  'London': ['londen','londan','lindon','londdon','lndon','londn','ldn'],
+  'Motability': ['motab','motabilty','motivability'],
+  'UK': ['uk','u k'],
+  'Monday': ['monday','mondey','monady'],
+  'Tuesday': ['tuesday','tueday','tuesay','tueseday'],
+  'Wednesday': ['wednesday','wensday','wednsday','wedensday'],
+  'Thursday': ['thursday','thurday','thursay'],
+  'Friday': ['friday','firday'],
+  'Saturday': ['saturday','satarday'],
+  'Sunday': ['sunday','sundey'],
+  'January': ['januray','janary','januarry'],
+  'February': ['febuary','feburary','februuary'],
+  'March': ['marhc','mrach','marchh'],
+  'April': ['aprill'],
+  'May': ['mayy','maay'],
+  'June': ['junee','juen'],
+  'July': ['julyy','jly'],
+  'August': ['augustt','agust','auguest'],
+  'September': ['septemberr','septembar','setpember'],
+  'October': ['octobr','octuber','otcober'],
+  'November': ['novemberr','noovember','novembar'],
+  'December': ['decemberr','decembar','decmeber'],
+  'I': ['i'],
+  'able': ['abl','ab le'],
+  'add': ['ad','a dd'],
+  'address': ['adress','adresss','adrs'],
+  'advise': ['adice','advice','advise'],
+  'agent': ['agnt','agant'],
+  'agents': ['agnts','agantS','agantes'],
+  'all': ['al','a ll'],
+  'along': ['alng','alogn'],
+  'am': ['ma','a m'],
+  'an': ['na','a n'],
+  'and': ['adn','an d','snd','se nd'],
+  'any': ['an y','anyy','ani'],
+  'appointments': ['appontments','apointments','appoinments'],
+  'arrange': ['arange','arrnge'],
+  'are': ['ar','aer','arre'],
+  'as': ['sa','a s'],
+  'at': ['ta','a t'],
+  'available': ['availble','avialable','avalable'],
+  'aware': ['awre','awar'],
+  'be': ['eb','b e'],
+  'because': ['becuase','beacuse'],
+  'before': ['befor','bfore','befroe'],
+  'believe': ['belive','beleive'],
+  'book': ['bok','bokk'],
+  'both': ['bth','booth'],
+  'branches': ['braches','branchs'],
+  'but': ['bt','b ut'],
+  'calendar': ['calender'],
+  'call': ['cal','cal l'],
+  'calls': ['cals','calss'],
+  'can': ['csn'],
+  "can't": ['cant','can t','cnt'],
+  'central': ['centrall','centrl'],
+  'closer': ['closr','closeer','clsoer'],
+  'come': ['cmoe','coem'],
+  'confirm': ['confrm','cnfirm','confrim'],
+  'contact': ['contat','contac'],
+  'costs': ['csts'],
+  "couldn't": ['couldnt','coudnt',"could'nt"],
+  'currently': ['curently','currenty','currenlty'],
+  'dealership': ['delership','dealrship'],
+  'definitely': ['definately','definatly','defently'],
+  'department': ['departmnt','departent'],
+  'dates': ['daets','datse'],
+  'detail': ['detial'],
+  'details': ['detials','detals'],
+  'directly': ['directy','dirctly'],
+  'do': ['d0','od'],
+  "don't": ['dont','don t'],
+  'discuss': ['dicuss','discus'],
+  'editor': ['edtor','editro','edditor'],
+  'email': ['emial','emiall'],
+  'enough': ['enuf','enogh'],
+  'everything': ['everyting','evrything'],
+  'expected': ['expcted','expeced','expectd'],
+  'exchanged': ['exhanged','exchnged'],
+  'find': ['fnd','fi nd'],
+  'fine': ['fien','fin'],
+  'for': ['fro','fo','fr'],
+  'fuel': ['fuell','fu el'],
+  'further': ['furhter'],
+  'get': ['gt','git'],
+  'give': ['giv','giev'],
+  'go': ['og','g o'],
+  'have': ['hvae','hae','hve','havet'],
+  'hate': ['hat','haet'],
+  'heard': ['herd','haerd'],
+  'hello': ['helo','helllo'],
+  'help': ['hlp','hepl','hekp'],
+  'here': ['hre','he re'],
+  'how': ['hw','hwo'],
+  'however': ['hovewer','howeer','howerver'],
+  'if': ['fi','i f'],
+  "I'm": ['im'],
+  'immediate': ['immediat','immediatly'],
+  'in': ['ni','i n'],
+  'information': ['informtion','infromation','informaiton'],
+  'interested': ['intrested','intersted','intereste'],
+  'instead': ['instaed','insted'],
+  'into': ['in to'],
+  'issue': ['issuse','isssue','isue'],
+  'is': ['si','i s'],
+  'it': ['ut'],
+  "i've": ['ive'],
+  'just': ['jst','ju st'],
+  'local': ['locl','loca'],
+  'looking': ['loking','lookng','lookin'],
+  'looked': ['loked','lookked'],
+  'limited': ['limted','limiited'],
+  'like': ['lik','liek'],
+  'make': ['mkae','mak'],
+  'may': ['mya'],
+  'me': ['m','mee'],
+  'miles': ['miiles'],
+  'morning': ['morng','morni ng'],
+  'move': ['mvoe','moev'],
+  'my': ['ny','ym'],
+  'need': ['need'],
+  'needed': ['neded','needd'],
+  'never': ['nevr','neveer'],
+  'next': ['nxt','nextt'],
+  'no problem': ['np'],
+  'not': ['nto','noot'],
+  'number': ['nubmer','numbr'],
+  'of': ['fo','o f'],
+  'on': ['o n'],
+  'onto': ['on to','ont o'],
+  'or': ['ro','o r'],
+  'orders': ['ordres','oders'],
+  'our': ['our'],
+  'part-exchange': ['px'],
+  'part-exchanging': ['pxing'],
+  'please': ['plese','pleas'],
+  'postcode': ['postocde'],
+  'price': ['prcie','prce'],
+  'problem': ['probelm','proble'],
+  'previously': ['prevously','previoiusly'],
+  'purchase': ['purches','purchace','pursch'],
+  'potential': ['potental','potentail'],
+  'quarter': ['quater','quartre','qarter'],
+  'receive': ['recieve','recive'],
+  'referring': ['refering'],
+  'recommend': ['recomend','reccommend','recommnd'],
+  'recommended': ['recomended','reommend','recommened'],
+  'require': ['requre','requier'],
+  'sales': ['saels','sles'],
+  'schedule': ['shedule','schedul'],
+  'scheduling': ['schedualling'],
+  'seems': ['sems'],
+  'sent': ['snt','se nt'],
+  'service': ['sevice','srvice'],
+  "shouldn't": ['shouldnt','shoudnt',"should'nt"],
+  'site': ['sitr','si te'],
+  'so': ['os','s o'],
+  'so I': ['so i'],
+  'so much': ['sm'],
+  'something': ['smt'],
+  'specific': ['spefic','specfic'],
+  'sure': ['sur','shure'],
+  'test': ['tset','te st'],
+  'team': ['tem','te am'],
+  'that': ['thst'],
+  'thank you': ['thankyou','ty','thak you','thank yu'],
+  'the': ['th','thee','teh'],
+  'their': ['thier'],
+  'these': ['tehse','thes'],
+  'there': ['ther','thre','thare'],
+  'this': ['tis','thsi','thes'],
+  'though': ['tho','thogh','thugh','thouhg','thoough'],
+  'thought': ['thot','thougth'],
+  'through': ['throguh','thruogh','throuogh'],
+  'time': ['tme','tiem'],
+  'today': ['tody','todday','tdy'],
+  'tomorrow': ['tommorow','tomorow','tmr'],
+  'transmission': ['transmision','trasmission'],
+  'type': ['tpe','ty pe'],
+  'unavailable': ['unavaible','unavalible'],
+  'unfortunately': ['unfortunetly','unfortunatly'],
+  'valuation': ['valutaion','valution','valuaton'],
+  'vehicle': ['vehical','vechicle','vehicule','vehicel','vehicl','vehcilea','vehcile'],
+  'vehicles': ['vehciles','vehicels','vehicles','vehicals','vechicles','vehicules','vehicels','vehicls','vehcileas'],
+  'viewings': ['viewngs','vieewings'],
+  'website': ['wesbite','webiste','websit'],
+  'we': ['ew','w e'],
+  'West': ['wset','we st'],
+  'which': ['whcih','whihc'],
+  'will': ['wil','wll'],
+  'with': ['wiht','w tih'],
+  'work': ['wrok'],
+  'working': ['workng','wroking','workiing'],
+  'would': ['woudl','wold'],
+  "wouldn't": ['woudlnt','wouldnt'],
+  'wrong': ['wron','wrnog'],
+  'yes': ['ye','y es'],
+  'yet': ['yte','yt'],
+  'you': ['yo','yuo','u'],
+  'your': ['uour','ur'],
+  'yourself': ['yourslef','yourse lf'],
+  'seperate': ['seperate'],
+  'recieve': ['recieve'],
+  'adress': ['adress'],
+  'definate': ['definate'],
+  'definately': ['definately'],
+  'occurence': ['occurence'],
+  'occurance': ['occurance'],
+  'embarass': ['embarass'],
+  'embarassed': ['embarassed'],
+  'goverment': ['goverment'],
+  'enviroment': ['enviroment'],
+  'responce': ['responce'],
+  'writting': ['writting'],
+  'arguement': ['arguement'],
+  'beleive': ['beleive'],
+  'wierd': ['wierd'],
+  'existance': ['existance'],
+  'firey': ['firey'],
+  'gratefull': ['gratefull'],
+  'independant': ['independant'],
+  'liase': ['liase'],
+  'ocassion': ['ocassion'],
+  'ocasion': ['ocasion'],
+  'occassion': ['occassion'],
+  'recieveing': ['recieveing'],
+  'recieveed': ['recieveed'],
+  'occurd': ['occurd'],
+  'untill': ['untill'],
+  'wich': ['wich'],
+  'alot': ['alot'],
+  'kinda': ['kinda'],
+  'sorta': ['sorta'],
+  'cant': ['cant'],
+  'dont': ['dont'],
+  'wont': ['wont'],
+  'wouldnt': ['wouldnt'],
+  'couldnt': ['couldnt'],
+  'shouldnt': ['shouldnt'],
+  'wasnt': ['wasnt'],
+  'werent': ['werent'],
+  'isnt': ['isnt'],
+  'im': ['im'],
+  'ive': ['ive'],
+  'ill': ['ill'],
+  'id': ['id'],
+  'lets': ['lets'],
+  'youre': ['youre'],
+  'theyre': ['theyre'],
+  'its': ['its'],
+  'doesnt': ['doesnt'],
+  'didnt': ['didnt'],
+  'wouldntve': ['wouldntve'],
+  'couldntve': ['couldntve'],
+  'shouldntve': ['shouldntve'],
+  'infront': ['infront'],
+  'eachother': ['eachother'],
+  'aswell': ['aswell'],
+  'at least': ['atleast'],
+  'by the way': ['bytheway'],
+  'thankyou': ['thankyou'],
+  'iloveyou': ['iloveyou'],
+  'forsure': ['forsure'],
+  'whatare': ['whatare'],
+  'dontknow': ['dontknow']
 };
 
 AC.mergeDictionaries = function () {
-  AC.state.mergedWords = { ...AC.builtinWords, ...AC.state.customWords };
-  AC.state.mergedPhrases = { ...AC.builtinPhrases, ...AC.state.customPhrases };
+  const flat = {};
+  const phrases = {};
+  const canonicalSet = new Set();
+
+  const addMapping = (miss, canon) => {
+    if (!miss || !canon) return;
+    flat[miss.toLowerCase()] = canon;
+    if (miss.includes(' ')) phrases[miss.toLowerCase()] = canon;
+  };
+
+  const addCanonical = (canon) => {
+    canonicalSet.add(canon);
+    flat[canon.toLowerCase()] = canon;
+    if (canon.includes(' ')) phrases[canon.toLowerCase()] = canon;
+  };
+
+  Object.entries(AC.baseDict).forEach(([canon, list]) => {
+    addCanonical(canon);
+    (list || []).forEach(m => addMapping(m, canon));
+  });
+
+  Object.entries(AC.state.customWordsNew).forEach(([k, v]) => {
+    addCanonical(v);
+    addMapping(k, v);
+  });
+  Object.entries(AC.state.customPhrasesNew).forEach(([k, v]) => {
+    addCanonical(v);
+    addMapping(k, v);
+  });
+
+  (AC.state.customList || []).forEach(canon => addCanonical(canon));
+  Object.entries(AC.state.customMap || {}).forEach(([miss, canon]) => {
+    addCanonical(canon);
+    addMapping(miss, canon);
+  });
+
+  AC.state.flatMap = flat;
+  AC.state.multi = phrases;
+  AC.state.canonicals = Array.from(canonicalSet).sort((a, b) => a.localeCompare(b));
+  AC.state.mergedWords = flat;
+  AC.state.mergedPhrases = phrases;
 };
 AC.mergeDictionaries();
 
@@ -163,12 +443,12 @@ AC.state.logs = AC.state.logs.filter(e => !/\d/.test(e.word) || AC.normalizeTime
 // ===================== Word + phrase correction functions =====================
 AC.applyCapitalization = function (original, replacement) {
   if (!replacement) return replacement;
-  if (original === original.toUpperCase()) {
-    return replacement.toUpperCase();
+  const capRuleMatch = (AC.state.capsRules || []).some(r => r.toLowerCase() === replacement.toLowerCase());
+  if (capRuleMatch) {
+    return replacement.charAt(0).toUpperCase() + replacement.slice(1);
   }
-  if (original[0] === original[0].toUpperCase()) {
-    return replacement[0].toUpperCase() + replacement.slice(1);
-  }
+  if (original === original.toUpperCase()) return replacement.toUpperCase();
+  if (original[0] === original[0].toUpperCase()) return replacement[0].toUpperCase() + replacement.slice(1);
   return replacement;
 };
 
@@ -182,9 +462,7 @@ AC.correctWord = function (word) {
   const lower = word.toLowerCase();
   const phraseKeys = Object.keys(phrases).sort((a, b) => b.length - a.length);
   for (const p of phraseKeys) {
-    if (lower.endsWith(p)) {
-      return AC.applyCapitalization(word, phrases[p]);
-    }
+    if (lower.endsWith(p)) return AC.applyCapitalization(word, phrases[p]);
   }
 
   let correction = null;
@@ -243,13 +521,8 @@ AC.createRangeForContentEditable = function (el, start, end) {
   let range = document.createRange();
   while (current) {
     const nextIndex = index + current.textContent.length;
-    if (start >= index && start <= nextIndex) {
-      range.setStart(current, start - index);
-    }
-    if (end >= index && end <= nextIndex) {
-      range.setEnd(current, end - index);
-      break;
-    }
+    if (start >= index && start <= nextIndex) range.setStart(current, start - index);
+    if (end >= index && end <= nextIndex) { range.setEnd(current, end - index); break; }
     index = nextIndex;
     current = walker.nextNode();
   }
@@ -287,14 +560,12 @@ AC.appendLog = function (word, snapshot) {
 
   const entry = { word, snapshot, timestamp: now.toISOString(), day: dayKey };
   AC.state.logs.push(entry);
-  if (AC.state.logs.length > 500) {
-    AC.state.logs.shift();
-  }
+  if (AC.state.logs.length > 500) AC.state.logs.shift();
   AC.storage.write('logs', AC.state.logs);
 };
 
 // ===================== Autocorrect processing engine =====================
-AC.process = function (el, triggerChar) {
+AC.process = function (el) {
   if (!AC.state.enabled) return;
   const { text, pos } = AC.getTextAndCursor(el);
   const before = text.slice(0, pos);
@@ -326,9 +597,7 @@ AC.handleKey = function (event) {
   const triggers = [' ', '.', ',', '?', '!', 'Enter'];
   const el = event.target;
   if (!triggers.includes(event.key)) return;
-  setTimeout(() => {
-    AC.process(el, event.key === 'Enter' ? '' : event.key);
-  }, 0);
+  setTimeout(() => { AC.process(el); }, 0);
 };
 
 AC.undoLastCorrection = function () {
@@ -342,9 +611,7 @@ AC.undoLastCorrection = function () {
 AC.isEditable = function (el) {
   if (!(el instanceof Element)) return false;
   if (el.dataset && el.dataset.acAttached) return false;
-  if (el.matches('textarea, input[type="text"], input[type="search"], [contenteditable], .ql-editor, div[role="textbox"]')) {
-    return true;
-  }
+  if (el.matches('textarea, input[type=\'text\'], input[type=\'search\'], [contenteditable], .ql-editor, div[role=\'textbox\']')) return true;
   return false;
 };
 
@@ -359,10 +626,8 @@ AC.bindEditor = function (el) {
 };
 
 AC.scanExisting = function () {
-  const selectors = '.ql-editor, div[role="textbox"], [contenteditable], textarea, input[type="text"], input[type="search"]';
-  document.querySelectorAll(selectors).forEach(el => {
-    if (!AC.state.editors.has(el)) AC.bindEditor(el);
-  });
+  const selectors = '.ql-editor, div[role=\'textbox\'], [contenteditable], textarea, input[type=\'text\'], input[type=\'search\']';
+  document.querySelectorAll(selectors).forEach(el => { if (!AC.state.editors.has(el)) AC.bindEditor(el); });
 };
 
 // ===================== Mutation observer =====================
@@ -373,9 +638,7 @@ AC.startObserver = function () {
       m.addedNodes.forEach(node => {
         if (!(node instanceof Element)) return;
         if (AC.isEditable(node)) AC.bindEditor(node);
-        node.querySelectorAll && node.querySelectorAll('.ql-editor, div[role="textbox"], [contenteditable], textarea, input[type="text"], input[type="search"]').forEach(el => {
-          if (AC.isEditable(el)) AC.bindEditor(el);
-        });
+        node.querySelectorAll && node.querySelectorAll('.ql-editor, div[role=\'textbox\'], [contenteditable], textarea, input[type=\'text\'], input[type=\'search\']').forEach(el => { if (AC.isEditable(el)) AC.bindEditor(el); });
       });
     });
   });
@@ -393,7 +656,7 @@ AC.buildUI = function () {
     .ac-header-old { padding: 12px 14px; background: #483a73; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
     .ac-tabs-old { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px 4px; border-bottom: 1px solid #bdbde3; }
     .ac-tab-old { background: #34416a; color: #fff; padding: 6px 10px; border: 1px solid #bdbde3; border-radius: 3px; cursor: pointer; font-size: 12px; transition: background 0.2s; }
-    .ac-tab-old.ac-active { background: #483a73; border-color: #f9772e; }
+    .ac-tab-old.ac-active { background: #f9772e; border-color: #f9772e; color: #1e1d49; }
     .ac-undo { margin: 0 12px 8px; padding: 6px 10px; background: #34416a; color: #fff; border: 1px solid #bdbde3; border-radius: 3px; cursor: pointer; }
     .ac-content-old { flex: 1; overflow: auto; padding: 10px 12px; }
     .ac-floating-old { position: fixed; bottom: 24px; left: 24px; width: 24px; height: 24px; aspect-ratio: 1 / 1; background: #f9772e; color: #1e1d49; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 12px rgba(0,0,0,0.35); z-index: 100000; font-weight: bold; }
@@ -405,8 +668,14 @@ AC.buildUI = function () {
     .ac-mapping-panel { position: fixed; top: 0; right: 0; width: 320px; height: 100vh; background: #1e1d49; color: #fff; z-index: 99998; transform: translateX(100%); transition: transform 0.25s ease, opacity 0.25s ease; opacity: 0; padding: 12px; box-shadow: -4px 0 10px rgba(0,0,0,0.4); font-family: Arial, sans-serif; }
     .ac-mapping-panel.ac-open { transform: translateX(0); opacity: 1; }
     .ac-scrollbar-old::-webkit-scrollbar { width: 8px; }
-    .ac-scrollbar-old::-webkit-scrollbar-thumb { background: #483a73; border-radius: 4px; }
+    .ac-scrollbar-old::-webkit-scrollbar-thumb { background: #34416a; border-radius: 4px; }
     .ac-scrollbar-old::-webkit-scrollbar-track { background: #1e1d49; }
+    .ac-dict-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+    .ac-dict-item { background: #34416a; border: 1px solid #bdbde3; border-radius: 4px; padding: 6px; font-size: 12px; }
+    .ac-dict-icons { margin-bottom: 4px; font-size: 12px; }
+    .ac-dict-word { font-weight: bold; }
+    .ac-dict-actions { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+    .ac-note { font-size: 11px; opacity: 0.8; margin-top: 6px; }
   `;
   document.head.appendChild(style);
 
@@ -493,7 +762,7 @@ AC.switchTab = function (id) {
 AC.renderCurrentTab = function () {
   if (!AC.state.ui.root) return;
   AC.state.ui.tabs.forEach(tab => tab.classList.toggle('ac-active', tab.dataset.tab === AC.state.ui.tab));
-  AC.state.ui.content.innerHTML = '';
+  AC.state.ui.content.textContent = '';
   const tab = AC.state.ui.tab;
   if (tab === 'log') AC.renderLog();
   if (tab === 'recent') AC.renderRecent();
@@ -544,121 +813,143 @@ AC.renderStats = function () {
 
 AC.renderDictionary = function () {
   const sec = AC.state.ui.content;
-  const words = AC.state.mergedWords;
-  const phrases = AC.state.mergedPhrases;
-  const wordsList = document.createElement('ul');
-  wordsList.className = 'ac-list-old';
-  Object.entries(words).forEach(([k, v]) => {
-    if (AC.builtinWords[k] === v) return;
-    const li = document.createElement('li');
-    li.textContent = `${k} → ${v}`;
-    const btn = document.createElement('button');
-    btn.className = 'ac-button-old';
-    btn.textContent = 'Remove';
-    btn.addEventListener('click', () => {
-      delete AC.state.customWords[k];
-      AC.storage.write('customWords', AC.state.customWords);
-      AC.mergeDictionaries();
-      AC.renderCurrentTab();
-    });
-    li.appendChild(btn);
-    wordsList.appendChild(li);
-  });
 
-  const phrasesList = document.createElement('ul');
-  phrasesList.className = 'ac-list-old';
-  Object.entries(phrases).forEach(([k, v]) => {
-    if (AC.builtinPhrases[k] === v) return;
-    const li = document.createElement('li');
-    li.textContent = `${k} → ${v}`;
-    const btn = document.createElement('button');
-    btn.className = 'ac-button-old';
-    btn.textContent = 'Remove';
-    btn.addEventListener('click', () => {
-      delete AC.state.customPhrases[k];
-      AC.storage.write('customPhrases', AC.state.customPhrases);
-      AC.mergeDictionaries();
-      AC.renderCurrentTab();
-    });
-    li.appendChild(btn);
-    phrasesList.appendChild(li);
+  const addWordRow = document.createElement('div');
+  addWordRow.className = 'ac-row-old';
+  const newCanon = document.createElement('input');
+  newCanon.className = 'ac-input-old';
+  newCanon.placeholder = 'Add canonical word/phrase';
+  const starToggle = document.createElement('input');
+  starToggle.type = 'checkbox';
+  const starLabel = document.createElement('label');
+  starLabel.style.display = 'flex';
+  starLabel.style.alignItems = 'center';
+  starLabel.style.gap = '4px';
+  starLabel.appendChild(starToggle);
+  starLabel.appendChild(document.createTextNode('Always capitalise'));
+  const addCanonBtn = document.createElement('button');
+  addCanonBtn.className = 'ac-button-old';
+  addCanonBtn.textContent = 'Add';
+  addCanonBtn.addEventListener('click', () => {
+    if (!newCanon.value.trim()) return;
+    const canon = newCanon.value.trim();
+    AC.state.customList.push(canon);
+    if (starToggle.checked && !AC.state.capsRules.includes(canon)) AC.state.capsRules.push(canon);
+    AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
+    AC.storage.writeRaw('ac_caps_rules_v2', AC.state.capsRules);
+    AC.mergeDictionaries();
+    AC.renderCurrentTab();
   });
+  addWordRow.appendChild(newCanon);
+  addWordRow.appendChild(starLabel);
+  addWordRow.appendChild(addCanonBtn);
 
-  const wordRow = document.createElement('div');
-  wordRow.className = 'ac-row-old';
+  const addMapRow = document.createElement('div');
+  addMapRow.className = 'ac-row-old';
   const miss = document.createElement('input');
-  miss.placeholder = 'misspelling';
   miss.className = 'ac-input-old';
-  const corr = document.createElement('input');
-  corr.placeholder = 'correction';
-  corr.className = 'ac-input-old';
-  const addBtn = document.createElement('button');
-  addBtn.className = 'ac-button-old';
-  addBtn.textContent = 'Add word';
-  addBtn.addEventListener('click', () => {
-    if (!miss.value || !corr.value) return;
-    AC.state.customWords[miss.value.toLowerCase()] = corr.value;
-    AC.storage.write('customWords', AC.state.customWords);
+  miss.placeholder = 'Misspelling';
+  const canon = document.createElement('input');
+  canon.className = 'ac-input-old';
+  canon.placeholder = 'Canonical target';
+  const addMapBtn = document.createElement('button');
+  addMapBtn.className = 'ac-button-old';
+  addMapBtn.textContent = 'Map';
+  addMapBtn.addEventListener('click', () => {
+    if (!miss.value.trim() || !canon.value.trim()) return;
+    AC.state.customMap[miss.value.trim().toLowerCase()] = canon.value.trim();
+    AC.storage.writeRaw('ac_custom_map_v2', AC.state.customMap);
+    if (!AC.state.customList.includes(canon.value.trim())) {
+      AC.state.customList.push(canon.value.trim());
+      AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
+    }
     AC.mergeDictionaries();
     miss.value = '';
-    corr.value = '';
+    canon.value = '';
     AC.renderCurrentTab();
   });
-  wordRow.appendChild(miss);
-  wordRow.appendChild(corr);
-  wordRow.appendChild(addBtn);
-
-  const phraseRow = document.createElement('div');
-  phraseRow.className = 'ac-row-old';
-  const pmiss = document.createElement('input');
-  pmiss.placeholder = 'phrase misspelling';
-  pmiss.className = 'ac-input-old';
-  const pcorr = document.createElement('input');
-  pcorr.placeholder = 'phrase correction';
-  pcorr.className = 'ac-input-old';
-  const padd = document.createElement('button');
-  padd.className = 'ac-button-old';
-  padd.textContent = 'Add phrase';
-  padd.addEventListener('click', () => {
-    if (!pmiss.value || !pcorr.value) return;
-    AC.state.customPhrases[pmiss.value.toLowerCase()] = pcorr.value;
-    AC.storage.write('customPhrases', AC.state.customPhrases);
-    AC.mergeDictionaries();
-    pmiss.value = '';
-    pcorr.value = '';
-    AC.renderCurrentTab();
-  });
-  phraseRow.appendChild(pmiss);
-  phraseRow.appendChild(pcorr);
-  phraseRow.appendChild(padd);
+  addMapRow.appendChild(miss);
+  addMapRow.appendChild(canon);
+  addMapRow.appendChild(addMapBtn);
 
   const mapBtn = document.createElement('button');
   mapBtn.className = 'ac-button-old';
   mapBtn.textContent = 'Open mapping panel';
   mapBtn.addEventListener('click', () => AC.toggleMapping(true));
 
-  sec.appendChild(document.createTextNode('Custom words'));
-  sec.appendChild(wordsList);
-  sec.appendChild(wordRow);
-  sec.appendChild(document.createElement('hr'));
-  sec.appendChild(document.createTextNode('Custom phrases'));
-  sec.appendChild(phrasesList);
-  sec.appendChild(phraseRow);
+  const dictGrid = document.createElement('div');
+  dictGrid.className = 'ac-dict-grid';
+
+  const wordToMappings = {};
+  Object.entries(AC.state.flatMap).forEach(([k, v]) => {
+    const canonLower = v.toLowerCase();
+    wordToMappings[canonLower] = wordToMappings[canonLower] || [];
+    if (k !== v.toLowerCase()) wordToMappings[canonLower].push(k);
+  });
+
+  AC.state.canonicals.forEach(canonWord => {
+    const item = document.createElement('div');
+    item.className = 'ac-dict-item';
+    const icons = document.createElement('div');
+    icons.className = 'ac-dict-icons';
+    const lower = canonWord.toLowerCase();
+    if ((AC.state.capsRules || []).some(r => r.toLowerCase() === lower)) icons.textContent += '⭐ ';
+    if ((wordToMappings[lower] || []).length) icons.textContent += '⚙️ ';
+    if (!AC.baseDict[canonWord]) icons.textContent += '⬜ ';
+    const wordEl = document.createElement('div');
+    wordEl.className = 'ac-dict-word';
+    wordEl.textContent = canonWord;
+    const missList = document.createElement('div');
+    missList.style.fontSize = '11px';
+    missList.textContent = (wordToMappings[lower] || []).sort().join(', ');
+    const actions = document.createElement('div');
+    actions.className = 'ac-dict-actions';
+    if (!AC.baseDict[canonWord]) {
+      const remove = document.createElement('button');
+      remove.className = 'ac-button-old';
+      remove.textContent = 'Remove';
+      remove.addEventListener('click', () => {
+        AC.state.customList = AC.state.customList.filter(c => c !== canonWord);
+        Object.keys(AC.state.customMap).forEach(m => { if (AC.state.customMap[m] === canonWord) delete AC.state.customMap[m]; });
+        AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
+        AC.storage.writeRaw('ac_custom_map_v2', AC.state.customMap);
+        AC.mergeDictionaries();
+        AC.renderCurrentTab();
+      });
+      actions.appendChild(remove);
+    }
+    const mapLink = document.createElement('button');
+    mapLink.className = 'ac-button-old';
+    mapLink.textContent = 'Map misspelling';
+    mapLink.addEventListener('click', () => {
+      AC.toggleMapping(true, canonWord);
+    });
+    actions.appendChild(mapLink);
+
+    item.appendChild(icons);
+    item.appendChild(wordEl);
+    if (missList.textContent) item.appendChild(missList);
+    item.appendChild(actions);
+    dictGrid.appendChild(item);
+  });
+
+  sec.appendChild(addWordRow);
+  sec.appendChild(addMapRow);
   sec.appendChild(mapBtn);
+  sec.appendChild(dictGrid);
+  const note = document.createElement('div');
+  note.className = 'ac-note';
+  note.textContent = '⭐ always capitalise · ⚙️ has mappings · ⬜ custom only';
+  sec.appendChild(note);
 };
 
 AC.renderExport = function () {
   const sec = AC.state.ui.content;
-  const data = {
-    customWords: AC.state.customWords,
-    customPhrases: AC.state.customPhrases,
-    logs: AC.state.logs,
-    stats: AC.state.stats
-  };
+  const data = { customMap: AC.state.customMap, customList: AC.state.customList, capsRules: AC.state.capsRules, logs: AC.state.logs, stats: AC.state.stats };
   const textarea = document.createElement('textarea');
   textarea.className = 'ac-input-old ac-scrollbar-old';
   textarea.style.height = '200px';
-  textarea.value = JSON.stringify(data, null, 2);
+  textarea.textContent = JSON.stringify(data, null, 2);
   sec.appendChild(textarea);
 };
 
@@ -675,10 +966,10 @@ AC.renderSettings = function () {
   sec.appendChild(toggle);
 };
 
-AC.renderMappingPanel = function () {
+AC.renderMappingPanel = function (prefill) {
   if (!AC.state.ui.mapping) return;
   const panel = AC.state.ui.mapping;
-  panel.innerHTML = '';
+  panel.textContent = '';
   const title = document.createElement('div');
   title.style.marginBottom = '8px';
   title.textContent = 'Mapping panel';
@@ -686,64 +977,69 @@ AC.renderMappingPanel = function () {
   const search = document.createElement('input');
   search.className = 'ac-input-old';
   search.placeholder = 'Search canonical word';
-
   const results = document.createElement('div');
   results.className = 'ac-scrollbar-old';
   results.style.maxHeight = '180px';
   results.style.overflow = 'auto';
+
+  const missInput = document.createElement('input');
+  missInput.className = 'ac-input-old';
+  missInput.placeholder = 'Misspelling';
+  const canonInput = document.createElement('input');
+  canonInput.className = 'ac-input-old';
+  canonInput.placeholder = 'Canonical';
+  if (prefill) canonInput.value = prefill;
+
   const renderResults = () => {
-    results.innerHTML = '';
+    results.textContent = '';
     const term = search.value.toLowerCase();
-    const items = Object.entries(AC.state.mergedWords).filter(([k, v]) => k.includes(term) || v.toLowerCase().includes(term)).slice(0, 50);
-    items.forEach(([k, v]) => {
+    const items = AC.state.canonicals.filter(c => c.toLowerCase().includes(term)).slice(0, 200);
+    items.forEach(c => {
       const div = document.createElement('div');
-      div.textContent = `${k} → ${v}`;
+      div.textContent = c;
+      div.style.cursor = 'pointer';
+      div.addEventListener('click', () => { canonInput.value = c; });
       results.appendChild(div);
     });
   };
   search.addEventListener('input', renderResults);
   renderResults();
 
-  const miss = document.createElement('input');
-  miss.className = 'ac-input-old';
-  miss.placeholder = 'Misspelling';
-  const canon = document.createElement('input');
-  canon.className = 'ac-input-old';
-  canon.placeholder = 'Canonical';
-
-  const addBtn = document.createElement('button');
-  addBtn.className = 'ac-button-old';
-  addBtn.textContent = 'Add mapping';
-  addBtn.addEventListener('click', () => {
-    if (!miss.value || !canon.value) return;
-    AC.state.customWords[miss.value.toLowerCase()] = canon.value;
-    AC.storage.write('customWords', AC.state.customWords);
+  const assignBtn = document.createElement('button');
+  assignBtn.className = 'ac-button-old';
+  assignBtn.textContent = 'Assign';
+  assignBtn.addEventListener('click', () => {
+    if (!missInput.value.trim() || !canonInput.value.trim()) return;
+    AC.state.customMap[missInput.value.trim().toLowerCase()] = canonInput.value.trim();
+    if (!AC.state.customList.includes(canonInput.value.trim())) AC.state.customList.push(canonInput.value.trim());
+    AC.storage.writeRaw('ac_custom_map_v2', AC.state.customMap);
+    AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
     AC.mergeDictionaries();
     AC.renderCurrentTab();
-    miss.value = '';
-    canon.value = '';
+    renderResults();
+    missInput.value = '';
   });
 
   const closeBtn = document.createElement('button');
   closeBtn.className = 'ac-button-old';
-  closeBtn.textContent = 'Close';
+  closeBtn.textContent = 'Cancel';
   closeBtn.addEventListener('click', () => AC.toggleMapping(false));
 
   panel.appendChild(title);
   panel.appendChild(search);
   panel.appendChild(results);
-  panel.appendChild(miss);
-  panel.appendChild(canon);
-  panel.appendChild(addBtn);
+  panel.appendChild(missInput);
+  panel.appendChild(canonInput);
+  panel.appendChild(assignBtn);
   panel.appendChild(closeBtn);
 };
 
-AC.toggleMapping = function (force) {
+AC.toggleMapping = function (force, prefill) {
   if (!AC.state.ui.mapping) return;
   const panel = AC.state.ui.mapping;
   const next = typeof force === 'boolean' ? force : !panel.classList.contains('ac-open');
   panel.classList.toggle('ac-open', next);
-  if (next) AC.renderMappingPanel();
+  if (next) AC.renderMappingPanel(prefill);
 };
 
 // ===================== AC.init =====================
