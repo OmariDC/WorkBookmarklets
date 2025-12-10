@@ -361,15 +361,21 @@ AC.mergeDictionaries = function () {
   const canonicalSet = new Set();
 
   const addMapping = (miss, canon) => {
-    if (!miss || !canon) return;
-    flat[miss.toLowerCase()] = canon;
-    if (miss.includes(' ')) phrases[miss.toLowerCase()] = canon;
+    if (miss == null || canon == null) return;
+    const missStr = String(miss);
+    const canonStr = String(canon);
+    if (!missStr) return;
+    flat[missStr.toLowerCase()] = canonStr;
+    if (missStr.includes(' ')) phrases[missStr.toLowerCase()] = canonStr;
   };
 
   const addCanonical = (canon) => {
-    canonicalSet.add(canon);
-    flat[canon.toLowerCase()] = canon;
-    if (canon.includes(' ')) phrases[canon.toLowerCase()] = canon;
+    if (canon == null) return;
+    const canonStr = String(canon);
+    if (!canonStr) return;
+    canonicalSet.add(canonStr);
+    flat[canonStr.toLowerCase()] = canonStr;
+    if (canonStr.includes(' ')) phrases[canonStr.toLowerCase()] = canonStr;
   };
 
   Object.entries(AC.baseDict).forEach(([canon, list]) => {
