@@ -46,6 +46,17 @@ AC.state = {
   ui: { root: null, mapping: null, content: null, tabs: [], open: false, tab: 'log' }
 };
 
+// Clean invalid stored data
+AC.state.customList = (AC.state.customList || []).filter(c => typeof c === "string" && c.trim());
+AC.state.customMap = Object.fromEntries(
+  Object.entries(AC.state.customMap || {}).filter(([m, c]) =>
+    typeof m === "string" &&
+    typeof c === "string" &&
+    m.trim() &&
+    c.trim()
+  )
+);
+
 // ===================== Dictionary loading + merging =====================
 AC.baseDict = {
   'Abarth': ['abart','abarht','abarth?'],
@@ -392,10 +403,21 @@ AC.mergeDictionaries = function () {
     addMapping(k, v);
   });
 
-  (AC.state.customList || []).forEach(canon => addCanonical(canon));
+  (AC.state.customList || []).forEach(canon => {
+    if (typeof canon === "string" && canon.trim()) {
+      addCanonical(canon.trim());
+    }
+  });
   Object.entries(AC.state.customMap || {}).forEach(([miss, canon]) => {
-    addCanonical(canon);
-    addMapping(miss, canon);
+    if (
+      typeof miss === "string" &&
+      typeof canon === "string" &&
+      miss.trim() &&
+      canon.trim()
+    ) {
+      addCanonical(canon.trim());
+      addMapping(miss.trim(), canon.trim());
+    }
   });
 
   AC.state.flatMap = flat;
