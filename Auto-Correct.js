@@ -30,6 +30,9 @@ AC.state = {
   logs: AC.storage.read('logs', []),
   stats: AC.storage.read('stats', { corrections: 0, lastCorrection: null }),
   recent: [],
+  mergedWords: {},
+  mergedPhrases: {},
+  lastAction: null,
   editors: new WeakSet(),
   keyListeners: new WeakMap(),
   observer: null,
@@ -111,11 +114,11 @@ AC.builtinPhrases = {
   dontknow: "don't know"
 };
 
-AC.getDictionaries = function () {
-  const words = { ...AC.builtinWords, ...AC.state.customWords };
-  const phrases = { ...AC.builtinPhrases, ...AC.state.customPhrases };
-  return { words, phrases };
+AC.mergeDictionaries = function () {
+  AC.state.mergedWords = { ...AC.builtinWords, ...AC.state.customWords };
+  AC.state.mergedPhrases = { ...AC.builtinPhrases, ...AC.state.customPhrases };
 };
+AC.mergeDictionaries();
 
 // ===================== Time normalisation functions =====================
 AC.toTwo = function (num) {
@@ -155,6 +158,8 @@ AC.normalizeTimeLoose = function (word) {
   return AC.normalizeTime(word);
 };
 
+AC.state.logs = AC.state.logs.filter(e => !/\d/.test(e.word) || AC.normalizeTimeLoose(e.word));
+
 // ===================== Word + phrase correction functions =====================
 AC.applyCapitalization = function (original, replacement) {
   if (!replacement) return replacement;
@@ -168,15 +173,29 @@ AC.applyCapitalization = function (original, replacement) {
 };
 
 AC.correctWord = function (word) {
-  const { words, phrases } = AC.getDictionaries();
-  const normalizedTime = AC.normalizeTimeLoose(word);
-  if (normalizedTime) return normalizedTime;
+  const time = AC.normalizeTimeLoose(word);
+  if (time) return time;
+
+  const words = AC.state.mergedWords;
+  const phrases = AC.state.mergedPhrases;
 
   const lower = word.toLowerCase();
-  if (phrases[lower]) return AC.applyCapitalization(word, phrases[lower]);
-  if (words[lower]) return AC.applyCapitalization(word, words[lower]);
-  if (lower === 'i') return 'I';
-  return null;
+  const phraseKeys = Object.keys(phrases).sort((a, b) => b.length - a.length);
+  for (const p of phraseKeys) {
+    if (lower.endsWith(p)) {
+      return AC.applyCapitalization(word, phrases[p]);
+    }
+  }
+
+  let correction = null;
+  if (phrases[lower]) correction = AC.applyCapitalization(word, phrases[lower]);
+  if (!correction && words[lower]) correction = AC.applyCapitalization(word, words[lower]);
+  if (!correction && lower === 'i') correction = 'I';
+  if (correction === word) {
+    const cap = AC.applyCapitalization(word, correction);
+    if (cap !== word) correction = cap; else return null;
+  }
+  return correction;
 };
 
 // ===================== Caret handling functions =====================
@@ -242,21 +261,24 @@ AC.getTextAndCursor = function (el) {
     return { text: el.value, pos: el.selectionStart || 0 };
   }
   const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0) return { text: el.innerText || '', pos: 0 };
+  if (!selection || selection.rangeCount === 0) return { text: el.textContent || '', pos: 0 };
   const range = selection.getRangeAt(0);
   const preRange = range.cloneRange();
   preRange.selectNodeContents(el);
   preRange.setEnd(range.endContainer, range.endOffset);
   const pos = preRange.toString().length;
-  return { text: el.innerText || '', pos };
+  return { text: el.textContent || '', pos };
 };
 
 // ===================== Logging engine =====================
 AC.appendLog = function (word, snapshot) {
-  const { words, phrases } = AC.getDictionaries();
+  const words = AC.state.mergedWords;
+  const phrases = AC.state.mergedPhrases;
   const lower = word.toLowerCase();
   if (words[lower] || phrases[lower]) return;
   if (AC.normalizeTimeLoose(word)) return;
+  if (/\d/.test(word) && !AC.normalizeTimeLoose(word)) return;
+  if (phrases[word.toLowerCase()]) return;
 
   const now = new Date();
   const dayKey = now.toISOString().slice(0, 10);
@@ -276,19 +298,22 @@ AC.process = function (el, triggerChar) {
   if (!AC.state.enabled) return;
   const { text, pos } = AC.getTextAndCursor(el);
   const before = text.slice(0, pos);
-  const match = before.match(/([^\s]+)\s*$/);
+  const match = before.match(/(\S+)(\s*)$/);
   if (!match) return;
   const word = match[1];
   const start = match.index || 0;
   const end = start + word.length;
   const correction = AC.correctWord(word);
-  if (!correction || correction === word) {
+  if (!correction) {
     AC.appendLog(word, text.slice(Math.max(0, start - 20), Math.min(text.length, end + 20)));
     return;
   }
+  if (correction === word) return;
 
   const tail = text.slice(end, pos);
-  const newText = correction + tail;
+  const trailingSpaces = match[2] || '';
+  const newText = correction + trailingSpaces + (word.match(/\s*$/)?.[0] || '') + tail;
+  AC.state.lastAction = { el, start, replacementLength: newText.length, original: text.slice(start, pos) };
   AC.replaceRange(el, start, pos, newText);
   AC.state.stats.corrections += 1;
   AC.state.stats.lastCorrection = new Date().toISOString();
@@ -306,11 +331,18 @@ AC.handleKey = function (event) {
   }, 0);
 };
 
+AC.undoLastCorrection = function () {
+  const action = AC.state.lastAction;
+  if (!action || !action.el) return;
+  AC.replaceRange(action.el, action.start, action.start + action.replacementLength, action.original);
+  AC.state.lastAction = null;
+};
+
 // ===================== Editor binding functions =====================
 AC.isEditable = function (el) {
   if (!(el instanceof Element)) return false;
   if (el.dataset && el.dataset.acAttached) return false;
-  if (el.matches('textarea, input[type="text"], input[type="search"], [contenteditable="true"], [contenteditable=""], .ql-editor, div[role="textbox"]')) {
+  if (el.matches('textarea, input[type="text"], input[type="search"], [contenteditable], .ql-editor, div[role="textbox"]')) {
     return true;
   }
   return false;
@@ -318,6 +350,7 @@ AC.isEditable = function (el) {
 
 AC.bindEditor = function (el) {
   if (AC.state.editors.has(el)) return;
+  if (AC.state.keyListeners.has(el)) return;
   el.dataset.acAttached = '1';
   const listener = AC.handleKey.bind(AC);
   el.addEventListener('keydown', listener);
@@ -326,7 +359,7 @@ AC.bindEditor = function (el) {
 };
 
 AC.scanExisting = function () {
-  const selectors = '.ql-editor, div[role="textbox"], [contenteditable="true"], [contenteditable=""], textarea, input[type="text"], input[type="search"]';
+  const selectors = '.ql-editor, div[role="textbox"], [contenteditable], textarea, input[type="text"], input[type="search"]';
   document.querySelectorAll(selectors).forEach(el => {
     if (!AC.state.editors.has(el)) AC.bindEditor(el);
   });
@@ -340,7 +373,7 @@ AC.startObserver = function () {
       m.addedNodes.forEach(node => {
         if (!(node instanceof Element)) return;
         if (AC.isEditable(node)) AC.bindEditor(node);
-        node.querySelectorAll && node.querySelectorAll('.ql-editor, div[role="textbox"], [contenteditable="true"], [contenteditable=""], textarea, input[type="text"], input[type="search"]').forEach(el => {
+        node.querySelectorAll && node.querySelectorAll('.ql-editor, div[role="textbox"], [contenteditable], textarea, input[type="text"], input[type="search"]').forEach(el => {
           if (AC.isEditable(el)) AC.bindEditor(el);
         });
       });
@@ -354,86 +387,89 @@ AC.buildUI = function () {
   if (AC.state.ui.root) return;
   const style = document.createElement('style');
   style.textContent = `
-    .ac-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 99998; opacity: 0; pointer-events: none; transition: opacity 0.2s ease; }
-    .ac-overlay.ac-open { opacity: 1; pointer-events: auto; }
-    .ac-sidebar { position: fixed; top: 0; left: 0; width: 360px; height: 100vh; background: #1e1d49; color: #fff; z-index: 99999; transform: translateX(-100%); transition: transform 0.25s ease; box-shadow: 3px 0 12px rgba(0,0,0,0.4); display: flex; flex-direction: column; font-family: Arial, sans-serif; }
-    .ac-sidebar.ac-open { transform: translateX(0); }
-    .ac-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #483a73; }
-    .ac-tabs { display: flex; gap: 8px; padding: 8px 12px; flex-wrap: wrap; }
-    .ac-tab { background: #34416a; border: 1px solid #bdbde3; color: #fff; padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-    .ac-tab.ac-active { background: #bdbde3; color: #1e1d49; }
-    .ac-content { flex: 1; overflow: auto; padding: 12px; }
-    .ac-section { display: none; }
-    .ac-section.ac-active { display: block; }
-    .ac-close { cursor: pointer; background: transparent; border: none; color: #fff; font-size: 16px; }
-    .ac-floating { position: fixed; bottom: 24px; left: 24px; width: 48px; height: 48px; background: #483a73; color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 12px rgba(0,0,0,0.35); z-index: 100000; }
-    .ac-list { list-style: none; padding: 0; margin: 0; }
-    .ac-list li { padding: 6px 0; border-bottom: 1px solid #bdbde3; font-size: 12px; }
-    .ac-input { width: 100%; padding: 6px 8px; border-radius: 4px; border: 1px solid #bdbde3; background: #34416a; color: #fff; margin-bottom: 8px; }
-    .ac-button { background: #34416a; color: #fff; border: 1px solid #bdbde3; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
-    .ac-row { display: flex; gap: 6px; margin-bottom: 8px; }
+    .ac-ui *, .ac-ui *::before, .ac-ui *::after { box-sizing: border-box; }
+    .ac-sidebar-old { position: fixed; top: 0; left: 0; width: 280px; height: 100vh; background: #1e1d49; color: #fff; z-index: 99999; transform: translateX(-100%); transition: transform 0.25s ease, opacity 0.25s ease; opacity: 0; display: flex; flex-direction: column; font-family: Arial, sans-serif; box-shadow: 4px 0 10px rgba(0,0,0,0.4); }
+    .ac-sidebar-old.ac-open { transform: translateX(0); opacity: 1; }
+    .ac-header-old { padding: 12px 14px; background: #483a73; font-weight: bold; display: flex; justify-content: space-between; align-items: center; }
+    .ac-tabs-old { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px 4px; border-bottom: 1px solid #bdbde3; }
+    .ac-tab-old { background: #34416a; color: #fff; padding: 6px 10px; border: 1px solid #bdbde3; border-radius: 3px; cursor: pointer; font-size: 12px; transition: background 0.2s; }
+    .ac-tab-old.ac-active { background: #483a73; border-color: #f9772e; }
+    .ac-undo { margin: 0 12px 8px; padding: 6px 10px; background: #34416a; color: #fff; border: 1px solid #bdbde3; border-radius: 3px; cursor: pointer; }
+    .ac-content-old { flex: 1; overflow: auto; padding: 10px 12px; }
+    .ac-floating-old { position: fixed; bottom: 24px; left: 24px; width: 24px; height: 24px; aspect-ratio: 1 / 1; background: #f9772e; color: #1e1d49; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; box-shadow: 0 6px 12px rgba(0,0,0,0.35); z-index: 100000; font-weight: bold; }
+    .ac-list-old { list-style: none; padding: 0; margin: 0; }
+    .ac-list-old li { padding: 6px 0; border-bottom: 1px solid #bdbde3; font-size: 12px; }
+    .ac-input-old { width: 100%; padding: 6px 8px; border-radius: 4px; border: 1px solid #bdbde3; background: #34416a; color: #fff; margin-bottom: 8px; }
+    .ac-button-old { background: #34416a; color: #fff; border: 1px solid #bdbde3; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
+    .ac-row-old { display: flex; gap: 6px; margin-bottom: 8px; }
+    .ac-mapping-panel { position: fixed; top: 0; right: 0; width: 320px; height: 100vh; background: #1e1d49; color: #fff; z-index: 99998; transform: translateX(100%); transition: transform 0.25s ease, opacity 0.25s ease; opacity: 0; padding: 12px; box-shadow: -4px 0 10px rgba(0,0,0,0.4); font-family: Arial, sans-serif; }
+    .ac-mapping-panel.ac-open { transform: translateX(0); opacity: 1; }
+    .ac-scrollbar-old::-webkit-scrollbar { width: 8px; }
+    .ac-scrollbar-old::-webkit-scrollbar-thumb { background: #483a73; border-radius: 4px; }
+    .ac-scrollbar-old::-webkit-scrollbar-track { background: #1e1d49; }
   `;
   document.head.appendChild(style);
 
-  const overlay = document.createElement('div');
-  overlay.className = 'ac-overlay';
-  overlay.addEventListener('click', () => AC.toggleUI(false));
-
   const sidebar = document.createElement('div');
-  sidebar.className = 'ac-sidebar';
+  sidebar.className = 'ac-sidebar-old ac-ui ac-scrollbar-old';
 
   const header = document.createElement('div');
-  header.className = 'ac-header';
+  header.className = 'ac-header-old';
   const title = document.createElement('div');
   title.textContent = 'Auto-Correct';
-  const close = document.createElement('button');
-  close.className = 'ac-close';
-  close.textContent = '×';
-  close.addEventListener('click', () => AC.toggleUI(false));
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = '×';
+  closeBtn.className = 'ac-button-old';
+  closeBtn.style.padding = '4px 8px';
+  closeBtn.addEventListener('click', () => AC.toggleUI(false));
   header.appendChild(title);
-  header.appendChild(close);
+  header.appendChild(closeBtn);
 
-  const tabs = ['log', 'recent', 'stats', 'export', 'dictionary', 'settings'];
   const tabBar = document.createElement('div');
-  tabBar.className = 'ac-tabs';
-  const content = document.createElement('div');
-  content.className = 'ac-content';
-  const sections = {};
-
+  tabBar.className = 'ac-tabs-old';
+  const tabs = ['log', 'recent', 'stats', 'export', 'dictionary', 'settings'];
   tabs.forEach(id => {
-    const btn = document.createElement('div');
-    btn.className = 'ac-tab';
+    const btn = document.createElement('button');
+    btn.className = 'ac-tab-old';
+    btn.dataset.tab = id;
     btn.textContent = id.charAt(0).toUpperCase() + id.slice(1);
     btn.addEventListener('click', () => AC.switchTab(id));
-    btn.dataset.tab = id;
     tabBar.appendChild(btn);
-
-    const section = document.createElement('div');
-    section.className = 'ac-section';
-    section.dataset.tab = id;
-    sections[id] = section;
-    content.appendChild(section);
   });
+
+  const undoBtn = document.createElement('button');
+  undoBtn.className = 'ac-undo';
+  undoBtn.textContent = 'Undo last correction';
+  undoBtn.addEventListener('click', () => AC.undoLastCorrection());
+
+  const content = document.createElement('div');
+  content.className = 'ac-content-old ac-scrollbar-old';
 
   sidebar.appendChild(header);
   sidebar.appendChild(tabBar);
+  sidebar.appendChild(undoBtn);
   sidebar.appendChild(content);
 
   const floating = document.createElement('div');
-  floating.className = 'ac-floating';
+  floating.className = 'ac-floating-old';
   floating.textContent = 'AC';
   floating.addEventListener('click', () => AC.toggleUI());
 
-  document.body.appendChild(overlay);
+  const mappingPanel = document.createElement('div');
+  mappingPanel.className = 'ac-mapping-panel ac-scrollbar-old';
+
   document.body.appendChild(sidebar);
+  document.body.appendChild(mappingPanel);
   document.body.appendChild(floating);
 
   AC.state.ui.root = sidebar;
-  AC.state.ui.overlay = overlay;
-  AC.state.ui.sections = sections;
-  AC.state.ui.tabs = tabBar.querySelectorAll('.ac-tab');
+  AC.state.ui.mapping = mappingPanel;
+  AC.state.ui.content = content;
+  AC.state.ui.tabs = tabBar.querySelectorAll('.ac-tab-old');
 
-  AC.renderTabs();
+  AC.renderCurrentTab();
+  AC.renderMappingPanel();
+
   document.addEventListener('keydown', e => {
     if (e.altKey && (e.key === 't' || e.key === 'T')) {
       e.preventDefault();
@@ -447,54 +483,45 @@ AC.toggleUI = function (force) {
   AC.state.ui.open = next;
   if (!AC.state.ui.root) return;
   AC.state.ui.root.classList.toggle('ac-open', next);
-  AC.state.ui.overlay.classList.toggle('ac-open', next);
-  AC.renderTabs();
 };
 
 AC.switchTab = function (id) {
   AC.state.ui.tab = id;
-  AC.renderTabs();
+  AC.renderCurrentTab();
 };
 
-AC.renderTabs = function () {
+AC.renderCurrentTab = function () {
   if (!AC.state.ui.root) return;
-  AC.state.ui.tabs.forEach(tab => {
-    tab.classList.toggle('ac-active', tab.dataset.tab === AC.state.ui.tab);
-  });
-  Object.entries(AC.state.ui.sections).forEach(([id, section]) => {
-    section.classList.toggle('ac-active', id === AC.state.ui.tab);
-  });
-  AC.renderLog();
-  AC.renderRecent();
-  AC.renderStats();
-  AC.renderDictionary();
-  AC.renderExport();
-  AC.renderSettings();
+  AC.state.ui.tabs.forEach(tab => tab.classList.toggle('ac-active', tab.dataset.tab === AC.state.ui.tab));
+  AC.state.ui.content.innerHTML = '';
+  const tab = AC.state.ui.tab;
+  if (tab === 'log') AC.renderLog();
+  if (tab === 'recent') AC.renderRecent();
+  if (tab === 'stats') AC.renderStats();
+  if (tab === 'export') AC.renderExport();
+  if (tab === 'dictionary') AC.renderDictionary();
+  if (tab === 'settings') AC.renderSettings();
 };
 
 AC.renderLog = function () {
-  const sec = AC.state.ui.sections.log;
-  if (!sec) return;
-  sec.innerHTML = '';
+  const sec = AC.state.ui.content;
   const list = document.createElement('ul');
-  list.className = 'ac-list';
+  list.className = 'ac-list-old';
   AC.state.logs.slice().reverse().forEach(entry => {
     const li = document.createElement('li');
-    li.textContent = `${entry.word} — ${new Date(entry.timestamp).toLocaleString()}`;
+    li.textContent = `${entry.word} — ${new Date(entry.timestamp).toLocaleString('en-GB', { hour12: false })}`;
     list.appendChild(li);
   });
   sec.appendChild(list);
 };
 
 AC.renderRecent = function () {
-  const sec = AC.state.ui.sections.recent;
-  if (!sec) return;
-  sec.innerHTML = '';
+  const sec = AC.state.ui.content;
   const list = document.createElement('ul');
-  list.className = 'ac-list';
+  list.className = 'ac-list-old';
   AC.state.recent.slice().reverse().forEach(entry => {
     const li = document.createElement('li');
-    li.textContent = `${entry.from} → ${entry.to} — ${new Date(entry.at).toLocaleTimeString()}`;
+    li.textContent = `${entry.from} → ${entry.to} — ${new Date(entry.at).toLocaleTimeString('en-GB', { hour12: false })}`;
     list.appendChild(li);
   });
   if (!list.childElementCount) {
@@ -506,103 +533,109 @@ AC.renderRecent = function () {
 };
 
 AC.renderStats = function () {
-  const sec = AC.state.ui.sections.stats;
-  if (!sec) return;
-  sec.innerHTML = '';
+  const sec = AC.state.ui.content;
   const p = document.createElement('div');
   p.textContent = `Corrections: ${AC.state.stats.corrections}`;
   const last = document.createElement('div');
-  last.textContent = `Last: ${AC.state.stats.lastCorrection ? new Date(AC.state.stats.lastCorrection).toLocaleString() : 'N/A'}`;
+  last.textContent = `Last: ${AC.state.stats.lastCorrection ? new Date(AC.state.stats.lastCorrection).toLocaleString('en-GB', { hour12: false }) : 'N/A'}`;
   sec.appendChild(p);
   sec.appendChild(last);
 };
 
 AC.renderDictionary = function () {
-  const sec = AC.state.ui.sections.dictionary;
-  if (!sec) return;
-  sec.innerHTML = '';
+  const sec = AC.state.ui.content;
+  const words = AC.state.mergedWords;
+  const phrases = AC.state.mergedPhrases;
   const wordsList = document.createElement('ul');
-  wordsList.className = 'ac-list';
-  const { words, phrases } = AC.getDictionaries();
+  wordsList.className = 'ac-list-old';
   Object.entries(words).forEach(([k, v]) => {
-    if (AC.builtinWords[k] === v) return; // skip builtin
+    if (AC.builtinWords[k] === v) return;
     const li = document.createElement('li');
     li.textContent = `${k} → ${v}`;
     const btn = document.createElement('button');
-    btn.className = 'ac-button';
+    btn.className = 'ac-button-old';
     btn.textContent = 'Remove';
     btn.addEventListener('click', () => {
       delete AC.state.customWords[k];
       AC.storage.write('customWords', AC.state.customWords);
-      AC.renderDictionary();
+      AC.mergeDictionaries();
+      AC.renderCurrentTab();
     });
     li.appendChild(btn);
     wordsList.appendChild(li);
   });
 
   const phrasesList = document.createElement('ul');
-  phrasesList.className = 'ac-list';
+  phrasesList.className = 'ac-list-old';
   Object.entries(phrases).forEach(([k, v]) => {
     if (AC.builtinPhrases[k] === v) return;
     const li = document.createElement('li');
     li.textContent = `${k} → ${v}`;
     const btn = document.createElement('button');
-    btn.className = 'ac-button';
+    btn.className = 'ac-button-old';
     btn.textContent = 'Remove';
     btn.addEventListener('click', () => {
       delete AC.state.customPhrases[k];
       AC.storage.write('customPhrases', AC.state.customPhrases);
-      AC.renderDictionary();
+      AC.mergeDictionaries();
+      AC.renderCurrentTab();
     });
     li.appendChild(btn);
     phrasesList.appendChild(li);
   });
 
   const wordRow = document.createElement('div');
-  wordRow.className = 'ac-row';
+  wordRow.className = 'ac-row-old';
   const miss = document.createElement('input');
   miss.placeholder = 'misspelling';
-  miss.className = 'ac-input';
+  miss.className = 'ac-input-old';
   const corr = document.createElement('input');
   corr.placeholder = 'correction';
-  corr.className = 'ac-input';
+  corr.className = 'ac-input-old';
   const addBtn = document.createElement('button');
-  addBtn.className = 'ac-button';
+  addBtn.className = 'ac-button-old';
   addBtn.textContent = 'Add word';
   addBtn.addEventListener('click', () => {
     if (!miss.value || !corr.value) return;
     AC.state.customWords[miss.value.toLowerCase()] = corr.value;
     AC.storage.write('customWords', AC.state.customWords);
+    AC.mergeDictionaries();
     miss.value = '';
     corr.value = '';
-    AC.renderDictionary();
+    AC.renderCurrentTab();
   });
   wordRow.appendChild(miss);
   wordRow.appendChild(corr);
   wordRow.appendChild(addBtn);
 
   const phraseRow = document.createElement('div');
-  phraseRow.className = 'ac-row';
+  phraseRow.className = 'ac-row-old';
   const pmiss = document.createElement('input');
   pmiss.placeholder = 'phrase misspelling';
-  pmiss.className = 'ac-input';
+  pmiss.className = 'ac-input-old';
   const pcorr = document.createElement('input');
   pcorr.placeholder = 'phrase correction';
-  pcorr.className = 'ac-input';
+  pcorr.className = 'ac-input-old';
   const padd = document.createElement('button');
-  padd.className = 'ac-button';
+  padd.className = 'ac-button-old';
   padd.textContent = 'Add phrase';
   padd.addEventListener('click', () => {
     if (!pmiss.value || !pcorr.value) return;
     AC.state.customPhrases[pmiss.value.toLowerCase()] = pcorr.value;
     AC.storage.write('customPhrases', AC.state.customPhrases);
+    AC.mergeDictionaries();
     pmiss.value = '';
     pcorr.value = '';
-    AC.renderDictionary();
+    AC.renderCurrentTab();
   });
   phraseRow.appendChild(pmiss);
   phraseRow.appendChild(pcorr);
   phraseRow.appendChild(padd);
+
+  const mapBtn = document.createElement('button');
+  mapBtn.className = 'ac-button-old';
+  mapBtn.textContent = 'Open mapping panel';
+  mapBtn.addEventListener('click', () => AC.toggleMapping(true));
 
   sec.appendChild(document.createTextNode('Custom words'));
   sec.appendChild(wordsList);
@@ -611,12 +644,11 @@ AC.renderDictionary = function () {
   sec.appendChild(document.createTextNode('Custom phrases'));
   sec.appendChild(phrasesList);
   sec.appendChild(phraseRow);
+  sec.appendChild(mapBtn);
 };
 
 AC.renderExport = function () {
-  const sec = AC.state.ui.sections.export;
-  if (!sec) return;
-  sec.innerHTML = '';
+  const sec = AC.state.ui.content;
   const data = {
     customWords: AC.state.customWords,
     customPhrases: AC.state.customPhrases,
@@ -624,29 +656,99 @@ AC.renderExport = function () {
     stats: AC.state.stats
   };
   const textarea = document.createElement('textarea');
-  textarea.className = 'ac-input';
+  textarea.className = 'ac-input-old ac-scrollbar-old';
   textarea.style.height = '200px';
   textarea.value = JSON.stringify(data, null, 2);
   sec.appendChild(textarea);
 };
 
 AC.renderSettings = function () {
-  const sec = AC.state.ui.sections.settings;
-  if (!sec) return;
-  sec.innerHTML = '';
+  const sec = AC.state.ui.content;
   const toggle = document.createElement('button');
-  toggle.className = 'ac-button';
+  toggle.className = 'ac-button-old';
   toggle.textContent = AC.state.enabled ? 'Disable autocorrect' : 'Enable autocorrect';
   toggle.addEventListener('click', () => {
     AC.state.enabled = !AC.state.enabled;
     AC.storage.write('enabled', AC.state.enabled);
-    AC.renderSettings();
+    AC.renderCurrentTab();
   });
   sec.appendChild(toggle);
 };
 
+AC.renderMappingPanel = function () {
+  if (!AC.state.ui.mapping) return;
+  const panel = AC.state.ui.mapping;
+  panel.innerHTML = '';
+  const title = document.createElement('div');
+  title.style.marginBottom = '8px';
+  title.textContent = 'Mapping panel';
+
+  const search = document.createElement('input');
+  search.className = 'ac-input-old';
+  search.placeholder = 'Search canonical word';
+
+  const results = document.createElement('div');
+  results.className = 'ac-scrollbar-old';
+  results.style.maxHeight = '180px';
+  results.style.overflow = 'auto';
+  const renderResults = () => {
+    results.innerHTML = '';
+    const term = search.value.toLowerCase();
+    const items = Object.entries(AC.state.mergedWords).filter(([k, v]) => k.includes(term) || v.toLowerCase().includes(term)).slice(0, 50);
+    items.forEach(([k, v]) => {
+      const div = document.createElement('div');
+      div.textContent = `${k} → ${v}`;
+      results.appendChild(div);
+    });
+  };
+  search.addEventListener('input', renderResults);
+  renderResults();
+
+  const miss = document.createElement('input');
+  miss.className = 'ac-input-old';
+  miss.placeholder = 'Misspelling';
+  const canon = document.createElement('input');
+  canon.className = 'ac-input-old';
+  canon.placeholder = 'Canonical';
+
+  const addBtn = document.createElement('button');
+  addBtn.className = 'ac-button-old';
+  addBtn.textContent = 'Add mapping';
+  addBtn.addEventListener('click', () => {
+    if (!miss.value || !canon.value) return;
+    AC.state.customWords[miss.value.toLowerCase()] = canon.value;
+    AC.storage.write('customWords', AC.state.customWords);
+    AC.mergeDictionaries();
+    AC.renderCurrentTab();
+    miss.value = '';
+    canon.value = '';
+  });
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'ac-button-old';
+  closeBtn.textContent = 'Close';
+  closeBtn.addEventListener('click', () => AC.toggleMapping(false));
+
+  panel.appendChild(title);
+  panel.appendChild(search);
+  panel.appendChild(results);
+  panel.appendChild(miss);
+  panel.appendChild(canon);
+  panel.appendChild(addBtn);
+  panel.appendChild(closeBtn);
+};
+
+AC.toggleMapping = function (force) {
+  if (!AC.state.ui.mapping) return;
+  const panel = AC.state.ui.mapping;
+  const next = typeof force === 'boolean' ? force : !panel.classList.contains('ac-open');
+  panel.classList.toggle('ac-open', next);
+  if (next) AC.renderMappingPanel();
+};
+
 // ===================== AC.init =====================
 AC.init = function () {
+  AC.mergeDictionaries();
   AC.scanExisting();
   AC.startObserver();
   AC.buildUI();
