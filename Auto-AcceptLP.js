@@ -1,6 +1,7 @@
-// Prevent double installation
-if (window._autoAcceptInstalled) return;
-window._autoAcceptInstalled = true;
+// Prevent double install without using return (LP-safe)
+if (!window._autoAcceptInstalled) {
+  window._autoAcceptInstalled = true;
+}
 
 // CONFIG
 const BUTTON_SELECTOR =
@@ -12,7 +13,7 @@ const BADGE_BORDER_COLOR = '#000';
 
 let observer = null;
 
-// Delay generator
+// Return random delay
 function getDelay() {
   return 500 + Math.random() * 1100;
 }
@@ -33,7 +34,7 @@ function enable() {
 
   observer.observe(document.body, { childList: true, subtree: true });
 
-  // Badge
+  // Create badge if missing
   let badge = document.getElementById(BADGE_ID);
   if (!badge) {
     badge = document.createElement('div');
@@ -51,7 +52,7 @@ function enable() {
     background: BADGE_COLOR,
     border: `2px solid ${BADGE_BORDER_COLOR}`,
     borderRadius: '50%',
-    boxShadow: '0 0 4px rgba(0, 0, 0, 0.4)',
+    boxShadow: '0 0 4px rgba(0,0,0,0.4)`,
     zIndex: 99999,
     cursor: 'pointer'
   });
@@ -73,13 +74,13 @@ function disable() {
   console.info('Auto-accept OFF');
 }
 
-// Toggle state
+// Toggle
 function toggle() {
   if (observer) disable();
   else enable();
 }
 
-// Register hotkey
+// Register AUTO HOTKEY
 if (!window._autoAcceptHotkey) {
   window._autoAcceptHotkey = true;
 
@@ -92,5 +93,5 @@ if (!window._autoAcceptHotkey) {
   });
 }
 
-// Auto-start ON
+// Start ON
 enable();
