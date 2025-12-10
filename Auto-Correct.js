@@ -373,8 +373,10 @@ AC.mergeDictionaries = function () {
 
   const addMapping = (miss, canon) => {
     if (miss == null || canon == null) return;
-    const missStr = String(miss);
-    const canonStr = String(canon);
+    if (typeof canon !== 'string') canon = String(canon);
+    if (typeof miss !== 'string') miss = String(miss);
+    const missStr = canon == null || miss == null ? '' : miss;
+    const canonStr = canon == null ? '' : canon;
     if (!missStr) return;
     flat[missStr.toLowerCase()] = canonStr;
     if (missStr.includes(' ')) phrases[missStr.toLowerCase()] = canonStr;
@@ -382,7 +384,8 @@ AC.mergeDictionaries = function () {
 
   const addCanonical = (canon) => {
     if (canon == null) return;
-    const canonStr = String(canon);
+    if (typeof canon !== 'string') canon = String(canon);
+    const canonStr = canon == null ? '' : canon;
     if (!canonStr) return;
     canonicalSet.add(canonStr);
     flat[canonStr.toLowerCase()] = canonStr;
@@ -392,15 +395,6 @@ AC.mergeDictionaries = function () {
   Object.entries(AC.baseDict).forEach(([canon, list]) => {
     addCanonical(canon);
     (list || []).forEach(m => addMapping(m, canon));
-  });
-
-  Object.entries(AC.state.customWordsNew).forEach(([k, v]) => {
-    addCanonical(v);
-    addMapping(k, v);
-  });
-  Object.entries(AC.state.customPhrasesNew).forEach(([k, v]) => {
-    addCanonical(v);
-    addMapping(k, v);
   });
 
   (AC.state.customList || []).forEach(canon => {
@@ -420,11 +414,31 @@ AC.mergeDictionaries = function () {
     }
   });
 
+  Object.entries(AC.state.customWordsNew).forEach(([k, v]) => {
+    addCanonical(v);
+    addMapping(k, v);
+  });
+  Object.entries(AC.state.customPhrasesNew).forEach(([k, v]) => {
+    addCanonical(v);
+    addMapping(k, v);
+  });
+
   AC.state.flatMap = flat;
   AC.state.multi = phrases;
   AC.state.canonicals = Array.from(canonicalSet).sort((a, b) => a.localeCompare(b));
   AC.state.mergedWords = flat;
   AC.state.mergedPhrases = phrases;
+
+  if (Object.keys(AC.state.mergedWords).length === 0) {
+    console.warn("Dictionary failed to load, reloading baseDict");
+    AC.state.mergedWords = Object.fromEntries(
+      Object.entries(AC.baseDict).map(([canon, arr]) => [canon.toLowerCase(), canon])
+    );
+  }
+
+  if (Object.keys(AC.state.mergedPhrases).length === 0) {
+    AC.state.mergedPhrases = {};
+  }
 };
 AC.mergeDictionaries();
 
@@ -488,9 +502,9 @@ AC.correctWord = function (word) {
   const phrases = AC.state.mergedPhrases;
 
   const lower = word.toLowerCase();
-  const phraseKeys = Object.keys(phrases).sort((a, b) => b.length - a.length);
+  const phraseKeys = Object.keys(phrases).map(k => k.toLowerCase()).sort((a, b) => b.length - a.length);
   for (const p of phraseKeys) {
-    if (lower.endsWith(p)) return AC.applyCapitalization(word, phrases[p]);
+    if (lower.includes(p)) return AC.applyCapitalization(word, phrases[p]);
   }
 
   let correction = null;
@@ -576,10 +590,9 @@ AC.appendLog = function (word, snapshot) {
   const words = AC.state.mergedWords;
   const phrases = AC.state.mergedPhrases;
   const lower = word.toLowerCase();
-  if (words[lower] || phrases[lower]) return;
   if (AC.normalizeTimeLoose(word)) return;
   if (/\d/.test(word) && !AC.normalizeTimeLoose(word)) return;
-  if (phrases[word.toLowerCase()]) return;
+  if (phrases[word.toLowerCase()] || words[word.toLowerCase()]) return;
 
   const now = new Date();
   const dayKey = now.toISOString().slice(0, 10);
@@ -603,6 +616,7 @@ AC.process = function (el) {
   const start = match.index || 0;
   const end = start + word.length;
   const correction = AC.correctWord(word);
+  console.debug("Word:", word, "Correction:", correction, "Dict size:", Object.keys(AC.state.mergedWords).length);
   if (!correction) {
     AC.appendLog(word, text.slice(Math.max(0, start - 20), Math.min(text.length, end + 20)));
     return;
@@ -863,8 +877,10 @@ AC.renderDictionary = function () {
     const canon = newCanon.value.trim();
     AC.state.customList.push(canon);
     if (starToggle.checked && !AC.state.capsRules.includes(canon)) AC.state.capsRules.push(canon);
+    AC.state.customWordsNew[canon.toLowerCase()] = canon;
     AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
     AC.storage.writeRaw('ac_caps_rules_v2', AC.state.capsRules);
+    AC.storage.write('customWords', AC.state.customWordsNew);
     AC.mergeDictionaries();
     AC.renderCurrentTab();
   });
@@ -886,11 +902,14 @@ AC.renderDictionary = function () {
   addMapBtn.addEventListener('click', () => {
     if (!miss.value.trim() || !canon.value.trim()) return;
     AC.state.customMap[miss.value.trim().toLowerCase()] = canon.value.trim();
+    AC.state.customWordsNew[canon.value.trim().toLowerCase()] = canon.value.trim();
+    AC.state.customWordsNew[miss.value.trim().toLowerCase()] = canon.value.trim();
     AC.storage.writeRaw('ac_custom_map_v2', AC.state.customMap);
     if (!AC.state.customList.includes(canon.value.trim())) {
       AC.state.customList.push(canon.value.trim());
       AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
     }
+    AC.storage.write('customWords', AC.state.customWordsNew);
     AC.mergeDictionaries();
     miss.value = '';
     canon.value = '';
@@ -910,9 +929,10 @@ AC.renderDictionary = function () {
 
   const wordToMappings = {};
   Object.entries(AC.state.flatMap).forEach(([k, v]) => {
-    const canonLower = v.toLowerCase();
+    const canonLower = String(v).toLowerCase();
     wordToMappings[canonLower] = wordToMappings[canonLower] || [];
-    if (k !== v.toLowerCase()) wordToMappings[canonLower].push(k);
+    const vLower = String(v).toLowerCase();
+    if (k !== vLower) wordToMappings[canonLower].push(k);
   });
 
   AC.state.canonicals.forEach(canonWord => {
@@ -1040,8 +1060,11 @@ AC.renderMappingPanel = function (prefill) {
     if (!missInput.value.trim() || !canonInput.value.trim()) return;
     AC.state.customMap[missInput.value.trim().toLowerCase()] = canonInput.value.trim();
     if (!AC.state.customList.includes(canonInput.value.trim())) AC.state.customList.push(canonInput.value.trim());
+    AC.state.customWordsNew[canonInput.value.trim().toLowerCase()] = canonInput.value.trim();
+    AC.state.customWordsNew[missInput.value.trim().toLowerCase()] = canonInput.value.trim();
     AC.storage.writeRaw('ac_custom_map_v2', AC.state.customMap);
     AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
+    AC.storage.write('customWords', AC.state.customWordsNew);
     AC.mergeDictionaries();
     AC.renderCurrentTab();
     renderResults();
