@@ -28,9 +28,9 @@ AC.storage = {
 // ===================== AC.state initialisation =====================
 AC.state = {
   enabled: AC.storage.read('enabled', true),
-  customMap: AC.storage.readRaw('ac_custom_map_v2', {}),
-  customList: AC.storage.readRaw('ac_custom_dict_v2', []),
-  capsRules: AC.storage.readRaw('ac_caps_rules_v2', []),
+  customMap: AC.storage.readRaw('ac_custom_map_v1', AC.storage.readRaw('ac_custom_map_v2', {})),
+  customList: AC.storage.readRaw('ac_custom_dict_v1', AC.storage.readRaw('ac_custom_dict_v2', [])),
+  capsRules: AC.storage.readRaw('ac_custom_caps_v1', AC.storage.readRaw('ac_caps_rules_v2', [])),
   customWordsNew: AC.storage.read('customWords', {}),
   customPhrasesNew: AC.storage.read('customPhrases', {}),
   logs: AC.storage.read('logs', []),
@@ -39,6 +39,7 @@ AC.state = {
   flatMap: {},
   multi: {},
   canonicals: [],
+  groupedCanonicals: {},
   lastAction: null,
   editors: new WeakSet(),
   keyListeners: new WeakMap(),
@@ -56,6 +57,7 @@ AC.state.customMap = Object.fromEntries(
     c.trim()
   )
 );
+AC.state.capsRules = (AC.state.capsRules || []).filter(c => typeof c === 'string' && c.trim());
 
 // ===================== Dictionary loading + merging =====================
 AC.baseDict = {
@@ -363,33 +365,45 @@ AC.baseDict = {
   'iloveyou': ['iloveyou'],
   'forsure': ['forsure'],
   'whatare': ['whatare'],
-  'dontknow': ['dontknow']
+  'dontknow': ['dontknow'],
+  'phone call 15:30': [],
+  '11th': [],
+  'NEW alfa romeo junior with val YB64XNN 100000': [],
+  'customer interested in coming down but at work right now would like call to discuss later on and tghen to confirm': []
 };
 
 AC.mergeDictionaries = function () {
   const flat = {};
   const phrases = {};
+  const grouped = {};
   const canonicalSet = new Set();
-
-  const addMapping = (miss, canon) => {
-    if (miss == null || canon == null) return;
-    if (typeof canon !== 'string') canon = String(canon);
-    if (typeof miss !== 'string') miss = String(miss);
-    const missStr = canon == null || miss == null ? '' : miss;
-    const canonStr = canon == null ? '' : canon;
-    if (!missStr) return;
-    flat[missStr.toLowerCase()] = canonStr;
-    if (missStr.includes(' ')) phrases[missStr.toLowerCase()] = canonStr;
-  };
 
   const addCanonical = (canon) => {
     if (canon == null) return;
     if (typeof canon !== 'string') canon = String(canon);
-    const canonStr = canon == null ? '' : canon;
-    if (!canonStr) return;
-    canonicalSet.add(canonStr);
-    flat[canonStr.toLowerCase()] = canonStr;
-    if (canonStr.includes(' ')) phrases[canonStr.toLowerCase()] = canonStr;
+    canon = canon.trim();
+    if (!canon) return;
+    canonicalSet.add(canon);
+    if (!grouped[canon]) grouped[canon] = [];
+    const canonLower = canon.toLowerCase();
+    flat[canonLower] = canon;
+    if (canon.includes(' ')) phrases[canonLower] = canon;
+  };
+
+  const addMapping = (miss, canon) => {
+    if (canon == null || miss == null) return;
+    if (typeof canon !== 'string') canon = String(canon);
+    if (typeof miss !== 'string') miss = String(miss);
+    canon = canon.trim();
+    miss = miss.trim();
+    if (!canon || !miss) return;
+    addCanonical(canon);
+    const canonLower = canon.toLowerCase();
+    const missLower = miss.toLowerCase();
+    flat[missLower] = canon;
+    if (miss.includes(' ')) phrases[missLower] = canon;
+    grouped[canon] = grouped[canon] || [];
+    if (!grouped[canon].some(m => m.toLowerCase() === missLower) && missLower !== canonLower) grouped[canon].push(miss);
   };
 
   Object.entries(AC.baseDict).forEach(([canon, list]) => {
@@ -397,44 +411,35 @@ AC.mergeDictionaries = function () {
     (list || []).forEach(m => addMapping(m, canon));
   });
 
-  (AC.state.customList || []).forEach(canon => {
-    if (typeof canon === "string" && canon.trim()) {
-      addCanonical(canon.trim());
-    }
-  });
+  (AC.state.customList || []).forEach(canon => addCanonical(canon));
+
   Object.entries(AC.state.customMap || {}).forEach(([miss, canon]) => {
-    if (
-      typeof miss === "string" &&
-      typeof canon === "string" &&
-      miss.trim() &&
-      canon.trim()
-    ) {
-      addCanonical(canon.trim());
-      addMapping(miss.trim(), canon.trim());
-    }
+    addMapping(miss, canon);
   });
 
   Object.entries(AC.state.customWordsNew).forEach(([k, v]) => {
-    addCanonical(v);
     addMapping(k, v);
   });
   Object.entries(AC.state.customPhrasesNew).forEach(([k, v]) => {
-    addCanonical(v);
     addMapping(k, v);
   });
+
+  if (Object.keys(flat).length === 0) {
+    console.warn("Dictionary failed to load, reloading baseDict");
+    Object.entries(AC.baseDict).forEach(([canon, list]) => {
+      addCanonical(canon);
+      (list || []).forEach(m => addMapping(m, canon));
+    });
+  }
 
   AC.state.flatMap = flat;
   AC.state.multi = phrases;
   AC.state.canonicals = Array.from(canonicalSet).sort((a, b) => a.localeCompare(b));
+  AC.state.groupedCanonicals = Object.fromEntries(
+    Object.entries(grouped).map(([canon, arr]) => [canon, Array.from(new Set(arr))])
+  );
   AC.state.mergedWords = flat;
   AC.state.mergedPhrases = phrases;
-
-  if (Object.keys(AC.state.mergedWords).length === 0) {
-    console.warn("Dictionary failed to load, reloading baseDict");
-    AC.state.mergedWords = Object.fromEntries(
-      Object.entries(AC.baseDict).map(([canon, arr]) => [canon.toLowerCase(), canon])
-    );
-  }
 
   if (Object.keys(AC.state.mergedPhrases).length === 0) {
     AC.state.mergedPhrases = {};
@@ -712,12 +717,6 @@ AC.buildUI = function () {
     .ac-scrollbar-old::-webkit-scrollbar { width: 8px; }
     .ac-scrollbar-old::-webkit-scrollbar-thumb { background: #34416a; border-radius: 4px; }
     .ac-scrollbar-old::-webkit-scrollbar-track { background: #1e1d49; }
-    .ac-dict-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
-    .ac-dict-item { background: #34416a; border: 1px solid #bdbde3; border-radius: 4px; padding: 6px; font-size: 12px; }
-    .ac-dict-icons { margin-bottom: 4px; font-size: 12px; }
-    .ac-dict-word { font-weight: bold; }
-    .ac-dict-actions { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
-    .ac-note { font-size: 11px; opacity: 0.8; margin-top: 6px; }
   `;
   document.head.appendChild(style);
 
@@ -855,7 +854,6 @@ AC.renderStats = function () {
 
 AC.renderDictionary = function () {
   const sec = AC.state.ui.content;
-
   const addWordRow = document.createElement('div');
   addWordRow.className = 'ac-row-old';
   const newCanon = document.createElement('input');
@@ -874,11 +872,13 @@ AC.renderDictionary = function () {
   addCanonBtn.textContent = 'Add';
   addCanonBtn.addEventListener('click', () => {
     if (!newCanon.value.trim()) return;
-    const canon = newCanon.value.trim();
-    AC.state.customList.push(canon);
+    const canon = String(newCanon.value.trim());
+    if (!AC.state.customList.includes(canon)) AC.state.customList.push(canon);
     if (starToggle.checked && !AC.state.capsRules.includes(canon)) AC.state.capsRules.push(canon);
     AC.state.customWordsNew[canon.toLowerCase()] = canon;
+    AC.storage.writeRaw('ac_custom_dict_v1', AC.state.customList);
     AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
+    AC.storage.writeRaw('ac_custom_caps_v1', AC.state.capsRules);
     AC.storage.writeRaw('ac_caps_rules_v2', AC.state.capsRules);
     AC.storage.write('customWords', AC.state.customWordsNew);
     AC.mergeDictionaries();
@@ -901,14 +901,16 @@ AC.renderDictionary = function () {
   addMapBtn.textContent = 'Map';
   addMapBtn.addEventListener('click', () => {
     if (!miss.value.trim() || !canon.value.trim()) return;
-    AC.state.customMap[miss.value.trim().toLowerCase()] = canon.value.trim();
-    AC.state.customWordsNew[canon.value.trim().toLowerCase()] = canon.value.trim();
-    AC.state.customWordsNew[miss.value.trim().toLowerCase()] = canon.value.trim();
+    const missVal = String(miss.value.trim());
+    const canonVal = String(canon.value.trim());
+    AC.state.customMap[missVal.toLowerCase()] = canonVal;
+    if (!AC.state.customList.includes(canonVal)) AC.state.customList.push(canonVal);
+    AC.state.customWordsNew[canonVal.toLowerCase()] = canonVal;
+    AC.state.customWordsNew[missVal.toLowerCase()] = canonVal;
+    AC.storage.writeRaw('ac_custom_map_v1', AC.state.customMap);
     AC.storage.writeRaw('ac_custom_map_v2', AC.state.customMap);
-    if (!AC.state.customList.includes(canon.value.trim())) {
-      AC.state.customList.push(canon.value.trim());
-      AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
-    }
+    AC.storage.writeRaw('ac_custom_dict_v1', AC.state.customList);
+    AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
     AC.storage.write('customWords', AC.state.customWordsNew);
     AC.mergeDictionaries();
     miss.value = '';
@@ -924,34 +926,28 @@ AC.renderDictionary = function () {
   mapBtn.textContent = 'Open mapping panel';
   mapBtn.addEventListener('click', () => AC.toggleMapping(true));
 
-  const dictGrid = document.createElement('div');
-  dictGrid.className = 'ac-dict-grid';
-
-  const wordToMappings = {};
-  Object.entries(AC.state.flatMap).forEach(([k, v]) => {
-    const canonLower = String(v).toLowerCase();
-    wordToMappings[canonLower] = wordToMappings[canonLower] || [];
-    const vLower = String(v).toLowerCase();
-    if (k !== vLower) wordToMappings[canonLower].push(k);
-  });
+  const dictList = document.createElement('ul');
+  dictList.className = 'ac-list-old';
 
   AC.state.canonicals.forEach(canonWord => {
-    const item = document.createElement('div');
-    item.className = 'ac-dict-item';
-    const icons = document.createElement('div');
-    icons.className = 'ac-dict-icons';
-    const lower = canonWord.toLowerCase();
-    if ((AC.state.capsRules || []).some(r => r.toLowerCase() === lower)) icons.textContent += '⭐ ';
-    if ((wordToMappings[lower] || []).length) icons.textContent += '⚙️ ';
-    if (!AC.baseDict[canonWord]) icons.textContent += '⬜ ';
-    const wordEl = document.createElement('div');
-    wordEl.className = 'ac-dict-word';
-    wordEl.textContent = canonWord;
+    const li = document.createElement('li');
+    const title = document.createElement('div');
+    title.textContent = canonWord;
+    if ((AC.state.capsRules || []).some(r => r.toLowerCase() === canonWord.toLowerCase())) {
+      title.textContent += ' (always capitalise)';
+    }
     const missList = document.createElement('div');
     missList.style.fontSize = '11px';
-    missList.textContent = (wordToMappings[lower] || []).sort().join(', ');
+    const missings = (AC.state.groupedCanonicals[canonWord] || []).slice().sort();
+    missList.textContent = missings.join(', ');
     const actions = document.createElement('div');
-    actions.className = 'ac-dict-actions';
+    actions.style.display = 'flex';
+    actions.style.gap = '6px';
+    const mapLink = document.createElement('button');
+    mapLink.className = 'ac-button-old';
+    mapLink.textContent = 'Map misspelling';
+    mapLink.addEventListener('click', () => AC.toggleMapping(true, canonWord));
+    actions.appendChild(mapLink);
     if (!AC.baseDict[canonWord]) {
       const remove = document.createElement('button');
       remove.className = 'ac-button-old';
@@ -959,36 +955,27 @@ AC.renderDictionary = function () {
       remove.addEventListener('click', () => {
         AC.state.customList = AC.state.customList.filter(c => c !== canonWord);
         Object.keys(AC.state.customMap).forEach(m => { if (AC.state.customMap[m] === canonWord) delete AC.state.customMap[m]; });
+        Object.keys(AC.state.customWordsNew).forEach(k => { if (AC.state.customWordsNew[k] === canonWord || k === canonWord.toLowerCase()) delete AC.state.customWordsNew[k]; });
+        AC.storage.writeRaw('ac_custom_dict_v1', AC.state.customList);
         AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
+        AC.storage.writeRaw('ac_custom_map_v1', AC.state.customMap);
         AC.storage.writeRaw('ac_custom_map_v2', AC.state.customMap);
+        AC.storage.write('customWords', AC.state.customWordsNew);
         AC.mergeDictionaries();
         AC.renderCurrentTab();
       });
       actions.appendChild(remove);
     }
-    const mapLink = document.createElement('button');
-    mapLink.className = 'ac-button-old';
-    mapLink.textContent = 'Map misspelling';
-    mapLink.addEventListener('click', () => {
-      AC.toggleMapping(true, canonWord);
-    });
-    actions.appendChild(mapLink);
-
-    item.appendChild(icons);
-    item.appendChild(wordEl);
-    if (missList.textContent) item.appendChild(missList);
-    item.appendChild(actions);
-    dictGrid.appendChild(item);
+    li.appendChild(title);
+    if (missList.textContent) li.appendChild(missList);
+    li.appendChild(actions);
+    dictList.appendChild(li);
   });
 
   sec.appendChild(addWordRow);
   sec.appendChild(addMapRow);
   sec.appendChild(mapBtn);
-  sec.appendChild(dictGrid);
-  const note = document.createElement('div');
-  note.className = 'ac-note';
-  note.textContent = '⭐ always capitalise · ⚙️ has mappings · ⬜ custom only';
-  sec.appendChild(note);
+  sec.appendChild(dictList);
 };
 
 AC.renderExport = function () {
@@ -1058,11 +1045,21 @@ AC.renderMappingPanel = function (prefill) {
   assignBtn.textContent = 'Assign';
   assignBtn.addEventListener('click', () => {
     if (!missInput.value.trim() || !canonInput.value.trim()) return;
-    AC.state.customMap[missInput.value.trim().toLowerCase()] = canonInput.value.trim();
-    if (!AC.state.customList.includes(canonInput.value.trim())) AC.state.customList.push(canonInput.value.trim());
-    AC.state.customWordsNew[canonInput.value.trim().toLowerCase()] = canonInput.value.trim();
-    AC.state.customWordsNew[missInput.value.trim().toLowerCase()] = canonInput.value.trim();
+    let canon = canonInput.value;
+    let miss = missInput.value;
+    if (typeof canon !== 'string') canon = String(canon);
+    if (typeof miss !== 'string') miss = String(miss);
+    canon = canon.trim();
+    miss = miss.trim();
+    if (!canon || !miss) return;
+    const missLower = miss.toLowerCase();
+    AC.state.customMap[missLower] = canon;
+    if (!AC.state.customList.includes(canon)) AC.state.customList.push(canon);
+    AC.state.customWordsNew[canon.toLowerCase()] = canon;
+    AC.state.customWordsNew[missLower] = canon;
+    AC.storage.writeRaw('ac_custom_map_v1', AC.state.customMap);
     AC.storage.writeRaw('ac_custom_map_v2', AC.state.customMap);
+    AC.storage.writeRaw('ac_custom_dict_v1', AC.state.customList);
     AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
     AC.storage.write('customWords', AC.state.customWordsNew);
     AC.mergeDictionaries();
