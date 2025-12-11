@@ -35,6 +35,7 @@ AC.state = {
   customPhrasesNew: AC.storage.read('customPhrases', {}),
   logs: AC.storage.read('logs', []),
   stats: AC.storage.read('stats', { corrections: 0, lastCorrection: null }),
+  removedBaseCanonicals: AC.storage.read('removedBaseCanonicals', []),
   recent: [],
   flatMap: {},
   multi: {},
@@ -63,6 +64,7 @@ AC.state.customMap = Object.fromEntries(
 );
 AC.state.capsRules = Array.isArray(AC.state.capsRules) ? AC.state.capsRules : [];
 AC.state.capsRules = (AC.state.capsRules || []).filter(c => typeof c === 'string' && c.trim());
+AC.state.removedBaseCanonicals = Array.from(new Set((AC.state.removedBaseCanonicals || []).filter(c => typeof c === 'string' && c.trim()).map(c => c.trim())));
 
 // ===================== Dictionary loading + merging =====================
 AC.baseDict = {
@@ -382,6 +384,7 @@ AC.mergeDictionaries = function () {
   const flat = {};
   const phrases = {};
   const grouped = {};
+  const removedSet = new Set((AC.state.removedBaseCanonicals || []).map(c => String(c).toLowerCase()));
   
   const addCanonical = (canon) => {
     if (canon == null) return;
@@ -411,6 +414,7 @@ AC.mergeDictionaries = function () {
   };
 
   Object.entries(AC.baseDict).forEach(([canon, list]) => {
+    if (removedSet.has(String(canon).toLowerCase())) return;
     addCanonical(canon);
     (list || []).forEach(m => addMapping(m, canon));
   });
@@ -442,6 +446,7 @@ AC.mergeDictionaries = function () {
   if (Object.keys(flat).length === 0) {
     console.warn("Dictionary failed to load, reloading baseDict");
     Object.entries(AC.baseDict).forEach(([canon, list]) => {
+      if (removedSet.has(String(canon).toLowerCase())) return;
       addCanonical(canon);
       (list || []).forEach(m => addMapping(m, canon));
     });
@@ -457,6 +462,7 @@ AC.mergeDictionaries = function () {
   });
   const canonMissObj = Object.fromEntries(Object.entries(canonMissMap).map(([k, v]) => [k, Array.from(v)]));
   const allCanonicals = Array.from(new Set(Object.values(flat).concat(Object.values(phrases)))).sort((a, b) => a.localeCompare(b));
+  AC.state.removedBaseSet = removedSet;
   AC.state.canonicals = allCanonicals;
   AC.state.allCanonicals = allCanonicals;
   AC.state.groupedCanonicals = Object.fromEntries(
@@ -1093,7 +1099,7 @@ AC.renderDictionary = function () {
         gear.textContent = '⚙️ Has Misspellings';
         labels.appendChild(gear);
       }
-      if (!AC.baseCanonicalSet.has(canonLower)) {
+      if (!AC.baseCanonicalSet.has(canonLower) || (AC.state.removedBaseSet && AC.state.removedBaseSet.has(canonLower))) {
         const custom = document.createElement('span');
         custom.textContent = '⬜ Custom-Only';
         labels.appendChild(custom);
@@ -1145,24 +1151,34 @@ AC.renderDictionary = function () {
       });
       actions.appendChild(overrideBtn);
 
-      if (!AC.baseDict[canonWord]) {
-        const remove = document.createElement('button');
-        remove.className = 'ac-button-old';
-        remove.textContent = 'Remove';
-        remove.addEventListener('click', () => {
-          AC.state.customList = AC.state.customList.filter(c => c !== canonWord);
-          Object.keys(AC.state.customMap).forEach(m => { if (AC.state.customMap[m] === canonWord) delete AC.state.customMap[m]; });
-          Object.keys(AC.state.customWordsNew).forEach(k => { if (AC.state.customWordsNew[k] === canonWord || k === canonWord.toLowerCase()) delete AC.state.customWordsNew[k]; });
-          AC.storage.writeRaw('ac_custom_dict_v1', AC.state.customList);
-          AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
-          AC.storage.writeRaw('ac_custom_map_v1', AC.state.customMap);
-          AC.storage.writeRaw('ac_custom_map_v2', AC.state.customMap);
-          AC.storage.write('customWords', AC.state.customWordsNew);
-          AC.mergeDictionaries();
-          AC.renderCurrentTab();
-        });
-        actions.appendChild(remove);
-      }
+      const remove = document.createElement('button');
+      remove.className = 'ac-button-old';
+      remove.textContent = 'Remove';
+      remove.addEventListener('click', () => {
+        const canonLower = canonWord.toLowerCase();
+        AC.state.customList = AC.state.customList.filter(c => c !== canonWord);
+        Object.keys(AC.state.customMap).forEach(m => { if (AC.state.customMap[m] === canonWord || m === canonWord || m === canonLower) delete AC.state.customMap[m]; });
+        Object.keys(AC.state.customWordsNew).forEach(k => { const v = AC.state.customWordsNew[k]; if (v === canonWord || k === canonWord || k === canonLower) delete AC.state.customWordsNew[k]; });
+        AC.state.customPhrasesNew = Object.fromEntries(
+          Object.entries(AC.state.customPhrasesNew || {}).filter(([k, v]) => v !== canonWord && k !== canonWord && k !== canonLower)
+        );
+        AC.state.capsRules = (AC.state.capsRules || []).filter(c => c.toLowerCase() !== canonLower);
+        if (AC.baseCanonicalSet.has(canonLower)) {
+          const exists = (AC.state.removedBaseCanonicals || []).some(c => c.toLowerCase() === canonLower);
+          if (!exists) AC.state.removedBaseCanonicals.push(canonWord);
+          AC.storage.write('removedBaseCanonicals', AC.state.removedBaseCanonicals);
+        }
+        AC.storage.writeRaw('ac_custom_dict_v1', AC.state.customList);
+        AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
+        AC.storage.writeRaw('ac_custom_map_v1', AC.state.customMap);
+        AC.storage.writeRaw('ac_custom_map_v2', AC.state.customMap);
+        AC.storage.writeRaw('ac_custom_caps_v1', AC.state.capsRules);
+        AC.storage.writeRaw('ac_caps_rules_v2', AC.state.capsRules);
+        AC.storage.write('customWords', AC.state.customWordsNew);
+        AC.mergeDictionaries();
+        AC.renderCurrentTab();
+      });
+      actions.appendChild(remove);
       li.appendChild(header);
       if (missList.textContent) li.appendChild(missList);
       li.appendChild(actions);
@@ -1181,11 +1197,47 @@ AC.renderDictionary = function () {
 
 AC.renderExport = function () {
   const sec = AC.state.ui.content;
-  const data = { customMap: AC.state.customMap, customList: AC.state.customList, capsRules: AC.state.capsRules, logs: AC.state.logs, stats: AC.state.stats };
+  const removedSet = AC.state.removedBaseSet || new Set();
+  const grouped = AC.state.groupedCanonicals || {};
+  const brandOrder = ['Abarth','Alfa Romeo','Citroën','DS','DS Automobiles','Fiat','Jeep','Leapmotor','Peugeot','Vauxhall','Stellantis','Stellantis &You'];
+  const isNoise = (str) => {
+    if (str == null) return true;
+    const s = String(str).trim();
+    if (!s) return true;
+    if (s.length > 40) return true;
+    if (s.split(/\s+/).length > 6) return true;
+    if (/^\d+$/.test(s)) return true;
+    if (AC.normalizeTimeLoose(s)) return true;
+    return false;
+  };
+  const canonList = Object.keys(grouped).filter(canon => {
+    const lower = canon.toLowerCase();
+    if (removedSet.has(lower)) return false;
+    if (isNoise(canon)) return false;
+    return true;
+  });
+  const canonLowerSet = new Set(canonList.map(c => c.toLowerCase()));
+  const ordered = [];
+  brandOrder.forEach(b => {
+    const low = b.toLowerCase();
+    if (canonLowerSet.has(low)) {
+      ordered.push(canonList.find(c => c.toLowerCase() === low) || b);
+      canonLowerSet.delete(low);
+    }
+  });
+  const remaining = canonList.filter(c => !ordered.some(o => o.toLowerCase() === c.toLowerCase())).sort((a, b) => a.localeCompare(b));
+  const finalCanonicals = ordered.concat(remaining);
+  const escapeStr = (s) => String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  const lines = ['AC.baseDict = {'];
+  finalCanonicals.forEach(canon => {
+    const missings = Array.from(new Set((grouped[canon] || []).map(m => String(m).trim()))).filter(m => m && !isNoise(m) && m.toLowerCase() !== canon.toLowerCase()).sort((a, b) => a.localeCompare(b));
+    lines.push(`  '${escapeStr(canon)}': [${missings.map(m => `'${escapeStr(m)}'`).join(',')}],`);
+  });
+  lines.push('};');
   const textarea = document.createElement('textarea');
   textarea.className = 'ac-input-old ac-scrollbar-old';
-  textarea.style.height = '200px';
-  textarea.textContent = JSON.stringify(data, null, 2);
+  textarea.style.height = '260px';
+  textarea.textContent = lines.join('\n');
   sec.appendChild(textarea);
 };
 
@@ -1212,7 +1264,7 @@ AC.renderMappingPanel = function (prefill) {
 
   const search = document.createElement('input');
   search.className = 'ac-input-old';
-  search.placeholder = 'Search canonical word';
+  search.placeholder = 'Search or set canonical word';
   const results = document.createElement('div');
   results.className = 'ac-scrollbar-old';
   results.style.maxHeight = '180px';
@@ -1221,9 +1273,6 @@ AC.renderMappingPanel = function (prefill) {
   const missInput = document.createElement('input');
   missInput.className = 'ac-input-old';
   missInput.placeholder = 'Misspelling';
-  const canonInput = document.createElement('input');
-  canonInput.className = 'ac-input-old';
-  canonInput.placeholder = 'Canonical';
   let prefillCanon = null;
   let prefillMiss = null;
   if (prefill) {
@@ -1233,7 +1282,7 @@ AC.renderMappingPanel = function (prefill) {
       prefillMiss = prefill.miss || null;
     }
   }
-  if (prefillCanon) canonInput.value = prefillCanon;
+  if (prefillCanon) search.value = prefillCanon;
   if (prefillMiss) missInput.value = prefillMiss;
 
   const renderResults = () => {
@@ -1244,7 +1293,7 @@ AC.renderMappingPanel = function (prefill) {
       const div = document.createElement('div');
       div.textContent = c;
       div.style.cursor = 'pointer';
-      div.addEventListener('click', () => { canonInput.value = c; });
+      div.addEventListener('click', () => { search.value = c; renderResults(); });
       results.appendChild(div);
     });
   };
@@ -1255,8 +1304,8 @@ AC.renderMappingPanel = function (prefill) {
   assignBtn.className = 'ac-button-old';
   assignBtn.textContent = 'Assign';
   assignBtn.addEventListener('click', () => {
-    if (!missInput.value.trim() || !canonInput.value.trim()) return;
-    let canon = canonInput.value;
+    if (!missInput.value.trim() || !search.value.trim()) return;
+    let canon = search.value;
     let miss = missInput.value;
     if (typeof canon !== 'string') canon = String(canon);
     if (typeof miss !== 'string') miss = String(miss);
@@ -1293,7 +1342,6 @@ AC.renderMappingPanel = function (prefill) {
   panel.appendChild(search);
   panel.appendChild(results);
   panel.appendChild(missInput);
-  panel.appendChild(canonInput);
   panel.appendChild(assignBtn);
   panel.appendChild(closeBtn);
 };
