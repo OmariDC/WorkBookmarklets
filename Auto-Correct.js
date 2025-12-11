@@ -622,41 +622,55 @@ AC.process = function (el) {
   if (!AC.state.enabled) return;
   const { text, pos } = AC.getTextAndCursor(el);
   const before = text.slice(0, pos);
-  const match = before.match(/(\S+)(\s*)$/);
-  if (!match) return;
-  const word = match[1];
-  const start = match.index || 0;
-  const end = start + word.length;
-  const sentenceCap = AC.needsSentenceCapitalization(text, start);
-  let correction = AC.correctWord(word);
-  console.debug("Word:", word, "Correction:", correction, "Dict size:", Object.keys(AC.state.mergedWords).length);
-  if (!correction) {
-    if (sentenceCap && /^[a-z]/.test(word)) {
-      correction = word.charAt(0).toUpperCase() + word.slice(1);
-    } else {
-      AC.appendLog(word, text.slice(Math.max(0, start - 20), Math.min(text.length, end + 20)));
-      return;
+  const trailingMatch = before.match(/\s*$/);
+  const trailingSpaces = trailingMatch ? trailingMatch[0] : '';
+  const beforeTrim = before.slice(0, before.length - trailingSpaces.length);
+  const tokens = beforeTrim.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return;
+
+  let chosenWord = tokens[tokens.length - 1];
+  let start = beforeTrim.length - chosenWord.length;
+  let correction = null;
+
+  for (let len = Math.min(4, tokens.length); len >= 1; len--) {
+    const candidate = tokens.slice(-len).join(' ');
+    const candidateStart = beforeTrim.length - candidate.length;
+    const sentenceCap = AC.needsSentenceCapitalization(text, candidateStart);
+    let candidateCorrection = AC.correctWord(candidate);
+    console.debug("Word:", candidate, "Correction:", candidateCorrection, "Dict size:", Object.keys(AC.state.mergedWords).length);
+    if (!candidateCorrection) {
+      if (sentenceCap && /^[a-z]/.test(candidate)) {
+        candidateCorrection = candidate.charAt(0).toUpperCase() + candidate.slice(1);
+      } else {
+        if (len === 1) AC.appendLog(candidate, text.slice(Math.max(0, candidateStart - 20), Math.min(text.length, candidateStart + candidate.length + 20)));
+        continue;
+      }
     }
-  }
-  if (correction === word) {
-    const cap = AC.applyCapitalization(word, correction);
-    const sentenceAdjusted = sentenceCap && /^[a-z]/.test(correction) ? correction.charAt(0).toUpperCase() + correction.slice(1) : correction;
-    const finalCorrection = sentenceAdjusted !== correction ? sentenceAdjusted : cap;
-    if (finalCorrection === word) return;
-    correction = finalCorrection;
-  }
-  if (sentenceCap && correction && /^[a-z]/.test(correction)) {
-    correction = correction.charAt(0).toUpperCase() + correction.slice(1);
+    if (candidateCorrection === candidate) {
+      const cap = AC.applyCapitalization(candidate, candidateCorrection);
+      const sentenceAdjusted = sentenceCap && /^[a-z]/.test(candidateCorrection) ? candidateCorrection.charAt(0).toUpperCase() + candidateCorrection.slice(1) : candidateCorrection;
+      const finalCorrection = sentenceAdjusted !== candidateCorrection ? sentenceAdjusted : cap;
+      if (finalCorrection === candidate) continue;
+      candidateCorrection = finalCorrection;
+    }
+    if (sentenceCap && candidateCorrection && /^[a-z]/.test(candidateCorrection)) {
+      candidateCorrection = candidateCorrection.charAt(0).toUpperCase() + candidateCorrection.slice(1);
+    }
+    chosenWord = candidate;
+    correction = candidateCorrection;
+    start = candidateStart;
+    break;
   }
 
-  const trailingSpaces = match[2] || '';
+  if (!correction) return;
+
   const newText = correction + trailingSpaces;
   AC.state.lastAction = { el, start, replacementLength: newText.length, original: text.slice(start, pos) };
   AC.replaceRange(el, start, pos, newText);
   AC.state.stats.corrections += 1;
   AC.state.stats.lastCorrection = new Date().toISOString();
   AC.storage.write('stats', AC.state.stats);
-  AC.state.recent.push({ from: word, to: correction, at: AC.state.stats.lastCorrection });
+  AC.state.recent.push({ from: chosenWord, to: correction, at: AC.state.stats.lastCorrection });
   if (AC.state.recent.length > 50) AC.state.recent.shift();
 };
 
