@@ -34,7 +34,6 @@ AC.state = {
   customWordsNew: AC.storage.read('customWords', {}),
   customPhrasesNew: AC.storage.read('customPhrases', {}),
   logs: AC.storage.read('logs', []),
-  stats: AC.storage.read('stats', { corrections: 0, lastCorrection: null }),
   removedBaseCanonicals: AC.storage.read('removedBaseCanonicals', []),
   recent: [],
   flatMap: {},
@@ -667,28 +666,33 @@ AC.process = function (el) {
   for (let len = Math.min(4, tokens.length); len >= 1; len--) {
     const candidate = tokens.slice(-len).join(' ');
     const candidateStart = beforeTrim.length - candidate.length;
+    const punctMatch = candidate.match(/([.,!?;:]+)$/);
+    const punct = punctMatch ? punctMatch[1] : '';
+    const coreCandidate = punct ? candidate.slice(0, -punct.length) : candidate;
+    if (!coreCandidate) continue;
     const sentenceCap = AC.needsSentenceCapitalization(text, candidateStart);
-    let candidateCorrection = AC.correctWord(candidate);
-    console.debug("Word:", candidate, "Correction:", candidateCorrection, "Dict size:", Object.keys(AC.state.mergedWords).length);
+    let candidateCorrection = AC.correctWord(coreCandidate);
+    console.debug("Word:", coreCandidate, "Correction:", candidateCorrection, "Dict size:", Object.keys(AC.state.mergedWords).length);
     if (!candidateCorrection) {
-      if (sentenceCap && /^[a-z]/.test(candidate)) {
-        candidateCorrection = candidate.charAt(0).toUpperCase() + candidate.slice(1);
+      if (sentenceCap && /^[a-z]/.test(coreCandidate)) {
+        candidateCorrection = coreCandidate.charAt(0).toUpperCase() + coreCandidate.slice(1);
       } else {
-        if (len === 1) AC.appendLog(candidate, text.slice(Math.max(0, candidateStart - 20), Math.min(text.length, candidateStart + candidate.length + 20)));
+        if (len === 1 && !punct) AC.appendLog(coreCandidate, text.slice(Math.max(0, candidateStart - 20), Math.min(text.length, candidateStart + candidate.length + 20)));
         continue;
       }
     }
-    if (candidateCorrection === candidate) {
-      const cap = AC.applyCapitalization(candidate, candidateCorrection);
+    if (candidateCorrection === coreCandidate) {
+      const cap = AC.applyCapitalization(coreCandidate, candidateCorrection);
       const sentenceAdjusted = sentenceCap && /^[a-z]/.test(candidateCorrection) ? candidateCorrection.charAt(0).toUpperCase() + candidateCorrection.slice(1) : candidateCorrection;
       const finalCorrection = sentenceAdjusted !== candidateCorrection ? sentenceAdjusted : cap;
-      if (finalCorrection === candidate) continue;
+      if (finalCorrection === coreCandidate) continue;
       candidateCorrection = finalCorrection;
     }
     if (sentenceCap && candidateCorrection && /^[a-z]/.test(candidateCorrection)) {
       candidateCorrection = candidateCorrection.charAt(0).toUpperCase() + candidateCorrection.slice(1);
     }
-    chosenWord = candidate;
+    if (punct) candidateCorrection += punct;
+    chosenWord = coreCandidate;
     correction = candidateCorrection;
     start = candidateStart;
     break;
@@ -699,15 +703,13 @@ AC.process = function (el) {
   const newText = correction + trailingSpaces;
   AC.state.lastAction = { el, start, replacementLength: newText.length, original: text.slice(start, pos) };
   AC.replaceRange(el, start, pos, newText);
-  AC.state.stats.corrections += 1;
-  AC.state.stats.lastCorrection = new Date().toISOString();
-  AC.storage.write('stats', AC.state.stats);
-  AC.state.recent.push({ from: chosenWord, to: correction, at: AC.state.stats.lastCorrection });
+  const correctionTime = new Date().toISOString();
+  AC.state.recent.push({ from: chosenWord, to: correction, at: correctionTime });
   if (AC.state.recent.length > 50) AC.state.recent.shift();
 };
 
 AC.handleKey = function (event) {
-  const triggers = [' ', '.', ',', '?', '!', 'Enter'];
+  const triggers = [' ', '.', ',', '?', '!', ';', ':', 'Enter'];
   const el = event.target;
   if (!triggers.includes(event.key)) return;
   setTimeout(() => { AC.process(el); }, 0);
@@ -803,7 +805,7 @@ AC.buildUI = function () {
 
   const tabBar = document.createElement('div');
   tabBar.className = 'ac-tabs-old';
-  const tabs = ['log', 'recent', 'stats', 'export', 'dictionary', 'settings'];
+  const tabs = ['log', 'recent', 'export', 'dictionary', 'settings'];
   tabs.forEach(id => {
     const btn = document.createElement('button');
     btn.className = 'ac-tab-old';
@@ -873,7 +875,6 @@ AC.renderCurrentTab = function () {
   const tab = AC.state.ui.tab;
   if (tab === 'log') AC.renderLog();
   if (tab === 'recent') AC.renderRecent();
-  if (tab === 'stats') AC.renderStats();
   if (tab === 'export') AC.renderExport();
   if (tab === 'dictionary') AC.renderDictionary();
   if (tab === 'settings') AC.renderSettings();
@@ -952,16 +953,6 @@ AC.renderRecent = function () {
     sec.appendChild(empty);
   }
   sec.appendChild(list);
-};
-
-AC.renderStats = function () {
-  const sec = AC.state.ui.content;
-  const p = document.createElement('div');
-  p.textContent = `Corrections: ${AC.state.stats.corrections}`;
-  const last = document.createElement('div');
-  last.textContent = `Last: ${AC.state.stats.lastCorrection ? new Date(AC.state.stats.lastCorrection).toLocaleString('en-GB', { hour12: false }) : 'N/A'}`;
-  sec.appendChild(p);
-  sec.appendChild(last);
 };
 
 AC.renderDictionary = function () {
