@@ -625,17 +625,19 @@ AC.getTextAndCursor = function (el) {
 AC.appendLog = function (word, snapshot) {
   const words = AC.state.mergedWords;
   const phrases = AC.state.mergedPhrases;
-  const lower = word.toLowerCase();
-  if (AC.normalizeTimeLoose(word)) return;
-  if (/\d/.test(word) && !AC.normalizeTimeLoose(word)) return;
-  if (phrases[word.toLowerCase()] || words[word.toLowerCase()]) return;
+  const baseRaw = String(word || '').replace(/[.,!?;:'"…]+$/g, '').trim();
+  if (!baseRaw) return;
+  const lower = baseRaw.toLowerCase();
+  if (AC.normalizeTimeLoose(baseRaw)) return;
+  if (/\d/.test(baseRaw) && !AC.normalizeTimeLoose(baseRaw)) return;
+  if (phrases[lower] || words[lower]) return;
 
   const now = new Date();
   const dayKey = now.toISOString().slice(0, 10);
-  const duplicate = AC.state.logs.find(l => l.word === word && l.day === dayKey);
+  const duplicate = AC.state.logs.find(l => l.word === baseRaw && l.day === dayKey);
   if (duplicate) return;
 
-  const entry = { word, snapshot, timestamp: now.toISOString(), day: dayKey };
+  const entry = { word: baseRaw, snapshot, timestamp: now.toISOString(), day: dayKey };
   AC.state.logs.push(entry);
   if (AC.state.logs.length > 500) AC.state.logs.shift();
   AC.storage.write('logs', AC.state.logs);
@@ -910,8 +912,18 @@ AC.renderLog = function () {
       AC.toggleMapping(true, { miss: entry.word });
     });
 
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'ac-button-old';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.addEventListener('click', () => {
+      AC.state.logs = AC.state.logs.filter(l => l !== entry);
+      AC.storage.write('logs', AC.state.logs);
+      AC.renderCurrentTab();
+    });
+
     actions.appendChild(addBtn);
     actions.appendChild(mapBtn);
+    actions.appendChild(deleteBtn);
     li.appendChild(info);
     li.appendChild(actions);
     list.appendChild(li);
@@ -948,6 +960,11 @@ AC.renderStats = function () {
 
 AC.renderDictionary = function () {
   const sec = AC.state.ui.content;
+  const addCanonSection = document.createElement('div');
+  addCanonSection.style.marginBottom = '10px';
+  const addCanonTitle = document.createElement('div');
+  addCanonTitle.style.fontWeight = 'bold';
+  addCanonTitle.textContent = 'Add canonical';
   const addWordRow = document.createElement('div');
   addWordRow.className = 'ac-row-old';
   const newCanon = document.createElement('input');
@@ -981,7 +998,14 @@ AC.renderDictionary = function () {
   addWordRow.appendChild(newCanon);
   addWordRow.appendChild(starLabel);
   addWordRow.appendChild(addCanonBtn);
+  addCanonSection.appendChild(addCanonTitle);
+  addCanonSection.appendChild(addWordRow);
 
+  const addMapSection = document.createElement('div');
+  addMapSection.style.marginBottom = '10px';
+  const addMapTitle = document.createElement('div');
+  addMapTitle.style.fontWeight = 'bold';
+  addMapTitle.textContent = 'Add mapping';
   const addMapRow = document.createElement('div');
   addMapRow.className = 'ac-row-old';
   const miss = document.createElement('input');
@@ -1014,15 +1038,24 @@ AC.renderDictionary = function () {
   addMapRow.appendChild(miss);
   addMapRow.appendChild(canon);
   addMapRow.appendChild(addMapBtn);
+  addMapSection.appendChild(addMapTitle);
+  addMapSection.appendChild(addMapRow);
 
   const mapBtn = document.createElement('button');
   mapBtn.className = 'ac-button-old';
   mapBtn.textContent = 'Open mapping panel';
   mapBtn.addEventListener('click', () => AC.toggleMapping(true));
 
+  const searchContainer = document.createElement('div');
+  searchContainer.style.margin = '10px 0';
+  const searchLabel = document.createElement('div');
+  searchLabel.style.fontWeight = 'bold';
+  searchLabel.textContent = 'Search';
   const searchInput = document.createElement('input');
   searchInput.className = 'ac-input-old';
   searchInput.placeholder = 'Search canonicals or misspellings';
+  searchContainer.appendChild(searchLabel);
+  searchContainer.appendChild(searchInput);
 
   const dictList = document.createElement('ul');
   dictList.className = 'ac-list-old';
@@ -1031,7 +1064,7 @@ AC.renderDictionary = function () {
     dictList.textContent = '';
     const term = searchInput.value.toLowerCase();
     const canonMiss = AC.state.canonMiss || {};
-    const allCanonicals = AC.state.allCanonicals || [];
+    const allCanonicals = (AC.state.allCanonicals || []).slice().sort((a, b) => a.localeCompare(b));
     allCanonicals.forEach(canonWord => {
       const canonLower = canonWord.toLowerCase();
       const missings = (canonMiss[canonLower] || []).filter(m => m !== canonLower);
@@ -1080,6 +1113,38 @@ AC.renderDictionary = function () {
       mapLink.textContent = 'Map misspelling';
       mapLink.addEventListener('click', () => AC.toggleMapping(true, { canon: canonWord }));
       actions.appendChild(mapLink);
+
+      const overrideBtn = document.createElement('button');
+      overrideBtn.className = 'ac-button-old';
+      overrideBtn.textContent = 'Override canonical';
+      overrideBtn.addEventListener('click', () => {
+        const newCanon = prompt('New canonical value', canonWord);
+        if (!newCanon || !newCanon.trim() || newCanon.trim() === canonWord) return;
+        const canonMissings = new Set((AC.state.canonMiss[canonLower] || []).concat(canonLower));
+        const newCanonClean = newCanon.trim();
+        const newLower = newCanonClean.toLowerCase();
+        canonMissings.forEach(m => {
+          const missLower = m.toLowerCase();
+          AC.state.customMap[missLower] = newCanonClean;
+          AC.state.customWordsNew[missLower] = newCanonClean;
+        });
+        if (!AC.state.customList.includes(newCanonClean)) AC.state.customList.push(newCanonClean);
+        AC.state.customWordsNew[newLower] = newCanonClean;
+        const capsLower = (AC.state.capsRules || []).map(r => r.toLowerCase());
+        AC.state.capsRules = (AC.state.capsRules || []).filter(r => r.toLowerCase() !== canonLower);
+        if (capsLower.includes(canonLower) && !capsLower.includes(newLower)) AC.state.capsRules.push(newCanonClean);
+        AC.storage.writeRaw('ac_custom_map_v1', AC.state.customMap);
+        AC.storage.writeRaw('ac_custom_map_v2', AC.state.customMap);
+        AC.storage.writeRaw('ac_custom_dict_v1', AC.state.customList);
+        AC.storage.writeRaw('ac_custom_dict_v2', AC.state.customList);
+        AC.storage.writeRaw('ac_custom_caps_v1', AC.state.capsRules);
+        AC.storage.writeRaw('ac_caps_rules_v2', AC.state.capsRules);
+        AC.storage.write('customWords', AC.state.customWordsNew);
+        AC.mergeDictionaries();
+        AC.renderCurrentTab();
+      });
+      actions.appendChild(overrideBtn);
+
       if (!AC.baseDict[canonWord]) {
         const remove = document.createElement('button');
         remove.className = 'ac-button-old';
@@ -1107,10 +1172,10 @@ AC.renderDictionary = function () {
   searchInput.addEventListener('input', renderList);
   renderList();
 
-  sec.appendChild(addWordRow);
-  sec.appendChild(addMapRow);
+  sec.appendChild(addCanonSection);
+  sec.appendChild(addMapSection);
   sec.appendChild(mapBtn);
-  sec.appendChild(searchInput);
+  sec.appendChild(searchContainer);
   sec.appendChild(dictList);
 };
 
