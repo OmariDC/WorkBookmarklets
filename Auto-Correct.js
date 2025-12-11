@@ -516,7 +516,7 @@ AC.correctWord = function (word) {
   const lower = word.toLowerCase();
   const phraseKeys = Object.keys(phrases).map(k => k.toLowerCase()).sort((a, b) => b.length - a.length);
   for (const p of phraseKeys) {
-    if (lower.includes(p)) return AC.applyCapitalization(word, phrases[p]);
+    if (lower === p) return AC.applyCapitalization(word, phrases[p]);
   }
 
   let correction = null;
