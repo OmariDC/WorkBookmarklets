@@ -650,7 +650,7 @@ AC.process = function (el) {
   }
 
   const trailingSpaces = match[2] || '';
-  const newText = correction + trailingSpaces + (word.match(/\s*$/)?.[0] || '');
+  const newText = correction + trailingSpaces;
   AC.state.lastAction = { el, start, replacementLength: newText.length, original: text.slice(start, pos) };
   AC.replaceRange(el, start, pos, newText);
   AC.state.stats.corrections += 1;
