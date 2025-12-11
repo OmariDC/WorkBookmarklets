@@ -1190,7 +1190,70 @@ AC.renderExport = function () {
   const sec = AC.state.ui.content;
   const removedSet = AC.state.removedBaseSet || new Set();
   const grouped = AC.state.groupedCanonicals || {};
-  const brandOrder = ['Abarth','Alfa Romeo','Citroën','DS','DS Automobiles','Fiat','Jeep','Leapmotor','Peugeot','Vauxhall','Stellantis','Stellantis &You'];
+  const topOrder = [
+    'Abarth',
+    'Alfa Romeo',
+    'Citroën',
+    'DS',
+    'DS Automobiles',
+    'Fiat',
+    'Jeep',
+    'Leapmotor',
+    'Peugeot',
+    'Vauxhall',
+    'Stellantis',
+    'Stellantis &You',
+    'Birmingham Central',
+    'Birmingham',
+    'Birmingham North',
+    'Birmingham South',
+    'Bristol Cribbs',
+    'Chelmsford',
+    'Chingford',
+    'Coventry',
+    'Crawley',
+    'Croydon',
+    'Edgware',
+    'Guildford',
+    'Hatfield',
+    'Leicester',
+    'Liverpool',
+    'Maidstone',
+    'Manchester',
+    'Newport',
+    'Nottingham',
+    'Preston',
+    'Redditch',
+    'Romford',
+    'Sale',
+    'Sheffield',
+    'Stockport',
+    'Walton',
+    'West London',
+    'Wimbledon',
+    'London',
+    'Motability',
+    'UK',
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday',
+    'Sunday',
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December'
+  ];
   const isNoise = (str) => {
     if (str == null) return true;
     const s = String(str).trim();
@@ -1209,10 +1272,10 @@ AC.renderExport = function () {
   });
   const canonLowerSet = new Set(canonList.map(c => c.toLowerCase()));
   const ordered = [];
-  brandOrder.forEach(b => {
-    const low = b.toLowerCase();
+  topOrder.forEach(item => {
+    const low = item.toLowerCase();
     if (canonLowerSet.has(low)) {
-      ordered.push(canonList.find(c => c.toLowerCase() === low) || b);
+      ordered.push(canonList.find(c => c.toLowerCase() === low) || item);
       canonLowerSet.delete(low);
     }
   });
