@@ -649,9 +649,8 @@ AC.process = function (el) {
     correction = correction.charAt(0).toUpperCase() + correction.slice(1);
   }
 
-  const tail = text.slice(end, pos);
   const trailingSpaces = match[2] || '';
-  const newText = correction + trailingSpaces + (word.match(/\s*$/)?.[0] || '') + tail;
+  const newText = correction + trailingSpaces + (word.match(/\s*$/)?.[0] || '');
   AC.state.lastAction = { el, start, replacementLength: newText.length, original: text.slice(start, pos) };
   AC.replaceRange(el, start, pos, newText);
   AC.state.stats.corrections += 1;
