@@ -700,15 +700,7 @@ AC.process = function (el) {
 
   if (!correction) return;
 
-  let prefixSpace = '';
-  if (start > 0) {
-    const prevChar = text[start - 1];
-    const currChar = text[start] || '';
-    if (/[.,!?;:]/.test(prevChar) && currChar && !/\s/.test(currChar)) {
-      prefixSpace = ' ';
-    }
-  }
-  const newText = prefixSpace + correction + trailingSpaces;
+  const newText = correction + trailingSpaces;
   AC.state.lastAction = { el, start, replacementLength: newText.length, original: text.slice(start, pos) };
   AC.replaceRange(el, start, pos, newText);
   const correctionTime = new Date().toISOString();
