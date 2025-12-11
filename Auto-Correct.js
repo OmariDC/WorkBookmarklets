@@ -57,6 +57,7 @@ AC.state.customMap = Object.fromEntries(
     c.trim()
   )
 );
+AC.state.capsRules = Array.isArray(AC.state.capsRules) ? AC.state.capsRules : [];
 AC.state.capsRules = (AC.state.capsRules || []).filter(c => typeof c === 'string' && c.trim());
 
 // ===================== Dictionary loading + merging =====================
