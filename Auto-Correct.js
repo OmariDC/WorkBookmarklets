@@ -500,6 +500,12 @@ AC.applyCapitalization = function (original, replacement) {
   return replacement;
 };
 
+AC.needsSentenceCapitalization = function (text, wordStart) {
+  const beforeWord = text.slice(0, wordStart);
+  if (!beforeWord.trim()) return true;
+  return /[.!?]\s*$/.test(beforeWord);
+};
+
 AC.correctWord = function (word) {
   const time = AC.normalizeTimeLoose(word);
   if (time) return time;
@@ -621,13 +627,27 @@ AC.process = function (el) {
   const word = match[1];
   const start = match.index || 0;
   const end = start + word.length;
-  const correction = AC.correctWord(word);
+  const sentenceCap = AC.needsSentenceCapitalization(text, start);
+  let correction = AC.correctWord(word);
   console.debug("Word:", word, "Correction:", correction, "Dict size:", Object.keys(AC.state.mergedWords).length);
   if (!correction) {
-    AC.appendLog(word, text.slice(Math.max(0, start - 20), Math.min(text.length, end + 20)));
-    return;
+    if (sentenceCap && /^[a-z]/.test(word)) {
+      correction = word.charAt(0).toUpperCase() + word.slice(1);
+    } else {
+      AC.appendLog(word, text.slice(Math.max(0, start - 20), Math.min(text.length, end + 20)));
+      return;
+    }
   }
-  if (correction === word) return;
+  if (correction === word) {
+    const cap = AC.applyCapitalization(word, correction);
+    const sentenceAdjusted = sentenceCap && /^[a-z]/.test(correction) ? correction.charAt(0).toUpperCase() + correction.slice(1) : correction;
+    const finalCorrection = sentenceAdjusted !== correction ? sentenceAdjusted : cap;
+    if (finalCorrection === word) return;
+    correction = finalCorrection;
+  }
+  if (sentenceCap && correction && /^[a-z]/.test(correction)) {
+    correction = correction.charAt(0).toUpperCase() + correction.slice(1);
+  }
 
   const tail = text.slice(end, pos);
   const trailingSpaces = match[2] || '';
