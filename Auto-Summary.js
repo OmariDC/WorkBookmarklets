@@ -12,24 +12,27 @@
     style.textContent =
       "#lpSumMiniBtn {" +
       " position: fixed;" +
-      " right: 16px;" +
-      " bottom: 90px;" +
-      " width: 40px;" +
-      " height: 40px;" +
+      " right: 32px;" +
+      " bottom: 12px;" +
+      " width: 14px;" +
+      " height: 14px;" +
       " border-radius: 50%;" +
       " background: #f9772e;" +
       " color: #ffffff;" +
       " font-weight: bold;" +
-      " font-size: 11px;" +
-      " border: none;" +
-      " box-shadow: 0 4px 12px rgba(0,0,0,0.35);" +
+      " font-size: 9px;" +
+      " border: 2px solid #000;" +
+      " box-shadow: 0 0 4px rgba(0,0,0,0.4);" +
       " cursor: pointer;" +
-      " z-index: 999999;" +
+      " z-index: 99999;" +
+      " display: flex;" +
+      " align-items: center;" +
+      " justify-content: center;" +
       "}" +
       "#lpSumMiniPanel {" +
       " position: fixed;" +
       " top: 0;" +
-      " right: -300px;" +
+      " right: -280px;" +
       " width: 280px;" +
       " height: 100vh;" +
       " background: #1e1d49;" +
@@ -39,7 +42,7 @@
       " padding: 20px;" +
       " box-shadow: -5px 0 12px rgba(0,0,0,0.35);" +
       " transition: right 0.3s ease;" +
-      " z-index: 999998;" +
+      " z-index: 99998;" +
       "}" +
       "#lpSumMiniPanel.open {" +
       " right: 0;" +
