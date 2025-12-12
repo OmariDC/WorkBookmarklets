@@ -12,15 +12,15 @@
     style.textContent =
       "#lpSumMiniBtn {" +
       " position: fixed;" +
-      " left: 16px;" +
-      " bottom: 16px;" +
-      " width: 52px;" +
-      " height: 52px;" +
+      " right: 16px;" +
+      " bottom: 90px;" +
+      " width: 40px;" +
+      " height: 40px;" +
       " border-radius: 50%;" +
       " background: #f9772e;" +
       " color: #ffffff;" +
       " font-weight: bold;" +
-      " font-size: 12px;" +
+      " font-size: 11px;" +
       " border: none;" +
       " box-shadow: 0 4px 12px rgba(0,0,0,0.35);" +
       " cursor: pointer;" +
@@ -29,7 +29,7 @@
       "#lpSumMiniPanel {" +
       " position: fixed;" +
       " top: 0;" +
-      " left: -300px;" +
+      " right: -300px;" +
       " width: 280px;" +
       " height: 100vh;" +
       " background: #1e1d49;" +
@@ -37,12 +37,12 @@
       " font-family: Arial, sans-serif;" +
       " font-size: 14px;" +
       " padding: 20px;" +
-      " box-shadow: 5px 0 12px rgba(0,0,0,0.35);" +
-      " transition: left 0.3s ease;" +
+      " box-shadow: -5px 0 12px rgba(0,0,0,0.35);" +
+      " transition: right 0.3s ease;" +
       " z-index: 999998;" +
       "}" +
       "#lpSumMiniPanel.open {" +
-      " left: 0;" +
+      " right: 0;" +
       "}";
     document.head.appendChild(style);
   }
