@@ -12,15 +12,12 @@
     style.textContent =
       "#lpSumMiniBtn {" +
       " position: fixed;" +
-      " right: 32px;" +
+      " right: 48px;" +
       " bottom: 12px;" +
       " width: 14px;" +
       " height: 14px;" +
       " border-radius: 50%;" +
       " background: #f9772e;" +
-      " color: #ffffff;" +
-      " font-weight: bold;" +
-      " font-size: 9px;" +
       " border: 2px solid #000;" +
       " box-shadow: 0 0 4px rgba(0,0,0,0.4);" +
       " cursor: pointer;" +
@@ -32,7 +29,7 @@
       "#lpSumMiniPanel {" +
       " position: fixed;" +
       " top: 0;" +
-      " right: -280px;" +
+      " right: -100%;" +
       " width: 280px;" +
       " height: 100vh;" +
       " background: #1e1d49;" +
@@ -55,7 +52,6 @@
 
     var btn = document.createElement("button");
     btn.id = "lpSumMiniBtn";
-    btn.textContent = "SUM";
 
     var panel = document.createElement("div");
     panel.id = "lpSumMiniPanel";
