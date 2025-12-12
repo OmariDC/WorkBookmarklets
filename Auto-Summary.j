@@ -423,7 +423,7 @@
       ['delivery', 'Customer wants delivery'],
       ['finance checked', 'Customer wants finance checked beforehand'],
       ['familiar with vehicle', 'Customer familiar with vehicle'],
-      ['urgent', 'Urgent purchase timeline'],
+      ['urgent', 'Urgent purchase timeline']
     ];
     defs.forEach(([needle, label]) => { if (lc.includes(needle)) flags.add(label); });
 
