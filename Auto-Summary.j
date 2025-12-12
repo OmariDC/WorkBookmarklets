@@ -587,12 +587,20 @@
 
     const summaryRows = [];
     const enquiryVehicle = [data.enquiry.make, data.enquiry.model].filter(Boolean).join(' ');
-    const vehicleSummary = data.enquiry.reg
-      ? [enquiryVehicle || data.enquiry.reg, data.enquiry.reg && enquiryVehicle ? data.enquiry.reg : ''].filter(Boolean).join(', ')
-      : (enquiryVehicle || '');
-    const pxSummary = (data.px.reg || data.px.mileage || data.px.make || data.px.model)
-      ? [data.px.reg, data.px.mileage ? `${data.px.mileage} miles` : ''].filter(Boolean).join(', ')
-      : 'No PX';
+    let vehicleSummary = enquiryVehicle || '';
+    if (data.enquiry.reg) {
+      vehicleSummary = [enquiryVehicle || data.enquiry.reg, data.enquiry.reg && enquiryVehicle ? data.enquiry.reg : '']
+        .filter(Boolean)
+        .join(', ');
+    }
+
+    const hasPx = data.px.reg || data.px.mileage || data.px.make || data.px.model;
+    let pxSummary = 'No PX';
+    if (hasPx) {
+      pxSummary = [data.px.reg, data.px.mileage ? `${data.px.mileage} miles` : '']
+        .filter(Boolean)
+        .join(', ');
+    }
     const intentSummary = data.intents.join('; ');
     const flagSummary = data.flags.join('; ');
 
