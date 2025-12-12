@@ -207,22 +207,79 @@
     return m ? m[1].replace(/,/g, '') : '';
   }
 
+  function isStockCentreReference(text) {
+    const stockPhrases = [
+      'central used stock centre',
+      'national used stock centre',
+      'used stock centre in the west midlands',
+      'central preparation centre',
+      'vehicle is stored at our central',
+      'vehicle is stored at the central',
+      'stored at our used stock centre',
+      'stored at the used stock centre'
+    ];
+    return stockPhrases.some(p => text.includes(p));
+  }
+
+  function isOnlineStoreProcess(text) {
+    const phrases = [
+      'click & collect',
+      'reservation moves it to your chosen dealership',
+      'once reserved we will move',
+      'once reserved we’ll move',
+      '5–6 working days',
+      'guide you through reserving it',
+      'guide you through reserving',
+      'online reserve',
+      'online store'
+    ];
+    return phrases.some(p => text.includes(p));
+  }
+
+  function isDealerToDealerTransfer(text) {
+    const sites = [
+      'birmingham','croydon','chingford','west london','hatfield',
+      'guildford','coventry','manchester','liverpool','leicester',
+      'redditch','romford','preston','sheffield','nottingham'
+    ];
+
+    return sites.some(s =>
+      text.includes(`move to ${s}`) ||
+      text.includes(`transfer to ${s}`) ||
+      text.includes(`sent to ${s}`)
+    );
+  }
+
+  function detectOnlineStore(text) {
+    const stock = isStockCentreReference(text);
+    const process = isOnlineStoreProcess(text);
+    const dealerTransfer = isDealerToDealerTransfer(text);
+
+    // Reject false positives
+    if (dealerTransfer && !stock) return false;
+
+    // Must have stock centre and online reservation process
+    if (stock && process) return true;
+
+    return false;
+  }
+
   function detectBookingType(text) {
     const lc = text.toLowerCase();
+    if (detectOnlineStore(lc)) return 'online store';
+    if (lc.includes('national reserve')) return 'national reserve';
+    if (lc.includes('motability')) return 'motability';
     if (lc.includes('test drive')) return 'test drive';
     if (lc.includes('viewing') || lc.includes('view ')) return 'view';
     if (lc.includes('phone call') || lc.includes('call back') || lc.includes('call ')) return 'phone call';
     if (lc.includes('valuation') || lc.includes('px check') || lc.includes('part exchange check')) return 'valuation';
-    if (lc.includes('motability')) return 'motability';
-    if (lc.includes('online store')) return 'online store';
-    if (lc.includes('national reserve')) return 'national reserve';
     return '';
   }
 
   function detectNewUsed(text, enquiryReg) {
     const lc = text.toLowerCase();
     if (lc.includes('motability')) return 'Motability';
-    if (lc.includes('brand new') || lc.includes('new model') || lc.includes('new shape') || /\bnew\b/.test(lc)) return 'new';
+    if (/\bnew\b/.test(lc) || lc.includes('brand new') || lc.includes('new model') || lc.includes('new shape')) return 'new';
     if (enquiryReg) return 'used';
     if (lc.includes('px') || lc.includes('part exchange') || lc.includes('finance')) return 'used';
     return '';
@@ -343,7 +400,7 @@
       ['extended test drive', 'extended test drive request'],
       ['delivery', 'delivery or collection enquiries'],
       ['collection', 'delivery or collection enquiries'],
-      ['video', 'wants video walkthrough'],
+      ['video', 'wants video walkthrough']
     ];
     map.forEach(([needle, label]) => { if (lc.includes(needle)) intents.add(label); });
     return Array.from(intents);
