@@ -101,7 +101,7 @@
     panel.innerHTML = `
       <header>
         <span>Auto-Summary</span>
-        <button id="lpClose" style="background:none;border:none;color:#fff;font-size:16px;cursor:pointer;">×</button>
+        <button id="lpClose" style="background:none;border:none;color:#fff;font-size:16px;cursor:pointer;">X</button>
       </header>
       <div id="lpSumContent"></div>
     `;
@@ -226,8 +226,8 @@
       'click & collect',
       'reservation moves it to your chosen dealership',
       'once reserved we will move',
-      'once reserved we’ll move',
-      '5–6 working days',
+      "once reserved we'll move",
+      '5-6 working days',
       'guide you through reserving it',
       'guide you through reserving',
       'online reserve',
@@ -367,7 +367,7 @@
     if (flexBetween) {
       const start = normalizeTimeToken(flexBetween[1]);
       const end = normalizeTimeToken(flexBetween[2]);
-      if (start && end) return { time: '', flexible: `between ${start}–${end}` };
+      if (start && end) return { time: '', flexible: `between ${start}-${end}` };
     }
     const after = joined.match(/after\s+([^\s]+)/);
     if (after) {
@@ -558,7 +558,7 @@
       wrap.className = 'lp-block';
       const header = document.createElement('div');
       header.className = 'lp-block-header';
-      header.innerHTML = `<span>${title}</span><span class="lp-toggle">▼</span>`;
+      header.innerHTML = `<span>${title}</span><span class="lp-toggle">v</span>`;
       const body = document.createElement('div');
       body.className = 'lp-body';
       if (!rows.length) wrap.classList.add('collapsed');
