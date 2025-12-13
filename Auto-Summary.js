@@ -1,6 +1,37 @@
 (function () {
   if (window._lpSumMini) return;
 
+  const PREDEFINED_CONTENT = [
+    // Insert all user-provided predefined content strings here
+  ];
+
+  // Ensure levenshtein exists for predefined filter
+  if (typeof levenshtein !== "function") {
+    function levenshtein(a, b) {
+      const matrix = [];
+      for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+      for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+      for (let i = 1; i <= b.length; i++)
+        for (let j = 1; j <= a.length; j++)
+          matrix[i][j] = b[i - 1] === a[j - 1]
+            ? matrix[i - 1][j - 1]
+            : Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
+      return matrix[b.length][a.length];
+    }
+  }
+
+  function levenshtein(a, b) {
+    const matrix = [];
+    for (let i = 0; i <= b.length; i++) matrix[i] = [i];
+    for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+    for (let i = 1; i <= b.length; i++)
+      for (let j = 1; j <= a.length; j++)
+        matrix[i][j] = b[i - 1] === a[j - 1]
+          ? matrix[i - 1][j - 1]
+          : Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
+    return matrix[b.length][a.length];
+  }
+
   var app = {
     styleId: "lp-sum-mini-style",
     buttonId: "lpSumMiniBtn",
@@ -384,6 +415,22 @@
 
       if (/^(?:\d|:|\s)+$/.test(text)) return;
 
+      // PREDEFINED CONTENT FILTER
+      let normalised = text.replace(/\s+/g, " ").trim().toLowerCase();
+
+      for (let template of PREDEFINED_CONTENT) {
+        let normTemplate = template.replace(/\s+/g, " ").trim().toLowerCase();
+
+        if (
+          normalised === normTemplate ||
+          normalised.startsWith(normTemplate.split(" ").slice(0, 6).join(" ")) ||
+          (normalised.length > 12 && levenshtein(normalised, normTemplate) < 5)
+        ) {
+          list.push("__PREDEFINED__:" + text);
+          return;
+        }
+      }
+
       list.push(text);
     });
 
@@ -395,7 +442,9 @@
 
   function parseMessages(messagesObj) {
     var list = messagesObj.list || [];
-    var combinedLower = (messagesObj.combined || "").toLowerCase();
+    var realMessages = list.filter(function (t) { return !t.startsWith("__PREDEFINED__:"); });
+    var combinedLower = (realMessages.join(" ") || "").toLowerCase();
+    var combinedText = realMessages.join(" ");
     var data = {
       fullName: "",
       firstName: "",
@@ -424,47 +473,79 @@
       flags: ""
     };
 
-    if (!list.length) {
+    if (!realMessages.length) {
       return data;
     }
 
-    var nameMatch = findName(list);
+    // PRIORITY ORDER
+    // 1) Filter predefined content
+    // 2) Identify corrected reg after agent rejection
+    // 3) Activate PX mode only after PX question
+    // 4) Assign enquiry reg vs pxReg based on PX_MODE
+    // 5) Detect booking type (agent-confirmed overrides keyword detection)
+    // 6) Date/time
+    // 7) Make/model + vehicle assembly
+    // 8) Intent
+    // 9) Flags
+
+    var nameMatch = findName(realMessages);
     if (nameMatch) {
       data.fullName = nameMatch.fullName;
       data.firstName = nameMatch.firstName;
       data.lastName = nameMatch.lastName;
     }
 
-    var emailMatch = (messagesObj.combined || "").match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+    var emailMatch = (combinedText || "").match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
     if (emailMatch) {
       data.email = emailMatch[0];
     }
 
-    var phoneMatch = findPhone(list);
+    var phoneMatch = findPhone(realMessages);
     if (phoneMatch) {
       data.phone = phoneMatch;
     }
 
-    var postcodeInfo = findPostcode(list);
+    var postcodeInfo = findPostcode(realMessages);
     if (postcodeInfo) {
       data.postcode = postcodeInfo.postcode;
       data.address = postcodeInfo.address;
     }
 
-    var regInfo = findRegs(list);
-    if (regInfo[0]) {
-      data.reg = regInfo[0];
-    }
-    if (regInfo[1]) {
-      data.pxReg = regInfo[1];
+    var userRegs = realMessages.flatMap(function (msg) { return findRegs([msg]); });
+
+    // ACTIVATE PX MODE WHEN AGENT ASKS FOR PX DETAILS
+    let PX_MODE = list.some(function (t) {
+      return /part[- ]?exchange|px details|registration, make, model and mileage|vehicle to part/i.test(t);
+    });
+
+    // REG CORRECTION LOGIC
+    let correctionTriggered = list.some(function (t) {
+      return /cannot find|cannot see|please confirm the registration|confirm the reg/i.test(t);
+    });
+
+    if (correctionTriggered && userRegs.length > 1) {
+      data.reg = userRegs[userRegs.length - 1];
+      data.pxReg = "";
     }
 
-    var mileage = findMileage(list);
+    if (!PX_MODE) {
+      data.reg = data.reg || (userRegs.length ? userRegs[userRegs.length - 1] : "");
+      data.pxReg = "";
+    } else {
+      if (!data.reg && userRegs.length) {
+        data.reg = userRegs[0];
+      }
+      if (userRegs.length > 1) {
+        data.pxReg = userRegs[userRegs.length - 1];
+      }
+    }
+
+    var mileage = findMileage(realMessages);
     if (mileage) {
       data.pxMileage = mileage;
     }
 
-    var vehicleInfo = findVehicle(list);
+    var vehicleInfo = findVehicle(realMessages);
     var baseVehicle = "";
     if (vehicleInfo) {
       data.make = vehicleInfo.make;
@@ -475,12 +556,10 @@
       baseVehicle = (data.make + " " + data.model).trim();
     }
 
-    if (data.reg) {
-      if (!baseVehicle) {
-        data.vehicle = data.reg;
-      } else {
-        data.vehicle = baseVehicle + ", " + data.reg;
-      }
+    if (data.reg && baseVehicle) {
+      data.vehicle = baseVehicle + ", " + data.reg;
+    } else if (data.reg && !baseVehicle) {
+      data.vehicle = data.reg;
     } else {
       data.vehicle = baseVehicle;
     }
@@ -493,9 +572,26 @@
       data.bookingType = bookingDetected;
     }
 
+    // PHONE CALL DETECTION OVERRIDE
+    let agentCallRequest = list.some(function (t) {
+      return /request contact|request a call|schedule a call|arrange a phone call|call from/i.test(t);
+    });
+    let customerAcceptance = list.some(function (t) {
+      return /\bok\b|yes\b|that works|please\b|sure\b/i.test(t);
+    });
+
+    if (agentCallRequest && customerAcceptance) {
+      data.bookingType = "phone call";
+    }
+
+    if (data.bookingType === "test drive") {
+      let noConfirmation = !/at \d{1,2}:\d{2}/.test(list.join(" ").toLowerCase());
+      if (noConfirmation) data.bookingType = "";
+    }
+
     data.newUsed = detectNewUsed(combinedLower, data, bookingDetected);
 
-    var dateInfo = detectDateTime(list);
+    var dateInfo = detectDateTime(realMessages);
     if (dateInfo) {
       data.date = dateInfo.date;
       data.time = dateInfo.time;
@@ -503,12 +599,21 @@
       data.dateTime = dateInfo.dateTime;
     }
 
+    // IF time but no date AND context implies "today"
+    if (!data.date && dateInfo && dateInfo.time &&
+      realMessages.some(function (t) { return /later today|today|this afternoon/i.test(t); })) {
+      var d = new Date();
+      var dd = String(d.getDate()).padStart(2, "0");
+      var mm = String(d.getMonth() + 1).padStart(2, "0");
+      data.date = dd + "/" + mm;
+    }
+
     var intent = detectIntent(combinedLower);
     if (intent.length) {
       data.intent = intent.join(", ");
     }
 
-    var flags = detectFlags(list);
+    var flags = detectFlags(realMessages);
     if (flags.length) {
       data.flags = flags.join(", ");
     }
@@ -530,25 +635,22 @@
   }
 
   function findName(list) {
-    var phraseRe = /\b(?:my name is|i am|i'm|im|this is)\s+([a-zA-Z][a-zA-Z\-']*(?:\s+[a-zA-Z][a-zA-Z\-']*)+)/i;
-    var standaloneRe = /\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b/;
-
     for (var i = 0; i < list.length; i++) {
       var txt = list[i];
-      var phrase = txt.match(phraseRe);
-      if (phrase) {
-        var fullPhrase = phrase[1].trim();
-        var partsPhrase = fullPhrase.split(/\s+/);
+      var m = txt.match(/(?:my name is|i am|i'm|im|this is)\s+([a-zA-Z][a-zA-Z\-']*(?:\s+[a-zA-Z][a-zA-Z\-']*)+)/i);
+      if (m) {
+        var full = m[1].trim();
+        var parts = full.split(/\s+/);
         return {
-          fullName: fullPhrase,
-          firstName: partsPhrase[0],
-          lastName: partsPhrase.slice(1).join(" ")
+          fullName: full,
+          firstName: parts[0],
+          lastName: parts.slice(1).join(" ")
         };
       }
 
-      var standalone = txt.match(standaloneRe);
+      var standalone = txt.trim().match(/^[a-zA-Z][a-zA-Z\-']*(?:\s+[a-zA-Z][a-zA-Z\-']*)+$/);
       if (standalone) {
-        var fullStandalone = standalone[1].trim();
+        var fullStandalone = standalone[0];
         var partsStandalone = fullStandalone.split(/\s+/);
         return {
           fullName: fullStandalone,
@@ -819,6 +921,10 @@
         intents.push(item.key);
       }
     });
+    if (containsAny(text, ["home delivery", "deliver to me", "dealer to dealer"])) intents.push("delivery enquiry");
+    if (containsAny(text, ["warranty", "12 months", "14 day money back"])) intents.push("warranty clarification");
+    if (containsAny(text, ["test a similar", "similar vehicle"])) intents.push("local test-drive alternative");
+    if (containsAny(text, ["80 miles", "far away", "distance"])) intents.push("distance concerns");
     return intents;
   }
 
@@ -840,6 +946,12 @@
       }
       if (containsAny(lower, ["wants delivery", "want delivery", "deliver", "delivery"])) {
         flags.push("wants delivery");
+      }
+      if (containsAny(lower, ["far away", "80 miles", "north east", "not local"])) {
+        flags.push("not local");
+      }
+      if (containsAny(lower, ["today", "later today", "asap"])) {
+        flags.push("needs call today");
       }
     }
 
