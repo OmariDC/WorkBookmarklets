@@ -465,18 +465,24 @@
     }
 
     var vehicleInfo = findVehicle(list);
+    var baseVehicle = "";
     if (vehicleInfo) {
       data.make = vehicleInfo.make;
       data.model = vehicleInfo.model;
       data.trim = vehicleInfo.trim;
-      data.vehicle = vehicleInfo.vehicle;
+      baseVehicle = (vehicleInfo.make + " " + vehicleInfo.model).trim();
+    } else if (data.make && data.model) {
+      baseVehicle = (data.make + " " + data.model).trim();
     }
 
-    if (!data.vehicle && data.make && data.model) {
-      data.vehicle = data.make + " " + data.model;
-    }
-    if (!data.vehicle && data.reg) {
-      data.vehicle = data.reg;
+    if (data.reg) {
+      if (!baseVehicle) {
+        data.vehicle = data.reg;
+      } else {
+        data.vehicle = baseVehicle + ", " + data.reg;
+      }
+    } else {
+      data.vehicle = baseVehicle;
     }
 
     var bookingDetected = detectBookingType(combinedLower);
