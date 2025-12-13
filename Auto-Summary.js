@@ -265,60 +265,29 @@
   }
 
   function collectMessages() {
-    var nodes = document.querySelectorAll('[data-testid="visitor-message"]');
-    var texts = [];
-    var ignoreSelectors = [
-      '[data-testid="agent-message"]',
-      '[data-testid="system-message"]',
-      '[data-testid="predefined-content"]',
-      'div[class*="agent"]',
-      'div[class*="rich-content"]',
-      'div[class*="agent-typing"]'
-    ];
+    // Select only visitor messages based on the actual DOM structure:
+    var nodes = document.querySelectorAll(
+      'div.message.consumer div.plain-text-wrapper div.html-content.text-content'
+    );
 
-    function isIgnored(el) {
-      for (var i = 0; i < ignoreSelectors.length; i++) {
-        if (el.matches(ignoreSelectors[i]) || el.querySelector(ignoreSelectors[i])) {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    var contentSelectors = [
-      'div[class*="bubble"] div[class*="content"] div[class*="text"]',
-      'div[class*="bubble"] div[class*="content"] span',
-      'div[class*="bubble"] div[class*="content"] p'
-    ];
+    var list = [];
 
     nodes.forEach(function (node) {
-      if (isIgnored(node)) return;
-      var parts = [];
-      for (var i = 0; i < contentSelectors.length; i++) {
-        var found = node.querySelectorAll(contentSelectors[i]);
-        found.forEach(function (el) {
-          var t = (el.textContent || "").trim();
-          if (t) {
-            parts.push(t);
-          }
-        });
-      }
-      if (!parts.length) {
-        var fallback = (node.innerText || "").trim();
-        if (fallback) {
-          parts.push(fallback);
-        }
-      }
-      var combined = parts.join(" ").trim();
-      if (combined && /[A-Za-z0-9]/.test(combined)) {
-        texts.push(combined);
+      var text = (node.textContent || "").trim();
+      if (text && /[A-Za-z0-9]/.test(text)) {
+        list.push(text);
       }
     });
 
-    return texts;
+    return {
+      list: list,
+      combined: list.join(" ").trim()
+    };
   }
 
-  function parseMessages(messages) {
+  function parseMessages(messagesObj) {
+    var list = messagesObj.list || [];
+    var combinedLower = (messagesObj.combined || "").toLowerCase();
     var data = {
       fullName: "",
       firstName: "",
@@ -344,13 +313,11 @@
       flags: ""
     };
 
-    if (!messages.length) {
+    if (!list.length) {
       return data;
     }
 
-    var combinedLower = messages.join(" \n ").toLowerCase();
-
-    var nameMatch = findName(messages);
+    var nameMatch = findName(list);
     if (nameMatch) {
       data.fullName = nameMatch.full;
       data.firstName = nameMatch.first;
@@ -362,18 +329,18 @@
       data.email = emailMatch[0];
     }
 
-    var phoneMatch = findPhone(messages);
+    var phoneMatch = findPhone(list);
     if (phoneMatch) {
       data.phone = phoneMatch;
     }
 
-    var postcodeInfo = findPostcode(messages);
+    var postcodeInfo = findPostcode(list);
     if (postcodeInfo) {
       data.postcode = postcodeInfo.postcode;
       data.address = postcodeInfo.address;
     }
 
-    var regInfo = findRegs(messages);
+    var regInfo = findRegs(list);
     if (regInfo.primary) {
       data.reg = regInfo.primary;
     }
@@ -381,7 +348,7 @@
       data.pxReg = regInfo.secondary;
     }
 
-    var mileage = findMileage(messages);
+    var mileage = findMileage(list);
     if (mileage) {
       data.pxMileage = mileage;
     }
@@ -409,36 +376,46 @@
     if (data.reg) {
       data.vehicle = data.reg;
     }
+    if (!data.vehicle && data.make && data.model) {
+      data.vehicle = data.make + " " + data.model;
+    }
     data.pxSummary = buildPxSummary(data);
 
     return data;
   }
 
-  function findName(messages) {
-    for (var i = 0; i < messages.length; i++) {
-      var txt = messages[i];
-      var match = txt.match(/(?:my name is|i am|i'm|im|this is)\s+([a-zA-Z'-]+(?:\s+[a-zA-Z'-]+)+)/i);
-      if (match) {
-        var full = match[1].trim();
+  function findName(list) {
+    for (var i = 0; i < list.length; i++) {
+      var txt = list[i];
+      var m = txt.match(/(?:my name is|i am|i'm|im|this is)\s+([a-zA-Z][a-zA-Z\-']*(?:\s+[a-zA-Z][a-zA-Z\-']*)+)/i);
+      if (m) {
+        var full = m[1].trim();
         var parts = full.split(/\s+/);
-        var first = parts[0];
-        var last = parts.slice(1).join(" ");
-        return { full: full, first: first, last: last };
+        return {
+          full: full,
+          first: parts[0],
+          last: parts.slice(1).join(" ")
+        };
       }
     }
     return null;
   }
 
-  function findPhone(messages) {
-    var phoneRegex = /(\+447\d{9}|07\d{9}|0\d{10})/g;
-    for (var i = 0; i < messages.length; i++) {
-      var txt = messages[i];
+  function findPhone(list) {
+    var re = /(\+447\d{9}|07\d{9}|0\d{9,10})/g;
+
+    for (var i = 0; i < list.length; i++) {
+      var txt = list[i];
       var m;
-      while ((m = phoneRegex.exec(txt))) {
+      while ((m = re.exec(txt))) {
         var num = m[1];
-        if (num.indexOf("+447") === 0) {
+
+        if (num.startsWith("+447")) {
           num = "07" + num.slice(4);
         }
+
+        if (!num.startsWith("0")) continue;
+
         return num.replace(/\D/g, "");
       }
     }
@@ -488,27 +465,34 @@
 
   function detectBookingType(text) {
     if (!text) return "";
-    if (text.indexOf("notes only") !== -1) return "notes only";
 
-    var onlineStore = containsAny(text, ["online store", "online-store", "bought online", "ordered online"]);
-    var stockCentre = containsAny(text, ["stock centre", "stock center", "stock location", "stock site"]);
-    if (onlineStore && stockCentre) {
+    if (text.includes("notes only")) return "notes only";
+
+    var stock = containsAny(text, ["stock centre", "stock center", "used stock centre", "central used"]);
+    var process = containsAny(text, ["click & collect", "guide you through reserving", "reservation moves"]);
+    var reserve = containsAny(text, ["online store"]);
+
+    // online-store requires stock-centre confirmation
+    if ((stock && process) || (stock && reserve)) {
       return "online store";
     }
 
-    if (text.indexOf("test drive") !== -1 || text.indexOf("test-drive") !== -1) return "test drive";
-    if (text.indexOf("viewing") !== -1 || text.indexOf("view ") !== -1) return "view";
-    if (text.indexOf("phone call") !== -1 || text.indexOf("call me") !== -1) return "phone call";
-    if (text.indexOf("valuation") !== -1 || text.indexOf("px") !== -1) return "valuation";
-    if (text.indexOf("motability") !== -1) return "motability";
-    if (text.indexOf("national reserve") !== -1) return "national reserve";
+    if (text.includes("national reserve")) return "national reserve";
+    if (text.includes("motability")) return "motability";
+    if (text.includes("test drive")) return "test drive";
+    if (text.includes("viewing") || text.includes("view ")) return "view";
+    if (text.includes("phone call") || text.includes("call me")) return "phone call";
+    if (text.includes("valuation") || text.includes("px")) return "valuation";
+
     return "";
   }
 
   function detectNewUsed(text) {
-    if (text.indexOf("motability") !== -1) return "";
-    if (text.indexOf("brand new") !== -1 || text.indexOf("new ") !== -1) return "new";
-    if (text.indexOf("used") !== -1 || text.indexOf("pre owned") !== -1 || text.indexOf("pre-owned") !== -1) return "used";
+    if (text.includes("motability")) return "";
+
+    if (containsAny(text, ["brand new", "new model", "new "])) return "new";
+    if (containsAny(text, ["used", "pre owned", "pre-owned"])) return "used";
+
     return "";
   }
 
@@ -562,8 +546,8 @@
   }
 
   function render() {
-    var messages = collectMessages();
-    app.data = parseMessages(messages);
+    var messagesObj = collectMessages();
+    app.data = parseMessages(messagesObj);
 
     var rows = app.panel ? app.panel.querySelectorAll('.lpSumMiniRow') : [];
     rows.forEach(function (row) {
