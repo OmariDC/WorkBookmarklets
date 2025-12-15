@@ -1,6 +1,29 @@
 (function () {
   if (window._lpSumMini) return;
 
+  let RENDER_LOCK = false;
+  let RENDER_SCHEDULED = false;
+
+  function safeRender(fn) {
+    if (RENDER_LOCK) {
+      if (!RENDER_SCHEDULED) {
+        RENDER_SCHEDULED = true;
+        setTimeout(function () {
+          RENDER_SCHEDULED = false;
+          safeRender(fn);
+        }, 80);
+      }
+      return;
+    }
+    RENDER_LOCK = true;
+    try {
+      fn();
+    } catch (e) {
+      console.error("LP Summary error:", e);
+    }
+    RENDER_LOCK = false;
+  }
+
   const PREDEFINED_CONTENT = [
     "Hello, you're speaking with $!{operator.displayname} from Stellantis &You UK.",
     "Hello, you're speaking with $!{operator.displayname} from Stellantis &You UK. How can I help you today?",
@@ -79,6 +102,7 @@
 
     var style = document.createElement("style");
     style.id = app.styleId;
+    style.setAttribute("data-lp-ignore", "true");
     style.textContent =
       "#" + app.buttonId + " {" +
       " position: fixed;" +
@@ -416,7 +440,7 @@
     try {
       localStorage.setItem("lpSumMini.bookingOverride", value);
     } catch (e) {}
-    render();
+    safeRender(render);
   }
 
   function copyValue(value) {
@@ -463,10 +487,14 @@
       '.content.text'
     ];
 
+    const panel = document.getElementById(app.panelId);
+
     var nodes = Array.from(document.querySelectorAll(selectors.join(",")));
     var uniqueNodes = [];
 
     nodes.forEach(function (node) {
+      if (panel && panel.contains(node)) return;
+      if (node.querySelector && node.querySelector("[data-lp-ignore]")) return;
       for (var i = 0; i < uniqueNodes.length; i++) {
         if (uniqueNodes[i] === node || uniqueNodes[i].contains(node)) {
           return;
@@ -1730,46 +1758,64 @@
   }
 
   function render() {
-    var messagesObj = collectMessages();
-    app.data = parseMessages(messagesObj);
+    safeRender(function () {
+      var messagesObj = collectMessages();
+      app.data = parseMessages(messagesObj);
 
-    updateDebugOverlay(messagesObj);
+      updateDebugOverlay(messagesObj);
 
-    if (app.bookingOverrideSelect) {
-      app.bookingOverrideSelect.value = getBookingOverride();
-    }
-
-    var rows = app.panel ? app.panel.querySelectorAll('.lpSumMiniRow[data-key]') : [];
-    rows.forEach(function (row) {
-      var keyName = row.dataset.key;
-      var value = app.data[keyName] || "";
-      if (keyName === "pxSummary") value = app.data.pxSummary || "";
-      if (keyName === "fullName" && !value && app.data.firstName) {
-        value = app.data.firstName + (app.data.lastName ? " " + app.data.lastName : "");
+      if (app.bookingOverrideSelect) {
+        app.bookingOverrideSelect.value = getBookingOverride();
       }
-      if (keyName === "dateTime" && !value) {
-        var parts = [];
-        if (app.data.date) parts.push(app.data.date);
-        if (app.data.time) parts.push(app.data.time);
-        if (app.data.flexible) parts.push(app.data.flexible);
-        value = parts.join(" ").trim();
-      }
-      row._valueEl.textContent = value;
+
+      var rows = app.panel ? app.panel.querySelectorAll('.lpSumMiniRow[data-key]') : [];
+      rows.forEach(function (row) {
+        var keyName = row.dataset.key;
+        var value = app.data[keyName] || "";
+        if (keyName === "pxSummary") value = app.data.pxSummary || "";
+        if (keyName === "fullName" && !value && app.data.firstName) {
+          value = app.data.firstName + (app.data.lastName ? " " + app.data.lastName : "");
+        }
+        if (keyName === "dateTime" && !value) {
+          var parts = [];
+          if (app.data.date) parts.push(app.data.date);
+          if (app.data.time) parts.push(app.data.time);
+          if (app.data.flexible) parts.push(app.data.flexible);
+          value = parts.join(" ").trim();
+        }
+        row._valueEl.textContent = value;
+      });
     });
   }
 
-  window._lpSumMini_forceRender = render;
+  window._lpSumMini_forceRender = function () {
+    safeRender(render);
+  };
   window._lpSumMini_setBookingType = function (type) {
     setBookingOverride(type);
   };
 
   function initObserver() {
     if (app.observer) return;
-    app.observer = new MutationObserver(render);
+    app.observer = new MutationObserver(function () {
+      safeRender(render);
+    });
     app.observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  createUI();
-  render();
-  initObserver();
+  if (document.readyState === "complete") {
+    createUI();
+    safeRender(render);
+    initObserver();
+  } else {
+    window.addEventListener(
+      "load",
+      function () {
+        createUI();
+        safeRender(render);
+        initObserver();
+      },
+      { once: true }
+    );
+  }
 })();
