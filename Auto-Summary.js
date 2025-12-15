@@ -2,7 +2,35 @@
   if (window._lpSumMini) return;
 
   const PREDEFINED_CONTENT = [
-    // Insert all user-provided predefined content strings here
+    "Hello, you're speaking with $!{operator.displayname} from Stellantis &You UK.",
+    "Hello, you're speaking with $!{operator.displayname} from Stellantis &You UK. How can I help you today?",
+    "Thanks for chatting with Stellantis &You UK. How can I assist you today?",
+    "You're speaking with $!{operator.displayname} from Stellantis &You UK.",
+    "Hello, you are speaking with $!{operator.displayname} from Stellantis &You UK.",
+    "Thank you for contacting Stellantis &You UK.",
+    "Thanks for your enquiry. A member of the team will be with you shortly.",
+    "I can help with your enquiry today.",
+    "Please can you provide registration, make, model and mileage.",
+    "Please can you provide the registration, make, model and mileage so I can value your part exchange.",
+    "We can guide you through reserving the vehicle for £99.",
+    "You are connected to Stellantis &You UK.",
+    "This chat may be recorded for quality and training purposes.",
+    "We are connecting you to an agent.",
+    "The agent is typing.",
+    "Transferring you to another agent.",
+    "Your chat has been transferred.",
+    "Thanks for waiting, I will be with you shortly.",
+    "We have received your message and will reply soon.",
+    "Stellantis &You UK availability confirmation."
+  ];
+
+  const PREDEFINED_OS_CONFIRMATIONS = [
+    "reservation moves it to your chosen dealership",
+    "stored at our central used stock centre",
+    "stored at our central used stock center",
+    "fully refundable £99 reservation moves it to your chosen stellantis &you dealership",
+    "up to 5–6 working days for click & collect",
+    "delivered for you once intention to purchase is confirmed"
   ];
 
   // Ensure levenshtein exists for predefined filter
@@ -11,25 +39,23 @@
       const matrix = [];
       for (let i = 0; i <= b.length; i++) matrix[i] = [i];
       for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
-      for (let i = 1; i <= b.length; i++)
-        for (let j = 1; j <= a.length; j++)
+      for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
           matrix[i][j] = b[i - 1] === a[j - 1]
             ? matrix[i - 1][j - 1]
             : Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
+        }
+      }
       return matrix[b.length][a.length];
     }
   }
 
-  function levenshtein(a, b) {
-    const matrix = [];
-    for (let i = 0; i <= b.length; i++) matrix[i] = [i];
-    for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
-    for (let i = 1; i <= b.length; i++)
-      for (let j = 1; j <= a.length; j++)
-        matrix[i][j] = b[i - 1] === a[j - 1]
-          ? matrix[i - 1][j - 1]
-          : Math.min(matrix[i - 1][j - 1] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j] + 1);
-    return matrix[b.length][a.length];
+  function normalizeMessageForTemplate(text) {
+    return (text || "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .replace(/you['’]?re speaking with [^.,]+ from stellantis &you uk\.?/, "")
+      .trim();
   }
 
   var app = {
@@ -171,8 +197,7 @@
       createRow("Full Name", "fullName", true),
       createRow("Email", "email"),
       createRow("Phone", "phone"),
-      createRow("Address", "address"),
-      createRow("Postcode", "postcode")
+      createRow("Address", "address")
     ]));
 
     panel.appendChild(buildSection("Part Exchange", [
@@ -188,6 +213,7 @@
       createRow("Booking Type", "bookingType"),
       createRow("New/Used", "newUsed"),
       createRow("Vehicle", "vehicle"),
+      createRow("Preferences", "preferences"),
       createRow("Date/Time", "dateTime"),
       createRow("PX Summary", "pxSummary"),
       createRow("Intent", "intent"),
@@ -291,7 +317,6 @@
       "view",
       "phone call",
       "valuation",
-      "motability",
       "online store"
     ];
 
@@ -318,7 +343,8 @@
 
   function getBookingOverride() {
     try {
-      return localStorage.getItem("lpSumMini.bookingOverride") || "auto-detect";
+      var stored = localStorage.getItem("lpSumMini.bookingOverride") || "auto-detect";
+      return stored === "motability" ? "auto-detect" : stored;
     } catch (e) {
       return "auto-detect";
     }
@@ -364,10 +390,15 @@
 
   function collectMessages() {
     var selectors = [
-      '[data-testid="visitor-message"]',
       '[data-testid="agent-message"]',
-      'div[class*="message"]',
-      'div[class*="bubble"]'
+      '[data-testid="visitor-message"]',
+      '[data-testid="message-bubble"]',
+      'div[class*="bubble"]',
+      'div[class*="msg"]',
+      '.lp_message_text',
+      '.html-content.text-content',
+      '.lpChatLineText',
+      '.content.text'
     ];
 
     var nodes = Array.from(document.querySelectorAll(selectors.join(",")));
@@ -384,13 +415,27 @@
 
     var list = [];
     uniqueNodes.forEach(function (node) {
+      var isAgent = false;
+      if (node.getAttribute && node.getAttribute("data-testid") === "agent-message") {
+        isAgent = true;
+      } else if (node.matches && node.matches('[data-testid="agent-message"]')) {
+        isAgent = true;
+      } else if (node.closest && node.closest('[data-testid="agent-message"]')) {
+        isAgent = true;
+      } else if (node.className && /agent/i.test(String(node.className))) {
+        isAgent = true;
+      }
+
       var parts = [];
       var innerSelectors = [
         '.html-content.text-content',
         '.text-content',
         'p',
         'span',
-        'div'
+        'div',
+        '.lp_message_text',
+        '.lpChatLineText',
+        '.content.text'
       ];
 
       innerSelectors.forEach(function (sel) {
@@ -409,29 +454,50 @@
       if (!/[A-Za-z0-9]/.test(text)) return;
 
       var lower = text.toLowerCase();
+      if (lower.indexOf("is typing") !== -1) return;
       if (lower.indexOf("connected to") !== -1) return;
       if (lower.indexOf("automated") !== -1) return;
-      if (lower.indexOf("is typing") !== -1) return;
-
       if (/^(?:\d|:|\s)+$/.test(text)) return;
+      if (/internal transfer|transferred you/i.test(lower)) return;
 
-      // PREDEFINED CONTENT FILTER
-      let normalised = text.replace(/\s+/g, " ").trim().toLowerCase();
-
-      for (let template of PREDEFINED_CONTENT) {
-        let normTemplate = template.replace(/\s+/g, " ").trim().toLowerCase();
+      // PREDEFINED OS CONFIRMATION FILTER
+      var normalised = normalizeMessageForTemplate(text);
+      for (let template of PREDEFINED_OS_CONFIRMATIONS) {
+        var normTemplateOs = normalizeMessageForTemplate(template);
+        var firstWordsOs = normTemplateOs.split(" ").slice(0, 5).join(" ");
 
         if (
-          normalised === normTemplate ||
-          normalised.startsWith(normTemplate.split(" ").slice(0, 6).join(" ")) ||
-          (normalised.length > 12 && levenshtein(normalised, normTemplate) < 5)
+          levenshtein(normalised, normTemplateOs) < 8 ||
+          normalised.startsWith(firstWordsOs) ||
+          text.indexOf("operator.displayname") !== -1
         ) {
-          list.push("__PREDEFINED__:" + text);
+          var osVal = isAgent ? "__AGENT__:__PREDEFINED_OS__:" + text : "__PREDEFINED_OS__:" + text;
+          list.push(osVal);
           return;
         }
       }
 
-      list.push(text);
+      // PREDEFINED CONTENT FILTER
+      for (let template of PREDEFINED_CONTENT) {
+        var normTemplate = normalizeMessageForTemplate(template);
+        var firstWords = normTemplate.split(" ").slice(0, 5).join(" ");
+
+        if (
+          levenshtein(normalised, normTemplate) < 8 ||
+          normalised.startsWith(firstWords) ||
+          text.indexOf("operator.displayname") !== -1
+        ) {
+          var preVal = isAgent ? "__AGENT__:__PREDEFINED__:" + text : "__PREDEFINED__:" + text;
+          list.push(preVal);
+          return;
+        }
+      }
+
+      if (isAgent) {
+        list.push("__AGENT__:" + text);
+      } else {
+        list.push(text);
+      }
     });
 
     return {
@@ -441,10 +507,30 @@
   }
 
   function parseMessages(messagesObj) {
-    var list = messagesObj.list || [];
-    var realMessages = list.filter(function (t) { return !t.startsWith("__PREDEFINED__:"); });
+    var rawList = messagesObj.list || [];
+    var entries = rawList.map(function (text, idx) {
+      var isAgent = text.indexOf("__AGENT__:") === 0;
+      var clean = isAgent ? text.replace("__AGENT__:", "") : text;
+
+      var isPreOs = clean.indexOf("__PREDEFINED_OS__:") === 0;
+      var isPre = clean.indexOf("__PREDEFINED__:") === 0;
+      if (isPreOs) clean = clean.replace("__PREDEFINED_OS__:", "");
+      else if (isPre) clean = clean.replace("__PREDEFINED__:", "");
+      return {
+        text: text,
+        cleanText: clean,
+        index: idx,
+        isPredefined: isPre,
+        isPredefinedOs: isPreOs,
+        isAgent: isAgent
+      };
+    });
+
+    var realEntries = entries.filter(function (e) { return !e.isPredefined && !e.isPredefinedOs; });
+    var realMessages = realEntries.map(function (e) { return e.cleanText; });
     var combinedLower = (realMessages.join(" ") || "").toLowerCase();
     var combinedText = realMessages.join(" ");
+
     var data = {
       fullName: "",
       firstName: "",
@@ -469,24 +555,16 @@
       pxModel: "",
       pxReg: "",
       pxMileage: "",
+      finance: "",
       intent: "",
-      flags: ""
+      preferences: "",
+      flags: "",
+      _osEligible: false
     };
 
     if (!realMessages.length) {
       return data;
     }
-
-    // PRIORITY ORDER
-    // 1) Filter predefined content
-    // 2) Identify corrected reg after agent rejection
-    // 3) Activate PX mode only after PX question
-    // 4) Assign enquiry reg vs pxReg based on PX_MODE
-    // 5) Detect booking type (agent-confirmed overrides keyword detection)
-    // 6) Date/time
-    // 7) Make/model + vehicle assembly
-    // 8) Intent
-    // 9) Flags
 
     var nameMatch = findName(realMessages);
     if (nameMatch) {
@@ -508,45 +586,156 @@
     var postcodeInfo = findPostcode(realMessages);
     if (postcodeInfo) {
       data.postcode = postcodeInfo.postcode;
-      data.address = postcodeInfo.address;
+      var mergedAddress = data.address || postcodeInfo.address || "";
+      if (postcodeInfo.postcode && mergedAddress.toUpperCase().indexOf(postcodeInfo.postcode) === -1) {
+        mergedAddress = (mergedAddress + " " + postcodeInfo.postcode).trim();
+      }
+      if (!mergedAddress) mergedAddress = postcodeInfo.postcode;
+      data.address = mergedAddress;
     }
 
-    var userRegs = realMessages.flatMap(function (msg) { return findRegs([msg]); });
+    var baseVehicle = "";
+    var vehicleInfo = null;
 
-    // ACTIVATE PX MODE WHEN AGENT ASKS FOR PX DETAILS
-    let PX_MODE = list.some(function (t) {
-      return /part[- ]?exchange|px details|registration, make, model and mileage|vehicle to part/i.test(t);
-    });
-
-    // REG CORRECTION LOGIC
-    let correctionTriggered = list.some(function (t) {
-      return /cannot find|cannot see|please confirm the registration|confirm the reg/i.test(t);
-    });
-
-    if (correctionTriggered && userRegs.length > 1) {
-      data.reg = userRegs[userRegs.length - 1];
-      data.pxReg = "";
+    var vehicleScope = entries.map(function (e) { return e.cleanText; });
+    vehicleInfo = findVehicle(vehicleScope);
+    if (!vehicleInfo) {
+      var modelOnly = findModelOnly(vehicleScope);
+      if (modelOnly) {
+        vehicleInfo = modelOnly;
+      }
     }
 
-    if (!PX_MODE) {
-      data.reg = data.reg || (userRegs.length ? userRegs[userRegs.length - 1] : "");
+    // --- PX FIX LOGIC ---
+    var pxQuestionIdx = -1;
+    var pxQuestionRe = /(part[- ]?exchange|px details|registration, make, model and mileage|vehicle to part)/i;
+
+    entries.forEach(function (entry) {
+      if (pxQuestionIdx === -1 && pxQuestionRe.test(entry.cleanText)) {
+        // Only treat as a question if it is from agent or is phrased as request
+        if (entry.isPredefined || /please|can you|could you|would you|provide/i.test(entry.cleanText)) {
+          pxQuestionIdx = entry.index;
+        }
+      }
+    });
+
+    // Track all detected regs with message index
+    var userRegEntries = [];
+    realEntries.forEach(function (entry) {
+      var regs = findRegs([entry.cleanText]);
+      regs.forEach(function (r) {
+        userRegEntries.push({ reg: r, index: entry.index });
+      });
+    });
+
+    var mileageEntries = [];
+    realEntries.forEach(function (entry) {
+      var mileageVal = findMileage([entry.cleanText]);
+      if (mileageVal) {
+        mileageEntries.push({ mileage: mileageVal, index: entry.index });
+      }
+    });
+
+    // Find PX reg AFTER PX question but allow valuation-first flows
+    var pxRegEntry = null;
+    userRegEntries.forEach(function (entry) {
+      if (pxQuestionIdx >= 0 && entry.index > pxQuestionIdx) {
+        pxRegEntry = entry;
+      }
+    });
+
+    var PX_MODE = pxQuestionIdx >= 0 && !!pxRegEntry;
+
+    if (!PX_MODE && userRegEntries.length && mileageEntries.length) {
+      var pxKeywordPresent = realEntries.some(function (entry) {
+        return /(\bpx\b|p\/x|part exchange|vehicle to part exchange)/i.test(entry.cleanText);
+      });
+
+      var hasVehicleContext = !!vehicleInfo || !!baseVehicle;
+      var nearReg = mileageEntries.some(function (m) {
+        return userRegEntries.some(function (r) {
+          return Math.abs(r.index - m.index) <= 2;
+        });
+      });
+
+      if ((pxKeywordPresent || hasVehicleContext) && nearReg) {
+        PX_MODE = true;
+        data.pxReg = userRegEntries[userRegEntries.length - 1].reg;
+      }
+    }
+
+    // Fix for corrected reg flows (e.g., AP22…)
+    var correctionTriggered = entries.some(function (e) {
+      return /cannot find|cannot see|please confirm the reg|confirm the registration/i.test(e.cleanText);
+    });
+
+    // Allocate reg + pxReg cleanly
+    if (correctionTriggered && userRegEntries.length > 1) {
+      data.reg = userRegEntries[userRegEntries.length - 1].reg;
       data.pxReg = "";
     } else {
-      if (!data.reg && userRegs.length) {
-        data.reg = userRegs[0];
-      }
-      if (userRegs.length > 1) {
-        data.pxReg = userRegs[userRegs.length - 1];
+      if (!PX_MODE) {
+        if (!data.reg && userRegEntries.length) {
+          data.reg = userRegEntries[userRegEntries.length - 1].reg;
+        }
+        data.pxReg = "";
+      } else {
+        if (pxRegEntry) data.pxReg = pxRegEntry.reg;
+
+        var enquiryEntry = null;
+        for (var i = 0; i < userRegEntries.length; i++) {
+          if (userRegEntries[i].index <= pxQuestionIdx) enquiryEntry = userRegEntries[i];
+        }
+
+        if (!data.reg && enquiryEntry) data.reg = enquiryEntry.reg;
+        else if (!data.reg && userRegEntries.length) data.reg = userRegEntries[0].reg;
       }
     }
 
-    var mileage = findMileage(realMessages);
-    if (mileage) {
-      data.pxMileage = mileage;
+    // PX make/model extraction scoped to PX context only
+    var pxContextRe = /(\bpx\b|p\/x|part exchange|vehicle to part exchange)/i;
+    var pxContextEntries = realEntries.filter(function (entry) {
+      return pxContextRe.test(entry.cleanText);
+    });
+    var pxAfterQuestionEntries = realEntries.filter(function (entry) {
+      return pxQuestionIdx >= 0 && entry.index > pxQuestionIdx;
+    });
+
+    var pxVehicle = findVehicle(pxContextEntries.map(function (e) { return e.cleanText; }));
+    if (!pxVehicle && pxAfterQuestionEntries.length) {
+      pxVehicle = findVehicle(pxAfterQuestionEntries.map(function (e) { return e.cleanText; }));
     }
 
-    var vehicleInfo = findVehicle(realMessages);
-    var baseVehicle = "";
+    if (pxVehicle) {
+      data.pxMake = pxVehicle.make;
+      data.pxModel = pxVehicle.model;
+    }
+
+    var pxMileage = "";
+    var pxContextMessages = pxContextEntries.map(function (e) { return e.cleanText; });
+    if (pxContextMessages.length) {
+      pxMileage = findMileage(pxContextMessages);
+    }
+
+    if (!pxMileage && pxAfterQuestionEntries.length) {
+      pxMileage = findMileage(pxAfterQuestionEntries.map(function (e) { return e.cleanText; }));
+    }
+
+    if (!pxMileage && pxRegEntry && mileageEntries.length) {
+      var nearMileage = mileageEntries.find(function (m) { return Math.abs(m.index - pxRegEntry.index) <= 2; });
+      if (nearMileage) {
+        pxMileage = nearMileage.mileage;
+      }
+    }
+
+    if (!pxMileage && data.pxReg) {
+      pxMileage = findMileage(realMessages);
+    }
+
+    if (pxMileage) {
+      data.pxMileage = pxMileage;
+    }
+
     if (vehicleInfo) {
       data.make = vehicleInfo.make;
       data.model = vehicleInfo.model;
@@ -557,41 +746,49 @@
     }
 
     if (data.reg && baseVehicle) {
-      data.vehicle = baseVehicle + ", " + data.reg;
+      data.vehicle = baseVehicle + " (" + data.reg + ")";
     } else if (data.reg && !baseVehicle) {
       data.vehicle = data.reg;
     } else {
       data.vehicle = baseVehicle;
     }
 
-    var bookingDetected = detectBookingType(combinedLower);
+    var bookingDetectedRaw = detectBookingType(combinedLower, data, entries, PX_MODE);
+    if (bookingDetectedRaw === "motability") {
+      data.newUsed = "motability";
+      bookingDetectedRaw = "";
+    }
+    if (bookingDetectedRaw && bookingDetectedRaw.indexOf("os") === 0) {
+      data.bookingType = formatBookingType(bookingDetectedRaw);
+    }
+
     var override = getBookingOverride();
+    var finalBooking = bookingDetectedRaw;
+
     if (override && override !== "auto-detect") {
-      data.bookingType = override;
-    } else {
-      data.bookingType = bookingDetected;
+      if (override === "online store") {
+        if (data._osEligible) {
+          finalBooking = "os phone call";
+        } else if (!finalBooking) {
+          finalBooking = bookingDetectedRaw;
+        }
+      } else {
+        finalBooking = override;
+      }
     }
 
-    // PHONE CALL DETECTION OVERRIDE
-    let agentCallRequest = list.some(function (t) {
-      return /request contact|request a call|schedule a call|arrange a phone call|call from/i.test(t);
-    });
-    let customerAcceptance = list.some(function (t) {
-      return /\bok\b|yes\b|that works|please\b|sure\b/i.test(t);
-    });
-
-    if (agentCallRequest && customerAcceptance) {
-      data.bookingType = "phone call";
+    if (!finalBooking) {
+      finalBooking = bookingDetectedRaw;
     }
 
-    if (data.bookingType === "test drive") {
-      let noConfirmation = !/at \d{1,2}:\d{2}/.test(list.join(" ").toLowerCase());
-      if (noConfirmation) data.bookingType = "";
+    data.bookingType = formatBookingType(finalBooking);
+
+    var resolvedStatus = detectNewUsed(combinedLower, data);
+    if (resolvedStatus) {
+      data.newUsed = resolvedStatus;
     }
 
-    data.newUsed = detectNewUsed(combinedLower, data, bookingDetected);
-
-    var dateInfo = detectDateTime(realMessages);
+    var dateInfo = detectDateTime(realMessages, entries);
     if (dateInfo) {
       data.date = dateInfo.date;
       data.time = dateInfo.time;
@@ -599,34 +796,93 @@
       data.dateTime = dateInfo.dateTime;
     }
 
-    // IF time but no date AND context implies "today"
-    if (!data.date && dateInfo && dateInfo.time &&
-      realMessages.some(function (t) { return /later today|today|this afternoon/i.test(t); })) {
-      var d = new Date();
-      var dd = String(d.getDate()).padStart(2, "0");
-      var mm = String(d.getMonth() + 1).padStart(2, "0");
-      data.date = dd + "/" + mm;
+    var preferences = detectPreferences(realMessages, combinedLower);
+    if (preferences.length) {
+      data.preferences = preferences.join(", ");
     }
 
-    var intent = detectIntent(combinedLower);
-    if (intent.length) {
-      data.intent = intent.join(", ");
+    // --- Finance Extraction ---
+    var financeWords = [
+      "pcp",
+      "p c p",
+      "personal contract purchase",
+      "hp",
+      "h p",
+      "hire purchase",
+      "pch",
+      "p c h",
+      "personal contract hire",
+      "lease",
+      "leasing",
+      "finance",
+      "finance options"
+    ];
+
+    data.finance = "";
+
+    var financeFound = financeWords.some(function (w) {
+      return combinedLower.indexOf(w) !== -1;
+    });
+    if (financeFound) {
+      var detectedType = "";
+
+      if (containsAny(combinedLower, ["pcp", "p c p"])) detectedType = "PCP";
+      else if (containsAny(combinedLower, ["hp", "h p"])) detectedType = "HP";
+      else if (containsAny(combinedLower, ["pch", "p c h", "lease", "leasing"])) detectedType = "PCH";
+      else detectedType = "Finance discussion";
+
+      var depositMatch = combinedLower.match(/(?:deposit\s*£?|£)\s*(\d{2,5})/);
+      var monthlyMatch = combinedLower.match(/£?\s?(\d{2,4})\s*(?:pm|p\/m|per month|a month|monthly)/);
+      var mileageMatch = combinedLower.match(/(\d{1,3}(?:[ ,]?\d{3})|\d{2,3}\s*k)\s*(?:miles?|mi)?\s*(?:pa|per annum)?/i);
+
+      var f = detectedType;
+      if (depositMatch) f += " | Deposit: £" + depositMatch[1];
+      if (monthlyMatch) f += " | Monthly: £" + monthlyMatch[1];
+      if (mileageMatch) {
+        var mileageVal = mileageMatch[1];
+        if (/k$/i.test(mileageVal)) {
+          mileageVal = String(parseInt(mileageVal, 10) * 1000);
+        } else {
+          mileageVal = mileageVal.replace(/\D/g, "");
+        }
+        f += " | Mileage PA: " + mileageVal;
+      }
+
+      data.finance = f;
     }
 
-    var flags = detectFlags(realMessages);
+    var intentList = detectIntent(combinedLower).filter(function (v, idx, arr) {
+      return arr.indexOf(v) === idx;
+    });
+
+    var flags = detectFlags(entries, dateInfo && dateInfo.flags);
+    if (flags.length) {
+      flags = flags.filter(function (v, idx, arr) { return arr.indexOf(v) === idx; });
+    }
+
+    if (flags.some(function (f) { return /^Discuss (delivery|transfer) to /i.test(f); })) {
+      intentList = intentList.filter(function (val) {
+        return val !== "delivery enquiry" && val !== "delivery/collection";
+      });
+    }
+
+    if (data.finance) {
+      if (intentList.indexOf("finance discussion") === -1) intentList.push("finance discussion");
+    }
+
+    if (intentList.length) {
+      data.intent = intentList.join(", ");
+    }
+
     if (flags.length) {
       data.flags = flags.join(", ");
     }
 
-    if (override === "motability") {
-      data.newUsed = "";
-    }
     if (override === "notes only") {
       data.dateTime = "";
       data.date = "";
       data.time = "";
       data.flexible = "";
-      data.newUsed = "";
     }
 
     data.pxSummary = buildPxSummary(data);
@@ -663,21 +919,23 @@
   }
 
   function findPhone(list) {
-    var re = /(\+447\d{9}|07\d{9}|0\d{9,10})/g;
-
     for (var i = 0; i < list.length; i++) {
       var txt = list[i];
-      var m;
-      while ((m = re.exec(txt))) {
-        var num = m[1];
+      var matches = txt.match(/(\+44[\d\s]{9,12}|0[\d\s]{9,11})/g);
+      if (!matches) continue;
 
-        if (num.indexOf("+447") === 0) {
-          num = "07" + num.slice(4);
+      for (var j = 0; j < matches.length; j++) {
+        var raw = matches[j].replace(/\s+/g, "");
+        if (raw.indexOf("0044") === 0) continue;
+        if (raw.indexOf("+44") === 0) {
+          if (raw.charAt(3) !== "7") continue;
+          raw = "0" + raw.slice(3);
         }
-
-        if (num.indexOf("0") !== 0) continue;
-
-        return num.replace(/\D/g, "");
+        if (raw.charAt(0) !== "0") continue;
+        var normalized = raw.replace(/\D/g, "");
+        if (normalized.length >= 10 && normalized.length <= 11) {
+          return normalized;
+        }
       }
     }
     return "";
@@ -685,7 +943,7 @@
 
   function findPostcode(messages) {
     var re = /\b([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})\b/i;
-    for (var i = 0; i < messages.length; i++) {
+    for (var i = messages.length - 1; i >= 0; i--) {
       var txt = messages[i];
       var m = re.exec(txt);
       if (m) {
@@ -722,7 +980,7 @@
   }
 
   function findMileage(messages) {
-    var re = /(\d{1,3}(?:,\d{3})+|\d{4,}|\d+(?:\s?[kK]))/;
+    var re = /(\d{1,3}(?:[\s,]\d{3})+|\d{4,}|\d+(?:\s?[kK]))/;
     for (var i = 0; i < messages.length; i++) {
       var m = re.exec(messages[i]);
       if (m) {
@@ -797,96 +1055,333 @@
     return null;
   }
 
-  function detectBookingType(text) {
-    if (!text) return "";
-
-    var stockCentre = containsAny(text, [
-      "central used stock centre",
-      "national used stock centre",
-      "preparation centre",
-      "stored at our central",
-      "stored at the used stock centre"
-    ]);
-    var onlineProcess = containsAny(text, [
-      "£99 reservation moves it",
-      "reservation moves it",
-      "guide you through reserving",
-      "click & collect",
-      "5-6 working days",
-      "5–6 working days",
-      "5 – 6 working days"
-    ]);
-
-    if (stockCentre && onlineProcess) {
-      return "online store";
-    }
-
-    if (text.indexOf("motability") !== -1) return "motability";
-    if (text.indexOf("test drive") !== -1) return "test drive";
-    if (text.indexOf("viewing") !== -1 || text.indexOf("view ") !== -1) return "view";
-    if (text.indexOf("phone call") !== -1 || text.indexOf("call me") !== -1 || text.indexOf("call back") !== -1)
-      return "phone call";
-    if (text.indexOf("valuation") !== -1 || text.indexOf("px") !== -1 || text.indexOf("p/x") !== -1)
-      return "valuation";
-
-    return "";
-  }
-
-  function detectNewUsed(text, data, bookingDetected) {
-    if (text.indexOf("motability") !== -1 || data.bookingType === "motability" || bookingDetected === "motability") {
-      return "";
-    }
-
-    if (containsAny(text, ["brand new", "new shape", "new model", "new "])) return "new";
-    if (data.reg) return "used";
-    if (containsAny(text, ["px", "p/x", "part exchange", "finance", "pcp", "hp", "apr"])) return "used";
-
-    return "";
-  }
-
-  function detectDateTime(messages) {
-    var date = "";
-    var time = "";
-    var flexible = "";
-
-    var monthNames = "january february march april may june july august september october november december".split(" ");
-    var monthPattern = monthNames.join("|");
+  function findModelOnly(messages) {
+    var modelMap = [
+      { pattern: /\b(mokka)\b/i, make: "Vauxhall" },
+      { pattern: /\b(corsa)\b/i, make: "Vauxhall" },
+      { pattern: /\b(astra)\b/i, make: "Vauxhall" },
+      { pattern: /\b(grandland)\b/i, make: "Vauxhall" },
+      { pattern: /\b(c3 aircross|c3\b)\b/i, make: "Citroen" },
+      { pattern: /\b(c4 x|c4\b|e-?c4)\b/i, make: "Citroen" },
+      { pattern: /\b(2008|e-?2008)\b/i, make: "Peugeot" },
+      { pattern: /\b(208|e-?208)\b/i, make: "Peugeot" },
+      { pattern: /\b(3008|308)\b/i, make: "Peugeot" },
+      { pattern: /\b(500x|500)\b/i, make: "Fiat" },
+      { pattern: /\b(panda)\b/i, make: "Fiat" },
+      { pattern: /\b(junior)\b/i, make: "Alfa Romeo" },
+      { pattern: /\b(ds3|ds 3)\b/i, make: "DS" },
+      { pattern: /\b(ds4|ds 4)\b/i, make: "DS" },
+      { pattern: /\b(ds7|ds 7)\b/i, make: "DS" },
+      { pattern: /\b(avenger)\b/i, make: "Jeep" },
+      { pattern: /\b(compass)\b/i, make: "Jeep" },
+      { pattern: /\b(renegade)\b/i, make: "Jeep" }
+    ];
 
     for (var i = 0; i < messages.length; i++) {
       var txt = messages[i];
-      var lower = txt.toLowerCase();
+      for (var j = 0; j < modelMap.length; j++) {
+        var match = modelMap[j].pattern.exec(txt);
+        if (match) {
+          var modelName = match[1] || match[0];
+          var makeName = modelMap[j].make;
+          return {
+            make: makeName,
+            model: modelName,
+            trim: "",
+            vehicle: (makeName + " " + modelName).trim()
+          };
+        }
+      }
+    }
 
-      if (!date) {
-        var m1 = lower.match(/\b(\d{1,2}\/\d{1,2})\b/);
-        var m2 = lower.match(new RegExp("\\b(\\d{1,2}(?:st|nd|rd|th)?\\s+(" + monthPattern + "))\\b"));
-        var m3 = lower.match(new RegExp("\\b(" + monthPattern + ")\\s+\\d{1,2}(?:st|nd|rd|th)?\\b"));
-        var m4 = lower.match(/\b(this|next)\s+(monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|week)\b/);
-        var m5 = lower.match(/\b(today|tomorrow)\b/);
-        if (m1) date = m1[1];
-        else if (m2) date = m2[1];
-        else if (m3) date = m3[0];
-        else if (m4) date = m4[0];
-        else if (m5) date = m5[1];
+    return null;
+  }
+
+  function detectBookingType(text, data, entries, pxMode) {
+    data._osEligible = false;
+    if (!text) return "";
+
+    var lower = text;
+    var agentCombined = entries
+      .filter(function (e) { return e.isAgent; })
+      .map(function (e) { return e.cleanText.toLowerCase(); })
+      .join(" ");
+    var agentOsPhrases = [
+      "stored at our central used stock centre",
+      "stored at our central used stock center",
+      "central stock",
+      "moved once reserved",
+      "reservation moves it to your chosen stellantis &you dealership",
+      "reservation moves it to your chosen dealership",
+      "up to 5–6 working days for click & collect",
+      "click & collect from central",
+      "delivered for you once intention to purchase is confirmed",
+      "collection after purchase"
+    ];
+
+    function agentConfirmedOS() {
+      return entries.some(function (entry) {
+        var txt = entry.cleanText.toLowerCase();
+        if (!entry.isAgent && !entry.isPredefinedOs) return false;
+        return containsAny(txt, agentOsPhrases);
+      });
+    }
+
+    var osVehicleConfirmed = agentConfirmedOS();
+    var hasPx = !!data.pxReg;
+
+    var wantsCall = containsAny(lower, ["arrange a call", "request contact", "call from", "schedule a call", "call me", "request a call"]) ||
+      containsAny(agentCombined, ["arrange a call", "request contact", "call from", "schedule a call", "call me", "request a call"]);
+    var wantsTestDrive = /test drive/.test(lower) || /test drive/.test(agentCombined);
+    var wantsView = containsAny(lower, ["view", "come in", "look at the car", "in person", "face to face", "see someone"]) ||
+      containsAny(agentCombined, ["view", "come in", "look at the car", "in person", "face to face", "see someone"]);
+    var bookingIntentPresent = wantsCall || wantsTestDrive || wantsView;
+
+    if (lower.indexOf("call appointment") !== -1) return "phone call";
+    if (lower.indexOf("general appointment") !== -1) return "";
+
+    var motabilityInText = /motability|mot scheme|motability scheme|disability allowance|\bpip\b|\bdla\b/.test(lower);
+    var usedContext = data.reg || containsAny(lower, ["used", "pre-owned", "previous keeper"]);
+    var osEligible = osVehicleConfirmed && hasPx && bookingIntentPresent && usedContext && !motabilityInText;
+    data._osEligible = osEligible;
+
+    // OS logic applies only if agent confirmed + PX exists and vehicle is used
+    if (osEligible) {
+      if (wantsTestDrive) return "os test drive";
+      if (wantsView) return "os view";
+      if (wantsCall) return "os phone call";
+    }
+
+    if (wantsCall) return "phone call";
+    if (wantsView) return "view";
+    if (wantsTestDrive) return "test drive";
+
+    var valuationMention = /valuation|value my car|accurate valuation/i.test(lower);
+    var virtualValuation = /virtual valuation|remote valuation/.test(lower);
+    var distanceConcern = /far|not local|distance|travel|journey/i.test(lower);
+
+    if (valuationMention && data.pxReg) {
+      if (virtualValuation || distanceConcern) return "valuation call";
+      return "valuation";
+    }
+
+    if (data.bookingType && data.bookingType.startsWith("Online Store")) {
+      return data.bookingType.toLowerCase().replace("online store - ", "os ");
+    }
+
+    return "";
+  }
+
+  function formatBookingType(type) {
+    if (!type) return "";
+
+    // Online Store types always get the OS prefix
+    if (type === "os phone call") {
+      return "Online Store - Phone Call";
+    }
+    if (type === "os test drive") {
+      return "Online Store - Test Drive";
+    }
+    if (type === "os view") {
+      return "Online Store - View";
+    }
+
+    // Standard types remain unchanged
+    switch (type) {
+      case "phone call":
+        return "Phone Call";
+      case "test drive":
+        return "Test Drive";
+      case "view":
+        return "View Appointment";
+      case "valuation":
+        return "Valuation";
+      case "valuation call":
+        return "Valuation Call";
+      default:
+        return type;
+    }
+  }
+
+  function detectNewUsed(text, data) {
+    var lower = text || "";
+
+    if (data.newUsed === "motability") return "motability";
+    if (/motability|mot scheme|motability scheme|disability allowance|\bpip\b|\bdla\b/.test(lower)) {
+      return "motability";
+    }
+
+    if (data.reg) return "used";
+    if (containsAny(lower, ["used", "pre-owned", "previous keeper"])) return "used";
+
+    if (containsAny(lower, ["brand new", "new shape", "new model", "new "])) return "new";
+
+    // Stellantis brands assumed NEW if no reg and no explicit used context
+    var stellantisBrands = ["alfa romeo", "abarth", "citroen", "ds", "fiat", "jeep", "leapmotor", "peugeot", "vauxhall"];
+    var isStellantis = false;
+    for (var i = 0; i < stellantisBrands.length; i++) {
+      if ((data.make || "").toLowerCase().indexOf(stellantisBrands[i]) !== -1) {
+        isStellantis = true;
+        break;
+      }
+    }
+
+    if (isStellantis && !data.reg && !containsAny(lower, ["used", "pre-owned", "previous keeper"])) {
+      return "new";
+    }
+
+    return "";
+  }
+
+
+
+  function detectDateTime(messages, entries) {
+    var date = "";
+    var time = "";
+    var flexible = "";
+    var extraFlags = [];
+
+    var monthNames = "january february march april may june july august september october november december".split(" ");
+    var monthPattern = monthNames.join("|");
+    var weekdayPattern = "monday|tuesday|wednesday|thursday|friday|saturday|sunday";
+
+    var now = new Date();
+
+    function formatDate(d) {
+      return String(d.getDate()).padStart(2, "0") + "/" + String(d.getMonth() + 1).padStart(2, "0");
+    }
+
+    function nextWeekday(day) {
+      var target = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"].indexOf(day);
+      var result = new Date();
+      var diff = (target + 7 - result.getDay()) % 7;
+      if (diff === 0) diff = 7;
+      result.setDate(result.getDate() + diff);
+      return formatDate(result);
+    }
+
+    function parseDateTimeFromText(txt) {
+      var lower = (txt || "").toLowerCase();
+      var localDate = "";
+      var localTime = "";
+      var localFlexible = "";
+
+      var m1 = lower.match(/\b(\d{1,2}\/\d{1,2})\b/);
+      var m2 = lower.match(new RegExp("\\b(\\d{1,2}(?:st|nd|rd|th)?\\s+(" + monthPattern + "))\\b"));
+      var m3 = lower.match(new RegExp("\\b(" + monthPattern + ")\\s+\\d{1,2}(?:st|nd|rd|th)?\\b"));
+      var m4 = lower.match(new RegExp("\\b(this|next)\\s+(" + weekdayPattern + ")\\b"));
+      var m5 = lower.match(/\b(today|tomorrow)\b/);
+
+      if (m1) localDate = m1[1];
+      else if (m2) localDate = m2[1];
+      else if (m3) localDate = m3[0];
+      else if (m4) {
+        var d = new Date();
+        var weekday = m4[2];
+        if (m4[1] === "next") {
+          d.setDate(d.getDate() + 7);
+        }
+        localDate = nextWeekday(weekday);
+      }
+      else if (m5) {
+        var d2 = new Date();
+        if (m5[1] === "tomorrow") d2.setDate(d2.getDate() + 1);
+        localDate = formatDate(d2);
       }
 
-      if (!time) {
-        var t1 = lower.match(/\b(\d{1,2}:\d{2}\s?(?:am|pm)?)\b/);
-        var t2 = lower.match(/\b(\d{1,2}\s?(?:am|pm))\b/);
-        var t3 = lower.match(/\bhalf\s*3\b/);
-        if (t1) time = t1[1];
-        else if (t2) time = t2[1];
-        else if (t3) time = "3:30";
-        else if (lower.indexOf("midday") !== -1) time = "12:00";
-        else if (lower.indexOf("midnight") !== -1) time = "00:00";
+      var t1 = lower.match(/\b(\d{1,2}:\d{2}\s?(?:am|pm)?)\b/);
+      var t2 = lower.match(/\b(\d{1,2}\s?(?:am|pm))\b/);
+      var t3 = lower.match(/\bhalf\s*3\b/);
+      var range = lower.match(/between\s+(\d{1,2})\s*(?:and|to|-)\s*(\d{1,2})/);
+      var afterTime = lower.match(/after\s+(\d{1,2})/);
+
+      if (t1) localTime = t1[1];
+      else if (t2) localTime = t2[1];
+      else if (t3) localTime = "3:30";
+      else if (range) {
+        localTime = String(range[1]).padStart(2, "0") + ":00";
+        localFlexible = range[0];
+      }
+      else if (afterTime) {
+        localTime = String(afterTime[1]).padStart(2, "0") + ":00";
+        localFlexible = afterTime[0];
+      }
+      else if (lower.indexOf("midday") !== -1) localTime = "12:00";
+      else if (lower.indexOf("midnight") !== -1) localTime = "00:00";
+
+      if (!localTime) {
+        if (lower.indexOf("morning") !== -1) localTime = "10:00";
+        else if (lower.indexOf("afternoon") !== -1) localTime = "14:00";
+        else if (lower.indexOf("evening") !== -1) localTime = "17:00";
       }
 
-      if (!flexible) {
-        var flex1 = lower.match(/\bbetween\s+\d{1,2}\s*[-to]*\s*\d{1,2}/);
-        var flex2 = lower.match(/\bafter\s+\d{1,2}/);
-        if (flex1) flexible = flex1[0];
-        else if (flex2) flexible = flex2[0];
-        else if (lower.indexOf("asap") !== -1) flexible = "asap";
-        else if (lower.indexOf("anytime") !== -1) flexible = "anytime";
+      if (!localFlexible) {
+        if (lower.indexOf("asap") !== -1) localFlexible = "asap";
+        else if (lower.indexOf("anytime") !== -1) localFlexible = "anytime";
+      }
+
+      return { date: localDate, time: localTime, flexible: localFlexible, flags: [] };
+    }
+
+    var locked = false;
+
+    entries.forEach(function (entry) {
+      if (locked) return;
+      if (!entry.isAgent) return;
+      var lower = entry.cleanText.toLowerCase();
+      if (/booked in|that has been booked|confirmed for|we can do/.test(lower)) {
+        var parsed = parseDateTimeFromText(entry.cleanText);
+        if (parsed.date || parsed.time) {
+          date = parsed.date;
+          time = parsed.time;
+          flexible = parsed.flexible;
+          locked = true;
+        }
+      }
+    });
+
+    var ordered = entries.slice().sort(function (a, b) {
+      if (a.isAgent === b.isAgent) return a.index - b.index;
+      return a.isAgent ? -1 : 1;
+    });
+
+    ordered.forEach(function (entry) {
+      if (locked) return;
+      var parsed = parseDateTimeFromText(entry.cleanText);
+      if (!parsed) return;
+      if (!date && parsed.date) date = parsed.date;
+      if (!time && parsed.time) time = parsed.time;
+      if (!flexible && parsed.flexible) flexible = parsed.flexible;
+    });
+
+    if (date && !time) {
+      var temp = new Date();
+      temp.setHours(temp.getHours() + 2, 0, 0, 0);
+      var minutes = temp.getMinutes();
+      if (minutes >= 30) {
+        temp.setHours(temp.getHours() + 1, 0, 0, 0);
+      } else {
+        temp.setMinutes(30, 0, 0);
+      }
+      var hour = temp.getHours();
+      if (hour < 9) {
+        hour = 9;
+        extraFlags.push("outside-hours preference");
+      }
+      if (hour > 18) {
+        hour = 18;
+        extraFlags.push("outside-hours preference");
+      }
+      time = String(hour).padStart(2, "0") + ":" + (temp.getMinutes() === 0 ? "00" : String(temp.getMinutes()).padStart(2, "0"));
+    }
+
+    if (!date && time) {
+      if (messages.some(function (t) { return /\btoday\b/i.test(t); })) {
+        date = formatDate(new Date());
+      } else if (messages.some(function (t) { return /\btomorrow\b/i.test(t); })) {
+        var tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        date = formatDate(tomorrow);
       }
     }
 
@@ -901,73 +1396,215 @@
       date: date,
       time: time,
       flexible: flexible,
-      dateTime: parts.join(" ").trim()
+      dateTime: parts.join(" ").trim(),
+      flags: extraFlags
     };
   }
-
   function detectIntent(text) {
     var intents = [];
     var map = [
       { key: "finance", terms: ["finance", "pcp"] },
       { key: "negative equity", terms: ["negative equity"] },
       { key: "petrol preferred", terms: ["petrol preferred", "prefer petrol"] },
-      { key: "video walkthrough", terms: ["video walkthrough", "video walk", "walkaround"] },
       { key: "extended test drive", terms: ["extended test drive", "longer drive"] },
       { key: "comparing models", terms: ["compare", "comparing", "versus"] },
-      { key: "delivery/collection", terms: ["delivery", "collection", "deliver"] }
+      { key: "delivery/collection", terms: ["delivery", "collection", "deliver"] },
+      { key: "information first", terms: ["information first", "know a few things", "questions first"] },
+      { key: "distance concerns", terms: ["80 miles", "far away", "distance", "not local"] },
+      { key: "vehicle confirmation questions", terms: ["confirm the vehicle", "vehicle confirmation", "is this the"] },
+      { key: "delivery enquiry", terms: ["home delivery", "dealer to dealer", "delivery from", "moved to branch"] }
     ];
     map.forEach(function (item) {
       if (containsAny(text, item.terms)) {
         intents.push(item.key);
       }
     });
-    if (containsAny(text, ["home delivery", "deliver to me", "dealer to dealer"])) intents.push("delivery enquiry");
     if (containsAny(text, ["warranty", "12 months", "14 day money back"])) intents.push("warranty clarification");
     if (containsAny(text, ["test a similar", "similar vehicle"])) intents.push("local test-drive alternative");
-    if (containsAny(text, ["80 miles", "far away", "distance"])) intents.push("distance concerns");
+    if (containsAny(text, ["finance only if", "only if 0%", "0% apr"])) intents.push("finance deal dependent");
+    if (containsAny(text, ["car spotless", "spotless"])) intents.push("PX condition note");
+    if (containsAny(text, ["test drive after discussion", "after discussion", "after we speak"])) intents.push("test drive after discussion");
+    if (containsAny(text, ["delivery/transfer", "transfer concerns"])) intents.push("delivery/transfer concerns");
     return intents;
   }
 
-  function detectFlags(messages) {
-    var flags = [];
+  function detectPreferences(messages, combinedLower) {
+    var prefs = [];
 
-    for (var i = 0; i < messages.length; i++) {
-      var txt = messages[i];
-      var lower = txt.toLowerCase();
-      var fao = txt.match(/fao\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)*)/i);
-      if (fao) {
-        flags.push("FAO " + fao[1]);
-      }
-      if (containsAny(lower, ["not local", "far away", "long distance", "travelling", "traveling"])) {
-        flags.push("not local");
-      }
-      if (lower.indexOf("urgent") !== -1 || lower.indexOf("asap") !== -1) {
-        flags.push("urgent");
-      }
-      if (containsAny(lower, ["wants delivery", "want delivery", "deliver", "delivery"])) {
-        flags.push("wants delivery");
-      }
-      if (containsAny(lower, ["far away", "80 miles", "north east", "not local"])) {
-        flags.push("not local");
-      }
-      if (containsAny(lower, ["today", "later today", "asap"])) {
-        flags.push("needs call today");
+    function addPref(val) {
+      if (val && prefs.indexOf(val) === -1) {
+        prefs.push(val);
       }
     }
 
-    return flags.filter(function (item, idx) {
-      return flags.indexOf(item) === idx;
+    var fuelMap = [
+      { key: "Fuel: petrol", terms: ["petrol"] },
+      { key: "Fuel: diesel", terms: ["diesel"] },
+      { key: "Fuel: hybrid", terms: ["hybrid"] },
+      { key: "Fuel: electric", terms: ["electric", "ev"] }
+    ];
+    fuelMap.forEach(function (item) {
+      if (containsAny(combinedLower, item.terms)) addPref(item.key);
     });
+
+    if (containsAny(combinedLower, ["automatic", "auto gearbox"])) addPref("Transmission: automatic");
+    if (containsAny(combinedLower, ["manual"])) addPref("Transmission: manual");
+
+    var budget = combinedLower.match(/£?\s?(\d{2,3}(?:[,\s]?\d{3})?)(?:\s?k)?\s*(?:budget|spend|price|max)/);
+    if (budget) {
+      var val = budget[1].replace(/\D/g, "");
+      if (combinedLower.indexOf("k") !== -1 && val.length <= 3) {
+        val = String(parseInt(val, 10) * 1000);
+      }
+      addPref("Budget: £" + val);
+    }
+
+    var useCaseTerms = [
+      { key: "Use: family", terms: ["family", "children", "kids"] },
+      { key: "Use: space", terms: ["space", "boot", "luggage"] }
+    ];
+    useCaseTerms.forEach(function (item) {
+      if (containsAny(combinedLower, item.terms)) addPref(item.key);
+    });
+
+    messages.forEach(function (msg) {
+      var lower = (msg || "").toLowerCase();
+      var mileagePref = lower.match(/\b(\d{1,2})k\s*miles?\b/);
+      if (mileagePref) {
+        addPref("Mileage pref: " + mileagePref[1] + "k");
+      }
+    });
+
+    return prefs;
+  }
+
+  function detectFlags(entries, extraFlags) {
+    var list = Array.isArray(entries) ? entries : [];
+    var agentEntries = list.filter(function (e) { return e.isAgent; });
+    var customerEntries = list.filter(function (e) { return !e.isAgent && !e.isPredefined && !e.isPredefinedOs; });
+    var flags = [];
+
+    function addFlag(label, priority) {
+      if (!label) return;
+      if (flags.some(function (f) { return f.label === label; })) return;
+      flags.push({ label: label, priority: priority });
+    }
+
+    function agentResponded(keywords, afterIndex) {
+      return agentEntries.some(function (entry) {
+        if (entry.index <= afterIndex) return false;
+        var lower = entry.cleanText.toLowerCase();
+        var keywordHit = keywords.some(function (k) { return lower.indexOf(k) !== -1; });
+        if (!keywordHit) return false;
+        return /yes|confirm|available|arranged|booked|sorted|there is|we have|i have/.test(lower);
+      });
+    }
+
+    var logisticTopics = [
+      { keywords: ["parking"], unanswered: "Site to confirm parking", deferral: "Site to confirm parking" },
+      { keywords: ["disabled access", "wheelchair", "accessibility"], unanswered: "Site to confirm accessibility", deferral: "Site to confirm accessibility" },
+      { keywords: ["vehicle availability", "availability onsite", "car available", "vehicle available", "onsite"], unanswered: "Site to confirm vehicle availability", deferral: "Site to confirm vehicle availability" }
+    ];
+
+    var conditionalRe = /(only if|depending on|as long as|subject to)/i;
+    customerEntries.forEach(function (entry) {
+      var lower = entry.cleanText.toLowerCase();
+      if (!conditionalRe.test(lower)) return;
+      var topic = "";
+      if (containsAny(lower, ["delivery", "collection", "deliver"])) topic = "delivery";
+      else if (containsAny(lower, ["finance", "pcp", "hp", "0%", "0 percent"])) topic = "finance";
+      else if (containsAny(lower, ["px", "p/x", "part exchange", "valuation", "value"])) topic = "px value";
+      else if (containsAny(lower, ["family", "kids", "practical", "space"])) topic = "practicality";
+      if (topic) addFlag("Decision dependent on " + topic, 1);
+    });
+
+    customerEntries.forEach(function (entry) {
+      var txt = entry.cleanText || "";
+      var lower = txt.toLowerCase();
+      var hasPartner = /(partner|wife|husband)\b/.test(lower);
+      var hasFamily = /(son|daughter|child|children|kid)\b/.test(lower);
+      var attendanceHint = /(attend|come|coming|be there|join)/.test(lower);
+      var conditionalHint = /(only if|depending on|as long as|subject to|if they can|if (?:he|she|they) can)/.test(lower);
+      var practicalityHint = containsAny(lower, ["practical", "practicality", "space", "fit", "assess"]);
+
+      if (hasPartner && conditionalHint) {
+        addFlag("Attendance conditional on partner availability", 1);
+      } else if (hasPartner && attendanceHint) {
+        addFlag("Customer attending with partner", 2);
+      } else if (hasFamily && conditionalHint) {
+        addFlag("Attendance conditional on family availability", 1);
+      } else if (hasFamily && attendanceHint && practicalityHint) {
+        addFlag("Customer bringing children to assess practicality", 2);
+      }
+    });
+
+    customerEntries.forEach(function (entry) {
+      var lower = entry.cleanText.toLowerCase();
+      var isQuestion = /\?/.test(entry.cleanText) || /(can|do|does|is|are|will|would|could|any)/.test(lower);
+      if (!isQuestion) return;
+      logisticTopics.forEach(function (topic) {
+        var hit = topic.keywords.some(function (k) { return lower.indexOf(k) !== -1; });
+        if (!hit) return;
+        if (!agentResponded(topic.keywords, entry.index)) {
+          addFlag(topic.unanswered, 2);
+        }
+      });
+    });
+
+    var deferralRe = /(sales team can confirm|they'll check|they will check|this can be discussed on the day|that will be confirmed onsite|i'll ask them|the team can|dealership can confirm|site can confirm)/i;
+    agentEntries.forEach(function (entry) {
+      var lower = entry.cleanText.toLowerCase();
+      if (!deferralRe.test(lower)) return;
+      var matchedTopic = null;
+      for (var i = 0; i < logisticTopics.length; i++) {
+        if (logisticTopics[i].keywords.some(function (k) { return lower.indexOf(k) !== -1; })) {
+          matchedTopic = logisticTopics[i];
+          break;
+        }
+      }
+      if (matchedTopic) addFlag(matchedTopic.deferral, 3);
+      else addFlag("Site to confirm delivery details", 3);
+    });
+
+    customerEntries.forEach(function (entry) {
+      var txt = entry.cleanText || "";
+      var lower = txt.toLowerCase();
+      if (!containsAny(lower, ["delivery", "deliver", "transfer", "move the vehicle", "move vehicle"])) return;
+
+      var locationMatch =
+        txt.match(/(?:deliver|delivery|transfer|move)[^\n]*?\bto\b\s+([^.?\n]+)/i) ||
+        txt.match(/\bto\b\s+([A-Za-z]{1,2}\d{1,2}[A-Za-z]?\s?\d[A-Za-z]{2})/i);
+
+      var location = locationMatch ? locationMatch[1].trim().replace(/[.,;]+$/, "") : "";
+      if (!location) return;
+      if (agentResponded(["deliver", "delivery", "transfer", "move"], entry.index)) return;
+
+      var labelPrefix = lower.indexOf("transfer") !== -1 ? "Discuss transfer to " : "Discuss delivery to ";
+      addFlag(labelPrefix + location, 2);
+    });
+
+    if (Array.isArray(extraFlags)) {
+      extraFlags.forEach(function (ef) {
+        var label = String(ef || "").trim();
+        if (!label) return;
+        if (label.toLowerCase().indexOf("outside-hours") !== -1) return;
+        addFlag(label, 4);
+      });
+    }
+
+    flags.sort(function (a, b) { return a.priority - b.priority; });
+    flags = flags.slice(0, 3);
+    return flags.map(function (f) { return f.label; });
   }
 
   function buildPxSummary(data) {
-    var parts = [];
-    if (data.pxReg) parts.push("Reg: " + data.pxReg);
-    if (data.pxMileage) parts.push("Miles: " + data.pxMileage);
-    if (data.pxModel || data.pxMake) {
-      parts.push("Model: " + (data.pxMake ? data.pxMake + " " : "") + (data.pxModel || ""));
+    var out = [];
+    if (data.pxReg) out.push("Reg: " + data.pxReg);
+    if (data.pxMake || data.pxModel) {
+      out.push("Model: " + (data.pxMake ? data.pxMake + " " : "") + (data.pxModel || ""));
     }
-    return parts.join(" | ");
+    if (data.pxMileage) out.push("Miles: " + data.pxMileage);
+    return out.join(" | ");
   }
 
   function containsAny(text, terms) {
@@ -998,6 +1635,7 @@
     rows.forEach(function (row) {
       var keyName = row.dataset.key;
       var value = app.data[keyName] || "";
+      if (keyName === "pxSummary") value = app.data.pxSummary || "";
       if (keyName === "fullName" && !value && app.data.firstName) {
         value = app.data.firstName + (app.data.lastName ? " " + app.data.lastName : "");
       }
