@@ -33,6 +33,8 @@
     "delivered for you once intention to purchase is confirmed"
   ];
 
+  var DEBUG_OVERLAY_ENABLED = true;
+
   // Ensure levenshtein exists for predefined filter
   if (typeof levenshtein !== "function") {
     function levenshtein(a, b) {
@@ -63,8 +65,11 @@
     buttonId: "lpSumMiniBtn",
     panelId: "lpSumMiniPanel",
     copyBadgeId: "lpSumMiniCopyBadge",
+    debugOverlayId: "lpSumMiniDebugOverlay",
     observer: null,
-    data: {}
+    data: {},
+    renderCount: 0,
+    debugOverlay: null
   };
 
   window._lpSumMini = app;
@@ -174,6 +179,19 @@
       "}" +
       "#" + app.copyBadgeId + ".show {" +
       " opacity: 1;" +
+      "}" +
+      "#" + app.debugOverlayId + " {" +
+      " position: fixed;" +
+      " bottom: 8px;" +
+      " left: 50%;" +
+      " transform: translateX(-50%);" +
+      " background: rgba(0, 0, 0, 0.7);" +
+      " color: #fff;" +
+      " padding: 6px 10px;" +
+      " border-radius: 4px;" +
+      " font-size: 12px;" +
+      " z-index: 100003;" +
+      " pointer-events: none;" +
       "}";
     document.head.appendChild(style);
   }
@@ -235,6 +253,50 @@
     app.button = btn;
     app.panel = panel;
     app.badge = badge;
+  }
+
+  function updateDebugOverlay(messagesObj) {
+    if (!DEBUG_OVERLAY_ENABLED) {
+      if (app.debugOverlay) {
+        app.debugOverlay.style.display = "none";
+      }
+      return;
+    }
+
+    if (!messagesObj || !messagesObj.list) return;
+
+    if (!app.debugOverlay) {
+      var overlay = document.getElementById(app.debugOverlayId);
+      if (!overlay) {
+        overlay = document.createElement("div");
+        overlay.id = app.debugOverlayId;
+        document.body.appendChild(overlay);
+      }
+      app.debugOverlay = overlay;
+    }
+
+    app.debugOverlay.style.display = "block";
+    app.renderCount = (app.renderCount || 0) + 1;
+
+    var totalMessages = messagesObj.list.length;
+    var agentMessages = messagesObj.list.filter(function (txt) {
+      return txt.indexOf("__AGENT__:") === 0;
+    }).length;
+    var customerMessages = totalMessages - agentMessages;
+    var combinedLength = (messagesObj.combined || "").length;
+    var hash = totalMessages + ":" + combinedLength;
+
+    app.debugOverlay.textContent =
+      "renders: " +
+      app.renderCount +
+      " | messages: " +
+      totalMessages +
+      " (agent: " +
+      agentMessages +
+      ", customer: " +
+      customerMessages +
+      ") | hash: " +
+      hash;
   }
 
   function buildSection(title, rows) {
@@ -1670,6 +1732,8 @@
   function render() {
     var messagesObj = collectMessages();
     app.data = parseMessages(messagesObj);
+
+    updateDebugOverlay(messagesObj);
 
     if (app.bookingOverrideSelect) {
       app.bookingOverrideSelect.value = getBookingOverride();
