@@ -498,57 +498,82 @@
 
   function collectMessages() {
     const now = Date.now();
+
+    // 1. Respect global cache lifetime (you already set 300ms)
     if (_cache_message_nodes && now - _cache_message_nodes_time < CACHE_LIFETIME) {
       return _cache_message_nodes;
     }
 
-    const rawNodes = document.querySelectorAll('[data-testid="agent-message"], [data-testid="visitor-message"]');
+    // 2. Scan only the *core LP message containers* (fastest stable method)
+    // These are the true LP bubble selectors that cover historical + new messages
+    const containerSelectors = [
+      '[data-testid="message-bubble"]',
+      '[data-testid="agent-message"]',
+      '[data-testid="visitor-message"]',
+      '.lp_message_text',
+      '.html-content.text-content'
+    ];
 
-    if (rawNodes.length !== LAST_NODE_COUNT) {
-      const newNodes = Array.from(rawNodes).slice(LAST_NODE_COUNT);
+    const panels = document.querySelectorAll(containerSelectors.join(","));
+    const nodes = Array.from(panels);
 
-      newNodes.forEach(node => {
-        if (app.panel && app.panel.contains(node)) return;
-        let text = (node.innerText || "").trim();
-        if (!text) return;
-        if (!/[A-Za-z0-9]/.test(text)) return;
+    // 3. Filter out elements inside your summary panel (prevents recursion/read-your-own-text)
+    const filteredNodes = nodes.filter(node => {
+      return !(app.panel && app.panel.contains(node));
+    });
 
-        let lower = text.toLowerCase();
-        if (lower.includes("is typing")) return;
-        if (lower.includes("connected to")) return;
-        if (lower.includes("automated")) return;
+    const list = [];
 
-        let isAgent = node.getAttribute("data-testid") === "agent-message";
+    filteredNodes.forEach(node => {
+      let text = (node.innerText || "").trim();
+      if (!text) return;
+      if (!/[A-Za-z0-9]/.test(text)) return;
 
-        let normalised = normalizeMessageForTemplate(text);
+      const lower = text.toLowerCase();
 
-        for (let template of PREDEFINED_OS_CONFIRMATIONS) {
-          let norm = normalizeMessageForTemplate(template);
-          if (levenshtein(normalised, norm) < 8 || normalised.startsWith(norm.split(" ").slice(0, 5).join(" "))) {
-            MESSAGE_BUFFER.push(isAgent ? "__AGENT__:__PREDEFINED_OS__:" + text : "__PREDEFINED_OS__:" + text);
-            return;
-          }
+      // 4. Filter out system noise
+      if (lower.includes("is typing")) return;
+      if (lower.includes("connected to")) return;
+      if (lower.includes("automated")) return;
+      if (/^\d[:\s]*$/.test(text)) return;
+
+      // 5. Identify sender
+      let isAgent =
+        node.getAttribute("data-testid") === "agent-message" ||
+        node.closest('[data-testid="agent-message"]');
+
+      // 6. Predefined OS logic (unchanged)
+      const normalised = normalizeMessageForTemplate(text);
+      for (let template of PREDEFINED_OS_CONFIRMATIONS) {
+        const norm = normalizeMessageForTemplate(template);
+        const fw = norm.split(" ").slice(0, 5).join(" ");
+        if (levenshtein(normalised, norm) < 8 || normalised.startsWith(fw)) {
+          list.push(isAgent ? "__AGENT__:__PREDEFINED_OS__:" + text : "__PREDEFINED_OS__:" + text);
+          return;
         }
+      }
 
-        for (let template of PREDEFINED_CONTENT) {
-          let norm = normalizeMessageForTemplate(template);
-          if (levenshtein(normalised, norm) < 8 || normalised.startsWith(norm.split(" ").slice(0, 5).join(" "))) {
-            MESSAGE_BUFFER.push(isAgent ? "__AGENT__:__PREDEFINED__:" + text : "__PREDEFINED__:" + text);
-            return;
-          }
+      // 7. Predefined greeting/content (unchanged)
+      for (let template of PREDEFINED_CONTENT) {
+        const norm = normalizeMessageForTemplate(template);
+        const fw = norm.split(" ").slice(0, 5).join(" ");
+        if (levenshtein(normalised, norm) < 8 || normalised.startsWith(fw)) {
+          list.push(isAgent ? "__AGENT__:__PREDEFINED__:" + text : "__PREDEFINED__:" + text);
+          return;
         }
+      }
 
-        MESSAGE_BUFFER.push(isAgent ? "__AGENT__:" + text : text);
-      });
+      // 8. Write real messages
+      list.push(isAgent ? "__AGENT__:" + text : text);
+    });
 
-      LAST_NODE_COUNT = rawNodes.length;
-    }
-
+    // 9. Cache the result for performance
     _cache_message_nodes = {
-      list: MESSAGE_BUFFER.slice(),
-      combined: MESSAGE_BUFFER.join(" ").trim()
+      list: list,
+      combined: list.join(" ").trim()
     };
     _cache_message_nodes_time = Date.now();
+
     return _cache_message_nodes;
   }
 
