@@ -983,17 +983,6 @@
           lastName: parts.slice(1).join(" ")
         };
       }
-
-      var standalone = txt.trim().match(/^[a-zA-Z][a-zA-Z\-']*(?:\s+[a-zA-Z][a-zA-Z\-']*)+$/);
-      if (standalone) {
-        var fullStandalone = standalone[0];
-        var partsStandalone = fullStandalone.split(/\s+/);
-        return {
-          fullName: fullStandalone,
-          firstName: partsStandalone[0],
-          lastName: partsStandalone.slice(1).join(" ")
-        };
-      }
     }
     return null;
   }
