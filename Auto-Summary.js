@@ -10,6 +10,8 @@
   let _cache_message_nodes = null;
   let _cache_message_nodes_time = 0;
   const CACHE_LIFETIME = 300; // milliseconds
+  let MESSAGE_BUFFER = [];
+  let LAST_NODE_COUNT = 0;
 
   function safeRender(fn) {
     const now = Date.now();
@@ -500,124 +502,51 @@
       return _cache_message_nodes;
     }
 
-    var selectors = [
-      '[data-testid="agent-message"]',
-      '[data-testid="visitor-message"]',
-      '[data-testid="message-bubble"]',
-      'div[class*="bubble"]',
-      'div[class*="msg"]',
-      '.lp_message_text',
-      '.html-content.text-content',
-      '.lpChatLineText',
-      '.content.text'
-    ];
+    const rawNodes = document.querySelectorAll('[data-testid="agent-message"], [data-testid="visitor-message"]');
 
-    const panel = document.getElementById(app.panelId);
+    if (rawNodes.length !== LAST_NODE_COUNT) {
+      const newNodes = Array.from(rawNodes).slice(LAST_NODE_COUNT);
 
-    var nodes = Array.from(document.querySelectorAll(selectors.join(",")));
-    var uniqueNodes = [];
+      newNodes.forEach(node => {
+        if (app.panel && app.panel.contains(node)) return;
+        let text = (node.innerText || "").trim();
+        if (!text) return;
+        if (!/[A-Za-z0-9]/.test(text)) return;
 
-    nodes.forEach(function (node) {
-      if (panel && panel.contains(node)) return;
-      if (node.querySelector && node.querySelector("[data-lp-ignore]")) return;
-      for (var i = 0; i < uniqueNodes.length; i++) {
-        if (uniqueNodes[i] === node || uniqueNodes[i].contains(node)) {
-          return;
+        let lower = text.toLowerCase();
+        if (lower.includes("is typing")) return;
+        if (lower.includes("connected to")) return;
+        if (lower.includes("automated")) return;
+
+        let isAgent = node.getAttribute("data-testid") === "agent-message";
+
+        let normalised = normalizeMessageForTemplate(text);
+
+        for (let template of PREDEFINED_OS_CONFIRMATIONS) {
+          let norm = normalizeMessageForTemplate(template);
+          if (levenshtein(normalised, norm) < 8 || normalised.startsWith(norm.split(" ").slice(0, 5).join(" "))) {
+            MESSAGE_BUFFER.push(isAgent ? "__AGENT__:__PREDEFINED_OS__:" + text : "__PREDEFINED_OS__:" + text);
+            return;
+          }
         }
-      }
-      uniqueNodes.push(node);
-    });
 
-    var list = [];
-    uniqueNodes.forEach(function (node) {
-      var isAgent = false;
-      if (node.getAttribute && node.getAttribute("data-testid") === "agent-message") {
-        isAgent = true;
-      } else if (node.matches && node.matches('[data-testid="agent-message"]')) {
-        isAgent = true;
-      } else if (node.closest && node.closest('[data-testid="agent-message"]')) {
-        isAgent = true;
-      } else if (node.className && /agent/i.test(String(node.className))) {
-        isAgent = true;
-      }
+        for (let template of PREDEFINED_CONTENT) {
+          let norm = normalizeMessageForTemplate(template);
+          if (levenshtein(normalised, norm) < 8 || normalised.startsWith(norm.split(" ").slice(0, 5).join(" "))) {
+            MESSAGE_BUFFER.push(isAgent ? "__AGENT__:__PREDEFINED__:" + text : "__PREDEFINED__:" + text);
+            return;
+          }
+        }
 
-      var parts = [];
-      var innerSelectors = [
-        '.html-content.text-content',
-        '.text-content',
-        'p',
-        'span',
-        'div',
-        '.lp_message_text',
-        '.lpChatLineText',
-        '.content.text'
-      ];
-
-      innerSelectors.forEach(function (sel) {
-        node.querySelectorAll(sel).forEach(function (inner) {
-          var t = (inner.textContent || "").trim();
-          if (t) parts.push(t);
-        });
+        MESSAGE_BUFFER.push(isAgent ? "__AGENT__:" + text : text);
       });
 
-      var text = parts.join(" ").replace(/\s+/g, " ").trim();
-      if (!text) {
-        text = (node.innerText || "").replace(/\s+/g, " ").trim();
-      }
-
-      if (!text) return;
-      if (!/[A-Za-z0-9]/.test(text)) return;
-
-      var lower = text.toLowerCase();
-      if (lower.indexOf("is typing") !== -1) return;
-      if (lower.indexOf("connected to") !== -1) return;
-      if (lower.indexOf("automated") !== -1) return;
-      if (/^(?:\d|:|\s)+$/.test(text)) return;
-      if (/internal transfer|transferred you/i.test(lower)) return;
-
-      // PREDEFINED OS CONFIRMATION FILTER
-      var normalised = normalizeMessageForTemplate(text);
-      for (let template of PREDEFINED_OS_CONFIRMATIONS) {
-        var normTemplateOs = normalizeMessageForTemplate(template);
-        var firstWordsOs = normTemplateOs.split(" ").slice(0, 5).join(" ");
-
-        if (
-          levenshtein(normalised, normTemplateOs) < 8 ||
-          normalised.startsWith(firstWordsOs) ||
-          text.indexOf("operator.displayname") !== -1
-        ) {
-          var osVal = isAgent ? "__AGENT__:__PREDEFINED_OS__:" + text : "__PREDEFINED_OS__:" + text;
-          list.push(osVal);
-          return;
-        }
-      }
-
-      // PREDEFINED CONTENT FILTER
-      for (let template of PREDEFINED_CONTENT) {
-        var normTemplate = normalizeMessageForTemplate(template);
-        var firstWords = normTemplate.split(" ").slice(0, 5).join(" ");
-
-        if (
-          levenshtein(normalised, normTemplate) < 8 ||
-          normalised.startsWith(firstWords) ||
-          text.indexOf("operator.displayname") !== -1
-        ) {
-          var preVal = isAgent ? "__AGENT__:__PREDEFINED__:" + text : "__PREDEFINED__:" + text;
-          list.push(preVal);
-          return;
-        }
-      }
-
-      if (isAgent) {
-        list.push("__AGENT__:" + text);
-      } else {
-        list.push(text);
-      }
-    });
+      LAST_NODE_COUNT = rawNodes.length;
+    }
 
     _cache_message_nodes = {
-      list: list,
-      combined: list.join(" ").trim()
+      list: MESSAGE_BUFFER.slice(),
+      combined: MESSAGE_BUFFER.join(" ").trim()
     };
     _cache_message_nodes_time = Date.now();
     return _cache_message_nodes;
