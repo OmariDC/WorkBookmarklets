@@ -54,7 +54,7 @@
     "stored at our central used stock centre",
     "stored at our central used stock center",
     "fully refundable £99 reservation moves it to your chosen stellantis &you dealership",
-    "up to 5–6 working days for click & collect",
+    "up to 5-6 working days for click & collect",
     "delivered for you once intention to purchase is confirmed"
   ];
 
@@ -81,7 +81,7 @@
     return (text || "")
       .toLowerCase()
       .replace(/\s+/g, " ")
-      .replace(/you['’]?re speaking with [^.,]+ from stellantis &you uk\.?/, "")
+      .replace(/you'?re speaking with [^.,]+ from stellantis &you uk\.?/, "")
       .trim();
   }
 
@@ -765,7 +765,7 @@
       }
     }
 
-    // Fix for corrected reg flows (e.g., AP22…)
+    // Fix for corrected reg flows (e.g., AP22...)
     var correctionTriggered = entries.some(function (e) {
       return /cannot find|cannot see|please confirm the reg|confirm the registration/i.test(e.cleanText);
     });
@@ -1249,7 +1249,7 @@
       "moved once reserved",
       "reservation moves it to your chosen stellantis &you dealership",
       "reservation moves it to your chosen dealership",
-      "up to 5–6 working days for click & collect",
+      "up to 5-6 working days for click & collect",
       "click & collect from central",
       "delivered for you once intention to purchase is confirmed",
       "collection after purchase"
