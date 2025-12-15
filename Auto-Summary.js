@@ -299,6 +299,46 @@
     app.button = btn;
     app.panel = panel;
     app.badge = badge;
+    enableSummaryCopyAll();
+  }
+
+  function enableSummaryCopyAll() {
+    var panel = document.getElementById(app.panelId);
+    if (!panel) return;
+
+    var heading = panel.querySelector(".lpSumMiniSection h3");
+    if (!heading) return;
+
+    heading.style.cursor = "pointer";
+
+    heading.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+
+      var rows = panel.querySelectorAll('.lpSumMiniSection .lpSumMiniRow[data-key]');
+      var out = [];
+
+      rows.forEach(function (row) {
+        var key = row.dataset.key;
+        if (!key || key === "bookingTypeOverride") return;
+        var label = row.querySelector(".lpSumMiniLabel").innerText.trim();
+        var value = row.querySelector(".lpSumMiniValue").innerText.trim();
+        if (value) out.push(label + ": " + value);
+      });
+
+      var finalText = out.join("\n");
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(finalText).then(showCopied);
+      } else {
+        var t = document.createElement("textarea");
+        t.value = finalText;
+        document.body.appendChild(t);
+        t.select();
+        document.execCommand("copy");
+        t.remove();
+        showCopied();
+      }
+    });
   }
 
   function updateDebugOverlay(messagesObj) {
@@ -529,45 +569,39 @@
       if (!text) return;
       if (!/[A-Za-z0-9]/.test(text)) return;
 
-      const lower = text.toLowerCase();
+      const sender = detectSenderFromDOM(node);
 
-      // 4. Filter out system noise
+      const lower = text.toLowerCase();
       if (lower.includes("is typing")) return;
-      if (lower.includes("connected to")) return;
       if (lower.includes("automated")) return;
       if (/^\d[:\s]*$/.test(text)) return;
 
-      // 5. Identify sender
-      let isAgent =
-        node.getAttribute("data-testid") === "agent-message" ||
-        node.closest('[data-testid="agent-message"]');
-
-      // 6. Predefined OS logic (unchanged)
       const normalised = normalizeMessageForTemplate(text);
       for (let template of PREDEFINED_OS_CONFIRMATIONS) {
         const norm = normalizeMessageForTemplate(template);
         const fw = norm.split(" ").slice(0, 5).join(" ");
         if (levenshtein(normalised, norm) < 8 || normalised.startsWith(fw)) {
-          list.push(isAgent ? "__AGENT__:__PREDEFINED_OS__:" + text : "__PREDEFINED_OS__:" + text);
+          list.push(sender === "agent" ? "__AGENT__:__PREDEFINED_OS__:" + text : "__PREDEFINED_OS__:" + text);
           return;
         }
       }
 
-      // 7. Predefined greeting/content (unchanged)
       for (let template of PREDEFINED_CONTENT) {
         const norm = normalizeMessageForTemplate(template);
         const fw = norm.split(" ").slice(0, 5).join(" ");
         if (levenshtein(normalised, norm) < 8 || normalised.startsWith(fw)) {
-          list.push(isAgent ? "__AGENT__:__PREDEFINED__:" + text : "__PREDEFINED__:" + text);
+          list.push(sender === "agent" ? "__AGENT__:__PREDEFINED__:" + text : "__PREDEFINED__:" + text);
           return;
         }
       }
 
-      // 8. Write real messages
-      list.push(isAgent ? "__AGENT__:" + text : text);
+      if (sender === "agent") {
+        list.push("__AGENT__:" + text);
+      } else if (sender === "customer") {
+        list.push(text);
+      }
     });
 
-    // 9. Cache the result for performance
     _cache_message_nodes = {
       list: list,
       combined: list.join(" ").trim()
@@ -575,6 +609,29 @@
     _cache_message_nodes_time = Date.now();
 
     return _cache_message_nodes;
+  }
+
+  function detectSenderFromDOM(node) {
+    try {
+      var origin = node.closest('[data-testid], .message-container, .html-content');
+      if (!origin) return "unknown";
+
+      var originatorEl = origin.querySelector(".originator");
+      if (!originatorEl) return "system";
+
+      var name = (originatorEl.innerText || "").trim().toLowerCase();
+      if (!name) return "system";
+
+      if (name === "omari") return "agent";
+      if (name === "visitor") return "customer";
+      if (name === "welcome message") return "system";
+      if (name.indexOf("stellantis") !== -1) return "system";
+      if (name.indexOf("sms user") === 0) return "customer";
+
+      return "customer";
+    } catch (e) {
+      return "unknown";
+    }
   }
 
   function parseMessages(messagesObj) {
@@ -970,18 +1027,29 @@
     return data;
   }
 
-  function findName(list) {
-    for (var i = 0; i < list.length; i++) {
-      var txt = list[i];
-      var m = txt.match(/(?:my name is|i am|i'm|im|this is)\s+([a-zA-Z][a-zA-Z\-']*(?:\s+[a-zA-Z][a-zA-Z\-']*)+)/i);
+  function findName(messages) {
+    var lastAskedIndex = -1;
+
+    var askRe = /(full name|confirm your name|may i take your name|can i take your name)/i;
+    messages.forEach(function (msg, idx) {
+      if (askRe.test(msg.toLowerCase())) lastAskedIndex = idx;
+    });
+
+    for (var i = 0; i < messages.length; i++) {
+      var msg = messages[i].trim();
+
+      var m = msg.match(/(?:my name is|i am|i'm|im|this is)\s+([a-zA-Z][a-zA-Z\-']*(?:\s+[a-zA-Z][a-zA-Z\-']*)+)/i);
       if (m) {
         var full = m[1].trim();
         var parts = full.split(/\s+/);
-        return {
-          fullName: full,
-          firstName: parts[0],
-          lastName: parts.slice(1).join(" ")
-        };
+        return { fullName: full, firstName: parts[0], lastName: parts.slice(1).join(" ") };
+      }
+
+      if (i === lastAskedIndex + 1) {
+        if (/^[A-Za-z][A-Za-z\s\-']{2,}$/.test(msg) && !/\d/.test(msg)) {
+          var partsInline = msg.split(/\s+/);
+          return { fullName: msg, firstName: partsInline[0], lastName: partsInline.slice(1).join(" ") };
+        }
       }
     }
     return null;
