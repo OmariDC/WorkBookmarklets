@@ -2,11 +2,28 @@
   if (window._lpSumMini) return;
 
   let RENDER_LOCK = false;
+  let LAST_RENDER = 0;
+  const MIN_RENDER_GAP = 250; // milliseconds
   let RENDER_SCHEDULED = false;
   let OBSERVER_DEBOUNCE = null;
-  const OBSERVER_DELAY = 120;
+  const OBSERVER_DELAY = 350;
+  let _cache_message_nodes = null;
+  let _cache_message_nodes_time = 0;
+  const CACHE_LIFETIME = 300; // milliseconds
 
   function safeRender(fn) {
+    const now = Date.now();
+    if (now - LAST_RENDER < MIN_RENDER_GAP) {
+      if (!RENDER_SCHEDULED) {
+        RENDER_SCHEDULED = true;
+        setTimeout(function () {
+          RENDER_SCHEDULED = false;
+          safeRender(fn);
+        }, MIN_RENDER_GAP);
+      }
+      return;
+    }
+
     if (RENDER_LOCK) {
       if (!RENDER_SCHEDULED) {
         RENDER_SCHEDULED = true;
@@ -23,6 +40,7 @@
     } catch (e) {
       console.error("LP Summary error:", e);
     }
+    LAST_RENDER = Date.now();
     RENDER_LOCK = false;
   }
 
@@ -58,7 +76,7 @@
     "delivered for you once intention to purchase is confirmed"
   ];
 
-  var DEBUG_OVERLAY_ENABLED = true;
+  var DEBUG_OVERLAY_ENABLED = false;
 
   // Ensure levenshtein exists for predefined filter
   if (typeof levenshtein !== "function") {
@@ -477,6 +495,11 @@
   }
 
   function collectMessages() {
+    const now = Date.now();
+    if (_cache_message_nodes && now - _cache_message_nodes_time < CACHE_LIFETIME) {
+      return _cache_message_nodes;
+    }
+
     var selectors = [
       '[data-testid="agent-message"]',
       '[data-testid="visitor-message"]',
@@ -592,10 +615,12 @@
       }
     });
 
-    return {
+    _cache_message_nodes = {
       list: list,
       combined: list.join(" ").trim()
     };
+    _cache_message_nodes_time = Date.now();
+    return _cache_message_nodes;
   }
 
   function parseMessages(messagesObj) {
