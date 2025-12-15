@@ -596,14 +596,23 @@
 
     var baseVehicle = "";
     var vehicleInfo = null;
+    var vehicleInfoSource = "";
 
     var vehicleScope = entries.map(function (e) { return e.cleanText; });
     vehicleInfo = findVehicle(vehicleScope);
+    if (vehicleInfo) vehicleInfoSource = "brand";
     if (!vehicleInfo) {
       var modelOnly = findModelOnly(vehicleScope);
       if (modelOnly) {
         vehicleInfo = modelOnly;
+        vehicleInfoSource = "model-only";
       }
+    }
+
+    var agentVehicle = findAgentConfirmedVehicle(entries);
+    if (agentVehicle && vehicleInfoSource !== "brand") {
+      vehicleInfo = agentVehicle;
+      vehicleInfoSource = "agent";
     }
 
     // --- PX FIX LOGIC ---
@@ -1030,7 +1039,10 @@
       "jeep",
       "dacia",
       "alfa romeo",
-      "alfa-romeo"
+      "alfa-romeo",
+      "abarth",
+      "ds",
+      "leapmotor"
     ];
 
     for (var i = 0; i < messages.length; i++) {
@@ -1061,20 +1073,36 @@
       { pattern: /\b(corsa)\b/i, make: "Vauxhall" },
       { pattern: /\b(astra)\b/i, make: "Vauxhall" },
       { pattern: /\b(grandland)\b/i, make: "Vauxhall" },
+      { pattern: /\b(crossland)\b/i, make: "Vauxhall" },
+      { pattern: /\b(combo|combo life)\b/i, make: "Vauxhall" },
       { pattern: /\b(c3 aircross|c3\b)\b/i, make: "Citroen" },
       { pattern: /\b(c4 x|c4\b|e-?c4)\b/i, make: "Citroen" },
+      { pattern: /\b(c5 aircross|c5\s*x)\b/i, make: "Citroen" },
+      { pattern: /\b(berlingo|e-?berlingo)\b/i, make: "Citroen" },
       { pattern: /\b(2008|e-?2008)\b/i, make: "Peugeot" },
       { pattern: /\b(208|e-?208)\b/i, make: "Peugeot" },
       { pattern: /\b(3008|308)\b/i, make: "Peugeot" },
-      { pattern: /\b(500x|500)\b/i, make: "Fiat" },
+      { pattern: /\b(408)\b/i, make: "Peugeot" },
+      { pattern: /\b(508)\b/i, make: "Peugeot" },
+      { pattern: /\b(5008)\b/i, make: "Peugeot" },
+      { pattern: /\b(500x|500e|500)\b/i, make: "Fiat" },
       { pattern: /\b(panda)\b/i, make: "Fiat" },
+      { pattern: /\b(tipo)\b/i, make: "Fiat" },
+      { pattern: /\b(600|600e)\b/i, make: "Fiat" },
       { pattern: /\b(junior)\b/i, make: "Alfa Romeo" },
+      { pattern: /\b(tonale)\b/i, make: "Alfa Romeo" },
+      { pattern: /\b(giulia)\b/i, make: "Alfa Romeo" },
+      { pattern: /\b(stelvio)\b/i, make: "Alfa Romeo" },
+      { pattern: /\b(595|695|500e)\b/i, make: "Abarth" },
       { pattern: /\b(ds3|ds 3)\b/i, make: "DS" },
       { pattern: /\b(ds4|ds 4)\b/i, make: "DS" },
       { pattern: /\b(ds7|ds 7)\b/i, make: "DS" },
+      { pattern: /\b(ds9|ds 9)\b/i, make: "DS" },
       { pattern: /\b(avenger)\b/i, make: "Jeep" },
       { pattern: /\b(compass)\b/i, make: "Jeep" },
-      { pattern: /\b(renegade)\b/i, make: "Jeep" }
+      { pattern: /\b(renegade)\b/i, make: "Jeep" },
+      { pattern: /\b(c10)\b/i, make: "Leapmotor" },
+      { pattern: /\b(b10)\b/i, make: "Leapmotor" }
     ];
 
     for (var i = 0; i < messages.length; i++) {
@@ -1093,6 +1121,22 @@
         }
       }
     }
+
+    return null;
+  }
+
+  function findAgentConfirmedVehicle(entries) {
+    var agentMessages = entries
+      .filter(function (e) { return e.isAgent; })
+      .map(function (e) { return e.cleanText; });
+
+    if (!agentMessages.length) return null;
+
+    var fromBrand = findVehicle(agentMessages);
+    if (fromBrand) return fromBrand;
+
+    var fromModelOnly = findModelOnly(agentMessages);
+    if (fromModelOnly) return fromModelOnly;
 
     return null;
   }
