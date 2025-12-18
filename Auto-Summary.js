@@ -547,11 +547,9 @@
     // 2. Scan only the *core LP message containers* (fastest stable method)
     // These are the true LP bubble selectors that cover historical + new messages
     const containerSelectors = [
-      '[data-testid="message-bubble"]',
+      '.html-content.text-content',
       '[data-testid="agent-message"]',
-      '[data-testid="visitor-message"]',
-      '.lp_message_text',
-      '.html-content.text-content'
+      '[data-testid="visitor-message"]'
     ];
 
     const panels = document.querySelectorAll(containerSelectors.join(","));
@@ -568,6 +566,8 @@
       let text = (node.innerText || "").trim();
       if (!text) return;
       if (!/[A-Za-z0-9]/.test(text)) return;
+
+      if (text === "Hey") return;
 
       const sender = detectSenderFromDOM(node);
 
@@ -613,11 +613,24 @@
 
   function detectSenderFromDOM(node) {
     try {
-      var origin = node.closest('[data-testid], .message-container, .html-content');
-      if (!origin) return "unknown";
+      var originatorEl = null;
 
-      var originatorEl = origin.querySelector(".originator");
-      if (!originatorEl) return "system";
+      var next = node.nextElementSibling;
+      if (next && next.classList.contains("originator")) {
+        originatorEl = next;
+      }
+
+      if (!originatorEl) {
+        var sibs = node.parentElement ? node.parentElement.querySelectorAll(".originator") : [];
+        if (sibs.length === 1) originatorEl = sibs[0];
+      }
+
+      if (!originatorEl) {
+        var fallback = node.closest('[data-testid], .message-container');
+        if (fallback) originatorEl = fallback.querySelector(".originator");
+      }
+
+      if (!originatorEl) return "customer";
 
       var name = (originatorEl.innerText || "").trim().toLowerCase();
       if (!name) return "system";
@@ -630,7 +643,7 @@
 
       return "customer";
     } catch (e) {
-      return "unknown";
+      return "customer";
     }
   }
 
