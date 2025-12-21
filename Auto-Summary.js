@@ -306,23 +306,28 @@
     var panel = document.getElementById(app.panelId);
     if (!panel) return;
 
-    var heading = panel.querySelector(".lpSumMiniSection h3");
-    if (!heading) return;
+    var headings = panel.querySelectorAll(".lpSumMiniSection h3");
+    var summaryHeading = null;
+    headings.forEach(function (h) {
+      if (h.textContent.trim().toLowerCase() === "summary") summaryHeading = h;
+    });
+    if (!summaryHeading) return;
 
-    heading.style.cursor = "pointer";
+    summaryHeading.style.cursor = "pointer";
 
-    heading.addEventListener("click", function (ev) {
+    summaryHeading.addEventListener("click", function (ev) {
       ev.stopPropagation();
 
-      var rows = panel.querySelectorAll('.lpSumMiniSection .lpSumMiniRow[data-key]');
-      var out = [];
+      var section = summaryHeading.parentElement;
+      var rows = section.querySelectorAll('.lpSumMiniRow[data-key]');
 
+      var out = [];
       rows.forEach(function (row) {
         var key = row.dataset.key;
         if (!key || key === "bookingTypeOverride") return;
         var label = row.querySelector(".lpSumMiniLabel").innerText.trim();
         var value = row.querySelector(".lpSumMiniValue").innerText.trim();
-        if (value) out.push(label + ": " + value);
+        out.push(label + ": " + (value || ""));
       });
 
       var finalText = out.join("\n");
@@ -538,58 +543,59 @@
 
   function collectMessages() {
     const now = Date.now();
-
-    // 1. Respect global cache lifetime (you already set 300ms)
     if (_cache_message_nodes && now - _cache_message_nodes_time < CACHE_LIFETIME) {
       return _cache_message_nodes;
     }
 
-    // 2. Scan only the *core LP message containers* (fastest stable method)
-    // These are the true LP bubble selectors that cover historical + new messages
     const containerSelectors = [
-      '.html-content.text-content',
-      '[data-testid="agent-message"]',
-      '[data-testid="visitor-message"]'
+      ".html-content.text-content",
+      "[data-testid=\"agent-message\"]",
+      "[data-testid=\"visitor-message\"]",
+      "[data-testid=\"system-message\"]"
     ];
 
-    const panels = document.querySelectorAll(containerSelectors.join(","));
-    const nodes = Array.from(panels);
+    var nodes = Array.from(document.querySelectorAll(containerSelectors.join(",")));
 
-    // 3. Filter out elements inside your summary panel (prevents recursion/read-your-own-text)
-    const filteredNodes = nodes.filter(node => {
+    var originatorSiblings = document.querySelectorAll("div + .originator");
+    originatorSiblings.forEach(function (orig) {
+      if (orig.previousElementSibling) {
+        nodes.push(orig.previousElementSibling);
+      }
+    });
+
+    var filteredNodes = nodes.filter(function (node) {
       return !(app.panel && app.panel.contains(node));
     });
 
-    const list = [];
+    var list = [];
 
-    filteredNodes.forEach(node => {
-      let text = (node.innerText || "").trim();
+    filteredNodes.forEach(function (node) {
+      var text = (node.innerText || "").trim();
       if (!text) return;
       if (!/[A-Za-z0-9]/.test(text)) return;
-
       if (text === "Hey") return;
 
-      const sender = detectSenderFromDOM(node);
-
-      const lower = text.toLowerCase();
-      if (lower.includes("is typing")) return;
-      if (lower.includes("automated")) return;
+      var sender = detectSenderFromDOM(node);
+      var lower = text.toLowerCase();
+      if (lower.indexOf("is typing") !== -1) return;
+      if (lower.indexOf("automated") !== -1) return;
+      if (lower.indexOf("connected to") !== -1) return;
       if (/^\d[:\s]*$/.test(text)) return;
 
-      const normalised = normalizeMessageForTemplate(text);
-      for (let template of PREDEFINED_OS_CONFIRMATIONS) {
-        const norm = normalizeMessageForTemplate(template);
-        const fw = norm.split(" ").slice(0, 5).join(" ");
-        if (levenshtein(normalised, norm) < 8 || normalised.startsWith(fw)) {
+      var normalised = normalizeMessageForTemplate(text);
+      for (var i = 0; i < PREDEFINED_OS_CONFIRMATIONS.length; i++) {
+        var normOs = normalizeMessageForTemplate(PREDEFINED_OS_CONFIRMATIONS[i]);
+        var fwOs = normOs.split(" ").slice(0, 5).join(" ");
+        if (levenshtein(normalised, normOs) < 8 || normalised.indexOf(fwOs) === 0) {
           list.push(sender === "agent" ? "__AGENT__:__PREDEFINED_OS__:" + text : "__PREDEFINED_OS__:" + text);
           return;
         }
       }
 
-      for (let template of PREDEFINED_CONTENT) {
-        const norm = normalizeMessageForTemplate(template);
-        const fw = norm.split(" ").slice(0, 5).join(" ");
-        if (levenshtein(normalised, norm) < 8 || normalised.startsWith(fw)) {
+      for (var j = 0; j < PREDEFINED_CONTENT.length; j++) {
+        var norm = normalizeMessageForTemplate(PREDEFINED_CONTENT[j]);
+        var fw = norm.split(" ").slice(0, 5).join(" ");
+        if (levenshtein(normalised, norm) < 8 || normalised.indexOf(fw) === 0) {
           list.push(sender === "agent" ? "__AGENT__:__PREDEFINED__:" + text : "__PREDEFINED__:" + text);
           return;
         }
@@ -626,25 +632,37 @@
       }
 
       if (!originatorEl) {
-        var fallback = node.closest('[data-testid], .message-container');
+        var fallback = node.closest("[data-testid], .message-container");
         if (fallback) originatorEl = fallback.querySelector(".originator");
       }
 
-      if (!originatorEl) return "customer";
+      var name = originatorEl ? (originatorEl.innerText || "").trim().toLowerCase() : "";
+      if (name) {
+        if (name === "omari") return "agent";
+        if (name === "visitor") return "customer";
+        if (name === "welcome message") return "system";
+        if (name.indexOf("stellantis &you uk") !== -1) return "system";
+        if (name.indexOf("sms") === 0) return "customer";
+      }
 
-      var name = (originatorEl.innerText || "").trim().toLowerCase();
-      if (!name) return "system";
-
-      if (name === "omari") return "agent";
-      if (name === "visitor") return "customer";
-      if (name === "welcome message") return "system";
-      if (name.indexOf("stellantis") !== -1) return "system";
-      if (name.indexOf("sms user") === 0) return "customer";
+      var bubbleText = (node.innerText || "").toLowerCase();
+      if (bubbleText.indexOf("hello, you are speaking with omari") !== -1 || bubbleText.indexOf("hello, you're speaking with omari") !== -1) return "agent";
 
       return "customer";
     } catch (e) {
       return "customer";
     }
+  }
+
+  function autoCapName(str) {
+    if (!str) return "";
+    return str
+      .trim()
+      .split(/\s+/)
+      .map(function (p) {
+        return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
+      })
+      .join(" ");
   }
 
   function parseMessages(messagesObj) {
@@ -712,11 +730,16 @@
       data.fullName = nameMatch.fullName;
       data.firstName = nameMatch.firstName;
       data.lastName = nameMatch.lastName;
+      if (data.fullName) {
+        data.fullName = autoCapName(data.fullName);
+        data.firstName = autoCapName(data.firstName);
+        data.lastName = autoCapName(data.lastName);
+      }
     }
 
     var emailMatch = (combinedText || "").match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
     if (emailMatch) {
-      data.email = emailMatch[0];
+      data.email = emailMatch[0].replace(/[.,;]+$/, "");
     }
 
     var phoneMatch = findPhone(realMessages);
@@ -724,15 +747,32 @@
       data.phone = phoneMatch;
     }
 
+    var addressCandidate = "";
+    for (var ai = 0; ai < realMessages.length; ai++) {
+      var addrTxt = realMessages[ai];
+      if (!addressCandidate && /\d/.test(addrTxt) && /(street|st\b|road|rd\b|avenue|ave\b|lane|ln\b|close|cl\b|drive|dr\b|house|flat)/i.test(addrTxt)) {
+        addressCandidate = addrTxt.trim();
+      }
+    }
+    if (addressCandidate && !data.address) {
+      data.address = addressCandidate;
+    }
+
     var postcodeInfo = findPostcode(realMessages);
     if (postcodeInfo) {
       data.postcode = postcodeInfo.postcode;
-      var mergedAddress = data.address || postcodeInfo.address || "";
-      if (postcodeInfo.postcode && mergedAddress.toUpperCase().indexOf(postcodeInfo.postcode) === -1) {
+      var mergedAddress = data.address || "";
+      if (postcodeInfo.addressPart) {
+        mergedAddress = (mergedAddress ? mergedAddress + " " + postcodeInfo.addressPart : postcodeInfo.addressPart).trim();
+      } else if (!mergedAddress) {
+        mergedAddress = postcodeInfo.address;
+      }
+      var upperMerged = (mergedAddress || "").toUpperCase();
+      if (postcodeInfo.postcode && upperMerged.indexOf(postcodeInfo.postcode) === -1) {
         mergedAddress = (mergedAddress + " " + postcodeInfo.postcode).trim();
       }
       if (!mergedAddress) mergedAddress = postcodeInfo.postcode;
-      data.address = mergedAddress;
+      data.address = mergedAddress.trim();
     }
 
     var baseVehicle = "";
@@ -798,7 +838,7 @@
 
     if (!PX_MODE && userRegEntries.length && mileageEntries.length) {
       var pxKeywordPresent = realEntries.some(function (entry) {
-        return /(\bpx\b|p\/x|part exchange|vehicle to part exchange)/i.test(entry.cleanText);
+        return /(\bpx\b|p\/x|part exchange|vehicle to part exchange|swap my car)/i.test(entry.cleanText);
       });
 
       var hasVehicleContext = !!vehicleInfo || !!baseVehicle;
@@ -830,7 +870,7 @@
         }
         data.pxReg = "";
       } else {
-        if (pxRegEntry) data.pxReg = pxRegEntry.reg;
+        if (pxRegEntry && pxRegEntry.reg !== data.reg) data.pxReg = pxRegEntry.reg;
 
         var enquiryEntry = null;
         for (var i = 0; i < userRegEntries.length; i++) {
@@ -1005,7 +1045,12 @@
       return arr.indexOf(v) === idx;
     });
 
-    var flags = detectFlags(entries, dateInfo && dateInfo.flags);
+    var extraFlagList = [];
+    if (dateInfo && dateInfo.flags) extraFlagList = extraFlagList.concat(dateInfo.flags);
+    if ((pxQuestionIdx >= 0 || pxKeywordPresent) && !data.pxReg) {
+      extraFlagList.push("PX required before booking");
+    }
+    var flags = detectFlags(entries, extraFlagList, data);
     if (flags.length) {
       flags = flags.filter(function (v, idx, arr) { return arr.indexOf(v) === idx; });
     }
@@ -1041,30 +1086,63 @@
   }
 
   function findName(messages) {
-    var lastAskedIndex = -1;
+    function buildName(str) {
+      var trimmed = (str || "").trim().replace(/\s+/g, " ");
+      if (!trimmed) return null;
+      var parts = trimmed.split(/\s+/);
+      return {
+        fullName: trimmed,
+        firstName: parts[0],
+        lastName: parts.slice(1).join(" ")
+      };
+    }
 
-    var askRe = /(full name|confirm your name|may i take your name|can i take your name)/i;
-    messages.forEach(function (msg, idx) {
-      if (askRe.test(msg.toLowerCase())) lastAskedIndex = idx;
-    });
+    function cleanAfterPhrase(fragment) {
+      var cutIdx = fragment.search(/[@\d]|[,.;!]/);
+      if (cutIdx !== -1) fragment = fragment.slice(0, cutIdx);
+      return fragment.trim();
+    }
+
+    var askRe = /(full name|confirm your name|may i take your name|could i have your full name|can i confirm your name)/i;
+    var requestIdx = -1;
 
     for (var i = 0; i < messages.length; i++) {
-      var msg = messages[i].trim();
-
-      var m = msg.match(/(?:my name is|i am|i'm|im|this is)\s+([a-zA-Z][a-zA-Z\-']*(?:\s+[a-zA-Z][a-zA-Z\-']*)+)/i);
+      var txt = (messages[i] || "").trim();
+      if (askRe.test(txt.toLowerCase())) requestIdx = i;
+      var m = txt.match(/(?:my name is|i am|i'm|im|this is)\s+(.+)/i);
       if (m) {
-        var full = m[1].trim();
-        var parts = full.split(/\s+/);
-        return { fullName: full, firstName: parts[0], lastName: parts.slice(1).join(" ") };
-      }
-
-      if (i === lastAskedIndex + 1) {
-        if (/^[A-Za-z][A-Za-z\s\-']{2,}$/.test(msg) && !/\d/.test(msg)) {
-          var partsInline = msg.split(/\s+/);
-          return { fullName: msg, firstName: partsInline[0], lastName: partsInline.slice(1).join(" ") };
+        var candidate = cleanAfterPhrase(m[1]);
+        if (candidate && /^[A-Za-z][A-Za-z\s\-']+$/.test(candidate)) {
+          return buildName(candidate);
         }
       }
     }
+
+    if (requestIdx >= 0 && requestIdx + 1 < messages.length) {
+      var nextMsg = (messages[requestIdx + 1] || "").trim();
+      var stripped = cleanAfterPhrase(nextMsg);
+      if (stripped && /^[A-Za-z][A-Za-z\s\-']+$/.test(stripped)) {
+        return buildName(stripped);
+      }
+    }
+
+    var narrativeBlock = /(looking for|need sorted|good morning|good afternoon|good evening|away in|appointment|test drive|viewing|delivery|address|postcode|reg\b|registration)/i;
+    var postcodeRe = /\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b/i;
+
+    for (var j = 0; j < messages.length; j++) {
+      var msg = (messages[j] || "").trim();
+      if (!msg) continue;
+      if (postcodeRe.test(msg)) continue;
+      if (/\d/.test(msg)) continue;
+      if (narrativeBlock.test(msg.toLowerCase())) continue;
+      if (/make|model|trim|engine/i.test(msg)) continue;
+      if (/address/i.test(msg)) continue;
+      if (/good morning|good afternoon|good evening/i.test(msg.toLowerCase())) continue;
+      if (/^[A-Za-z][A-Za-z\s\-']+$/.test(msg)) {
+        return buildName(msg);
+      }
+    }
+
     return null;
   }
 
@@ -1083,6 +1161,7 @@
         }
         if (raw.charAt(0) !== "0") continue;
         var normalized = raw.replace(/\D/g, "");
+        if (normalized === "2008" || normalized === "3008" || normalized === "5008") continue;
         if (normalized.length >= 10 && normalized.length <= 11) {
           return normalized;
         }
@@ -1101,11 +1180,12 @@
         var postcode = cleaned.slice(0, cleaned.length - 3) + " " + cleaned.slice(-3);
         var upperTxt = txt.toUpperCase();
         var idx = upperTxt.indexOf(cleaned);
-        var address = "";
+        var addressPart = "";
         if (idx > 0) {
-          address = txt.slice(0, idx).trim();
+          addressPart = txt.slice(0, idx).trim();
         }
-        return { postcode: postcode, address: address };
+        var combined = (addressPart + " " + postcode).trim();
+        return { postcode: postcode, address: combined, addressPart: addressPart };
       }
     }
     return null;
@@ -1445,6 +1525,19 @@
       return formatDate(result);
     }
 
+    function normalizeTime(val) {
+      if (!val) return "";
+      var lower = val.toLowerCase().trim();
+      var match = lower.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/);
+      if (!match) return val;
+      var hour = parseInt(match[1], 10);
+      var mins = match[2] ? parseInt(match[2], 10) : 0;
+      var mer = match[3];
+      if (mer === "pm" && hour < 12) hour += 12;
+      if (mer === "am" && hour === 12) hour = 0;
+      return String(hour).padStart(2, "0") + ":" + String(mins).padStart(2, "0");
+    }
+
     function parseDateTimeFromText(txt) {
       var lower = (txt || "").toLowerCase();
       var localDate = "";
@@ -1452,23 +1545,42 @@
       var localFlexible = "";
 
       var m1 = lower.match(/\b(\d{1,2}\/\d{1,2})\b/);
-      var m2 = lower.match(new RegExp("\\b(\\d{1,2}(?:st|nd|rd|th)?\\s+(" + monthPattern + "))\\b"));
-      var m3 = lower.match(new RegExp("\\b(" + monthPattern + ")\\s+\\d{1,2}(?:st|nd|rd|th)?\\b"));
+      var m2 = lower.match(new RegExp("\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(" + monthPattern + ")\\b"));
+      var m3 = lower.match(new RegExp("\\b(" + monthPattern + ")\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b"));
       var m4 = lower.match(new RegExp("\\b(this|next)\\s+(" + weekdayPattern + ")\\b"));
       var m5 = lower.match(/\b(today|tomorrow)\b/);
 
-      if (m1) localDate = m1[1];
-      else if (m2) localDate = m2[1];
-      else if (m3) localDate = m3[0];
-      else if (m4) {
+      if (m1) {
+        var parts = m1[1].split("/");
+        var day = parseInt(parts[0], 10);
+        var month = parseInt(parts[1], 10);
+        localDate = String(day).padStart(2, "0") + "/" + String(month).padStart(2, "0");
+      } else if (m2) {
+        var dayNum = parseInt(m2[1], 10);
+        var monthIdx = monthNames.indexOf(m2[2]);
+        if (monthIdx !== -1) {
+          var dRef = new Date();
+          dRef.setMonth(monthIdx);
+          dRef.setDate(dayNum);
+          localDate = formatDate(dRef);
+        }
+      } else if (m3) {
+        var monthIdx2 = monthNames.indexOf(m3[1]);
+        var dayNum2 = parseInt(m3[2], 10);
+        if (monthIdx2 !== -1) {
+          var dRef2 = new Date();
+          dRef2.setMonth(monthIdx2);
+          dRef2.setDate(dayNum2);
+          localDate = formatDate(dRef2);
+        }
+      } else if (m4) {
         var d = new Date();
         var weekday = m4[2];
         if (m4[1] === "next") {
           d.setDate(d.getDate() + 7);
         }
         localDate = nextWeekday(weekday);
-      }
-      else if (m5) {
+      } else if (m5) {
         var d2 = new Date();
         if (m5[1] === "tomorrow") d2.setDate(d2.getDate() + 1);
         localDate = formatDate(d2);
@@ -1482,7 +1594,7 @@
 
       if (t1) localTime = t1[1];
       else if (t2) localTime = t2[1];
-      else if (t3) localTime = "3:30";
+      else if (t3) localTime = "15:30";
       else if (range) {
         localTime = String(range[1]).padStart(2, "0") + ":00";
         localFlexible = range[0];
@@ -1504,6 +1616,8 @@
         if (lower.indexOf("asap") !== -1) localFlexible = "asap";
         else if (lower.indexOf("anytime") !== -1) localFlexible = "anytime";
       }
+
+      localTime = normalizeTime(localTime);
 
       return { date: localDate, time: localTime, flexible: localFlexible, flags: [] };
     }
@@ -1567,21 +1681,27 @@
         var tomorrow = new Date();
         tomorrow.setDate(tomorrow.getDate() + 1);
         date = formatDate(tomorrow);
+      } else {
+        time = "";
       }
     }
 
     if (!date && !time && !flexible) return null;
 
-    var parts = [];
-    if (date) parts.push(date);
-    if (time) parts.push(time);
-    if (flexible) parts.push(flexible);
+    var dateTime = "";
+    if (date && time) {
+      dateTime = date + " " + time;
+    } else if (date) {
+      dateTime = date + (time ? " " + time : "");
+    } else if (time) {
+      dateTime = time;
+    }
 
     return {
       date: date,
       time: time,
       flexible: flexible,
-      dateTime: parts.join(" ").trim(),
+      dateTime: dateTime.trim(),
       flags: extraFlags
     };
   }
@@ -1597,7 +1717,11 @@
       { key: "information first", terms: ["information first", "know a few things", "questions first"] },
       { key: "distance concerns", terms: ["80 miles", "far away", "distance", "not local"] },
       { key: "vehicle confirmation questions", terms: ["confirm the vehicle", "vehicle confirmation", "is this the"] },
-      { key: "delivery enquiry", terms: ["home delivery", "dealer to dealer", "delivery from", "moved to branch"] }
+      { key: "delivery enquiry", terms: ["home delivery", "dealer to dealer", "delivery from", "moved to branch"] },
+      { key: "cancellation request", terms: ["cancel my appointment", "cancel the booking", "cancel reservation", "no longer attending", "not coming"] },
+      { key: "enquiry-only", terms: ["just looking", "enquiry only", "looking for information", "not ready to book"] },
+      { key: "renewal", terms: ["renew", "swap in", "replacement in", "renewal"] },
+      { key: "wants-options-before-booking", terms: ["options before booking", "quote before booking", "information before booking", "need options first"] }
     ];
     map.forEach(function (item) {
       if (containsAny(text, item.terms)) {
@@ -1663,7 +1787,7 @@
     return prefs;
   }
 
-  function detectFlags(entries, extraFlags) {
+  function detectFlags(entries, extraFlags, data) {
     var list = Array.isArray(entries) ? entries : [];
     var agentEntries = list.filter(function (e) { return e.isAgent; });
     var customerEntries = list.filter(function (e) { return !e.isAgent && !e.isPredefined && !e.isPredefinedOs; });
@@ -1704,8 +1828,18 @@
     });
 
     customerEntries.forEach(function (entry) {
+      var lower = entry.cleanText.toLowerCase();
+      if (/cancel/.test(lower) && containsAny(lower, ["appointment", "booking", "reservation", "test drive", "view"])) {
+        addFlag("Cancellation request", 1);
+      }
+    });
+
+    customerEntries.forEach(function (entry) {
       var txt = entry.cleanText || "";
       var lower = txt.toLowerCase();
+      if (/\burgent\b|\basap\b|as soon as possible/.test(lower)) {
+        addFlag("Customer urgency", 2);
+      }
       var hasPartner = /(partner|wife|husband)\b/.test(lower);
       var hasFamily = /(son|daughter|child|children|kid)\b/.test(lower);
       var attendanceHint = /(attend|come|coming|be there|join)/.test(lower);
@@ -1775,6 +1909,10 @@
         if (label.toLowerCase().indexOf("outside-hours") !== -1) return;
         addFlag(label, 4);
       });
+    }
+
+    if (data && data.fullName) {
+      addFlag("Name confirmed", 3);
     }
 
     flags.sort(function (a, b) { return a.priority - b.priority; });
