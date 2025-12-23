@@ -3,10 +3,10 @@
 
   let RENDER_LOCK = false;
   let LAST_RENDER = 0;
-  const MIN_RENDER_GAP = 250; // milliseconds
+  const MIN_RENDER_GAP = 300; // milliseconds
   let RENDER_SCHEDULED = false;
   let OBSERVER_DEBOUNCE = null;
-  const OBSERVER_DELAY = 350;
+  const OBSERVER_DELAY = 500;
 
   function safeRender(fn) {
     const now = Date.now();
@@ -499,29 +499,29 @@
 
     heading.onclick = function (ev) {
       ev.stopPropagation();
-      var rows = heading.parentElement.querySelectorAll('.lpSumMiniRow[data-key]');
       var data = window._lpSumMini.data || {};
 
-      var output = "Summary\n";
-      rows.forEach(function (row) {
-        var label = row.querySelector(".lpSumMiniLabel").textContent.trim();
-        var key = row.dataset.key;
-        if (!key || key === "bookingTypeOverride") return;
-        var val = data[key] || "";
-        if (key === "dateTime" && !val) {
+      var lines = [
+        "Summary",
+        "------------------",
+        "Booking Type: " + (data.bookingType || ""),
+        "New/Used: " + (data.newUsed || ""),
+        "Vehicle: " + (data.vehicle || ""),
+        "Preferences: " + (data.preferences || ""),
+        "Date/Time: " + (function () {
+          if (data.dateTime) return data.dateTime;
           var parts = [];
           if (data.date) parts.push(data.date);
           if (data.time) parts.push(data.time);
           if (data.flexible) parts.push(data.flexible);
-          val = parts.join(" ").trim();
-        }
-        if (key === "pxSummary") {
-          val = data.pxSummary || "";
-        }
-        output += label + ": " + val + "\n";
-      });
+          return parts.join(" ").trim();
+        })(),
+        "PX Summary: " + (data.pxSummary || ""),
+        "Intent: " + (data.intent || ""),
+        "Flags: " + (data.flags || "")
+      ];
 
-      navigator.clipboard.writeText(output.trim()).then(showCopied);
+      navigator.clipboard.writeText(lines.join("\n").trim()).then(showCopied);
     };
   }
 
@@ -539,16 +539,15 @@
     var cleanCustomer = [];
     var cleanAgent = [];
     var messageIndex = 0;
+    var nonSystemCount = 0;
 
     function isPredefined(text) {
       return PREDEFINED_CONTENT.indexOf(text) !== -1 || PREDEFINED_OS_CONFIRMATIONS.indexOf(text) !== -1;
     }
 
-    function askedForFullName(message) {
-      var lower = message.toLowerCase();
-      return lower.indexOf("may i take your full name") !== -1 ||
-        lower.indexOf("just to confirm, could i have your full name") !== -1 ||
-        lower.indexOf("can i confirm your full name") !== -1;
+    function isNameRequest(txt) {
+      var lower = (txt || "").toLowerCase();
+      return /may i take your full name|just to confirm, could i have your full name|can i confirm your full name|your full name please|could i take your name|may i take your name/.test(lower);
     }
 
     nodes.forEach(function (node) {
@@ -557,61 +556,55 @@
       if (!text) return;
       if (!/[A-Za-z0-9]/.test(text)) return;
       if (node.closest(".chips-item")) return;
+      if (text.trim().toLowerCase() === "hey") return;
+
+      // Try to get explicit originator div
+      var originatorEl = node.nextElementSibling &&
+                         node.nextElementSibling.classList.contains("originator")
+                         ? node.nextElementSibling
+                         : null;
+
+      if (!originatorEl && node.parentElement) {
+        const ori = node.parentElement.querySelectorAll(".originator");
+        if (ori.length === 1) originatorEl = ori[0];
+      }
+
+      let sender = "customer";
+      let origin = originatorEl ? (originatorEl.innerText || "").trim().toLowerCase() : "";
+      let lowerText = text.toLowerCase();
+
+      // 1. Explicit labels
+      if (origin === "omari") sender = "agent";
+      else if (origin === "visitor") sender = "customer";
+      else if (origin === "welcome message") sender = "system";
+      else if (origin.indexOf("stellantis &you uk") !== -1) sender = "system";
+      else if (origin.startsWith("sms")) sender = "customer";
+
+      // 2. No originator → infer
+      if (!origin) {
+        if (/^welcome!|^you are now connected/.test(lowerText)) sender = "system";
+        else if (/^hello, you are speaking with omari/.test(lowerText)) sender = "agent";
+        else if (raw.length === 0) sender = "customer"; // first customer message
+      }
+
+      // 3. If the previous message was agent asking for name → next must be customer
+      function askedName(msg) {
+        return /may i take your full name|just to confirm.*full name|can i confirm your full name/.test(
+          (msg.text || "").toLowerCase()
+        );
+      }
+      if (raw.length > 0 && askedName(raw[raw.length - 1])) sender = "customer";
+
+      // Block predefined content
       if (isPredefined(text)) return;
-
-      var originatorEl = null;
-      var next = node.nextElementSibling;
-      if (next && next.classList.contains("originator")) {
-        originatorEl = next;
-      } else if (node.parentElement) {
-        var parents = node.parentElement.querySelectorAll(".originator");
-        if (parents.length === 1) originatorEl = parents[0];
-      }
-
-      var sender = "customer";
-      var originatorText = originatorEl ? (originatorEl.innerText || "").toLowerCase().trim() : "";
-      var agentDetected = false;
-
-      if (originatorText) {
-        if (originatorText === "omari") {
-          sender = "agent";
-          agentDetected = true;
-        } else if (originatorText === "visitor") {
-          sender = "customer";
-        } else if (originatorText === "welcome message") {
-          sender = "system";
-        } else if (originatorText.indexOf("stellantis &you uk") !== -1) {
-          sender = "system";
-        } else if (originatorText.indexOf("sms") === 0) {
-          sender = "customer";
-        } else {
-          sender = "customer";
-        }
-      } else {
-        var lowerText = text.toLowerCase();
-        if (lowerText.indexOf("hello, you are speaking with omari") === 0 || lowerText.indexOf("hello, you're speaking with omari") === 0) {
-          sender = "agent";
-          agentDetected = true;
-        } else if (raw.length === 0) {
-          sender = "customer";
-        }
-      }
-
-      if (!agentDetected && raw.length > 0) {
-        var previous = raw[raw.length - 1];
-        if (previous.sender === "agent" && askedForFullName(previous.text)) {
-          sender = "customer";
-        }
-      }
-
-      if (/^welcome! we['’]re excited/i.test(text) || /^you are now connected/i.test(text)) {
-        sender = "system";
-      }
+      if (/^hey$/i.test(text) && origin === "welcome message") return;
+      if (/is typing/i.test(lowerText)) return;
 
       var currentIndex = messageIndex++;
-      raw.push({ sender: sender, text: text, index: currentIndex });
+      raw.push({ sender, text: text, index: currentIndex });
       if (sender === "customer") cleanCustomer.push(text);
       if (sender === "agent") cleanAgent.push(text);
+      if (sender !== "system") nonSystemCount++;
     });
 
     return {
@@ -720,19 +713,6 @@
 
     data.bookingType = detectBookingTypeV4(raw, data, agentMessages, customerMessages);
 
-    var bookingOverride = typeof getBookingOverride === "function" ? getBookingOverride() : "auto-detect";
-    if (bookingOverride && bookingOverride !== "auto-detect") {
-      if (bookingOverride === "notes only") {
-        data.bookingType = "";
-        data.date = "";
-        data.time = "";
-        data.dateTime = "";
-        data.flexible = "";
-      } else {
-        data.bookingType = toTitleCase(bookingOverride);
-      }
-    }
-
     var dateInfo = detectDateTimeV7(raw, agentMessages);
     if (dateInfo) {
       data.date = dateInfo.date;
@@ -759,8 +739,8 @@
   }
 
   function detectNameV3(customerMessages, agentMessages, raw) {
-    var askRegex = /(full name|confirm your name|your name please|could i have your name|can i confirm your full name|may i take your full name)/i;
-    var selfIdRegex = /(?:my name is|this is|i am|i'm|im)\s+(.+)/i;
+    var askRegex = /(full name|confirm your name|your name please|could i have your name|can i confirm your full name|may i take your full name|could i take your name|may i take your name)/i;
+    var selfIdRegex = /(?:my name is|this is|i am|i'm|im|name:\s*|my names|it's\s+)(.+)/i;
 
     function cleanNameCandidate(fragment) {
       if (!fragment) return "";
@@ -786,6 +766,7 @@
       };
     }
 
+    // A) Self identification
     for (var i = 0; i < customerMessages.length; i++) {
       var txt = (customerMessages[i].text || "").trim();
       var match = selfIdRegex.exec(txt);
@@ -793,8 +774,13 @@
         var candidate = cleanNameCandidate(match[1]);
         if (looksLikeName(candidate)) return buildNameObject(candidate);
       }
+      if (/speaking$/i.test(txt)) {
+        var stripped = txt.replace(/speaking$/i, "").trim();
+        if (looksLikeName(stripped)) return buildNameObject(stripped);
+      }
     }
 
+    // B) After agent request
     var askIndex = -1;
     for (var a = 0; a < agentMessages.length; a++) {
       if (askRegex.test((agentMessages[a].text || "").toLowerCase())) {
@@ -807,12 +793,17 @@
       for (var r = 0; r < raw.length; r++) {
         var item = raw[r];
         if (item.index <= askIndex || item.sender !== "customer") continue;
-        var candidateText = cleanNameCandidate(item.text || "");
+        var candidateText = (item.text || "")
+          .replace(/[0-9\+\-\(\)]/g, "")
+          .replace(/[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}/gi, "")
+          .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, "");
+        candidateText = cleanNameCandidate(candidateText);
         if (looksLikeName(candidateText)) return buildNameObject(candidateText);
         break;
       }
     }
 
+    // C) Pure name message
     for (var c = 0; c < customerMessages.length; c++) {
       var msg = (customerMessages[c].text || "").trim();
       if (looksLikeName(msg)) {
@@ -857,14 +848,14 @@
   function detectAddressAndPostcode(customerMessages) {
     var postcodeRe = /([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})/i;
     for (var i = 0; i < customerMessages.length; i++) {
-      var txt = customerMessages[i].text || "";
+      var txt = (customerMessages[i].text || "").replace(/\s+/g, " ").trim();
       var match = postcodeRe.exec(txt);
-      if (match) {
-        var cleaned = match[1].replace(/\s+/g, "").toUpperCase();
-        var postcode = cleaned.slice(0, cleaned.length - 3) + " " + cleaned.slice(-3);
-        var address = txt.replace(match[1], postcode).trim();
-        return { address: address, postcode: postcode };
-      }
+      if (!match) continue;
+      var cleaned = match[1].replace(/\s+/g, "").toUpperCase();
+      var postcode = cleaned.slice(0, cleaned.length - 3) + " " + cleaned.slice(-3);
+      var address = txt.replace(match[1], postcode).trim();
+      address = address.replace(/\s+/g, " ").trim();
+      return { address: address, postcode: postcode };
     }
     return null;
   }
@@ -908,7 +899,7 @@
 
     if (pxAskIndex >= 0) {
       var after = regs.filter(function (r) { return r.index > pxAskIndex; });
-      if (after.length) pxReg = after[after.length - 1].reg;
+      if (after.length) pxReg = after[0].reg;
     }
 
     return { reg: reg, pxReg: pxReg, all: regs, agentOverride: agentOverride };
@@ -970,7 +961,22 @@
     var combined = customerMessages.concat(agentMessages);
     var vehicle = null;
 
+    function agentConfirmedVehicle() {
+      var regRe = /\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/i;
+      for (var i = 0; i < agentMessages.length; i++) {
+        var txt = agentMessages[i].text || "";
+        if (!regRe.test(txt)) continue;
+        var brandModel = detectBrandAndModel(txt) || detectKnownModelOnly(txt);
+        if (brandModel) return brandModel;
+      }
+      return null;
+    }
+
+    var agentVehicle = agentConfirmedVehicle();
+    if (agentVehicle) vehicle = agentVehicle;
+
     for (var i = 0; i < combined.length; i++) {
+      if (vehicle) break;
       var found = detectBrandAndModel(combined[i].text || "");
       if (found) {
         vehicle = found;
@@ -1099,10 +1105,10 @@
     var hasMotability = combined.indexOf("motability") !== -1;
     if (hasMotability) return "Motability";
 
-    var wantsTestDrive = combined.indexOf("test drive") !== -1;
-    var wantsView = combined.indexOf("view") !== -1 || combined.indexOf("come in") !== -1;
-    var wantsCall = combined.indexOf("call") !== -1 || combined.indexOf("phone") !== -1;
-    var valuation = (data.pxReg || data.pxMileage) && combined.indexOf("valuation") !== -1;
+    var wantsTestDrive = /test drive/.test(combined);
+    var wantsView = /view|viewing/.test(combined);
+    var wantsCall = /call|phone/.test(combined);
+    var valuation = /valuation/.test(combined) || (data.pxReg && /value|valuation/.test(combined));
 
     var baseBooking = "";
     if (wantsTestDrive) baseBooking = "Test Drive";
@@ -1117,7 +1123,8 @@
     ]);
     var agentCombined = agentMessages.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
     var agentOsConfirmed = agentOsPhrases.some(function (p) { return agentCombined.indexOf(p) !== -1; });
-    var osEligible = agentOsConfirmed && data.pxReg && data.newUsed === "used" && (wantsCall || wantsTestDrive || wantsView);
+    var usedVehicle = data.newUsed === "used" || (!!data.reg);
+    var osEligible = agentOsConfirmed && usedVehicle && data.pxReg && (wantsCall || wantsTestDrive || wantsView);
 
     if (osEligible && baseBooking) {
       return "Online Store - " + baseBooking;
@@ -1155,6 +1162,10 @@
         var pHour = parseInt(plain[2], 10);
         return clampTimeSlot(pHour < 9 ? pHour + 12 : pHour, 0);
       }
+      if (/morning/.test(token)) return "10:00";
+      if (/afternoon/.test(token)) return "14:00";
+      if (/evening/.test(token)) return "17:00";
+      if (/midday|noon/.test(token)) return "12:00";
       return "";
     }
 
@@ -1345,6 +1356,21 @@
     var messagesObj = collectMessages();
     var data = parseMessages(messagesObj);
     window._lpSumMini.data = data;
+
+    var override = getBookingOverride();
+    if (override && override !== "auto-detect") {
+      if (override === "notes only") {
+        data.bookingType = "";
+        data.date = "";
+        data.time = "";
+        data.dateTime = "";
+        data.flexible = "";
+      } else if (override === "online store") {
+        data.bookingType = "Online Store";
+      } else {
+        data.bookingType = toTitleCase(override);
+      }
+    }
 
     updateDebugOverlay(messagesObj);
 
