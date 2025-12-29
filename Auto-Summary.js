@@ -544,134 +544,89 @@
   function collectMessages() {
     var nodes = Array.from(document.querySelectorAll(".html-content.text-content"));
     var raw = [];
-    var cleanCustomer = [];
-    var cleanAgent = [];
     var messageIndex = 0;
-    var nonSystemCount = 0;
-    var history = { agentConfirmed: {} };
 
     function isPredefined(text) {
-      return PREDEFINED_CONTENT.indexOf(text) !== -1 || PREDEFINED_OS_CONFIRMATIONS.indexOf(text) !== -1;
-    }
-
-    function isPredefinedDeep(text) {
       var normalized = normalizeMessageForTemplate(text);
       return PREDEFINED_CONTENT.concat(PREDEFINED_OS_CONFIRMATIONS).some(function (template) {
         return levenshtein(normalizeMessageForTemplate(template), normalized) < 3;
       });
     }
 
-    function isNameRequest(txt) {
-      var lower = (txt || "").toLowerCase();
-      return /may i take your full name|just to confirm, could i have your full name|can i confirm your full name|your full name please|could i take your name|may i take your name/.test(lower);
-    }
+    function getOriginator(node) {
+      var originatorEl = node.nextElementSibling && node.nextElementSibling.classList.contains("originator")
+        ? node.nextElementSibling
+        : null;
 
-    function isTimestampOrigin(origin) {
-      return !origin || /^[\d:\s]+$/.test(origin);
-    }
-
-    function requestedInfo(msg) {
-      if (!msg || msg.sender !== "agent") return false;
-      var lower = (msg.text || "").toLowerCase();
-      return /full name|name|registration|reg|make|model|mileage|part exchange|px|finance|deposit|monthly|date|time|appointment|test drive|viewing|phone call/.test(lower);
-    }
-
-    function recordAgentConfirmed(text) {
-      var lower = (text || "").toLowerCase();
-      var regMatch = /\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/i.exec(text || "");
-      if (regMatch) history.agentConfirmed.reg = regMatch[1].replace(/\s+/g, "").toUpperCase();
-
-      var vehicle = detectBrandAndModel(text) || detectKnownModelOnly(text);
-      if (vehicle) history.agentConfirmed.vehicle = vehicle;
-
-      if (/pcp|hp|pch|lease|finance|deposit|monthly/.test(lower)) {
-        history.agentConfirmed.finance = text;
+      if (!originatorEl && node.parentElement) {
+        var ori = node.parentElement.querySelectorAll(".originator");
+        if (ori.length === 1) originatorEl = ori[0];
       }
 
-      var timeMatch = /(\d{1,2}[:.]\d{2})/i.exec(text);
-      if (timeMatch) history.agentConfirmed.time = timeMatch[1];
+      return originatorEl ? (originatorEl.innerText || "").trim() : "";
+    }
 
-      var dateMatch = /(\d{1,2})[\/\-](\d{1,2})/i.exec(text);
-      if (dateMatch) history.agentConfirmed.date = dateMatch[1] + "/" + dateMatch[2];
+    function getTimestamp(node) {
+      if (!node || !node.parentElement) return "";
+      var ts = node.parentElement.querySelector(".timestamp, .message-time, time");
+      return ts ? (ts.innerText || "").trim() : "";
+    }
+
+    function isSmsNumber(text) {
+      if (!text) return false;
+      return /^\+?\d[\d\s-]{6,}$/.test(text.trim());
+    }
+
+    function detectSender(originator, text, previousSender) {
+      var origin = (originator || "").toLowerCase();
+      var lowerText = (text || "").toLowerCase();
+
+      if (origin.indexOf("omari") !== -1) return "agent";
+      if (origin.indexOf("visitor") !== -1 || origin.indexOf("sms") !== -1) return "customer";
+      if (origin.indexOf("welcome message") !== -1) return "system";
+      if (origin.indexOf("stellantis") !== -1) return "system";
+      if (!origin) return "system";
+
+      if (origin) return "customer";
+
+      if (/^welcome!|^you are now connected/.test(lowerText)) return "system";
+      return "customer";
     }
 
     nodes.forEach(function (node) {
       if (app.panel && app.panel.contains(node)) return;
+      if (node.closest(".chips-item")) return;
+
       var text = (node.innerText || "").replace(/\s+/g, " ").trim();
       if (!text) return;
       if (!/[A-Za-z0-9]/.test(text)) return;
-      if (node.closest(".chips-item")) return;
 
-      var originatorEl = node.nextElementSibling &&
-                         node.nextElementSibling.classList.contains("originator")
-                         ? node.nextElementSibling
-                         : null;
+      var originator = getOriginator(node);
+      var sender = detectSender(originator, text, raw.length ? raw[raw.length - 1].sender : "");
+      var timestamp = getTimestamp(node);
+      var predefined = isPredefined(text);
+      var type = sender === "system" ? "system-intro" : (predefined ? "predefined-content" : sender);
 
-      if (!originatorEl && node.parentElement) {
-        const ori = node.parentElement.querySelectorAll(".originator");
-        if (ori.length === 1) originatorEl = ori[0];
-      }
-
-      let sender = "customer";
-      let origin = originatorEl ? (originatorEl.innerText || "").trim().toLowerCase() : "";
-      let lowerText = text.toLowerCase();
-
-      if (origin === "omari") sender = "agent";
-      else if (origin === "visitor") sender = "customer";
-      else if (origin === "welcome message") sender = "system";
-      else if (origin.indexOf("stellantis &you uk") !== -1) sender = "system";
-      else if (origin.startsWith("sms")) sender = "customer";
-
-      if (isTimestampOrigin(origin)) {
-        if (/^hello, you are speaking with omari/.test(text)) sender = "agent";
-        else if (/^welcome!|^you are now connected/.test(lowerText)) sender = "system";
-        else if (raw.length === 0) sender = "customer";
-      }
-
-      function askedName(msg) {
-        return /may i take your full name|just to confirm.*full name|can i confirm your full name/.test(
-          (msg.text || "").toLowerCase()
-        );
-      }
-      if (raw.length > 0 && (askedName(raw[raw.length - 1]) || requestedInfo(raw[raw.length - 1]))) sender = "customer";
-
-      if (isPredefined(text) || isPredefinedDeep(text)) return;
-      if (/is typing/i.test(lowerText)) return;
-
-      var currentIndex = messageIndex++;
-      raw.push({ sender: sender, text: text, index: currentIndex, lower: lowerText });
-      if (sender === "agent") recordAgentConfirmed(text);
-      if (sender === "customer") cleanCustomer.push(text);
-      if (sender === "agent") cleanAgent.push(text);
-      if (sender !== "system") nonSystemCount++;
+      raw.push({
+        text: text,
+        sender: sender,
+        index: messageIndex++,
+        timestamp: timestamp,
+        type: type
+      });
     });
 
-    return {
-      raw: raw,
-      cleanCustomer: cleanCustomer,
-      cleanAgent: cleanAgent,
-      history: history,
-      combinedCustomer: cleanCustomer.join(" ").toLowerCase(),
-      combinedAll: raw.map(function (r) { return r.text; }).join(" ").toLowerCase()
-    };
-  }
-
-  function autoCapName(str) {
-    if (!str) return "";
-    return str
-      .trim()
-      .split(/\s+/)
-      .map(function (p) {
-        return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
-      })
-      .join(" ");
+    return { raw: raw };
   }
 
   function parseMessages(messagesObj) {
     var raw = (messagesObj && messagesObj.raw) || [];
-    var customerMessages = raw.filter(function (m) { return m.sender === "customer"; });
-    var agentMessages = raw.filter(function (m) { return m.sender === "agent"; });
-    var history = (messagesObj && messagesObj.history) || {};
+    var parsingMessages = raw.filter(function (m) {
+      return m.sender !== "system" && m.type !== "predefined-content";
+    });
+    var customerMessages = parsingMessages.filter(function (m) { return m.sender === "customer"; });
+    var agentMessages = parsingMessages.filter(function (m) { return m.sender === "agent"; });
+
     var data = {
       fullName: "",
       firstName: "",
@@ -699,374 +654,111 @@
       intent: "",
       preferences: "",
       flags: "",
-      customerRequests: [],
-      placeholderVOI: ""
+      customerRequests: []
     };
 
-    var nameInfo = detectNameV5(raw, agentMessages, customerMessages);
-    if (nameInfo) {
-      data.fullName = nameInfo.fullName;
-      data.firstName = nameInfo.firstName;
-      data.lastName = nameInfo.lastName;
+    var nameResult = detectCustomerName(customerMessages, agentMessages);
+    if (nameResult) {
+      data.fullName = nameResult.fullName;
+      data.firstName = nameResult.firstName;
+      data.lastName = nameResult.lastName;
     }
 
-    var email = detectEmail(customerMessages);
-    if (email) data.email = email;
+    var phoneResult = detectPhone(customerMessages, agentMessages);
+    if (phoneResult) data.phone = phoneResult;
 
-    var phone = detectPhoneV2(customerMessages);
-    if (phone) data.phone = phone;
+    var emailResult = detectEmail(customerMessages, agentMessages);
+    if (emailResult) data.email = emailResult;
 
-    var addressInfo = detectAddressAndPostcode(customerMessages);
-    if (addressInfo) {
-      data.address = addressInfo.address;
-      data.postcode = addressInfo.postcode;
+    var addressResult = detectAddress(customerMessages, agentMessages);
+    if (addressResult) {
+      data.address = addressResult.address;
+      data.postcode = addressResult.postcode;
     }
 
-    var pxAskIndex = detectPxRequestIndex(agentMessages);
-    var pxData = detectPXv6(raw, agentMessages, pxAskIndex);
-    if (pxData) {
-      data.pxReg = pxData.pxReg || "";
-      data.pxMake = pxData.pxMake || "";
-      data.pxModel = pxData.pxModel || "";
-      data.pxMileage = pxData.pxMileage || "";
+    var pxResult = detectPX(customerMessages, agentMessages);
+    if (pxResult) {
+      data.pxReg = pxResult.pxReg || "";
+      data.pxMake = pxResult.pxMake || "";
+      data.pxModel = pxResult.pxModel || "";
+      data.pxMileage = pxResult.pxMileage || "";
+      data.pxSummary = pxResult.pxSummary || "";
     }
 
-    var voiData = detectVOIv4(raw, agentMessages, pxData, history, pxAskIndex);
-    if (voiData) {
-      data.make = voiData.make || data.make;
-      data.model = voiData.model || data.model;
-      data.trim = voiData.trim || data.trim;
-      data.reg = voiData.reg || data.reg;
-    }
-    if (voiData && voiData.placeholder) {
-      data.placeholderVOI = voiData.placeholder;
+    var voiResult = detectVOI(customerMessages, agentMessages, pxResult);
+    if (voiResult) {
+      data.make = voiResult.make || "";
+      data.model = voiResult.model || "";
+      data.reg = voiResult.reg || "";
+      if (voiResult.placeholder) data.vehicle = voiResult.placeholder;
     }
 
-    if (history.agentConfirmed && history.agentConfirmed.reg) data.reg = history.agentConfirmed.reg;
-
-    if (data.reg && data.make && data.model) {
-      data.vehicle = (data.make + " " + data.model + " (" + data.reg + ")").trim();
-    } else if (data.make && data.model) {
-      data.vehicle = (data.make + " " + data.model).trim();
-    } else if (data.reg) {
-      data.vehicle = data.reg;
-    }
-
-    data.customerRequests = detectCustomerRequestsV3(raw, agentMessages);
-
-    var intents = detectIntentV9(raw, data, pxAskIndex);
-    if (intents.length) data.intent = intents.join(", ");
-
-    var preferences = detectPreferencesV4(raw);
-    if (preferences.length) data.preferences = preferences.join(", ");
-
-    var finance = detectFinanceV3(raw);
-    if (finance) {
-      if (!data.intent) data.intent = "finance discussion";
-      else if (data.intent.indexOf("finance discussion") === -1) data.intent += ", finance discussion";
-
-      if (data.customerRequests.indexOf(finance) === -1) {
-        data.customerRequests.push(finance);
+    if (!data.vehicle) {
+      if (data.reg && data.make && data.model) {
+        data.vehicle = (data.make + " " + data.model + " (" + data.reg + ")").trim();
+      } else if (data.make || data.model) {
+        data.vehicle = (data.make + " " + data.model).trim();
+      } else if (data.reg) {
+        data.vehicle = data.reg;
       }
     }
 
-    var dateInfo = detectDateTimeV9(raw, agentMessages, history);
+    var requests = detectCustomerRequests(customerMessages, agentMessages);
+    data.customerRequests = requests;
+
+    var intents = detectIntent(customerMessages, data);
+    if (intents.length) data.intent = intents.join(", ");
+
+    var dateInfo = detectDateTime(customerMessages, agentMessages);
     if (dateInfo) {
       data.date = dateInfo.date;
       data.time = dateInfo.time;
-      data.flexible = dateInfo.flexible;
       data.dateTime = dateInfo.dateTime;
     }
-    if (history.agentConfirmed) {
-      if (history.agentConfirmed.date) data.date = history.agentConfirmed.date;
-      if (history.agentConfirmed.time) data.time = history.agentConfirmed.time;
-    }
-    if (data.date && data.time) data.dateTime = data.date + " " + data.time;
-    else if (data.date && data.flexible) data.dateTime = data.date + " " + data.flexible;
-    else if (data.date) data.dateTime = data.date;
-    else if (data.time) data.dateTime = data.time;
 
-    var newUsed = detectNewUsedV4(data, raw, history);
-    if (newUsed) data.newUsed = newUsed;
+    data.bookingType = detectBookingType(agentMessages, customerMessages);
+    data.newUsed = detectNewUsed(customerMessages, data.reg);
 
-    data.bookingType = detectBookingTypeV6(raw, data, agentMessages, customerMessages);
-
-    var flags = detectFlagsV10(raw, data, pxAskIndex);
+    var flags = detectFlags(customerMessages, agentMessages, data, pxResult, voiResult);
     if (flags.length) data.flags = flags.join(", ");
 
-    data.pxSummary = buildPxSummary(data);
+    if (pxResult && !data.pxSummary) data.pxSummary = buildPxSummary(data);
+    if (data.bookingType === "Online Store") data.newUsed = "Used";
+
+    if (data.address && data.postcode) {
+      data.address = data.address + ", " + data.postcode;
+    } else if (data.address) {
+      data.address = data.address.trim();
+    } else if (data.postcode) {
+      data.address = data.postcode;
+    }
+
+    if (!data.date) {
+      data.dateTime = "";
+    }
 
     return data;
   }
 
-  function detectNameV5(raw, agentMessages, customerMessages) {
-    var selfIdRegex = /(my name is|this is|i am|i'm|im|speaking[, ]?)(.+)$/i;
-    var askRegex = /(full name|confirm your name|your name please|could i have your name|can i confirm your full name|may i take your full name|could i take your name|may i take your name)/i;
-    var strictReg = /\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/i;
-    var blockedPhrases = /(i'?m looking for|i'?m after|i'?m looking at|i'?m interested in|i'?m not sure)/i;
-    var blockedTokens = /(looking|after|for|wanting|needing|similar|interested|view|test|drive|finance|deposit|mileage|reg)/i;
-
-    function cleanNameCandidate(fragment) {
-      if (!fragment) return "";
-      return fragment
-        .replace(/[0-9]/g, "")
-        .replace(/[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}/gi, "")
-        .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, "")
-        .replace(/\s+/g, " ")
-        .trim();
-    }
-
-    function looksLikeName(str) {
-      if (!str) return false;
-      if (/@/.test(str)) return false;
-      if (strictReg.test(str)) return false;
-      if (detectKnownModelOnly(str) || detectBrandAndModel(str)) return false;
-      if (blockedTokens.test(str.toLowerCase())) return false;
-      var parts = str.split(/\s+/);
-      if (parts.length < 1 || parts.length > 4) return false;
-      return parts.every(function (p) { return /^[A-Za-z][A-Za-z\-']*$/.test(p); });
-    }
-
-    function buildNameObject(firstName, lastName) {
-      var fullName = "";
-      if (firstName && lastName) fullName = autoCapName(firstName + " " + lastName);
-      else if (firstName) fullName = autoCapName(firstName);
-      return {
-        fullName: fullName,
-        firstName: autoCapName(firstName || ""),
-        lastName: autoCapName(lastName || "")
-      };
-    }
-
-    var result = { fullName: "", firstName: "", lastName: "" };
-
-    customerMessages.forEach(function (msg) {
-      var text = (msg.text || "").trim();
-      if (blockedPhrases.test(text)) return;
-      var match = selfIdRegex.exec(text);
-      if (!match) return;
-      var candidate = cleanNameCandidate(match[2]);
-      if (!looksLikeName(candidate)) return;
-      var parts = candidate.split(/\s+/);
-      if (parts.length >= 2) {
-        result = buildNameObject(parts[0], parts.slice(1).join(" "));
-      } else if (parts.length === 1) {
-        result.firstName = autoCapName(parts[0]);
-        result.fullName = result.firstName;
-      }
-    });
-
-    var askIndex = -1;
-    agentMessages.forEach(function (msg) {
-      if (askIndex !== -1) return;
-      if (askRegex.test((msg.text || "").toLowerCase())) askIndex = msg.index;
-    });
-
-    if (askIndex >= 0) {
-      for (var r = 0; r < raw.length; r++) {
-        var item = raw[r];
-        if (item.index <= askIndex || item.sender !== "customer") continue;
-        var candidateText = cleanNameCandidate(item.text || "");
-        if (!looksLikeName(candidateText)) break;
-        var partsAfter = candidateText.split(/\s+/);
-        if (partsAfter.length >= 2) {
-          result = buildNameObject(partsAfter[0], partsAfter.slice(1).join(" "));
-        } else if (partsAfter.length === 1) {
-          result.firstName = autoCapName(partsAfter[0]);
-          result.fullName = result.firstName;
-        }
-        break;
-      }
-    }
-
-    customerMessages.forEach(function (msg) {
-      var candidate = cleanNameCandidate((msg.text || "").trim());
-      if (!looksLikeName(candidate)) return;
-      var parts = candidate.split(/\s+/);
-      if (parts.length >= 2) {
-        result = buildNameObject(parts[0], parts.slice(1).join(" "));
-      }
-    });
-
-    customerMessages.forEach(function (msg) {
-      var text = (msg.text || "").trim();
-      var surnameMatch = /(surname|last name)\s+([A-Za-z\-']+)/i.exec(text);
-      if (surnameMatch && result.firstName && !result.lastName) {
-        result = buildNameObject(result.firstName, surnameMatch[2]);
-      }
-    });
-
-    return result.fullName || result.firstName ? result : null;
+  function normalizeWhitespace(text) {
+    return (text || "").replace(/\s+/g, " ").trim();
   }
 
-  function detectPXv6(raw, agentMessages, pxAskIndex) {
-    var px = { pxReg: "", pxMake: "", pxModel: "", pxMileage: "" };
-    var strictReg = /^[A-Z]{2}[0-9]{2}[A-Z]{3}$/;
-
-    function extractReg(text) {
-      var match = /\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/i.exec(text || "");
-      if (!match) return "";
-      var candidate = match[1].replace(/\s+/g, "").toUpperCase();
-      if (!strictReg.test(candidate)) return "";
-      if (/finance|deposit|monthly|pm|pcp|hp|pch/i.test(text)) return "";
-      return candidate;
-    }
-
-    function extractMileage(text) {
-      if (/finance|deposit|monthly|pm|pcp|hp|pch/i.test(text)) return "";
-      var match = /(\d{2,3}\s?k|\d{4,6})\s*(miles|mi)?/i.exec(text || "");
-      if (!match) return "";
-      var rawVal = match[1];
-      var num = rawVal.replace(/[^\d]/g, "");
-      if (/k/i.test(rawVal)) return String(parseInt(num, 10) * 1000);
-      if (parseInt(num, 10) < 1000 && !/miles|mi/i.test(text)) return "";
-      return num;
-    }
-
-    function shouldReset(text) {
-      return /(that's wrong|actually|correction|ignore that reg)/i.test(text || "");
-    }
-
-    raw.forEach(function (item) {
-      if (item.sender !== "customer") return;
-      var text = item.text || "";
-      var selfIdentified = isSelfIdentifyingVehicle(text);
-      var afterAsk = pxAskIndex >= 0 && item.index > pxAskIndex;
-      if (!afterAsk && !selfIdentified) return;
-      if (/similar to my/i.test(text)) return;
-
-      if (shouldReset(text)) {
-        px = { pxReg: "", pxMake: "", pxModel: "", pxMileage: "" };
-        return;
-      }
-
-      var reg = extractReg(text);
-      var mileage = extractMileage(text);
-      var model = detectKnownModelOnly(text);
-      var makeModel = detectBrandAndModel(text);
-
-      if (reg) px.pxReg = reg;
-      if (mileage) px.pxMileage = mileage;
-      if (makeModel) {
-        px.pxMake = makeModel.make;
-        px.pxModel = makeModel.model;
-      } else if (model) {
-        px.pxMake = model.make;
-        px.pxModel = model.model;
-      }
-    });
-
-    return px;
+  function toTitleCase(str) {
+    return str
+      .split(/\s+/)
+      .map(function (part) {
+        return part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
+      })
+      .join(" ");
   }
 
-  function detectVOIv4(raw, agentMessages, pxData, history, pxAskIndex) {
-    var voi = null;
-    var candidates = [];
-    var interestRegex = /(looking for|looking at|interested in|want a|do you have|the \w+\s+\d{3,4})/i;
-
-    function pushCandidate(source, text, priority) {
-      var vehicle = detectBrandAndModel(text) || detectKnownModelOnly(text);
-      if (!vehicle) return;
-      candidates.push({ vehicle: vehicle, priority: priority, source: source, text: text });
-    }
-
-    if (history && history.agentConfirmed && history.agentConfirmed.vehicle) {
-      voi = history.agentConfirmed.vehicle;
-    }
-
-    if (!voi) {
-      raw.forEach(function (item) {
-        var text = item.text || "";
-        if (item.sender === "customer" && interestRegex.test(text) && !isSelfIdentifyingVehicle(text)) {
-          pushCandidate("interest", text, 1);
-        }
-      });
-    }
-
-    if (!voi && pxData && pxData.pxMake && pxData.pxModel) {
-      raw.forEach(function (item) {
-        var text = item.text || "";
-        if (item.sender === "customer" && /similar to my/i.test(text)) {
-          voi = { placeholder: "Similar to: " + pxData.pxMake + " " + pxData.pxModel };
-        }
-      });
-    }
-
-    if (!voi && candidates.length === 0) {
-      raw.forEach(function (item) {
-        var text = item.text || "";
-        if (item.sender === "customer" && !isSelfIdentifyingVehicle(text)) {
-          pushCandidate("mention", text, 2);
-        }
-      });
-    }
-
-    if (!voi && candidates.length === 0) {
-      raw.forEach(function (item) {
-        var text = item.text || "";
-        if (item.sender === "customer" && !isSelfIdentifyingVehicle(text) && pxAskIndex >= 0 && item.index < pxAskIndex) {
-          var regMatch = /\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/i.exec(text);
-          if (regMatch) {
-            candidates.push({ vehicle: { make: "", model: "", trim: "", reg: regMatch[1].replace(/\s+/g, "").toUpperCase() }, priority: 3 });
-          }
-        }
-      });
-    }
-
-    if (!voi && candidates.length) {
-      candidates.sort(function (a, b) { return a.priority - b.priority; });
-      voi = candidates[candidates.length - 1].vehicle;
-    }
-
-    if (voi && !voi.placeholder && pxData && pxData.pxModel && detectKnownModelOnly(pxData.pxModel)) {
-      if (voi.model === pxData.pxModel && voi.make === pxData.pxMake) {
-        voi = null;
-      }
-    }
-
-    if (voi && voi.placeholder) {
-      return voi;
-    }
-
-    return voi;
+  function getBrandList() {
+    return ["peugeot", "citroen", "citroën", "ds", "fiat", "abarth", "alfa romeo", "jeep", "vauxhall", "leapmotor"];
   }
 
-  function detectBrandAndModel(text) {
-    var brandList = ["peugeot", "citroen", "citroën", "ds", "fiat", "abarth", "alfa romeo", "jeep", "vauxhall", "leapmotor"];
-    var trimList = ["gt", "allure", "active", "premium", "ultra", "sport", "la premiere", "s line", "lounge"];
-    var lower = (text || "").toLowerCase();
-    var tokens = lower.split(/\s+/);
-
-    for (var b = 0; b < brandList.length; b++) {
-      var brand = brandList[b];
-      for (var t = 0; t < tokens.length; t++) {
-        if (tokens[t] === brand || tokens[t].replace(/[^a-z]/g, "") === brand.replace(/\s+/g, "")) {
-          var following = tokens.slice(t + 1, t + 4).filter(function (tok) { return tok && !/^[^a-z0-9]+$/i.test(tok); });
-          if (!following.length) continue;
-          var modelTokens = following.slice(0, 2);
-          var trim = "";
-          var lastToken = following[following.length - 1];
-          if (trimList.indexOf(lastToken.replace(/[^a-z]/g, "")) !== -1) {
-            trim = lastToken.replace(/[^a-z]/g, "");
-            modelTokens = following.slice(0, following.length - 1);
-          }
-          var model = modelTokens.join(" ").trim();
-          if (model) {
-            return {
-              make: toTitleCase(brand),
-              model: model.toUpperCase() === model ? model : toTitleCase(model),
-              trim: trim ? toTitleCase(trim) : "",
-              reg: ""
-            };
-          }
-        }
-      }
-    }
-    return null;
-  }
-
-  function detectKnownModelOnly(text) {
-    var models = [
+  function getModelList() {
+    return [
       { make: "Peugeot", model: "208" },
       { make: "Peugeot", model: "2008" },
       { make: "Peugeot", model: "308" },
@@ -1100,89 +792,502 @@
       { make: "Leapmotor", model: "T03" },
       { make: "Leapmotor", model: "C10" }
     ];
-    var lower = (text || "").toLowerCase();
-    for (var i = 0; i < models.length; i++) {
-      var m = models[i];
-      if (lower.indexOf(m.model.toLowerCase()) !== -1) {
-        return { make: m.make, model: m.model, trim: "", reg: "" };
+  }
+
+  function extractReg(text) {
+    var match = /\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/i.exec(text || "");
+    if (!match) return "";
+    return match[1].replace(/\s+/g, "").toUpperCase();
+  }
+
+  function isFinanceMessage(text) {
+    return /(finance|pcp|hp|pch|deposit|monthly|apr|payment)/i.test(text || "");
+  }
+
+  function containsMileage(text) {
+    return /(\b\d{2,3}\s?k\b|\b\d{4,6}\b).*?(miles|mi)/i.test(text || "");
+  }
+
+  function detectCustomerName(customerMessages, agentMessages) {
+    var namePrompts = /(may i take your full name|just to confirm, could i have your full name|can i confirm your full name|could i take your name|may i take your name)/i;
+    var selfId = /(my name is|this is|i am|i'm|im)\s+(.+)/i;
+    var financeWords = /(finance|pcp|hp|pch|deposit|monthly|apr|payment)/i;
+    var regRegex = /\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/i;
+    var greetings = ["hi", "hello", "hey", "ok", "okay", "asap", "thanks", "thank you", "cheers"];
+
+    function isGreetingOnly(text) {
+      var normalized = normalizeWhitespace(text).toLowerCase();
+      return greetings.indexOf(normalized) !== -1;
+    }
+
+    function isNameCandidate(text) {
+      var cleaned = normalizeWhitespace(text).replace(/[0-9]/g, "");
+      if (!cleaned) return "";
+      if (isGreetingOnly(text)) return "";
+      if (/@/.test(text)) return "";
+      if (regRegex.test(text)) return "";
+      if (financeWords.test(text)) return "";
+      if (containsMileage(text)) return "";
+      if (detectModelInText(text)) return "";
+      if (/\b\d{1,2}[\/:]\d{1,2}\b/.test(text)) return "";
+      if (/\b(yes|ok|okay|perfect|sounds good|that works|that's fine)\b/i.test(text)) return "";
+      var parts = cleaned.split(/\s+/).filter(Boolean);
+      if (parts.length < 1 || parts.length > 4) return "";
+      if (!parts.every(function (p) { return /^[A-Za-z][A-Za-z\-']*$/.test(p); })) return "";
+      return parts.map(toTitleCase).join(" ");
+    }
+
+    for (var j = 0; j < customerMessages.length; j++) {
+      var text = customerMessages[j].text || "";
+      var match = selfId.exec(text);
+      if (match) {
+        var candidate = isNameCandidate(match[2]);
+        if (candidate) return buildNameParts(candidate);
       }
     }
+
+    var promptIndex = -1;
+    agentMessages.forEach(function (msg) {
+      if (namePrompts.test(msg.text || "")) promptIndex = msg.index;
+    });
+
+    var candidates = [];
+    if (promptIndex >= 0) {
+      customerMessages.forEach(function (msg) {
+        if (msg.index <= promptIndex) return;
+        var candidate = isNameCandidate(msg.text || "");
+        if (candidate) candidates.push({ name: candidate, index: msg.index });
+      });
+    }
+
+    if (candidates.length) {
+      candidates.sort(function (a, b) { return a.index - b.index; });
+      var firstParts = candidates[0].name.split(/\s+/);
+      var firstName = firstParts[0] || "";
+      var lastName = firstParts.length > 1 ? firstParts.slice(1).join(" ") : "";
+      if (!lastName) {
+        for (var i = 1; i < candidates.length; i++) {
+          var nextParts = candidates[i].name.split(/\s+/);
+          if (nextParts.length == 1) {
+            lastName = nextParts[0];
+            break;
+          }
+        }
+      }
+      var fullName = (firstName + (lastName ? " " + lastName : "")).trim();
+      if (/@/.test(fullName)) return null;
+      return buildNameParts(fullName);
+    }
+
+    for (var k = 0; k < customerMessages.length; k++) {
+      var signature = customerMessages[k].text || "";
+      var sigMatch = /(thanks|kind regards|regards|cheers),?\s*([A-Za-z\-' ]{2,40})$/i.exec(signature.trim());
+      if (sigMatch) {
+        var sigCandidate = isNameCandidate(sigMatch[2]);
+        if (sigCandidate) return buildNameParts(sigCandidate);
+      }
+    }
+
     return null;
   }
 
-  function detectEmail(messages) {
-    var emailRegex = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
-    for (var i = 0; i < messages.length; i++) {
-      var text = messages[i].text || "";
-      var match = emailRegex.exec(text);
-      if (match) return match[0].toLowerCase();
-    }
-    return "";
+  function buildNameParts(fullName) {
+    var parts = fullName.split(/\s+/).filter(Boolean);
+    var firstName = parts[0] || "";
+    var lastName = parts.length > 1 ? parts.slice(1).join(" ") : "";
+    return {
+      fullName: (firstName + (lastName ? " " + lastName : "")).trim(),
+      firstName: firstName,
+      lastName: lastName
+    };
   }
 
-  function detectPhoneV2(messages) {
-    var digitsRegex = /(\+?\d[\d\s]{7,})/;
-    for (var i = 0; i < messages.length; i++) {
-      var text = messages[i].text || "";
-      var match = digitsRegex.exec(text);
-      if (match) {
-        var cleaned = match[1].replace(/\D/g, "");
-        if (cleaned.length >= 9 && cleaned.length <= 13) return cleaned;
-      }
-    }
-    return "";
-  }
+  function detectPhone(customerMessages, agentMessages) {
+    var phoneRequest = /(phone|contact number|mobile|telephone|call you)/i;
+    var requestIndex = -1;
+    agentMessages.forEach(function (msg) {
+      if (phoneRequest.test(msg.text || "")) requestIndex = msg.index;
+    });
 
-  function detectAddressAndPostcode(messages) {
-    var postcodeRegex = /([A-Z]{1,2}\d{1,2}[A-Z]?)\s?(\d[A-Z]{2})/i;
-    var address = "";
-    var postcode = "";
-    messages.forEach(function (msg) {
+    var phoneRegex = /\b(?:\+44\s?\d{2,4}|0\d{2,4})\s?\d{3,4}\s?\d{3,4}\b/;
+    var latest = "";
+
+    customerMessages.forEach(function (msg) {
       var text = msg.text || "";
-      if (!address && /\d+\s+\w+/.test(text)) {
-        address = text;
+      if (requestIndex >= 0 && msg.index <= requestIndex) return;
+      if (/\bmiles\b|\bmi\b/i.test(text)) return;
+      var match = phoneRegex.exec(text);
+      if (!match) return;
+      var cleaned = match[0].replace(/\D/g, "");
+      if (cleaned.length < 9 || cleaned.length > 13) return;
+      latest = cleaned;
+    });
+
+    if (latest) return latest;
+
+    if (requestIndex < 0) {
+      for (var i = 0; i < customerMessages.length; i++) {
+        var textFallback = customerMessages[i].text || "";
+        if (/\bmiles\b|\bmi\b/i.test(textFallback)) continue;
+        var matchFallback = phoneRegex.exec(textFallback);
+        if (matchFallback) return matchFallback[0].replace(/\D/g, "");
       }
-      var match = postcodeRegex.exec(text);
-      if (match) {
-        postcode = (match[1] + " " + match[2]).toUpperCase();
+    }
+
+    return "";
+  }
+
+  function detectEmail(customerMessages, agentMessages) {
+    var emailRegex = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
+    var emailRequest = /(email address|email)/i;
+    var requestIndex = -1;
+    agentMessages.forEach(function (msg) {
+      if (emailRequest.test(msg.text || "")) requestIndex = msg.index;
+    });
+
+    var latestAfterRequest = "";
+    customerMessages.forEach(function (msg) {
+      var match = emailRegex.exec(msg.text || "");
+      if (!match) return;
+      if (requestIndex >= 0 && msg.index > requestIndex) {
+        latestAfterRequest = match[0].toLowerCase();
       }
     });
+
+    if (latestAfterRequest) return latestAfterRequest;
+
+    if (requestIndex < 0) {
+      for (var i = 0; i < customerMessages.length; i++) {
+        var match = emailRegex.exec(customerMessages[i].text || "");
+        if (match) return match[0].toLowerCase();
+      }
+    }
+
+    return "";
+  }
+
+  function detectAddress(customerMessages, agentMessages) {
+    var postcodeRegex = /([A-Z]{1,2}\d{1,2}[A-Z]?)\s?(\d[A-Z]{2})/i;
+    var addressTokens = /(road|rd|street|st|avenue|ave|lane|ln|drive|dr|close|cl|court|ct|place|pl|crescent|cres|way|terrace|ter|boulevard|blvd|park)/i;
+    var addressRequest = /(address|postcode|post code|house number|street)/i;
+    var blockWords = /(booking|what time|when|contact|branch|trying to|call)/i;
+    var requestIndex = -1;
+
+    agentMessages.forEach(function (msg) {
+      if (addressRequest.test(msg.text || "")) requestIndex = msg.index;
+    });
+
+    if (requestIndex < 0) return null;
+
+    var parts = [];
+    var postcode = "";
+
+    customerMessages.forEach(function (msg) {
+      if (msg.index <= requestIndex) return;
+      var text = normalizeWhitespace(msg.text || "");
+      if (!text) return;
+      if (blockWords.test(text)) return;
+
+      var postMatch = postcodeRegex.exec(text);
+      var hasPostcode = false;
+      if (postMatch) {
+        postcode = (postMatch[1] + " " + postMatch[2]).toUpperCase();
+        hasPostcode = true;
+      }
+
+      var hasHouseNumber = /\d+\s+\w+/.test(text) && addressTokens.test(text);
+      if (text.split(/\s+/).length === 1 && !hasPostcode) return;
+
+      if (hasPostcode || hasHouseNumber) {
+        if (parts.indexOf(text) === -1) parts.push(text);
+      }
+    });
+
+    var address = parts.join("\n");
     return address || postcode ? { address: address, postcode: postcode } : null;
   }
 
-  function detectPxRequestIndex(agentMessages) {
-    var idx = -1;
+  function detectPX(customerMessages, agentMessages) {
+    var pxPrompt = /(do you have a vehicle to part exchange|do you have a vehicle to part-exchange|please provide registration, make, model and mileage|can i please take the registration, make, model and mileage)/i;
+    var requestIndex = -1;
     agentMessages.forEach(function (msg) {
-      var lower = (msg.text || "").toLowerCase();
-      if (/part exchange|px|trade[- ]?in/.test(lower)) idx = msg.index;
+      if (pxPrompt.test(msg.text || "")) requestIndex = msg.index;
     });
-    return idx;
+
+    if (requestIndex < 0) return null;
+
+    var px = { pxReg: "", pxMake: "", pxModel: "", pxMileage: "", pxSummary: "" };
+    var noPx = false;
+
+    customerMessages.forEach(function (msg) {
+      if (msg.index <= requestIndex) return;
+      var text = msg.text || "";
+      if (noPx) return;
+      if (/no px|no part exchange|don't have a px|dont have a px|no part-exchange/i.test(text)) {
+        noPx = true;
+        px = { pxReg: "", pxMake: "", pxModel: "", pxMileage: "", pxSummary: "No PX" };
+        return;
+      }
+      if (/(that's wrong|actually ignore that reg|correction|ignore that reg)/i.test(text)) {
+        px = { pxReg: "", pxMake: "", pxModel: "", pxMileage: "", pxSummary: "" };
+        return;
+      }
+      if (isFinanceMessage(text)) return;
+
+      if (!px.pxReg) {
+        var reg = extractReg(text);
+        if (reg) px.pxReg = reg;
+      }
+
+      var mileageMatch = /(\b\d{2,3}\s?k\b|\b\d{4,6}\b)/i.exec(text);
+      if (mileageMatch) {
+        var rawMiles = mileageMatch[0].toLowerCase().replace(/\s+/g, "");
+        var digits = rawMiles.replace(/\D/g, "");
+        if (digits.length === 10 || digits.length === 11) return;
+        if (rawMiles.indexOf("k") !== -1) {
+          rawMiles = String(parseInt(digits, 10) * 1000);
+        } else {
+          rawMiles = digits;
+        }
+        if (rawMiles.length >= 4 && rawMiles.length <= 6) px.pxMileage = rawMiles;
+      }
+
+      var vehicle = detectVehicleFromText(text);
+      if (vehicle && !vehicle.placeholder) {
+        px.pxMake = vehicle.make || px.pxMake;
+        px.pxModel = vehicle.model || px.pxModel;
+      }
+    });
+
+    if (noPx) return px;
+
+    if (px.pxReg || px.pxMake || px.pxModel || px.pxMileage) {
+      px.pxSummary = buildPxSummary({
+        pxReg: px.pxReg,
+        pxMake: px.pxMake,
+        pxModel: px.pxModel,
+        pxMileage: px.pxMileage
+      });
+    }
+
+    return px;
   }
 
-  function isSelfIdentifyingVehicle(text) {
-    return /my car|my vehicle|i have|i've got|i currently drive/.test((text || "").toLowerCase());
+  function detectVOI(customerMessages, agentMessages, pxResult) {
+    var pxReg = pxResult ? pxResult.pxReg : "";
+    var pxModel = pxResult ? pxResult.pxModel : "";
+    var pxMake = pxResult ? pxResult.pxMake : "";
+
+    function isPxMessage(text) {
+      return /(part exchange|part-exchange|px|my car|my vehicle)/i.test(text || "");
+    }
+
+    var voiRequest = /(which vehicle are you looking for|what vehicle are you interested in|what car are you interested in)/i;
+    var voiRequestIndex = -1;
+    agentMessages.forEach(function (msg) {
+      if (voiRequest.test(msg.text || "")) voiRequestIndex = msg.index;
+    });
+
+    var agentConfirmed = null;
+    agentMessages.forEach(function (msg) {
+      if (voiRequestIndex >= 0 && msg.index <= voiRequestIndex) return;
+      var text = msg.text || "";
+      var reg = extractReg(text);
+      var vehicle = detectVehicleFromText(text);
+      if (reg || (vehicle && vehicle.model)) {
+        agentConfirmed = {
+          make: vehicle ? vehicle.make : "",
+          model: vehicle ? vehicle.model : "",
+          reg: reg || (vehicle ? vehicle.reg : "")
+        };
+      }
+    });
+    if (agentConfirmed) return agentConfirmed;
+
+    var placeholder = null;
+    customerMessages.forEach(function (msg) {
+      var text = msg.text || "";
+      if (voiRequestIndex >= 0 && msg.index <= voiRequestIndex) return;
+      if (/similar to my/i.test(text)) {
+        var vehicle = detectVehicleFromText(text);
+        if (vehicle && vehicle.model) {
+          placeholder = "Similar to: " + vehicle.make + " " + vehicle.model;
+        }
+      }
+    });
+    if (placeholder) return { placeholder: placeholder };
+
+    var lastMake = "";
+    var lastModel = "";
+    var lastReg = "";
+    var uniqueVehicles = [];
+
+    customerMessages.forEach(function (msg) {
+      var text = msg.text || "";
+      if (voiRequestIndex >= 0 && msg.index <= voiRequestIndex) return;
+      if (isPxMessage(text)) return;
+      if (isFinanceMessage(text)) return;
+
+      var reg = extractReg(text);
+      if (reg && reg !== pxReg) {
+        lastReg = reg;
+      }
+
+      var vehicle = detectVehicleFromText(text);
+      if (vehicle && vehicle.model) {
+        lastMake = vehicle.make || lastMake;
+        lastModel = vehicle.model || lastModel;
+      }
+
+      if (vehicle && vehicle.model) {
+        var key = (vehicle.make || "") + "|" + (vehicle.model || "") + "|" + (reg || "");
+        if (uniqueVehicles.indexOf(key) === -1) uniqueVehicles.push(key);
+      }
+    });
+
+    if (lastReg && lastReg !== pxReg && lastMake && lastModel) {
+      return { make: lastMake, model: lastModel, reg: lastReg };
+    }
+
+    if (lastMake || lastModel || lastReg) {
+      if (!(lastMake === pxMake && lastModel === pxModel)) {
+        return { make: lastMake, model: lastModel, reg: lastReg };
+      }
+    }
+
+    return null;
   }
 
-  function detectNewUsedV4(data, raw, history) {
-    var combined = raw.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
-    if (/new car|brand new/.test(combined)) return "New";
-    if (/used|second hand|pre-owned|approved used/.test(combined)) return "Used";
-    if (history.agentConfirmed && history.agentConfirmed.vehicle) return "Used";
-    if (data.reg) return "Used";
-    return "";
+  function detectVehicleFromText(text) {
+    var lower = (text || "").toLowerCase();
+    var reg = extractReg(text);
+    var models = getModelList();
+    for (var i = 0; i < models.length; i++) {
+      if (lower.indexOf(models[i].model.toLowerCase()) !== -1) {
+        return { make: models[i].make, model: models[i].model, reg: reg };
+      }
+    }
+
+    var brands = getBrandList();
+    var tokens = lower.split(/\s+/);
+    for (var b = 0; b < brands.length; b++) {
+      var brand = brands[b];
+      for (var t = 0; t < tokens.length; t++) {
+        if (tokens[t] === brand || tokens[t].replace(/[^a-z]/g, "") === brand.replace(/\s+/g, "")) {
+          var following = tokens.slice(t + 1, t + 3).filter(Boolean);
+          if (following.length) {
+            var model = following.join(" ");
+            return { make: toTitleCase(brand), model: toTitleCase(model), reg: reg };
+          }
+        }
+      }
+    }
+
+    return null;
   }
 
-  function detectBookingTypeV6(raw, data, agentMessages, customerMessages) {
-    var combined = raw.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
-    if (/test drive/.test(combined)) return "Test Drive";
-    if (/viewing|view|see (the )?car/.test(combined)) return "View";
-    if (/phone call|call me|phone me/.test(combined)) return "Phone Call";
-    if (/valuation/.test(combined)) return "Valuation";
-    if (/online store|reserve|reservation/.test(combined)) return "Online Store";
-    return "";
+  function detectModelInText(text) {
+    return !!detectVehicleFromText(text);
   }
 
-  function detectDateTimeV9(raw, agentMessages, history) {
+  function detectCustomerRequests(customerMessages, agentMessages) {
+    var requests = [];
+    var keywordRegex = /(delivery|transfer|finance|deposit|monthly|payment|warranty|service history|mot|colour|color|spec|picture|photo|video|urgent|asap|view|viewing|clarify|question|similar to)/i;
+    var greetings = /^(hi|hello|hey|ok|okay|thanks|thank you|cheers)$/i;
+
+    function isAnsweredLater(text, idx) {
+      var lower = (text || "").toLowerCase();
+      var keywords = ["delivery", "transfer", "finance", "deposit", "monthly", "warranty", "service history", "mot", "colour", "spec", "picture", "photo", "video", "viewing", "view"];
+      var hit = keywords.find(function (k) { return lower.indexOf(k) !== -1; });
+      if (!hit || !agentMessages) return false;
+      for (var i = 0; i < agentMessages.length; i++) {
+        if (agentMessages[i].index <= idx) continue;
+        if ((agentMessages[i].text || "").toLowerCase().indexOf(hit) !== -1) return true;
+      }
+      return false;
+    }
+
+    function addRequest(text) {
+      var trimmed = text.trim();
+      if (!trimmed) return;
+      var normalized = trimmed.toLowerCase();
+      for (var i = 0; i < requests.length; i++) {
+        var existing = requests[i];
+        if (existing.toLowerCase().indexOf(normalized) !== -1) return;
+        if (normalized.indexOf(existing.toLowerCase()) !== -1) {
+          requests[i] = trimmed;
+          return;
+        }
+      }
+      requests.push(trimmed);
+    }
+
+    customerMessages.forEach(function (msg) {
+      var text = normalizeWhitespace(msg.text || "");
+      if (!text) return;
+      if (greetings.test(text)) return;
+      if (!keywordRegex.test(text)) return;
+      if (isAnsweredLater(text, msg.index)) return;
+
+      text.split(/[.!?]/).forEach(function (segment) {
+        var trimmed = segment.trim();
+        if (!trimmed) return;
+        if (keywordRegex.test(trimmed)) {
+          addRequest(trimmed);
+        }
+      });
+    });
+
+    return requests;
+  }
+
+  function detectIntent(customerMessages, data) {
+    var intents = [];
+    var combined = customerMessages.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
+    if ((data.date && data.time) || /book|appointment|test drive|viewing|view/.test(combined)) intents.push("booking request");
+    if (/motability/.test(combined)) intents.push("motability inquiry");
+    if (/finance|pcp|hp|pch|monthly|deposit/.test(combined)) intents.push("finance discussion");
+    if (/delivery|transfer|home delivery/.test(combined)) intents.push("delivery enquiry");
+    if (/sell.*part exchange|px only|just want to sell/.test(combined)) intents.push("px-only enquiry");
+    if (/compare|\bvs\b/.test(combined)) intents.push("model comparison");
+    return intents.filter(function (v, idx, arr) { return arr.indexOf(v) === idx; });
+  }
+
+  function detectFlags(customerMessages, agentMessages, data, pxResult, voiResult) {
+    var flags = [];
+    var nameAsked = agentMessages.some(function (m) {
+      return /full name|confirm your name|your name please|could i have your name|may i take your name/i.test(m.text || "");
+    });
+
+    if (nameAsked && data.firstName && !data.lastName) flags.push("Missing surname");
+
+    var pxAsked = agentMessages.some(function (m) {
+      return /part exchange|part-exchange|registration, make, model and mileage/i.test(m.text || "");
+    });
+    if (pxAsked && (!pxResult || (!pxResult.pxReg && !pxResult.pxMake && !pxResult.pxModel && !pxResult.pxMileage)) && (!pxResult || pxResult.pxSummary !== "No PX")) {
+      flags.push("Missing PX details");
+    }
+
+    if (customerMessages.some(function (m) { return /urgent|asap/i.test(m.text || ""); })) {
+      flags.push("Customer urgency");
+    }
+
+    var vehicleMentions = [];
+    customerMessages.forEach(function (m) {
+      var text = m.text || "";
+      if (/(part exchange|part-exchange|px|my car|my vehicle)/i.test(text)) return;
+      var vehicle = detectVehicleFromText(text);
+      if (vehicle && vehicle.model) {
+        var key = vehicle.make + " " + vehicle.model;
+        if (vehicleMentions.indexOf(key) === -1) vehicleMentions.push(key);
+      }
+    });
+    if (vehicleMentions.length > 1) flags.push("Ambiguous vehicle of interest");
+
+    return flags;
+  }
+
+  function detectDateTime(customerMessages, agentMessages) {
     var today = new Date();
     var pad = function (n) { return n < 10 ? "0" + n : String(n); };
     var todayStr = pad(today.getDate()) + "/" + pad(today.getMonth() + 1);
@@ -1191,104 +1296,70 @@
 
     var date = "";
     var time = "";
-    var flexible = "";
-    var agentContext = agentMessages.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
-    var agentAskedToday = /today|tomorrow|this week|next week/.test(agentContext);
 
-    function getLastTimeMention(messages) {
-      var last = "";
-      messages.forEach(function (msg) {
-        var text = msg.text || "";
-        var match = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(text);
-        if (!match) return;
-        var hour = parseInt(match[1], 10);
-        var mins = match[2] ? parseInt(match[2], 10) : 0;
-        if (match[3]) {
-          if (match[3].toLowerCase() === "pm" && hour < 12) hour += 12;
-          if (match[3].toLowerCase() === "am" && hour === 12) hour = 0;
-        } else {
-          hour = hour < 9 ? hour + 12 : hour + 12;
-        }
-        last = clampTimeSlot(hour, mins);
-      });
-      return last;
-    }
-
-    function parseTime(token) {
-      var hm = /(\d{1,2})[:.](\d{2})/i.exec(token);
+    function parseTime(text) {
+      if (/asap|urgent|soon/i.test(text)) return "";
+      if (/midday|noon/.test(text)) return "12:00";
+      if (/morning/.test(text)) return "10:00";
+      if (/afternoon/.test(text)) return "14:00";
+      if (/evening/.test(text)) return "17:00";
+      var hm = /(\d{1,2})[:.](\d{2})/.exec(text);
       if (hm) return clampTimeSlot(parseInt(hm[1], 10), parseInt(hm[2], 10));
-      var plain = /\bat\s*(\d{1,2})\s*(am|pm)?\b/i.exec(token);
-      if (plain) {
-        var pHour = parseInt(plain[1], 10);
-        if (plain[2] && plain[2].toLowerCase() === "pm" && pHour < 12) pHour += 12;
-        if (plain[2] && plain[2].toLowerCase() === "am" && pHour === 12) pHour = 0;
-        if (!plain[2]) {
-          if (/morning/.test(agentContext)) pHour = 10;
-          else if (/afternoon/.test(agentContext)) pHour = 14;
-          else if (/evening/.test(agentContext)) pHour = 17;
-          else pHour = pHour < 9 ? pHour + 12 : pHour + 12;
-        }
-        return clampTimeSlot(pHour < 9 ? pHour + 12 : pHour, 0);
+      var h = /\b(\d{1,2})\s*(am|pm)?\b/.exec(text);
+      if (h) {
+        var hour = parseInt(h[1], 10);
+        var mer = (h[2] || "").toLowerCase();
+        if (mer === "pm" && hour < 12) hour += 12;
+        if (mer === "am" && hour === 12) hour = 0;
+        return clampTimeSlot(hour, 0);
       }
-      if (/after\s+\d{1,2}/i.test(token)) {
-        flexible = "Flexible";
-        var afterMatch = /after\s+(\d{1,2})/i.exec(token);
-        if (afterMatch) {
-          var afterHour = parseInt(afterMatch[1], 10);
-          return clampTimeSlot(afterHour < 9 ? afterHour + 12 : afterHour, 0);
-        }
-      }
-      if (/before\s+\d{1,2}/i.test(token)) {
-        flexible = "Flexible";
-        var beforeMatch = /before\s+(\d{1,2})/i.exec(token);
-        if (beforeMatch) {
-          var beforeHour = parseInt(beforeMatch[1], 10);
-          return clampTimeSlot(beforeHour < 9 ? beforeHour + 12 : beforeHour, 0);
-        }
-      }
-      if (/morning/.test(token)) return "10:00";
-      if (/afternoon/.test(token)) return "14:00";
-      if (/evening/.test(token)) return "17:00";
       return "";
     }
 
-    function parseDate(token) {
-      var numeric = /(\d{1,2})[\/\-](\d{1,2})/i.exec(token);
+    function parseDate(text) {
+      if (/tomorrow/.test(text)) return tomorrowStr;
+      if (/today/.test(text)) return todayStr;
+      var numeric = /(\d{1,2})[\/\-](\d{1,2})/.exec(text);
       if (numeric) return pad(parseInt(numeric[1], 10)) + "/" + pad(parseInt(numeric[2], 10));
-      if (/today/i.test(token)) return todayStr;
-      if (/tomorrow/i.test(token)) return tomorrowStr;
-      var weekdayRe = /(this|next)?\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.exec(token);
+      var weekdayRe = /(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.exec(text);
       if (weekdayRe) {
-        var dayName = weekdayRe[2];
-        var isNext = (weekdayRe[1] || "").toLowerCase() === "next";
-        return findNextWeekdayDate(dayName, isNext ? 7 : 0);
+        return findNextWeekdayDate(weekdayRe[1], 0);
       }
       return "";
     }
 
-    raw.forEach(function (item) {
-      var txt = item.text || "";
-      var lower = txt.toLowerCase();
-      if (!date) date = parseDate(lower);
-      if (!time) time = parseTime(lower);
-      if (!flexible && /flexible|any time/i.test(lower)) flexible = "Flexible";
+    var lastAgentDate = "";
+    var lastAgentTime = "";
+    agentMessages.forEach(function (msg) {
+      var lower = (msg.text || "").toLowerCase();
+      var newDate = parseDate(lower);
+      var newTime = parseTime(lower);
+      if (newDate) lastAgentDate = newDate;
+      if (newTime) lastAgentTime = newTime;
     });
 
-    if (!time) {
-      var last = getLastTimeMention(raw);
-      if (last) time = last;
+    customerMessages.forEach(function (msg) {
+      var lower = (msg.text || "").toLowerCase();
+      var newDate = parseDate(lower);
+      var newTime = parseTime(lower);
+      if (newDate) date = newDate;
+      if (newTime) time = newTime;
+
+      if (!newDate && !newTime && /(yes|that works|that's fine|ok|perfect|sounds good)/i.test(lower)) {
+        if (!date && lastAgentDate) date = lastAgentDate;
+        if (!time && lastAgentTime) time = lastAgentTime;
+      }
+    });
+
+    if (!date && time && agentMessages.some(function (m) { return /today or tomorrow/i.test(m.text || ""); })) {
+      date = tomorrowStr;
     }
 
-    if (!date && time && agentAskedToday) {
-      date = todayStr;
-    }
+    if (!date || !/^\d{2}\/\d{2}$/.test(date)) return { date: "", time: "", dateTime: "" };
+    if (time && !/^\d{2}:\d{2}$/.test(time)) time = "";
 
-    var dateTime = "";
-    if (date && time) dateTime = date + " " + time;
-    else if (date) dateTime = date;
-    else if (time) dateTime = time;
-
-    return { date: date, time: time, flexible: flexible, dateTime: dateTime };
+    var dateTime = time ? date + " " + time : date + "";
+    return { date: date, time: time, dateTime: dateTime };
   }
 
   function clampTimeSlot(hour, minute) {
@@ -1315,155 +1386,31 @@
     return pad(next.getDate()) + "/" + pad(next.getMonth() + 1);
   }
 
-  function detectFinanceV3(raw) {
-    var type = "";
-    var deposit = "";
-    var monthly = "";
-    var mileage = "";
+  function detectBookingType(agentMessages, customerMessages) {
+    var combinedAgent = agentMessages.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
+    var combinedCustomer = customerMessages.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
+    var combined = combinedAgent + " " + combinedCustomer;
 
-    raw.forEach(function (m) {
-      var text = (m.text || "");
-      var lower = text.toLowerCase();
-      if (/(pcp|hp|pch|lease|finance)/i.test(text)) {
-        if (/pcp/i.test(text)) type = "PCP";
-        else if (/hp/i.test(text)) type = "HP";
-        else if (/pch/i.test(text) || /lease/i.test(text)) type = "PCH";
-        else type = "Finance";
-      }
-      var depMatch = /(?:deposit|dep)\s*£?(\d{2,6})/i.exec(text);
-      if (depMatch) deposit = depMatch[1];
-      var monthMatch = /£?(\d{2,4})\s*(pm|per month|monthly)/i.exec(text);
-      if (monthMatch) monthly = monthMatch[1];
-      var mileageMatch = /(\d{2,3}k|\d{4,6})\s*(miles|mi|pa)?/i.exec(text);
-      if (mileageMatch) mileage = mileageMatch[1].toLowerCase().replace("k", "000");
+    if (/motability/.test(combined)) return "Motability";
+
+    var osConfirmation = PREDEFINED_OS_CONFIRMATIONS.some(function (msg) {
+      return combinedAgent.indexOf(msg.toLowerCase()) !== -1;
     });
 
-    if (!type && !deposit && !monthly && !mileage) return "";
-    var parts = [type || "Finance"];
-    if (deposit) parts.push("Deposit: £" + deposit);
-    if (monthly) parts.push("Monthly: £" + monthly);
-    if (mileage) parts.push("Mileage PA: " + mileage);
-    return parts.join(" | ");
+    if (osConfirmation) return "Online Store";
+    if (/test drive/.test(combined)) return "Test Drive";
+    if (/viewing|view/.test(combined)) return "View";
+    if (/phone call appointment|phone appointment|call appointment|book a call|arrange a call/.test(combined)) return "Phone Call";
+    if (/valuation/.test(combined)) return "Valuation";
+    return "";
   }
 
-  function detectPreferencesV4(raw) {
-    var combined = raw.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
-    var prefs = [];
-    var fuels = ["petrol", "diesel", "hybrid", "electric", "ev"];
-    fuels.forEach(function (f) {
-      if (combined.indexOf(f) !== -1) {
-        var label = f === "ev" ? "Fuel: electric" : "Fuel: " + f;
-        if (prefs.indexOf(label) === -1) prefs.push(label);
-      }
-    });
-
-    if (combined.indexOf("automatic") !== -1 || combined.indexOf("auto gearbox") !== -1) prefs.push("Transmission: automatic");
-    if (combined.indexOf("manual") !== -1) prefs.push("Transmission: manual");
-
-    var budgetMatch = /£\s?(\d{2,3}(?:[,\s]?\d{3})?)(?:\s?k)?\s*(?:budget|spend|price|max)/i.exec(combined);
-    if (budgetMatch) {
-      var val = budgetMatch[1].replace(/\D/g, "");
-      if (/k/i.test(budgetMatch[0]) && val.length <= 3) val += "000";
-      prefs.push("Budget: £" + val);
-    }
-
-    var useCases = [
-      { key: "Use-case: family", terms: ["family", "kids"] },
-      { key: "Use-case: space", terms: ["boot", "luggage", "space"] },
-      { key: "Use-case: luggage", terms: ["suitcase", "bags"] }
-    ];
-    useCases.forEach(function (u) {
-      if (u.terms.some(function (term) { return combined.indexOf(term) !== -1; })) {
-        if (prefs.indexOf(u.key) === -1) prefs.push(u.key);
-      }
-    });
-
-    return prefs;
-  }
-
-  function detectCustomerRequestsV3(raw, agentMessages) {
-    var requests = [];
-    var resolvedFilters = /(what'?s your number|postcode|what time do you open|opening hours)/i;
-
-    function isAnswered(text, idx) {
-      var lower = (text || "").toLowerCase();
-      var keywords = [
-        "delivery", "deliver", "collection", "transfer", "finance", "pcp", "hp", "pch",
-        "warranty", "service history", "mot", "documentation", "spec", "colour", "ulez",
-        "video", "photo", "photos", "pictures", "urgent", "asap"
-      ];
-      var hit = keywords.find(function (k) { return lower.indexOf(k) !== -1; });
-      if (!hit) return false;
-      for (var i = 0; i < agentMessages.length; i++) {
-        if (agentMessages[i].index <= idx) continue;
-        if ((agentMessages[i].text || "").toLowerCase().indexOf(hit) !== -1) return true;
-      }
-      return false;
-    }
-
-    raw.forEach(function (item) {
-      if (item.sender !== "customer") return;
-      var text = item.text || "";
-      var lower = text.toLowerCase();
-      if (resolvedFilters.test(text)) return;
-      if (/^(yes|no|ok|thanks|thank you)\b/i.test(text)) return;
-      if (!/(delivery|deliver|collection|transfer|finance|pcp|hp|pch|deposit|monthly|warranty|service history|mot|documentation|spec|colour|ulez|urgent|asap|video|photo|photos|pictures|similar to)/i.test(text)) {
-        return;
-      }
-      if (isAnswered(text, item.index)) return;
-      text.split(/[.!?]\s+/).forEach(function (segment) {
-        var trimmed = segment.trim();
-        if (!trimmed) return;
-        if (requests.indexOf(trimmed) === -1) requests.push(trimmed);
-      });
-    });
-
-    return requests;
-  }
-
-  function detectIntentV9(raw, data, pxAskIndex) {
-    var intents = [];
-    var combined = raw.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
-    var bookingSignal = data.dateTime || /book|appointment|test drive|viewing|view/.test(combined);
-    var financeSignal = raw.some(function (m) {
-      if (m.sender !== "customer") return false;
-      return /finance|pcp|hp|pch|monthly|deposit/.test((m.text || "").toLowerCase());
-    });
-    if (bookingSignal) intents.push("booking request");
-    if (financeSignal) intents.push("finance discussion");
-    if (/motability/.test(combined)) intents.push("motability discussion");
-    if (/delivery|collect|collection/.test(combined)) intents.push("delivery enquiry");
-    if (/compare|versus|vs|another model/.test(combined)) intents.push("compare models");
-    if (/px only|sell.*px|part exchange only/.test(combined)) intents.push("PX-only enquiry");
-    if (/cancel/.test(combined)) intents.push("cancellation request");
-    return intents.filter(function (v, idx, arr) { return arr.indexOf(v) === idx; });
-  }
-
-  function detectFlagsV10(raw, data, pxAskIndex) {
-    var flags = [];
-    function add(label, priority) {
-      if (!flags.some(function (f) { return f.label === label; })) {
-        flags.push({ label: label, priority: priority });
-      }
-    }
-
-    if (pxAskIndex >= 0 && !data.pxReg) add("Missing PX details", 1);
-    if (!data.fullName) add("Missing customer name", 2);
-    if (data.firstName && !data.lastName && (pxAskIndex >= 0 || data.bookingType)) add("Missing surname", 3);
-    raw.forEach(function (item) {
-      var lower = (item.text || "").toLowerCase();
-      if (/asap|urgent|soon|right away|straight away/.test(lower)) {
-        add("Customer urgency", 2);
-      }
-    });
-
-    var modelMentions = raw.filter(function (item) {
-      return detectKnownModelOnly(item.text || "") || detectBrandAndModel(item.text || "");
-    });
-    if (modelMentions.length > 1) add("Ambiguous vehicle of interest", 4);
-
-    flags.sort(function (a, b) { return a.priority - b.priority; });
-    return flags.slice(0, 3).map(function (f) { return f.label; });
+  function detectNewUsed(customerMessages, reg) {
+    if (reg) return "Used";
+    var combined = customerMessages.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
+    var brandDetected = getBrandList().some(function (brand) { return combined.indexOf(brand) !== -1; });
+    if (brandDetected) return "New";
+    return "";
   }
 
   function buildPxSummary(data) {
@@ -1476,16 +1423,6 @@
     if (!out.length) return "No PX";
     return out.join(" | ");
   }
-
-  function toTitleCase(str) {
-    return str
-      .split(/\s+/)
-      .map(function (part) {
-        return part.charAt(0).toUpperCase() + part.slice(1);
-      })
-      .join(" ");
-  }
-
   function renderV2() {
     if (Date.now() - LAST_RENDER < 500) return;
     var messagesObj = collectMessages();
@@ -1531,16 +1468,17 @@
         value = data.firstName + (data.lastName ? " " + data.lastName : "");
       }
       if (key === "dateTime" && !value) {
-        var parts = [];
-        if (data.date) parts.push(data.date);
-        if (data.time) parts.push(data.time);
-        if (data.flexible) parts.push(data.flexible);
-        value = parts.join(" ").trim();
+        if (!data.date) {
+          value = "";
+        } else {
+          var parts = [];
+          if (data.date) parts.push(data.date);
+          if (data.time) parts.push(data.time);
+          if (data.flexible) parts.push(data.flexible);
+          value = parts.join(" ").trim();
+        }
       }
       if (key === "vehicle") {
-        if (data.vehicle === "" && data.make === "" && data.model === "" && data.reg === "" && data.placeholderVOI) {
-          value = data.placeholderVOI;
-        }
         if (data.make || data.model) {
           if (data.reg) value = (data.make + " " + data.model + " (" + data.reg + ")").trim();
           else value = (data.make + " " + data.model).trim();
@@ -1548,11 +1486,19 @@
       }
       if (key === "pxSummary") value = data.pxSummary;
       if (key === "customerRequests") {
-        value = Array.isArray(data.customerRequests) ? data.customerRequests.join(" • ") : "";
+        if (Array.isArray(data.customerRequests) && data.customerRequests.length) {
+          value = data.customerRequests.map(function (request) { return "• " + request; }).join("\n");
+        } else {
+          value = "";
+        }
       }
 
       var valueEl = row.querySelector(".lpSumMiniValue");
-      if (valueEl) valueEl.textContent = value;
+      if (valueEl) {
+        if (key === "customerRequests") valueEl.style.whiteSpace = "pre-line";
+        else valueEl.style.whiteSpace = "";
+        valueEl.textContent = value;
+      }
     });
 
     var overrideSelect = window._lpSumMini.bookingOverrideSelect;
