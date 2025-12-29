@@ -6,7 +6,7 @@
   const MIN_RENDER_GAP = 300; // milliseconds
   let RENDER_SCHEDULED = false;
   let OBSERVER_DEBOUNCE = null;
-  const OBSERVER_DELAY = 500;
+  const OBSERVER_DELAY = 800;
 
   function safeRender(fn) {
     const now = Date.now();
@@ -75,7 +75,6 @@
 
   var DEBUG_OVERLAY_ENABLED = false;
 
-  // Ensure levenshtein exists for predefined filter
   if (typeof levenshtein !== "function") {
     function levenshtein(a, b) {
       const matrix = [];
@@ -275,6 +274,7 @@
       createRow("Preferences", "preferences"),
       createRow("Date/Time", "dateTime"),
       createRow("PX Summary", "pxSummary"),
+      createRow("Customer Requests", "customerRequests"),
       createRow("Intent", "intent"),
       createRow("Flags", "flags")
     ].forEach(function (row) {
@@ -516,10 +516,18 @@
           if (data.flexible) parts.push(data.flexible);
           return parts.join(" ").trim();
         })(),
-        "PX Summary: " + (data.pxSummary || ""),
-        "Intent: " + (data.intent || ""),
-        "Flags: " + (data.flags || "")
+        "PX Summary: " + (data.pxSummary || "")
       ];
+
+      var requests = Array.isArray(data.customerRequests) ? data.customerRequests : [];
+      lines.push("Customer Requests:");
+      if (requests.length) {
+        requests.forEach(function (request) {
+          lines.push(" - " + request);
+        });
+      }
+      lines.push("Intent: " + (data.intent || ""));
+      lines.push("Flags: " + (data.flags || ""));
 
       navigator.clipboard.writeText(lines.join("\n").trim()).then(showCopied);
     };
@@ -540,9 +548,17 @@
     var cleanAgent = [];
     var messageIndex = 0;
     var nonSystemCount = 0;
+    var history = { agentConfirmed: {} };
 
     function isPredefined(text) {
       return PREDEFINED_CONTENT.indexOf(text) !== -1 || PREDEFINED_OS_CONFIRMATIONS.indexOf(text) !== -1;
+    }
+
+    function isPredefinedDeep(text) {
+      var normalized = normalizeMessageForTemplate(text);
+      return PREDEFINED_CONTENT.concat(PREDEFINED_OS_CONFIRMATIONS).some(function (template) {
+        return levenshtein(normalizeMessageForTemplate(template), normalized) < 3;
+      });
     }
 
     function isNameRequest(txt) {
@@ -550,15 +566,42 @@
       return /may i take your full name|just to confirm, could i have your full name|can i confirm your full name|your full name please|could i take your name|may i take your name/.test(lower);
     }
 
+    function isTimestampOrigin(origin) {
+      return !origin || /^[\d:\s]+$/.test(origin);
+    }
+
+    function requestedInfo(msg) {
+      if (!msg || msg.sender !== "agent") return false;
+      var lower = (msg.text || "").toLowerCase();
+      return /full name|name|registration|reg|make|model|mileage|part exchange|px|finance|deposit|monthly|date|time|appointment|test drive|viewing|phone call/.test(lower);
+    }
+
+    function recordAgentConfirmed(text) {
+      var lower = (text || "").toLowerCase();
+      var regMatch = /\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/i.exec(text || "");
+      if (regMatch) history.agentConfirmed.reg = regMatch[1].replace(/\s+/g, "").toUpperCase();
+
+      var vehicle = detectBrandAndModel(text) || detectKnownModelOnly(text);
+      if (vehicle) history.agentConfirmed.vehicle = vehicle;
+
+      if (/pcp|hp|pch|lease|finance|deposit|monthly/.test(lower)) {
+        history.agentConfirmed.finance = text;
+      }
+
+      var timeMatch = /(\d{1,2}[:.]\d{2})/i.exec(text);
+      if (timeMatch) history.agentConfirmed.time = timeMatch[1];
+
+      var dateMatch = /(\d{1,2})[\/\-](\d{1,2})/i.exec(text);
+      if (dateMatch) history.agentConfirmed.date = dateMatch[1] + "/" + dateMatch[2];
+    }
+
     nodes.forEach(function (node) {
       if (app.panel && app.panel.contains(node)) return;
-      var text = (node.innerText || "").trim();
+      var text = (node.innerText || "").replace(/\s+/g, " ").trim();
       if (!text) return;
       if (!/[A-Za-z0-9]/.test(text)) return;
       if (node.closest(".chips-item")) return;
-      if (text.trim().toLowerCase() === "hey") return;
 
-      // Try to get explicit originator div
       var originatorEl = node.nextElementSibling &&
                          node.nextElementSibling.classList.contains("originator")
                          ? node.nextElementSibling
@@ -573,35 +616,31 @@
       let origin = originatorEl ? (originatorEl.innerText || "").trim().toLowerCase() : "";
       let lowerText = text.toLowerCase();
 
-      // 1. Explicit labels
       if (origin === "omari") sender = "agent";
       else if (origin === "visitor") sender = "customer";
       else if (origin === "welcome message") sender = "system";
       else if (origin.indexOf("stellantis &you uk") !== -1) sender = "system";
       else if (origin.startsWith("sms")) sender = "customer";
 
-      // 2. No originator → infer
-      if (!origin) {
-        if (/^welcome!|^you are now connected/.test(lowerText)) sender = "system";
-        else if (/^hello, you are speaking with omari/.test(lowerText)) sender = "agent";
-        else if (raw.length === 0) sender = "customer"; // first customer message
+      if (isTimestampOrigin(origin)) {
+        if (/^hello, you are speaking with omari/.test(text)) sender = "agent";
+        else if (/^welcome!|^you are now connected/.test(lowerText)) sender = "system";
+        else if (raw.length === 0) sender = "customer";
       }
 
-      // 3. If the previous message was agent asking for name → next must be customer
       function askedName(msg) {
         return /may i take your full name|just to confirm.*full name|can i confirm your full name/.test(
           (msg.text || "").toLowerCase()
         );
       }
-      if (raw.length > 0 && askedName(raw[raw.length - 1])) sender = "customer";
+      if (raw.length > 0 && (askedName(raw[raw.length - 1]) || requestedInfo(raw[raw.length - 1]))) sender = "customer";
 
-      // Block predefined content
-      if (isPredefined(text)) return;
-      if (/^hey$/i.test(text) && origin === "welcome message") return;
+      if (isPredefined(text) || isPredefinedDeep(text)) return;
       if (/is typing/i.test(lowerText)) return;
 
       var currentIndex = messageIndex++;
-      raw.push({ sender, text: text, index: currentIndex });
+      raw.push({ sender: sender, text: text, index: currentIndex, lower: lowerText });
+      if (sender === "agent") recordAgentConfirmed(text);
       if (sender === "customer") cleanCustomer.push(text);
       if (sender === "agent") cleanAgent.push(text);
       if (sender !== "system") nonSystemCount++;
@@ -611,6 +650,7 @@
       raw: raw,
       cleanCustomer: cleanCustomer,
       cleanAgent: cleanAgent,
+      history: history,
       combinedCustomer: cleanCustomer.join(" ").toLowerCase(),
       combinedAll: raw.map(function (r) { return r.text; }).join(" ").toLowerCase()
     };
@@ -627,12 +667,11 @@
       .join(" ");
   }
 
-  
-  
   function parseMessages(messagesObj) {
     var raw = (messagesObj && messagesObj.raw) || [];
     var customerMessages = raw.filter(function (m) { return m.sender === "customer"; });
     var agentMessages = raw.filter(function (m) { return m.sender === "agent"; });
+    var history = (messagesObj && messagesObj.history) || {};
     var data = {
       fullName: "",
       firstName: "",
@@ -657,13 +696,14 @@
       pxModel: "",
       pxReg: "",
       pxMileage: "",
-      finance: "",
       intent: "",
       preferences: "",
-      flags: ""
+      flags: "",
+      customerRequests: [],
+      placeholderVOI: ""
     };
 
-    var nameInfo = detectNameV3(customerMessages, agentMessages, raw);
+    var nameInfo = detectNameV5(raw, agentMessages, customerMessages);
     if (nameInfo) {
       data.fullName = nameInfo.fullName;
       data.firstName = nameInfo.firstName;
@@ -683,22 +723,26 @@
     }
 
     var pxAskIndex = detectPxRequestIndex(agentMessages);
-    var regInfo = detectRegistrationsV3(raw, pxAskIndex);
-    if (regInfo.reg) data.reg = regInfo.reg;
-    if (regInfo.pxReg) data.pxReg = regInfo.pxReg;
-
-    var pxInfo = detectPxDetails(raw, pxAskIndex, regInfo);
-    if (pxInfo.pxReg) data.pxReg = data.pxReg || pxInfo.pxReg;
-    if (pxInfo.pxMileage) data.pxMileage = pxInfo.pxMileage;
-    if (pxInfo.pxMake) data.pxMake = pxInfo.pxMake;
-    if (pxInfo.pxModel) data.pxModel = pxInfo.pxModel;
-
-    var vehicleInfo = detectVehicleV4(customerMessages, agentMessages, regInfo.agentOverride);
-    if (vehicleInfo) {
-      data.make = vehicleInfo.make;
-      data.model = vehicleInfo.model;
-      data.trim = vehicleInfo.trim;
+    var pxData = detectPXv6(raw, agentMessages, pxAskIndex);
+    if (pxData) {
+      data.pxReg = pxData.pxReg || "";
+      data.pxMake = pxData.pxMake || "";
+      data.pxModel = pxData.pxModel || "";
+      data.pxMileage = pxData.pxMileage || "";
     }
+
+    var voiData = detectVOIv4(raw, agentMessages, pxData, history, pxAskIndex);
+    if (voiData) {
+      data.make = voiData.make || data.make;
+      data.model = voiData.model || data.model;
+      data.trim = voiData.trim || data.trim;
+      data.reg = voiData.reg || data.reg;
+    }
+    if (voiData && voiData.placeholder) {
+      data.placeholderVOI = voiData.placeholder;
+    }
+
+    if (history.agentConfirmed && history.agentConfirmed.reg) data.reg = history.agentConfirmed.reg;
 
     if (data.reg && data.make && data.model) {
       data.vehicle = (data.make + " " + data.model + " (" + data.reg + ")").trim();
@@ -708,29 +752,46 @@
       data.vehicle = data.reg;
     }
 
-    var newUsed = detectNewUsedV3(data, raw);
-    if (newUsed) data.newUsed = newUsed;
+    data.customerRequests = detectCustomerRequestsV3(raw, agentMessages);
 
-    data.bookingType = detectBookingTypeV4(raw, data, agentMessages, customerMessages);
+    var intents = detectIntentV9(raw, data, pxAskIndex);
+    if (intents.length) data.intent = intents.join(", ");
 
-    var dateInfo = detectDateTimeV7(raw, agentMessages);
+    var preferences = detectPreferencesV4(raw);
+    if (preferences.length) data.preferences = preferences.join(", ");
+
+    var finance = detectFinanceV3(raw);
+    if (finance) {
+      if (!data.intent) data.intent = "finance discussion";
+      else if (data.intent.indexOf("finance discussion") === -1) data.intent += ", finance discussion";
+
+      if (data.customerRequests.indexOf(finance) === -1) {
+        data.customerRequests.push(finance);
+      }
+    }
+
+    var dateInfo = detectDateTimeV9(raw, agentMessages, history);
     if (dateInfo) {
       data.date = dateInfo.date;
       data.time = dateInfo.time;
       data.flexible = dateInfo.flexible;
       data.dateTime = dateInfo.dateTime;
     }
+    if (history.agentConfirmed) {
+      if (history.agentConfirmed.date) data.date = history.agentConfirmed.date;
+      if (history.agentConfirmed.time) data.time = history.agentConfirmed.time;
+    }
+    if (data.date && data.time) data.dateTime = data.date + " " + data.time;
+    else if (data.date && data.flexible) data.dateTime = data.date + " " + data.flexible;
+    else if (data.date) data.dateTime = data.date;
+    else if (data.time) data.dateTime = data.time;
 
-    var finance = detectFinanceV2(raw);
-    if (finance) data.finance = finance;
+    var newUsed = detectNewUsedV4(data, raw, history);
+    if (newUsed) data.newUsed = newUsed;
 
-    var preferences = detectPreferencesV4(raw);
-    if (preferences.length) data.preferences = preferences.join(", ");
+    data.bookingType = detectBookingTypeV6(raw, data, agentMessages, customerMessages);
 
-    var intents = detectIntentV6(raw);
-    if (intents.length) data.intent = intents.join(", ");
-
-    var flags = detectFlagsV6(raw, data, pxAskIndex);
+    var flags = detectFlagsV10(raw, data, pxAskIndex);
     if (flags.length) data.flags = flags.join(", ");
 
     data.pxSummary = buildPxSummary(data);
@@ -738,274 +799,236 @@
     return data;
   }
 
-  function detectNameV3(customerMessages, agentMessages, raw) {
+  function detectNameV5(raw, agentMessages, customerMessages) {
+    var selfIdRegex = /(my name is|this is|i am|i'm|im|speaking[, ]?)(.+)$/i;
     var askRegex = /(full name|confirm your name|your name please|could i have your name|can i confirm your full name|may i take your full name|could i take your name|may i take your name)/i;
-    var selfIdRegex = /(?:my name is|this is|i am|i'm|im|name:\s*|my names|it's\s+)(.+)/i;
+    var strictReg = /\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/i;
+    var blockedPhrases = /(i'?m looking for|i'?m after|i'?m looking at|i'?m interested in|i'?m not sure)/i;
+    var blockedTokens = /(looking|after|for|wanting|needing|similar|interested|view|test|drive|finance|deposit|mileage|reg)/i;
 
     function cleanNameCandidate(fragment) {
       if (!fragment) return "";
-      var cut = fragment.split(/[@\d]|[,.;!]/)[0];
-      return cut.trim();
+      return fragment
+        .replace(/[0-9]/g, "")
+        .replace(/[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}/gi, "")
+        .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, "")
+        .replace(/\s+/g, " ")
+        .trim();
     }
 
     function looksLikeName(str) {
       if (!str) return false;
-      if (/\d/.test(str)) return false;
-      if (/reg|registration|road|street|avenue|postcode|email|phone|mileage/i.test(str)) return false;
+      if (/@/.test(str)) return false;
+      if (strictReg.test(str)) return false;
+      if (detectKnownModelOnly(str) || detectBrandAndModel(str)) return false;
+      if (blockedTokens.test(str.toLowerCase())) return false;
       var parts = str.split(/\s+/);
-      if (!parts.length) return false;
+      if (parts.length < 1 || parts.length > 4) return false;
       return parts.every(function (p) { return /^[A-Za-z][A-Za-z\-']*$/.test(p); });
     }
 
-    function buildNameObject(candidate) {
-      var tokens = candidate.split(/\s+/);
+    function buildNameObject(firstName, lastName) {
+      var fullName = "";
+      if (firstName && lastName) fullName = autoCapName(firstName + " " + lastName);
+      else if (firstName) fullName = autoCapName(firstName);
       return {
-        fullName: autoCapName(candidate),
-        firstName: autoCapName(tokens[0] || ""),
-        lastName: autoCapName(tokens.slice(1).join(" "))
+        fullName: fullName,
+        firstName: autoCapName(firstName || ""),
+        lastName: autoCapName(lastName || "")
       };
     }
 
-    // A) Self identification
-    for (var i = 0; i < customerMessages.length; i++) {
-      var txt = (customerMessages[i].text || "").trim();
-      var match = selfIdRegex.exec(txt);
-      if (match) {
-        var candidate = cleanNameCandidate(match[1]);
-        if (looksLikeName(candidate)) return buildNameObject(candidate);
-      }
-      if (/speaking$/i.test(txt)) {
-        var stripped = txt.replace(/speaking$/i, "").trim();
-        if (looksLikeName(stripped)) return buildNameObject(stripped);
-      }
-    }
+    var result = { fullName: "", firstName: "", lastName: "" };
 
-    // B) After agent request
-    var askIndex = -1;
-    for (var a = 0; a < agentMessages.length; a++) {
-      if (askRegex.test((agentMessages[a].text || "").toLowerCase())) {
-        askIndex = agentMessages[a].index;
-        break;
+    customerMessages.forEach(function (msg) {
+      var text = (msg.text || "").trim();
+      if (blockedPhrases.test(text)) return;
+      var match = selfIdRegex.exec(text);
+      if (!match) return;
+      var candidate = cleanNameCandidate(match[2]);
+      if (!looksLikeName(candidate)) return;
+      var parts = candidate.split(/\s+/);
+      if (parts.length >= 2) {
+        result = buildNameObject(parts[0], parts.slice(1).join(" "));
+      } else if (parts.length === 1) {
+        result.firstName = autoCapName(parts[0]);
+        result.fullName = result.firstName;
       }
-    }
+    });
+
+    var askIndex = -1;
+    agentMessages.forEach(function (msg) {
+      if (askIndex !== -1) return;
+      if (askRegex.test((msg.text || "").toLowerCase())) askIndex = msg.index;
+    });
 
     if (askIndex >= 0) {
       for (var r = 0; r < raw.length; r++) {
         var item = raw[r];
         if (item.index <= askIndex || item.sender !== "customer") continue;
-        var candidateText = (item.text || "")
-          .replace(/[0-9\+\-\(\)]/g, "")
-          .replace(/[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}/gi, "")
-          .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, "");
-        candidateText = cleanNameCandidate(candidateText);
-        if (looksLikeName(candidateText)) return buildNameObject(candidateText);
+        var candidateText = cleanNameCandidate(item.text || "");
+        if (!looksLikeName(candidateText)) break;
+        var partsAfter = candidateText.split(/\s+/);
+        if (partsAfter.length >= 2) {
+          result = buildNameObject(partsAfter[0], partsAfter.slice(1).join(" "));
+        } else if (partsAfter.length === 1) {
+          result.firstName = autoCapName(partsAfter[0]);
+          result.fullName = result.firstName;
+        }
         break;
       }
     }
 
-    // C) Pure name message
-    for (var c = 0; c < customerMessages.length; c++) {
-      var msg = (customerMessages[c].text || "").trim();
-      if (looksLikeName(msg)) {
-        return buildNameObject(msg);
-      }
-    }
-
-    return null;
-  }
-
-  function detectEmail(customerMessages) {
-    var emailRe = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
-    for (var i = 0; i < customerMessages.length; i++) {
-      var match = emailRe.exec(customerMessages[i].text || "");
-      if (match) return match[0];
-    }
-    return "";
-  }
-
-  function detectPhoneV2(customerMessages) {
-    var phoneRe = /(\+44[\d\s]{9,12}|0[\d\s]{9,11})/g;
-    for (var i = 0; i < customerMessages.length; i++) {
-      var txt = customerMessages[i].text || "";
-      var matches = txt.match(phoneRe);
-      if (!matches) continue;
-      for (var m = 0; m < matches.length; m++) {
-        var raw = matches[m].replace(/\s+/g, "");
-        if (/^(2008|3008|5008)$/.test(raw)) continue;
-        if (raw.indexOf("+44") === 0) {
-          if (raw.charAt(3) !== "7") continue;
-          raw = "0" + raw.slice(3);
-        }
-        raw = raw.replace(/\D/g, "");
-        if (raw.length >= 10 && raw.length <= 11 && raw.charAt(0) === "0") {
-          return raw;
-        }
-      }
-    }
-    return "";
-  }
-
-  function detectAddressAndPostcode(customerMessages) {
-    var postcodeRe = /([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})/i;
-    for (var i = 0; i < customerMessages.length; i++) {
-      var txt = (customerMessages[i].text || "").replace(/\s+/g, " ").trim();
-      var match = postcodeRe.exec(txt);
-      if (!match) continue;
-      var cleaned = match[1].replace(/\s+/g, "").toUpperCase();
-      var postcode = cleaned.slice(0, cleaned.length - 3) + " " + cleaned.slice(-3);
-      var address = txt.replace(match[1], postcode).trim();
-      address = address.replace(/\s+/g, " ").trim();
-      return { address: address, postcode: postcode };
-    }
-    return null;
-  }
-
-  function detectPxRequestIndex(agentMessages) {
-    var triggerRe = /(registration, make, model and mileage|registration make model and mileage|px\b|part exchange)/i;
-    for (var i = 0; i < agentMessages.length; i++) {
-      if (triggerRe.test(agentMessages[i].text || "")) return agentMessages[i].index;
-    }
-    return -1;
-  }
-
-  function detectRegistrationsV3(raw, pxAskIndex) {
-    var regRe = /\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/gi;
-    var regs = [];
-    var agentOverride = null;
-
-    raw.forEach(function (item) {
-      var txt = item.text || "";
-      var match;
-      while ((match = regRe.exec(txt))) {
-        var reg = match[1].replace(/\s+/g, "").toUpperCase();
-        regs.push({ reg: reg, index: item.index, sender: item.sender, text: txt });
-        if (item.sender === "agent") {
-          agentOverride = item.index;
-        }
-      }
-      if (item.sender === "agent" && /please confirm reg|confirm the reg|confirm reg/i.test(txt)) {
-        agentOverride = item.index;
+    customerMessages.forEach(function (msg) {
+      var candidate = cleanNameCandidate((msg.text || "").trim());
+      if (!looksLikeName(candidate)) return;
+      var parts = candidate.split(/\s+/);
+      if (parts.length >= 2) {
+        result = buildNameObject(parts[0], parts.slice(1).join(" "));
       }
     });
 
-    var reg = "";
-    var pxReg = "";
+    customerMessages.forEach(function (msg) {
+      var text = (msg.text || "").trim();
+      var surnameMatch = /(surname|last name)\s+([A-Za-z\-']+)/i.exec(text);
+      if (surnameMatch && result.firstName && !result.lastName) {
+        result = buildNameObject(result.firstName, surnameMatch[2]);
+      }
+    });
 
-    if (agentOverride !== null && regs.length) {
-      reg = regs[regs.length - 1].reg;
-    } else if (regs.length) {
-      reg = regs[0].reg;
-    }
-
-    if (pxAskIndex >= 0) {
-      var after = regs.filter(function (r) { return r.index > pxAskIndex; });
-      if (after.length) pxReg = after[0].reg;
-    }
-
-    return { reg: reg, pxReg: pxReg, all: regs, agentOverride: agentOverride };
+    return result.fullName || result.firstName ? result : null;
   }
 
-  function detectMileageValue(text) {
-    var mileRe = /(\d{1,3}(?:[,\s]\d{3})+|\d{4,}|\d+\s?k)/i;
-    var match = mileRe.exec(text);
-    if (!match) return "";
-    var raw = match[1];
-    var num = raw.replace(/[^\d]/g, "");
-    if (/k/i.test(raw) && parseInt(num, 10) < 1000) {
-      num = String(parseInt(num, 10) * 1000);
+  function detectPXv6(raw, agentMessages, pxAskIndex) {
+    var px = { pxReg: "", pxMake: "", pxModel: "", pxMileage: "" };
+    var strictReg = /^[A-Z]{2}[0-9]{2}[A-Z]{3}$/;
+
+    function extractReg(text) {
+      var match = /\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/i.exec(text || "");
+      if (!match) return "";
+      var candidate = match[1].replace(/\s+/g, "").toUpperCase();
+      if (!strictReg.test(candidate)) return "";
+      if (/finance|deposit|monthly|pm|pcp|hp|pch/i.test(text)) return "";
+      return candidate;
     }
-    return num;
-  }
 
-  function detectPxDetails(raw, pxAskIndex, regInfo) {
-    var pxReg = regInfo.pxReg || "";
-    var pxMileage = "";
-    var pxMake = "";
-    var pxModel = "";
-    var knownModel = null;
+    function extractMileage(text) {
+      if (/finance|deposit|monthly|pm|pcp|hp|pch/i.test(text)) return "";
+      var match = /(\d{2,3}\s?k|\d{4,6})\s*(miles|mi)?/i.exec(text || "");
+      if (!match) return "";
+      var rawVal = match[1];
+      var num = rawVal.replace(/[^\d]/g, "");
+      if (/k/i.test(rawVal)) return String(parseInt(num, 10) * 1000);
+      if (parseInt(num, 10) < 1000 && !/miles|mi/i.test(text)) return "";
+      return num;
+    }
 
-    for (var i = 0; i < raw.length; i++) {
-      var item = raw[i];
-      if (pxAskIndex >= 0 && item.index <= pxAskIndex) continue;
+    function shouldReset(text) {
+      return /(that's wrong|actually|correction|ignore that reg)/i.test(text || "");
+    }
+
+    raw.forEach(function (item) {
+      if (item.sender !== "customer") return;
       var text = item.text || "";
-      var regMatch = text.match(/\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/i);
-      var mileageMatch = detectMileageValue(text);
-      var modelMatch = detectKnownModelOnly(text);
+      var selfIdentified = isSelfIdentifyingVehicle(text);
+      var afterAsk = pxAskIndex >= 0 && item.index > pxAskIndex;
+      if (!afterAsk && !selfIdentified) return;
+      if (/similar to my/i.test(text)) return;
 
-      if (regMatch && !pxReg) {
-        pxReg = regMatch[1].replace(/\s+/g, "").toUpperCase();
-      }
-      if (mileageMatch && !pxMileage) pxMileage = mileageMatch;
-      if (modelMatch && !pxModel) {
-        pxModel = modelMatch.model;
-        pxMake = modelMatch.make;
-        knownModel = modelMatch;
+      if (shouldReset(text)) {
+        px = { pxReg: "", pxMake: "", pxModel: "", pxMileage: "" };
+        return;
       }
 
-      if (regMatch && mileageMatch && modelMatch) {
-        break;
+      var reg = extractReg(text);
+      var mileage = extractMileage(text);
+      var model = detectKnownModelOnly(text);
+      var makeModel = detectBrandAndModel(text);
+
+      if (reg) px.pxReg = reg;
+      if (mileage) px.pxMileage = mileage;
+      if (makeModel) {
+        px.pxMake = makeModel.make;
+        px.pxModel = makeModel.model;
+      } else if (model) {
+        px.pxMake = model.make;
+        px.pxModel = model.model;
       }
-    }
+    });
 
-    if (!pxReg && pxAskIndex >= 0 && regInfo.all.length > 1) {
-      var afterAsk = regInfo.all.filter(function (r) { return r.index > pxAskIndex; });
-      if (afterAsk.length) pxReg = afterAsk[afterAsk.length - 1].reg;
-    }
-
-    if (!pxMake && knownModel) pxMake = knownModel.make;
-
-    return { pxReg: pxReg, pxMileage: pxMileage, pxMake: pxMake, pxModel: pxModel };
+    return px;
   }
 
-  function detectVehicleV4(customerMessages, agentMessages, agentOverrideIndex) {
-    var combined = customerMessages.concat(agentMessages);
-    var vehicle = null;
+  function detectVOIv4(raw, agentMessages, pxData, history, pxAskIndex) {
+    var voi = null;
+    var candidates = [];
+    var interestRegex = /(looking for|looking at|interested in|want a|do you have|the \w+\s+\d{3,4})/i;
 
-    function agentConfirmedVehicle() {
-      var regRe = /\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/i;
-      for (var i = 0; i < agentMessages.length; i++) {
-        var txt = agentMessages[i].text || "";
-        if (!regRe.test(txt)) continue;
-        var brandModel = detectBrandAndModel(txt) || detectKnownModelOnly(txt);
-        if (brandModel) return brandModel;
-      }
-      return null;
+    function pushCandidate(source, text, priority) {
+      var vehicle = detectBrandAndModel(text) || detectKnownModelOnly(text);
+      if (!vehicle) return;
+      candidates.push({ vehicle: vehicle, priority: priority, source: source, text: text });
     }
 
-    var agentVehicle = agentConfirmedVehicle();
-    if (agentVehicle) vehicle = agentVehicle;
-
-    for (var i = 0; i < combined.length; i++) {
-      if (vehicle) break;
-      var found = detectBrandAndModel(combined[i].text || "");
-      if (found) {
-        vehicle = found;
-        break;
-      }
+    if (history && history.agentConfirmed && history.agentConfirmed.vehicle) {
+      voi = history.agentConfirmed.vehicle;
     }
 
-    if (!vehicle) {
-      for (var j = 0; j < combined.length; j++) {
-        var modelOnly = detectKnownModelOnly(combined[j].text || "");
-        if (modelOnly) {
-          vehicle = modelOnly;
-          break;
+    if (!voi) {
+      raw.forEach(function (item) {
+        var text = item.text || "";
+        if (item.sender === "customer" && interestRegex.test(text) && !isSelfIdentifyingVehicle(text)) {
+          pushCandidate("interest", text, 1);
         }
-      }
+      });
     }
 
-    if (agentOverrideIndex !== null) {
-      for (var k = 0; k < agentMessages.length; k++) {
-        if (agentMessages[k].index < agentOverrideIndex) continue;
-        var overrideVehicle = detectBrandAndModel(agentMessages[k].text || "") || detectKnownModelOnly(agentMessages[k].text || "");
-        if (overrideVehicle) {
-          vehicle = overrideVehicle;
-          break;
+    if (!voi && pxData && pxData.pxMake && pxData.pxModel) {
+      raw.forEach(function (item) {
+        var text = item.text || "";
+        if (item.sender === "customer" && /similar to my/i.test(text)) {
+          voi = { placeholder: "Similar to: " + pxData.pxMake + " " + pxData.pxModel };
         }
+      });
+    }
+
+    if (!voi && candidates.length === 0) {
+      raw.forEach(function (item) {
+        var text = item.text || "";
+        if (item.sender === "customer" && !isSelfIdentifyingVehicle(text)) {
+          pushCandidate("mention", text, 2);
+        }
+      });
+    }
+
+    if (!voi && candidates.length === 0) {
+      raw.forEach(function (item) {
+        var text = item.text || "";
+        if (item.sender === "customer" && !isSelfIdentifyingVehicle(text) && pxAskIndex >= 0 && item.index < pxAskIndex) {
+          var regMatch = /\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/i.exec(text);
+          if (regMatch) {
+            candidates.push({ vehicle: { make: "", model: "", trim: "", reg: regMatch[1].replace(/\s+/g, "").toUpperCase() }, priority: 3 });
+          }
+        }
+      });
+    }
+
+    if (!voi && candidates.length) {
+      candidates.sort(function (a, b) { return a.priority - b.priority; });
+      voi = candidates[candidates.length - 1].vehicle;
+    }
+
+    if (voi && !voi.placeholder && pxData && pxData.pxModel && detectKnownModelOnly(pxData.pxModel)) {
+      if (voi.model === pxData.pxModel && voi.make === pxData.pxMake) {
+        voi = null;
       }
     }
 
-    return vehicle;
+    if (voi && voi.placeholder) {
+      return voi;
+    }
+
+    return voi;
   }
 
   function detectBrandAndModel(text) {
@@ -1032,108 +1055,134 @@
             return {
               make: toTitleCase(brand),
               model: model.toUpperCase() === model ? model : toTitleCase(model),
-              trim: trim ? toTitleCase(trim) : ""
+              trim: trim ? toTitleCase(trim) : "",
+              reg: ""
             };
           }
         }
       }
     }
-
     return null;
   }
 
   function detectKnownModelOnly(text) {
-    var modelMap = [
-      { pattern: /\b(2008|e-?2008)\b/i, make: "Peugeot" },
-      { pattern: /\b(208|e-?208)\b/i, make: "Peugeot" },
-      { pattern: /\b(3008|308)\b/i, make: "Peugeot" },
-      { pattern: /\b(408)\b/i, make: "Peugeot" },
-      { pattern: /\b(508)\b/i, make: "Peugeot" },
-      { pattern: /\b(5008)\b/i, make: "Peugeot" },
-      { pattern: /\b(c1)\b/i, make: "Citroen" },
-      { pattern: /\b(c3 aircross|c3\s*x)\b/i, make: "Citroen" },
-      { pattern: /\b(c4 picasso|c4\b)\b/i, make: "Citroen" },
-      { pattern: /\b(c4 x|c4\b|e-?c4)\b/i, make: "Citroen" },
-      { pattern: /\b(c5 aircross|c5\s*x)\b/i, make: "Citroen" },
-      { pattern: /\b(ds3|ds 3)\b/i, make: "DS" },
-      { pattern: /\b(ds4|ds 4)\b/i, make: "DS" },
-      { pattern: /\b(ds7|ds 7)\b/i, make: "DS" },
-      { pattern: /\b(ds9|ds 9)\b/i, make: "DS" },
-      { pattern: /\b(500x|500e|500)\b/i, make: "Fiat" },
-      { pattern: /\b(panda)\b/i, make: "Fiat" },
-      { pattern: /\b(tipo)\b/i, make: "Fiat" },
-      { pattern: /\b(600|600e)\b/i, make: "Fiat" },
-      { pattern: /\b(595|695|500e)\b/i, make: "Abarth" },
-      { pattern: /\b(junior)\b/i, make: "Alfa Romeo" },
-      { pattern: /\b(tonale)\b/i, make: "Alfa Romeo" },
-      { pattern: /\b(giulia)\b/i, make: "Alfa Romeo" },
-      { pattern: /\b(stelvio)\b/i, make: "Alfa Romeo" },
-      { pattern: /\b(avenger)\b/i, make: "Jeep" },
-      { pattern: /\b(compass)\b/i, make: "Jeep" },
-      { pattern: /\b(renegade)\b/i, make: "Jeep" },
-      { pattern: /\b(corsa)\b/i, make: "Vauxhall" },
-      { pattern: /\b(mokka)\b/i, make: "Vauxhall" },
-      { pattern: /\b(astra)\b/i, make: "Vauxhall" },
-      { pattern: /\b(grandland)\b/i, make: "Vauxhall" },
-      { pattern: /\b(c10)\b/i, make: "Leapmotor" },
-      { pattern: /\b(b10)\b/i, make: "Leapmotor" }
+    var models = [
+      { make: "Peugeot", model: "208" },
+      { make: "Peugeot", model: "2008" },
+      { make: "Peugeot", model: "308" },
+      { make: "Peugeot", model: "3008" },
+      { make: "Peugeot", model: "5008" },
+      { make: "Peugeot", model: "508" },
+      { make: "Citroen", model: "C3" },
+      { make: "Citroen", model: "C4" },
+      { make: "Citroen", model: "C5" },
+      { make: "Citroen", model: "C5 X" },
+      { make: "Citroen", model: "Berlingo" },
+      { make: "DS", model: "DS3" },
+      { make: "DS", model: "DS4" },
+      { make: "DS", model: "DS7" },
+      { make: "Fiat", model: "500" },
+      { make: "Fiat", model: "500e" },
+      { make: "Fiat", model: "Panda" },
+      { make: "Fiat", model: "Tipo" },
+      { make: "Abarth", model: "595" },
+      { make: "Abarth", model: "695" },
+      { make: "Alfa Romeo", model: "Giulia" },
+      { make: "Alfa Romeo", model: "Giulietta" },
+      { make: "Alfa Romeo", model: "Stelvio" },
+      { make: "Jeep", model: "Avenger" },
+      { make: "Jeep", model: "Compass" },
+      { make: "Jeep", model: "Renegade" },
+      { make: "Vauxhall", model: "Corsa" },
+      { make: "Vauxhall", model: "Astra" },
+      { make: "Vauxhall", model: "Mokka" },
+      { make: "Vauxhall", model: "Grandland" },
+      { make: "Leapmotor", model: "T03" },
+      { make: "Leapmotor", model: "C10" }
     ];
-
-    for (var i = 0; i < modelMap.length; i++) {
-      var match = modelMap[i].pattern.exec(text || "");
-      if (match) {
-        var modelName = match[1] || match[0];
-        return { make: modelMap[i].make, model: modelName, trim: "" };
+    var lower = (text || "").toLowerCase();
+    for (var i = 0; i < models.length; i++) {
+      var m = models[i];
+      if (lower.indexOf(m.model.toLowerCase()) !== -1) {
+        return { make: m.make, model: m.model, trim: "", reg: "" };
       }
     }
     return null;
   }
 
-  function detectNewUsedV3(data, raw) {
-    var combined = raw.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
-    if (/motability|mot scheme|pip|dla/.test(combined)) return "motability";
-    if (data.reg) return "used";
-    if (combined.indexOf("used") !== -1 || combined.indexOf("pre-owned") !== -1) return "used";
-    if ((data.make && /peugeot|citroen|ds|fiat|abarth|alfa romeo|jeep|vauxhall|leapmotor/i.test(data.make)) || /peugeot|citroen|ds|fiat|abarth|alfa romeo|jeep|vauxhall|leapmotor/.test(combined)) {
-      return "new";
+  function detectEmail(messages) {
+    var emailRegex = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
+    for (var i = 0; i < messages.length; i++) {
+      var text = messages[i].text || "";
+      var match = emailRegex.exec(text);
+      if (match) return match[0].toLowerCase();
     }
     return "";
   }
 
-  function detectBookingTypeV4(raw, data, agentMessages, customerMessages) {
-    var combined = raw.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
-    var hasMotability = combined.indexOf("motability") !== -1;
-    if (hasMotability) return "Motability";
-
-    var wantsTestDrive = /test drive/.test(combined);
-    var wantsView = /view|viewing/.test(combined);
-    var wantsCall = /call|phone/.test(combined);
-    var valuation = /valuation/.test(combined) || (data.pxReg && /value|valuation/.test(combined));
-
-    var baseBooking = "";
-    if (wantsTestDrive) baseBooking = "Test Drive";
-    else if (wantsView) baseBooking = "View Appointment";
-    else if (wantsCall) baseBooking = "Phone Call";
-    else if (valuation) baseBooking = "Valuation";
-
-    var agentOsPhrases = PREDEFINED_OS_CONFIRMATIONS.map(function (p) { return p.toLowerCase(); }).concat([
-      "central stock",
-      "online store",
-      "collection after purchase"
-    ]);
-    var agentCombined = agentMessages.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
-    var agentOsConfirmed = agentOsPhrases.some(function (p) { return agentCombined.indexOf(p) !== -1; });
-    var usedVehicle = data.newUsed === "used" || (!!data.reg);
-    var osEligible = agentOsConfirmed && usedVehicle && data.pxReg && (wantsCall || wantsTestDrive || wantsView);
-
-    if (osEligible && baseBooking) {
-      return "Online Store - " + baseBooking;
+  function detectPhoneV2(messages) {
+    var digitsRegex = /(\+?\d[\d\s]{7,})/;
+    for (var i = 0; i < messages.length; i++) {
+      var text = messages[i].text || "";
+      var match = digitsRegex.exec(text);
+      if (match) {
+        var cleaned = match[1].replace(/\D/g, "");
+        if (cleaned.length >= 9 && cleaned.length <= 13) return cleaned;
+      }
     }
-
-    return baseBooking;
+    return "";
   }
 
-  function detectDateTimeV7(raw, agentMessages) {
+  function detectAddressAndPostcode(messages) {
+    var postcodeRegex = /([A-Z]{1,2}\d{1,2}[A-Z]?)\s?(\d[A-Z]{2})/i;
+    var address = "";
+    var postcode = "";
+    messages.forEach(function (msg) {
+      var text = msg.text || "";
+      if (!address && /\d+\s+\w+/.test(text)) {
+        address = text;
+      }
+      var match = postcodeRegex.exec(text);
+      if (match) {
+        postcode = (match[1] + " " + match[2]).toUpperCase();
+      }
+    });
+    return address || postcode ? { address: address, postcode: postcode } : null;
+  }
+
+  function detectPxRequestIndex(agentMessages) {
+    var idx = -1;
+    agentMessages.forEach(function (msg) {
+      var lower = (msg.text || "").toLowerCase();
+      if (/part exchange|px|trade[- ]?in/.test(lower)) idx = msg.index;
+    });
+    return idx;
+  }
+
+  function isSelfIdentifyingVehicle(text) {
+    return /my car|my vehicle|i have|i've got|i currently drive/.test((text || "").toLowerCase());
+  }
+
+  function detectNewUsedV4(data, raw, history) {
+    var combined = raw.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
+    if (/new car|brand new/.test(combined)) return "New";
+    if (/used|second hand|pre-owned|approved used/.test(combined)) return "Used";
+    if (history.agentConfirmed && history.agentConfirmed.vehicle) return "Used";
+    if (data.reg) return "Used";
+    return "";
+  }
+
+  function detectBookingTypeV6(raw, data, agentMessages, customerMessages) {
+    var combined = raw.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
+    if (/test drive/.test(combined)) return "Test Drive";
+    if (/viewing|view|see (the )?car/.test(combined)) return "View";
+    if (/phone call|call me|phone me/.test(combined)) return "Phone Call";
+    if (/valuation/.test(combined)) return "Valuation";
+    if (/online store|reserve|reservation/.test(combined)) return "Online Store";
+    return "";
+  }
+
+  function detectDateTimeV9(raw, agentMessages, history) {
     var today = new Date();
     var pad = function (n) { return n < 10 ? "0" + n : String(n); };
     var todayStr = pad(today.getDate()) + "/" + pad(today.getMonth() + 1);
@@ -1143,29 +1192,63 @@
     var date = "";
     var time = "";
     var flexible = "";
-    var agentAskedToday = agentMessages.some(function (m) { return /today\??/i.test(m.text || ""); });
+    var agentContext = agentMessages.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
+    var agentAskedToday = /today|tomorrow|this week|next week/.test(agentContext);
+
+    function getLastTimeMention(messages) {
+      var last = "";
+      messages.forEach(function (msg) {
+        var text = msg.text || "";
+        var match = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(text);
+        if (!match) return;
+        var hour = parseInt(match[1], 10);
+        var mins = match[2] ? parseInt(match[2], 10) : 0;
+        if (match[3]) {
+          if (match[3].toLowerCase() === "pm" && hour < 12) hour += 12;
+          if (match[3].toLowerCase() === "am" && hour === 12) hour = 0;
+        } else {
+          hour = hour < 9 ? hour + 12 : hour + 12;
+        }
+        last = clampTimeSlot(hour, mins);
+      });
+      return last;
+    }
 
     function parseTime(token) {
-      var half = /half\s*(\d{1,2})/i.exec(token);
-      if (half) return clampTimeSlot(parseInt(half[1], 10), 30);
       var hm = /(\d{1,2})[:.](\d{2})/i.exec(token);
       if (hm) return clampTimeSlot(parseInt(hm[1], 10), parseInt(hm[2], 10));
-      var mer = /(\d{1,2})\s*(am|pm)/i.exec(token);
-      if (mer) {
-        var h = parseInt(mer[1], 10);
-        if (mer[2].toLowerCase() === "pm" && h < 12) h += 12;
-        if (mer[2].toLowerCase() === "am" && h === 12) h = 0;
-        return clampTimeSlot(h, 0);
-      }
-      var plain = /(^|\s)(\d{1,2})(\s|$)/.exec(token);
+      var plain = /\bat\s*(\d{1,2})\s*(am|pm)?\b/i.exec(token);
       if (plain) {
-        var pHour = parseInt(plain[2], 10);
+        var pHour = parseInt(plain[1], 10);
+        if (plain[2] && plain[2].toLowerCase() === "pm" && pHour < 12) pHour += 12;
+        if (plain[2] && plain[2].toLowerCase() === "am" && pHour === 12) pHour = 0;
+        if (!plain[2]) {
+          if (/morning/.test(agentContext)) pHour = 10;
+          else if (/afternoon/.test(agentContext)) pHour = 14;
+          else if (/evening/.test(agentContext)) pHour = 17;
+          else pHour = pHour < 9 ? pHour + 12 : pHour + 12;
+        }
         return clampTimeSlot(pHour < 9 ? pHour + 12 : pHour, 0);
+      }
+      if (/after\s+\d{1,2}/i.test(token)) {
+        flexible = "Flexible";
+        var afterMatch = /after\s+(\d{1,2})/i.exec(token);
+        if (afterMatch) {
+          var afterHour = parseInt(afterMatch[1], 10);
+          return clampTimeSlot(afterHour < 9 ? afterHour + 12 : afterHour, 0);
+        }
+      }
+      if (/before\s+\d{1,2}/i.test(token)) {
+        flexible = "Flexible";
+        var beforeMatch = /before\s+(\d{1,2})/i.exec(token);
+        if (beforeMatch) {
+          var beforeHour = parseInt(beforeMatch[1], 10);
+          return clampTimeSlot(beforeHour < 9 ? beforeHour + 12 : beforeHour, 0);
+        }
       }
       if (/morning/.test(token)) return "10:00";
       if (/afternoon/.test(token)) return "14:00";
       if (/evening/.test(token)) return "17:00";
-      if (/midday|noon/.test(token)) return "12:00";
       return "";
     }
 
@@ -1174,14 +1257,12 @@
       if (numeric) return pad(parseInt(numeric[1], 10)) + "/" + pad(parseInt(numeric[2], 10));
       if (/today/i.test(token)) return todayStr;
       if (/tomorrow/i.test(token)) return tomorrowStr;
-      var monthNames = ["january","february","march","april","may","june","july","august","september","october","november","december"];
-      var monthRe = /(\d{1,2})(st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december)/i.exec(token);
-      if (monthRe) {
-        var monthIdx = monthNames.indexOf(monthRe[3].toLowerCase());
-        if (monthIdx >= 0) return pad(parseInt(monthRe[1], 10)) + "/" + pad(monthIdx + 1);
+      var weekdayRe = /(this|next)?\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.exec(token);
+      if (weekdayRe) {
+        var dayName = weekdayRe[2];
+        var isNext = (weekdayRe[1] || "").toLowerCase() === "next";
+        return findNextWeekdayDate(dayName, isNext ? 7 : 0);
       }
-      var weekdayRe = /(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.exec(token);
-      if (weekdayRe) return findNextWeekdayDate(weekdayRe[1]);
       return "";
     }
 
@@ -1192,6 +1273,11 @@
       if (!time) time = parseTime(lower);
       if (!flexible && /flexible|any time/i.test(lower)) flexible = "Flexible";
     });
+
+    if (!time) {
+      var last = getLastTimeMention(raw);
+      if (last) time = last;
+    }
 
     if (!date && time && agentAskedToday) {
       date = todayStr;
@@ -1217,43 +1303,46 @@
     return pad(h) + ":" + pad(m);
   }
 
-  function findNextWeekdayDate(dayName) {
+  function findNextWeekdayDate(dayName, extraDays) {
     var today = new Date();
     var target = ["sunday","monday","tuesday","wednesday","thursday","friday","saturday"].indexOf(dayName.toLowerCase());
     var current = today.getDay();
     var diff = (target - current + 7) % 7;
     if (diff === 0) diff = 7;
-    var next = new Date(today.getTime() + diff * 86400000);
+    var offset = diff + (extraDays || 0);
+    var next = new Date(today.getTime() + offset * 86400000);
     var pad = function (n) { return n < 10 ? "0" + n : String(n); };
     return pad(next.getDate()) + "/" + pad(next.getMonth() + 1);
   }
 
-  function detectFinanceV2(raw) {
-    var combined = raw.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
-    var financeTerms = ["pcp", "p c p", "hp", "h p", "pch", "p c h", "lease", "leasing", "finance"];
-    var hasFinance = financeTerms.some(function (t) { return combined.indexOf(t) !== -1; });
-    if (!hasFinance) return "";
-
+  function detectFinanceV3(raw) {
     var type = "";
-    if (combined.indexOf("pcp") !== -1 || combined.indexOf("p c p") !== -1) type = "PCP";
-    else if (combined.indexOf("hp") !== -1 || combined.indexOf("h p") !== -1) type = "HP";
-    else if (combined.indexOf("pch") !== -1 || combined.indexOf("p c h") !== -1 || combined.indexOf("lease") !== -1) type = "PCH";
-    else type = "Finance discussion";
+    var deposit = "";
+    var monthly = "";
+    var mileage = "";
 
-    var depositMatch = /(?:deposit\s*£?|£)\s*(\d{2,5})/.exec(combined);
-    var monthlyMatch = /£?\s?(\d{2,4})\s*(?:pm|p\/m|per month|a month|monthly)/.exec(combined);
-    var mileageMatch = /(\d{1,3}(?:[ ,]?\d{3})|\d{2,3}\s*k)\s*(?:miles?|mi)?\s*(?:pa|per annum)?/i.exec(combined);
+    raw.forEach(function (m) {
+      var text = (m.text || "");
+      var lower = text.toLowerCase();
+      if (/(pcp|hp|pch|lease|finance)/i.test(text)) {
+        if (/pcp/i.test(text)) type = "PCP";
+        else if (/hp/i.test(text)) type = "HP";
+        else if (/pch/i.test(text) || /lease/i.test(text)) type = "PCH";
+        else type = "Finance";
+      }
+      var depMatch = /(?:deposit|dep)\s*£?(\d{2,6})/i.exec(text);
+      if (depMatch) deposit = depMatch[1];
+      var monthMatch = /£?(\d{2,4})\s*(pm|per month|monthly)/i.exec(text);
+      if (monthMatch) monthly = monthMatch[1];
+      var mileageMatch = /(\d{2,3}k|\d{4,6})\s*(miles|mi|pa)?/i.exec(text);
+      if (mileageMatch) mileage = mileageMatch[1].toLowerCase().replace("k", "000");
+    });
 
-    var parts = [type];
-    if (depositMatch) parts.push("Deposit: £" + depositMatch[1]);
-    if (monthlyMatch) parts.push("Monthly: £" + monthlyMatch[1]);
-    if (mileageMatch) {
-      var mileageVal = mileageMatch[1];
-      if (/k$/i.test(mileageVal)) mileageVal = String(parseInt(mileageVal, 10) * 1000);
-      else mileageVal = mileageVal.replace(/\D/g, "");
-      parts.push("Mileage PA: " + mileageVal);
-    }
-
+    if (!type && !deposit && !monthly && !mileage) return "";
+    var parts = [type || "Finance"];
+    if (deposit) parts.push("Deposit: £" + deposit);
+    if (monthly) parts.push("Monthly: £" + monthly);
+    if (mileage) parts.push("Mileage PA: " + mileage);
     return parts.join(" | ");
   }
 
@@ -1292,19 +1381,65 @@
     return prefs;
   }
 
-  function detectIntentV6(raw) {
-    var combined = raw.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
+  function detectCustomerRequestsV3(raw, agentMessages) {
+    var requests = [];
+    var resolvedFilters = /(what'?s your number|postcode|what time do you open|opening hours)/i;
+
+    function isAnswered(text, idx) {
+      var lower = (text || "").toLowerCase();
+      var keywords = [
+        "delivery", "deliver", "collection", "transfer", "finance", "pcp", "hp", "pch",
+        "warranty", "service history", "mot", "documentation", "spec", "colour", "ulez",
+        "video", "photo", "photos", "pictures", "urgent", "asap"
+      ];
+      var hit = keywords.find(function (k) { return lower.indexOf(k) !== -1; });
+      if (!hit) return false;
+      for (var i = 0; i < agentMessages.length; i++) {
+        if (agentMessages[i].index <= idx) continue;
+        if ((agentMessages[i].text || "").toLowerCase().indexOf(hit) !== -1) return true;
+      }
+      return false;
+    }
+
+    raw.forEach(function (item) {
+      if (item.sender !== "customer") return;
+      var text = item.text || "";
+      var lower = text.toLowerCase();
+      if (resolvedFilters.test(text)) return;
+      if (/^(yes|no|ok|thanks|thank you)\b/i.test(text)) return;
+      if (!/(delivery|deliver|collection|transfer|finance|pcp|hp|pch|deposit|monthly|warranty|service history|mot|documentation|spec|colour|ulez|urgent|asap|video|photo|photos|pictures|similar to)/i.test(text)) {
+        return;
+      }
+      if (isAnswered(text, item.index)) return;
+      text.split(/[.!?]\s+/).forEach(function (segment) {
+        var trimmed = segment.trim();
+        if (!trimmed) return;
+        if (requests.indexOf(trimmed) === -1) requests.push(trimmed);
+      });
+    });
+
+    return requests;
+  }
+
+  function detectIntentV9(raw, data, pxAskIndex) {
     var intents = [];
-    if (/finance/.test(combined) || /pcp|hp|lease|pch/.test(combined)) intents.push("finance discussion");
-    if (/delivery|deliver|collection|collect/.test(combined)) intents.push("delivery enquiry");
-    if (/warranty|guarantee/.test(combined)) intents.push("warranty clarification");
-    if (/extended test drive|24 hour test/.test(combined)) intents.push("extended test drive");
-    if (/similar vehicle|another vehicle/.test(combined)) intents.push("local test-drive alternative");
-    if (/cancel/.test(combined)) intents.push("cancellation");
+    var combined = raw.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
+    var bookingSignal = data.dateTime || /book|appointment|test drive|viewing|view/.test(combined);
+    var financeSignal = raw.some(function (m) {
+      if (m.sender !== "customer") return false;
+      return /finance|pcp|hp|pch|monthly|deposit/.test((m.text || "").toLowerCase());
+    });
+    if (bookingSignal) intents.push("booking request");
+    if (financeSignal) intents.push("finance discussion");
+    if (/motability/.test(combined)) intents.push("motability discussion");
+    if (/delivery|collect|collection/.test(combined)) intents.push("delivery enquiry");
+    if (/compare|versus|vs|another model/.test(combined)) intents.push("compare models");
+    if (/px only|sell.*px|part exchange only/.test(combined)) intents.push("PX-only enquiry");
+    if (/cancel/.test(combined)) intents.push("cancellation request");
     return intents.filter(function (v, idx, arr) { return arr.indexOf(v) === idx; });
   }
 
-  function detectFlagsV6(raw, data, pxAskIndex) {
+  function detectFlagsV10(raw, data, pxAskIndex) {
     var flags = [];
     function add(label, priority) {
       if (!flags.some(function (f) { return f.label === label; })) {
@@ -1312,22 +1447,20 @@
       }
     }
 
-    if (data.fullName) add("Name confirmed", 1);
-    if (pxAskIndex >= 0 && !data.pxReg) add("PX required before booking", 2);
-
+    if (pxAskIndex >= 0 && !data.pxReg) add("Missing PX details", 1);
+    if (!data.fullName) add("Missing customer name", 2);
+    if (data.firstName && !data.lastName && (pxAskIndex >= 0 || data.bookingType)) add("Missing surname", 3);
     raw.forEach(function (item) {
       var lower = (item.text || "").toLowerCase();
-      if (/[?]/.test(item.text || "") && (lower.indexOf("parking") !== -1 || lower.indexOf("accessibility") !== -1 || lower.indexOf("availability") !== -1)) {
-        add("Unanswered logistical questions", 3);
-      }
       if (/asap|urgent|soon|right away|straight away/.test(lower)) {
         add("Customer urgency", 2);
       }
-      var deliveryMatch = /delivery to ([a-z\s]+)/i.exec(item.text || "");
-      if (deliveryMatch) {
-        add("Discuss delivery to " + autoCapName(deliveryMatch[1].trim()), 4);
-      }
     });
+
+    var modelMentions = raw.filter(function (item) {
+      return detectKnownModelOnly(item.text || "") || detectBrandAndModel(item.text || "");
+    });
+    if (modelMentions.length > 1) add("Ambiguous vehicle of interest", 4);
 
     flags.sort(function (a, b) { return a.priority - b.priority; });
     return flags.slice(0, 3).map(function (f) { return f.label; });
@@ -1340,6 +1473,7 @@
       out.push("Model: " + (data.pxMake ? data.pxMake + " " : "") + (data.pxModel || ""));
     }
     if (data.pxMileage) out.push("Miles: " + data.pxMileage);
+    if (!out.length) return "No PX";
     return out.join(" | ");
   }
 
@@ -1353,6 +1487,7 @@
   }
 
   function renderV2() {
+    if (Date.now() - LAST_RENDER < 500) return;
     var messagesObj = collectMessages();
     var data = parseMessages(messagesObj);
     window._lpSumMini.data = data;
@@ -1374,6 +1509,19 @@
 
     updateDebugOverlay(messagesObj);
 
+    if (/@/.test(data.fullName || "")) {
+      data.fullName = "";
+      data.firstName = "";
+      data.lastName = "";
+    }
+    if (data.pxReg && data.phone && data.pxReg === data.phone) data.pxReg = "";
+    if (data.dateTime && !/^\d{2}\/\d{2}(\s+\d{2}:\d{2})?$/.test(data.dateTime)) {
+      data.date = "";
+      data.time = "";
+      data.dateTime = "";
+      data.flexible = "";
+    }
+
     var rows = document.querySelectorAll('.lpSumMiniRow[data-key]');
     rows.forEach(function (row) {
       var key = row.dataset.key;
@@ -1390,12 +1538,18 @@
         value = parts.join(" ").trim();
       }
       if (key === "vehicle") {
+        if (data.vehicle === "" && data.make === "" && data.model === "" && data.reg === "" && data.placeholderVOI) {
+          value = data.placeholderVOI;
+        }
         if (data.make || data.model) {
           if (data.reg) value = (data.make + " " + data.model + " (" + data.reg + ")").trim();
           else value = (data.make + " " + data.model).trim();
         }
       }
       if (key === "pxSummary") value = data.pxSummary;
+      if (key === "customerRequests") {
+        value = Array.isArray(data.customerRequests) ? data.customerRequests.join(" • ") : "";
+      }
 
       var valueEl = row.querySelector(".lpSumMiniValue");
       if (valueEl) valueEl.textContent = value;
