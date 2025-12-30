@@ -49,10 +49,6 @@
     "Hello, you are speaking with $!{operator.displayname} from Stellantis &You UK.",
     "Thank you for contacting Stellantis &You UK.",
     "Thanks for your enquiry. A member of the team will be with you shortly.",
-    "I can help with your enquiry today.",
-    "Please can you provide registration, make, model and mileage.",
-    "Please can you provide the registration, make, model and mileage so I can value your part exchange.",
-    "We can guide you through reserving the vehicle for £99.",
     "You are connected to Stellantis &You UK.",
     "This chat may be recorded for quality and training purposes.",
     "We are connecting you to an agent.",
@@ -60,8 +56,7 @@
     "Transferring you to another agent.",
     "Your chat has been transferred.",
     "Thanks for waiting, I will be with you shortly.",
-    "We have received your message and will reply soon.",
-    "Stellantis &You UK availability confirmation."
+    "We have received your message and will reply soon."
   ];
 
   const PREDEFINED_OS_CONFIRMATIONS = [
@@ -542,81 +537,76 @@
   }
 
   function collectMessages() {
-    var nodes = Array.from(document.querySelectorAll(".html-content.text-content"));
-    var raw = [];
-    var messageIndex = 0;
+    const nodes = Array.from(
+      document.querySelectorAll(".html-content.text-content, .content, .lp_message, .lpChatLine, .chatLine, .msg_text")
+    );
+    const raw = [];
+    const cleanCustomer = [];
+    const cleanAgent = [];
+    let index = 0;
 
-    function isPredefined(text) {
-      var normalized = normalizeMessageForTemplate(text);
-      return PREDEFINED_CONTENT.concat(PREDEFINED_OS_CONFIRMATIONS).some(function (template) {
-        return levenshtein(normalizeMessageForTemplate(template), normalized) < 3;
+    function isExactPredefined(text) {
+      return PREDEFINED_CONTENT.includes(text);
+    }
+
+    function isOsConfirmation(text) {
+      var lower = (text || "").toLowerCase();
+      return PREDEFINED_OS_CONFIRMATIONS.some(function (message) {
+        return lower.indexOf(message.toLowerCase()) !== -1;
       });
     }
 
-    function getOriginator(node) {
-      var originatorEl = node.nextElementSibling && node.nextElementSibling.classList.contains("originator")
-        ? node.nextElementSibling
-        : null;
+    nodes.forEach(node => {
+      if (app.panel && app.panel.contains(node)) return;
 
+      const text = (node.innerText || "").replace(/\s+/g, " ").trim();
+      if (!text) return;
+      if (!/[A-Za-z0-9]/.test(text)) return;
+      if (node.closest(".chips-item")) return;
+
+      let originatorEl = null;
+
+      // Look directly after node
+      if (node.nextElementSibling && node.nextElementSibling.classList.contains("originator")) {
+        originatorEl = node.nextElementSibling;
+      }
+
+      // Look inside container if needed
       if (!originatorEl && node.parentElement) {
-        var ori = node.parentElement.querySelectorAll(".originator");
+        const ori = node.parentElement.querySelectorAll(".originator");
         if (ori.length === 1) originatorEl = ori[0];
       }
 
-      return originatorEl ? (originatorEl.innerText || "").trim() : "";
-    }
+      let origin = originatorEl ? (originatorEl.innerText || "").trim() : "";
+      let sender = "customer";
 
-    function getTimestamp(node) {
-      if (!node || !node.parentElement) return "";
-      var ts = node.parentElement.querySelector(".timestamp, .message-time, time");
-      return ts ? (ts.innerText || "").trim() : "";
-    }
+      if (origin === "Omari") sender = "agent";
+      else if (origin === "Visitor") sender = "customer";
+      else if (/^sms/i.test(origin)) sender = "customer";
+      else if (/\+44|07\d{9}/.test(origin)) sender = "customer";
 
-    function isSmsNumber(text) {
-      if (!text) return false;
-      return /^\+?\d[\d\s-]{6,}$/.test(text.trim());
-    }
+      if (!origin) {
+        if (/(how can i help|how may i help|how can i assist|dealership|booking|test drive|viewing|appointment|we can|we are|i will|i can help|please provide|registration|make, model and mileage|can i take your|may i take your|could i take your|confirm your|provide your|reservation)/i.test(text)) {
+          sender = "agent";
+        } else {
+          sender = "customer";
+        }
+      }
 
-    function detectSender(originator, text, previousSender) {
-      var origin = (originator || "").toLowerCase();
-      var lowerText = (text || "").toLowerCase();
+      if (isExactPredefined(text) || isOsConfirmation(text)) sender = "system";
 
-      if (origin.indexOf("omari") !== -1) return "agent";
-      if (origin.indexOf("visitor") !== -1 || origin.indexOf("sms") !== -1) return "customer";
-      if (origin.indexOf("welcome message") !== -1) return "system";
-      if (origin.indexOf("stellantis") !== -1) return "system";
-      if (!origin) return "system";
+      const msg = { sender, text, index: index++ };
+      raw.push(msg);
 
-      if (origin) return "customer";
-
-      if (/^welcome!|^you are now connected/.test(lowerText)) return "system";
-      return "customer";
-    }
-
-    nodes.forEach(function (node) {
-      if (app.panel && app.panel.contains(node)) return;
-      if (node.closest(".chips-item")) return;
-
-      var text = (node.innerText || "").replace(/\s+/g, " ").trim();
-      if (!text) return;
-      if (!/[A-Za-z0-9]/.test(text)) return;
-
-      var originator = getOriginator(node);
-      var sender = detectSender(originator, text, raw.length ? raw[raw.length - 1].sender : "");
-      var timestamp = getTimestamp(node);
-      var predefined = isPredefined(text);
-      var type = sender === "system" ? "system-intro" : (predefined ? "predefined-content" : sender);
-
-      raw.push({
-        text: text,
-        sender: sender,
-        index: messageIndex++,
-        timestamp: timestamp,
-        type: type
-      });
+      if (sender === "customer") cleanCustomer.push(text);
+      if (sender === "agent") cleanAgent.push(text);
     });
 
-    return { raw: raw };
+    return {
+      raw,
+      cleanCustomer,
+      cleanAgent
+    };
   }
 
   function parseMessages(messagesObj) {
@@ -626,11 +616,13 @@
     });
     var customerMessages = parsingMessages.filter(function (m) { return m.sender === "customer"; });
     var agentMessages = parsingMessages.filter(function (m) { return m.sender === "agent"; });
+    var systemMessages = raw.filter(function (m) { return m.sender === "system"; });
 
     var data = {
       fullName: "",
       firstName: "",
       lastName: "",
+      nameAfterPromptSingleOnly: false,
       email: "",
       phone: "",
       address: "",
@@ -662,6 +654,7 @@
       data.fullName = nameResult.fullName;
       data.firstName = nameResult.firstName;
       data.lastName = nameResult.lastName;
+      data.nameAfterPromptSingleOnly = nameResult.afterPromptSingleOnly;
     }
 
     var phoneResult = detectPhone(customerMessages, agentMessages);
@@ -716,7 +709,7 @@
       data.dateTime = dateInfo.dateTime;
     }
 
-    data.bookingType = detectBookingType(agentMessages, customerMessages);
+    data.bookingType = detectBookingType(agentMessages, customerMessages, systemMessages);
     data.newUsed = detectNewUsed(customerMessages, data.reg);
 
     var flags = detectFlags(customerMessages, agentMessages, data, pxResult, voiResult);
@@ -731,10 +724,6 @@
       data.address = data.address.trim();
     } else if (data.postcode) {
       data.address = data.postcode;
-    }
-
-    if (!data.date) {
-      data.dateTime = "";
     }
 
     return data;
@@ -820,7 +809,7 @@
       return greetings.indexOf(normalized) !== -1;
     }
 
-    function isNameCandidate(text) {
+    function isNameCandidate(text, afterNamePrompt) {
       var cleaned = normalizeWhitespace(text).replace(/[0-9]/g, "");
       if (!cleaned) return "";
       if (isGreetingOnly(text)) return "";
@@ -828,77 +817,69 @@
       if (regRegex.test(text)) return "";
       if (financeWords.test(text)) return "";
       if (containsMileage(text)) return "";
-      if (detectModelInText(text)) return "";
-      if (/\b\d{1,2}[\/:]\d{1,2}\b/.test(text)) return "";
-      if (/\b(yes|ok|okay|perfect|sounds good|that works|that's fine)\b/i.test(text)) return "";
+      if (detectModelInText(text) && !afterNamePrompt) return "";
       var parts = cleaned.split(/\s+/).filter(Boolean);
       if (parts.length < 1 || parts.length > 4) return "";
       if (!parts.every(function (p) { return /^[A-Za-z][A-Za-z\-']*$/.test(p); })) return "";
       return parts.map(toTitleCase).join(" ");
     }
 
+    function getFirstNonEmptyLine(text) {
+      return (text || "")
+        .split(/\r?\n/)
+        .map(function (line) { return line.trim(); })
+        .find(function (line) { return line.length > 0; }) || "";
+    }
+
     for (var j = 0; j < customerMessages.length; j++) {
       var text = customerMessages[j].text || "";
+      if (customerMessages[j].sender === "system") continue;
       var match = selfId.exec(text);
       if (match) {
-        var candidate = isNameCandidate(match[2]);
-        if (candidate) return buildNameParts(candidate);
+        var candidate = isNameCandidate(getFirstNonEmptyLine(match[2]), false);
+        if (candidate) return buildNameParts(candidate, false);
       }
     }
 
     var promptIndex = -1;
     agentMessages.forEach(function (msg) {
+      if (msg.sender === "system") return;
       if (namePrompts.test(msg.text || "")) promptIndex = msg.index;
     });
 
-    var candidates = [];
     if (promptIndex >= 0) {
-      customerMessages.forEach(function (msg) {
-        if (msg.index <= promptIndex) return;
-        var candidate = isNameCandidate(msg.text || "");
-        if (candidate) candidates.push({ name: candidate, index: msg.index });
-      });
-    }
-
-    if (candidates.length) {
-      candidates.sort(function (a, b) { return a.index - b.index; });
-      var firstParts = candidates[0].name.split(/\s+/);
-      var firstName = firstParts[0] || "";
-      var lastName = firstParts.length > 1 ? firstParts.slice(1).join(" ") : "";
-      if (!lastName) {
-        for (var i = 1; i < candidates.length; i++) {
-          var nextParts = candidates[i].name.split(/\s+/);
-          if (nextParts.length == 1) {
-            lastName = nextParts[0];
-            break;
-          }
-        }
+      for (var i = 0; i < customerMessages.length; i++) {
+        var msg = customerMessages[i];
+        if (msg.sender === "system") continue;
+        if (msg.index <= promptIndex) continue;
+        var candidate = isNameCandidate(getFirstNonEmptyLine(msg.text || ""), true);
+        if (!candidate) continue;
+        return buildNameParts(candidate, candidate.split(/\s+/).length === 1);
       }
-      var fullName = (firstName + (lastName ? " " + lastName : "")).trim();
-      if (/@/.test(fullName)) return null;
-      return buildNameParts(fullName);
     }
 
     for (var k = 0; k < customerMessages.length; k++) {
       var signature = customerMessages[k].text || "";
+      if (customerMessages[k].sender === "system") continue;
       var sigMatch = /(thanks|kind regards|regards|cheers),?\s*([A-Za-z\-' ]{2,40})$/i.exec(signature.trim());
       if (sigMatch) {
-        var sigCandidate = isNameCandidate(sigMatch[2]);
-        if (sigCandidate) return buildNameParts(sigCandidate);
+        var sigCandidate = isNameCandidate(sigMatch[2], false);
+        if (sigCandidate) return buildNameParts(sigCandidate, false);
       }
     }
 
     return null;
   }
 
-  function buildNameParts(fullName) {
+  function buildNameParts(fullName, afterPromptSingleOnly) {
     var parts = fullName.split(/\s+/).filter(Boolean);
     var firstName = parts[0] || "";
     var lastName = parts.length > 1 ? parts.slice(1).join(" ") : "";
     return {
       fullName: (firstName + (lastName ? " " + lastName : "")).trim(),
       firstName: firstName,
-      lastName: lastName
+      lastName: lastName,
+      afterPromptSingleOnly: !!afterPromptSingleOnly
     };
   }
 
@@ -913,6 +894,7 @@
     var latest = "";
 
     customerMessages.forEach(function (msg) {
+      if (msg.sender === "system") return;
       var text = msg.text || "";
       if (requestIndex >= 0 && msg.index <= requestIndex) return;
       if (/\bmiles\b|\bmi\b/i.test(text)) return;
@@ -927,6 +909,7 @@
 
     if (requestIndex < 0) {
       for (var i = 0; i < customerMessages.length; i++) {
+        if (customerMessages[i].sender === "system") continue;
         var textFallback = customerMessages[i].text || "";
         if (/\bmiles\b|\bmi\b/i.test(textFallback)) continue;
         var matchFallback = phoneRegex.exec(textFallback);
@@ -947,6 +930,7 @@
 
     var latestAfterRequest = "";
     customerMessages.forEach(function (msg) {
+      if (msg.sender === "system") return;
       var match = emailRegex.exec(msg.text || "");
       if (!match) return;
       if (requestIndex >= 0 && msg.index > requestIndex) {
@@ -958,6 +942,7 @@
 
     if (requestIndex < 0) {
       for (var i = 0; i < customerMessages.length; i++) {
+        if (customerMessages[i].sender === "system") continue;
         var match = emailRegex.exec(customerMessages[i].text || "");
         if (match) return match[0].toLowerCase();
       }
@@ -970,7 +955,7 @@
     var postcodeRegex = /([A-Z]{1,2}\d{1,2}[A-Z]?)\s?(\d[A-Z]{2})/i;
     var addressTokens = /(road|rd|street|st|avenue|ave|lane|ln|drive|dr|close|cl|court|ct|place|pl|crescent|cres|way|terrace|ter|boulevard|blvd|park)/i;
     var addressRequest = /(address|postcode|post code|house number|street)/i;
-    var blockWords = /(booking|what time|when|contact|branch|trying to|call)/i;
+    var blockWords = /(booking|branch|team|call|what time)/i;
     var requestIndex = -1;
 
     agentMessages.forEach(function (msg) {
@@ -983,6 +968,7 @@
     var postcode = "";
 
     customerMessages.forEach(function (msg) {
+      if (msg.sender === "system") return;
       if (msg.index <= requestIndex) return;
       var text = normalizeWhitespace(msg.text || "");
       if (!text) return;
@@ -1019,9 +1005,18 @@
     var px = { pxReg: "", pxMake: "", pxModel: "", pxMileage: "", pxSummary: "" };
     var noPx = false;
 
+    function isOsConfirmationText(text) {
+      var lower = (text || "").toLowerCase();
+      return PREDEFINED_OS_CONFIRMATIONS.some(function (message) {
+        return lower.indexOf(message.toLowerCase()) !== -1;
+      });
+    }
+
     customerMessages.forEach(function (msg) {
+      if (msg.sender === "system") return;
       if (msg.index <= requestIndex) return;
       var text = msg.text || "";
+      if (isOsConfirmationText(text)) return;
       if (noPx) return;
       if (/no px|no part exchange|don't have a px|dont have a px|no part-exchange/i.test(text)) {
         noPx = true;
@@ -1034,10 +1029,8 @@
       }
       if (isFinanceMessage(text)) return;
 
-      if (!px.pxReg) {
-        var reg = extractReg(text);
-        if (reg) px.pxReg = reg;
-      }
+      var reg = extractReg(text);
+      if (reg) px.pxReg = reg;
 
       var mileageMatch = /(\b\d{2,3}\s?k\b|\b\d{4,6}\b)/i.exec(text);
       if (mileageMatch) {
@@ -1077,9 +1070,19 @@
     var pxReg = pxResult ? pxResult.pxReg : "";
     var pxModel = pxResult ? pxResult.pxModel : "";
     var pxMake = pxResult ? pxResult.pxMake : "";
+    function isSelfIdentifyingVehicle(text) {
+      return /\bmy\b/i.test(text || "") && !!detectVehicleFromText(text || "");
+    }
 
     function isPxMessage(text) {
-      return /(part exchange|part-exchange|px|my car|my vehicle)/i.test(text || "");
+      return /(part exchange|part-exchange|px|my car|my vehicle)/i.test(text || "") || isSelfIdentifyingVehicle(text);
+    }
+
+    function isOsConfirmationText(text) {
+      var lower = (text || "").toLowerCase();
+      return PREDEFINED_OS_CONFIRMATIONS.some(function (message) {
+        return lower.indexOf(message.toLowerCase()) !== -1;
+      });
     }
 
     var voiRequest = /(which vehicle are you looking for|what vehicle are you interested in|what car are you interested in)/i;
@@ -1104,27 +1107,16 @@
     });
     if (agentConfirmed) return agentConfirmed;
 
-    var placeholder = null;
-    customerMessages.forEach(function (msg) {
-      var text = msg.text || "";
-      if (voiRequestIndex >= 0 && msg.index <= voiRequestIndex) return;
-      if (/similar to my/i.test(text)) {
-        var vehicle = detectVehicleFromText(text);
-        if (vehicle && vehicle.model) {
-          placeholder = "Similar to: " + vehicle.make + " " + vehicle.model;
-        }
-      }
-    });
-    if (placeholder) return { placeholder: placeholder };
-
     var lastMake = "";
     var lastModel = "";
     var lastReg = "";
     var uniqueVehicles = [];
 
     customerMessages.forEach(function (msg) {
+      if (msg.sender === "system") return;
       var text = msg.text || "";
       if (voiRequestIndex >= 0 && msg.index <= voiRequestIndex) return;
+      if (isOsConfirmationText(text)) return;
       if (isPxMessage(text)) return;
       if (isFinanceMessage(text)) return;
 
@@ -1192,29 +1184,29 @@
 
   function detectCustomerRequests(customerMessages, agentMessages) {
     var requests = [];
-    var keywordRegex = /(delivery|transfer|finance|deposit|monthly|payment|warranty|service history|mot|colour|color|spec|picture|photo|video|urgent|asap|view|viewing|clarify|question|similar to)/i;
+    var keywordRegex = /(delivery|transfer|finance|deposit|monthly|warranty|service history|mot|colour|color|spec|photo|photos|picture|pictures|video|viewing|view|similar)/i;
+    var initiativeRegex = /(\?|\bcan\b|\bcould\b|\bwould\b|\bwhat\b|\bwhen\b|\bwhere\b|\bhow\b|\bplease\b|\bneed\b|is it possible|are you able|do you know|looking for|any chance|do you\b|should i|can we|could we)/i;
     var greetings = /^(hi|hello|hey|ok|okay|thanks|thank you|cheers)$/i;
+    var confirmationRegex = /^(yes|yep|yeah|ok|okay|perfect|that works|that's fine|sounds good|fine|works for me|no problem|sure)\b/i;
+    var dateTimeOnlyRegex = /^(today|tomorrow|this (morning|afternoon|evening)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|\d{1,2}[\/-]\d{1,2}|\d{1,2}(:\d{2})?\s?(am|pm)?)$/i;
+    var urgencyOnlyRegex = /\b(asap|urgent)\b/i;
 
-    function isAnsweredLater(text, idx) {
+    function isOsConfirmationText(text) {
       var lower = (text || "").toLowerCase();
-      var keywords = ["delivery", "transfer", "finance", "deposit", "monthly", "warranty", "service history", "mot", "colour", "spec", "picture", "photo", "video", "viewing", "view"];
-      var hit = keywords.find(function (k) { return lower.indexOf(k) !== -1; });
-      if (!hit || !agentMessages) return false;
-      for (var i = 0; i < agentMessages.length; i++) {
-        if (agentMessages[i].index <= idx) continue;
-        if ((agentMessages[i].text || "").toLowerCase().indexOf(hit) !== -1) return true;
-      }
-      return false;
+      return PREDEFINED_OS_CONFIRMATIONS.some(function (message) {
+        return lower.indexOf(message.toLowerCase()) !== -1;
+      });
     }
 
     function addRequest(text) {
       var trimmed = text.trim();
       if (!trimmed) return;
-      var normalized = trimmed.toLowerCase();
+      var normalized = normalizeRequest(trimmed);
       for (var i = 0; i < requests.length; i++) {
         var existing = requests[i];
-        if (existing.toLowerCase().indexOf(normalized) !== -1) return;
-        if (normalized.indexOf(existing.toLowerCase()) !== -1) {
+        var normalizedExisting = normalizeRequest(existing);
+        if (normalizedExisting.indexOf(normalized) !== -1) return;
+        if (normalized.indexOf(normalizedExisting) !== -1) {
           requests[i] = trimmed;
           return;
         }
@@ -1222,19 +1214,42 @@
       requests.push(trimmed);
     }
 
+    function normalizeRequest(text) {
+      return (text || "")
+        .toLowerCase()
+        .replace(/[.!?]/g, "")
+        .trim();
+    }
+
+    function hasActionableRequest(text) {
+      if (!keywordRegex.test(text)) return false;
+      return initiativeRegex.test(text);
+    }
+
     customerMessages.forEach(function (msg) {
+      if (msg.sender === "system") return;
       var text = normalizeWhitespace(msg.text || "");
       if (!text) return;
       if (greetings.test(text)) return;
-      if (!keywordRegex.test(text)) return;
-      if (isAnsweredLater(text, msg.index)) return;
+      if (urgencyOnlyRegex.test(text)) return;
+      if (confirmationRegex.test(text)) return;
+      if (dateTimeOnlyRegex.test(text.toLowerCase())) return;
+      if (isOsConfirmationText(text)) return;
+
+      if (/similar to my/i.test(text)) {
+        var vehicle = detectVehicleFromText(text);
+        if (vehicle && vehicle.model) {
+          addRequest("similar to: " + vehicle.make + " " + vehicle.model);
+          return;
+        }
+      }
+      if (!keywordRegex.test(text) || !initiativeRegex.test(text)) return;
 
       text.split(/[.!?]/).forEach(function (segment) {
         var trimmed = segment.trim();
         if (!trimmed) return;
-        if (keywordRegex.test(trimmed)) {
-          addRequest(trimmed);
-        }
+        if (!hasActionableRequest(trimmed)) return;
+        addRequest(trimmed);
       });
     });
 
@@ -1243,7 +1258,10 @@
 
   function detectIntent(customerMessages, data) {
     var intents = [];
-    var combined = customerMessages.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
+    var combined = customerMessages
+      .filter(function (m) { return m.sender !== "system"; })
+      .map(function (m) { return (m.text || "").toLowerCase(); })
+      .join(" ");
     if ((data.date && data.time) || /book|appointment|test drive|viewing|view/.test(combined)) intents.push("booking request");
     if (/motability/.test(combined)) intents.push("motability inquiry");
     if (/finance|pcp|hp|pch|monthly|deposit/.test(combined)) intents.push("finance discussion");
@@ -1259,7 +1277,7 @@
       return /full name|confirm your name|your name please|could i have your name|may i take your name/i.test(m.text || "");
     });
 
-    if (nameAsked && data.firstName && !data.lastName) flags.push("Missing surname");
+    if (nameAsked && data.nameAfterPromptSingleOnly) flags.push("Missing surname");
 
     var pxAsked = agentMessages.some(function (m) {
       return /part exchange|part-exchange|registration, make, model and mileage/i.test(m.text || "");
@@ -1268,12 +1286,15 @@
       flags.push("Missing PX details");
     }
 
-    if (customerMessages.some(function (m) { return /urgent|asap/i.test(m.text || ""); })) {
+    if (customerMessages.some(function (m) {
+      return m.sender !== "system" && /urgent|asap/i.test(m.text || "");
+    })) {
       flags.push("Customer urgency");
     }
 
     var vehicleMentions = [];
     customerMessages.forEach(function (m) {
+      if (m.sender === "system") return;
       var text = m.text || "";
       if (/(part exchange|part-exchange|px|my car|my vehicle)/i.test(text)) return;
       var vehicle = detectVehicleFromText(text);
@@ -1319,6 +1340,7 @@
     function parseDate(text) {
       if (/tomorrow/.test(text)) return tomorrowStr;
       if (/today/.test(text)) return todayStr;
+      if (/this (morning|afternoon|evening)/.test(text)) return todayStr;
       var numeric = /(\d{1,2})[\/\-](\d{1,2})/.exec(text);
       if (numeric) return pad(parseInt(numeric[1], 10)) + "/" + pad(parseInt(numeric[2], 10));
       var weekdayRe = /(monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i.exec(text);
@@ -1331,6 +1353,7 @@
     var lastAgentDate = "";
     var lastAgentTime = "";
     agentMessages.forEach(function (msg) {
+      if (msg.sender === "system") return;
       var lower = (msg.text || "").toLowerCase();
       var newDate = parseDate(lower);
       var newTime = parseTime(lower);
@@ -1339,6 +1362,7 @@
     });
 
     customerMessages.forEach(function (msg) {
+      if (msg.sender === "system") return;
       var lower = (msg.text || "").toLowerCase();
       var newDate = parseDate(lower);
       var newTime = parseTime(lower);
@@ -1351,8 +1375,14 @@
       }
     });
 
-    if (!date && time && agentMessages.some(function (m) { return /today or tomorrow/i.test(m.text || ""); })) {
+    if (!date && time && agentMessages.some(function (m) {
+      return m.sender !== "system" && /today or tomorrow/i.test(m.text || "");
+    })) {
       date = tomorrowStr;
+    }
+
+    if (!date && time && lastAgentDate) {
+      date = lastAgentDate;
     }
 
     if (!date || !/^\d{2}\/\d{2}$/.test(date)) return { date: "", time: "", dateTime: "" };
@@ -1386,22 +1416,31 @@
     return pad(next.getDate()) + "/" + pad(next.getMonth() + 1);
   }
 
-  function detectBookingType(agentMessages, customerMessages) {
+  function detectBookingType(agentMessages, customerMessages, systemMessages) {
     var combinedAgent = agentMessages.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
     var combinedCustomer = customerMessages.map(function (m) { return (m.text || "").toLowerCase(); }).join(" ");
+    var osSystemText = (systemMessages || [])
+      .map(function (m) { return (m.text || "").toLowerCase(); })
+      .filter(function (text) {
+        return PREDEFINED_OS_CONFIRMATIONS.some(function (msg) {
+          return text.indexOf(msg.toLowerCase()) !== -1;
+        });
+      })
+      .join(" ");
+    var combinedAgentWithSystem = combinedAgent + " " + osSystemText;
     var combined = combinedAgent + " " + combinedCustomer;
+    var combinedAll = combined + " " + osSystemText;
 
-    if (/motability/.test(combined)) return "Motability";
+    if (/motability/.test(combinedAll)) return "Motability";
 
     var osConfirmation = PREDEFINED_OS_CONFIRMATIONS.some(function (msg) {
-      return combinedAgent.indexOf(msg.toLowerCase()) !== -1;
+      return combinedAll.indexOf(msg.toLowerCase()) !== -1;
     });
-
     if (osConfirmation) return "Online Store";
-    if (/test drive/.test(combined)) return "Test Drive";
-    if (/viewing|view/.test(combined)) return "View";
-    if (/phone call appointment|phone appointment|call appointment|book a call|arrange a call/.test(combined)) return "Phone Call";
-    if (/valuation/.test(combined)) return "Valuation";
+    if (/test drive/.test(combinedAll)) return "Test Drive";
+    if (/\b(viewing|view)\b|come to view|arrange viewing/.test(combinedAll)) return "View";
+    if (/valuation/.test(combinedAll)) return "Valuation";
+    if (/\bcall\b|phone call|arrange a call|book a call/.test(combinedAll)) return "Phone Call";
     return "";
   }
 
@@ -1452,7 +1491,10 @@
       data.lastName = "";
     }
     if (data.pxReg && data.phone && data.pxReg === data.phone) data.pxReg = "";
-    if (data.dateTime && !/^\d{2}\/\d{2}(\s+\d{2}:\d{2})?$/.test(data.dateTime)) {
+    if (data.reg && data.pxReg && data.reg === data.pxReg) data.reg = "";
+    if (data.time && !data.date) {
+      data.dateTime = "";
+    } else if (!data.date && !data.time) {
       data.date = "";
       data.time = "";
       data.dateTime = "";
