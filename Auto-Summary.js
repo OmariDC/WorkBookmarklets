@@ -1,77 +1,38 @@
+/* ============================================================
+   LOGIC OVERRIDES PATCH
+   - engine, UI, observers untouched
+   - booking summary logic disabled
+   ============================================================ */
+
 (function () {
-  if (window._lpSumMini) return;
+  if (!window._lpSumMini) return;
 
-  let RENDER_LOCK = false;
-  let LAST_RENDER = 0;
-  const MIN_RENDER_GAP = 300;
-  let RENDER_SCHEDULED = false;
-  let OBSERVER_DEBOUNCE = null;
-  const OBSERVER_DELAY = 800;
+  /* =========================
+     HELPER: prompt index
+     ========================= */
 
-  function safeRender(fn) {
-    const now = Date.now();
-    if (now - LAST_RENDER < MIN_RENDER_GAP) {
-      if (!RENDER_SCHEDULED) {
-        RENDER_SCHEDULED = true;
-        setTimeout(function () {
-          RENDER_SCHEDULED = false;
-          safeRender(fn);
-        }, MIN_RENDER_GAP);
-      }
-      return;
-    }
-    if (RENDER_LOCK) {
-      if (!RENDER_SCHEDULED) {
-        RENDER_SCHEDULED = true;
-        setTimeout(function () {
-          RENDER_SCHEDULED = false;
-          safeRender(fn);
-        }, 80);
-      }
-      return;
-    }
-    RENDER_LOCK = true;
-    try { fn(); } catch (e) { console.error(e); }
-    LAST_RENDER = Date.now();
-    RENDER_LOCK = false;
+  function lastPromptIndex(agentMessages, regex) {
+    var idx = -1;
+    agentMessages.forEach(function (m) {
+      if (regex.test(m.text || "")) idx = m.index;
+    });
+    return idx;
   }
 
   /* =========================
-     FIX: PROMPT DEFINITIONS
+     OVERRIDE: NAME
      ========================= */
 
-  const PROMPTS = {
-    name: /(may i take your full name|just to confirm.*full name|confirm your full name|could i take your name)/i,
-    phone: /(contact number|phone|mobile|telephone)/i,
-    email: /(email address|email)/i,
-    address: /(postcode|post code|address)/i,
-    px: /(vehicle to part[- ]?exchange|registration, make, model and mileage|take the registration, make, model and mileage)/i
-  };
+  window.detectCustomerName = function (customerMessages, agentMessages) {
+    var promptIdx = lastPromptIndex(
+      agentMessages,
+      /(may i take your full name|confirm your full name|could i take your name)/i
+    );
 
-  /* =========================
-     EVERYTHING BELOW IS YOUR
-     ORIGINAL CODE UNCHANGED
-     EXCEPT THE DETECTORS
-     ========================= */
-
-  // --- UI, styles, collectMessages, etc ---
-  // UNCHANGED – omitted here for brevity
-  // (everything you pasted remains exactly the same)
-
-  /* =========================
-     FIXED DETECTORS
-     ========================= */
-
-  function detectCustomerName(customerMessages, agentMessages) {
-    let promptIndex = -1;
-    agentMessages.forEach(m => {
-      if (PROMPTS.name.test(m.text || "")) promptIndex = m.index;
-    });
-
-    let latest = "";
-    customerMessages.forEach(m => {
-      if (promptIndex >= 0 && m.index <= promptIndex) return;
-      let t = (m.text || "").trim();
+    var latest = "";
+    customerMessages.forEach(function (m) {
+      if (promptIdx >= 0 && m.index <= promptIdx) return;
+      var t = (m.text || "").trim();
       if (!t) return;
       if (/@|\d/.test(t)) return;
       if (t.split(/\s+/).length > 4) return;
@@ -79,96 +40,124 @@
     });
 
     if (!latest) return null;
-    let parts = latest.split(/\s+/);
+
+    var parts = latest.split(/\s+/);
     return {
       fullName: parts.join(" "),
       firstName: parts[0],
       lastName: parts.slice(1).join(" "),
       afterPromptSingleOnly: parts.length === 1
     };
-  }
+  };
 
-  function detectPhone(customerMessages, agentMessages) {
-    let promptIndex = -1;
-    agentMessages.forEach(m => {
-      if (PROMPTS.phone.test(m.text || "")) promptIndex = m.index;
-    });
+  /* =========================
+     OVERRIDE: PHONE
+     ========================= */
 
-    let phone = "";
-    customerMessages.forEach(m => {
-      if (promptIndex >= 0 && m.index <= promptIndex) return;
-      let match = m.text.match(/(?:\+44|0)\d{9,11}/);
+  window.detectPhone = function (customerMessages, agentMessages) {
+    var promptIdx = lastPromptIndex(
+      agentMessages,
+      /(contact number|phone|mobile|telephone)/i
+    );
+
+    var phone = "";
+    customerMessages.forEach(function (m) {
+      if (promptIdx >= 0 && m.index <= promptIdx) return;
+      var match = (m.text || "").match(/(?:\+44|0)\d{9,11}/);
       if (match) phone = match[0].replace(/\D/g, "");
     });
+
     return phone;
-  }
+  };
 
-  function detectEmail(customerMessages, agentMessages) {
-    let promptIndex = -1;
-    agentMessages.forEach(m => {
-      if (PROMPTS.email.test(m.text || "")) promptIndex = m.index;
-    });
+  /* =========================
+     OVERRIDE: EMAIL
+     ========================= */
 
-    let email = "";
-    customerMessages.forEach(m => {
-      if (promptIndex >= 0 && m.index <= promptIndex) return;
-      let match = m.text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+  window.detectEmail = function (customerMessages, agentMessages) {
+    var promptIdx = lastPromptIndex(
+      agentMessages,
+      /(email address|email)/i
+    );
+
+    var email = "";
+    customerMessages.forEach(function (m) {
+      if (promptIdx >= 0 && m.index <= promptIdx) return;
+      var match = (m.text || "").match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
       if (match) email = match[0].toLowerCase();
     });
+
     return email;
-  }
+  };
 
-  function detectAddress(customerMessages, agentMessages) {
-    let promptIndex = -1;
-    agentMessages.forEach(m => {
-      if (PROMPTS.address.test(m.text || "")) promptIndex = m.index;
-    });
+  /* =========================
+     OVERRIDE: ADDRESS
+     ========================= */
 
-    let lines = [];
-    let postcode = "";
+  window.detectAddress = function (customerMessages, agentMessages) {
+    var promptIdx = lastPromptIndex(
+      agentMessages,
+      /(postcode|post code|address)/i
+    );
 
-    customerMessages.forEach(m => {
-      if (promptIndex >= 0 && m.index <= promptIndex) return;
-      let t = m.text || "";
-      let pc = t.match(/([A-Z]{1,2}\d{1,2}[A-Z]?)\s?(\d[A-Z]{2})/i);
+    var lines = [];
+    var postcode = "";
+
+    customerMessages.forEach(function (m) {
+      if (promptIdx >= 0 && m.index <= promptIdx) return;
+      var t = (m.text || "").trim();
+      if (!t) return;
+
+      var pc = t.match(/([A-Z]{1,2}\d{1,2}[A-Z]?)\s?(\d[A-Z]{2})/i);
       if (pc) postcode = (pc[1] + " " + pc[2]).toUpperCase();
+
       if (/\d+/.test(t)) lines.push(t);
     });
 
     if (!lines.length && !postcode) return null;
-    return { address: lines.join(", "), postcode };
-  }
+    return { address: lines.join(", "), postcode: postcode };
+  };
 
-  function detectPX(customerMessages, agentMessages) {
-    let promptIndex = -1;
-    agentMessages.forEach(m => {
-      if (PROMPTS.px.test(m.text || "")) promptIndex = m.index;
-    });
-    if (promptIndex < 0) return null;
+  /* =========================
+     OVERRIDE: PX
+     ========================= */
 
-    let px = { pxReg: "", pxMake: "", pxModel: "", pxMileage: "", pxSummary: "" };
+  window.detectPX = function (customerMessages, agentMessages) {
+    var promptIdx = lastPromptIndex(
+      agentMessages,
+      /(vehicle to part[- ]?exchange|registration, make, model and mileage|take the registration, make, model and mileage)/i
+    );
+    if (promptIdx < 0) return null;
 
-    customerMessages.forEach(m => {
-      if (m.index <= promptIndex) return;
-      let t = m.text || "";
+    var px = {
+      pxReg: "",
+      pxMake: "",
+      pxModel: "",
+      pxMileage: "",
+      pxSummary: ""
+    };
+
+    customerMessages.forEach(function (m) {
+      if (m.index <= promptIdx) return;
+      var t = m.text || "";
 
       if (/no px|no part exchange/i.test(t)) {
         px.pxSummary = "No PX";
         return;
       }
 
-      let reg = t.match(/[A-Z]{2}\d{2}\s?[A-Z]{3}/i);
+      var reg = t.match(/[A-Z]{2}\d{2}\s?[A-Z]{3}/i);
       if (reg) px.pxReg = reg[0].replace(/\s+/g, "").toUpperCase();
 
-      let miles = t.match(/\b\d{2,3}\s?k\b|\b\d{4,6}\b/i);
+      var miles = t.match(/\b\d{2,3}\s?k\b|\b\d{4,6}\b/i);
       if (miles) {
-        let raw = miles[0].toLowerCase();
-        px.pxMileage = raw.includes("k")
-          ? String(parseInt(raw) * 1000)
+        var raw = miles[0].toLowerCase();
+        px.pxMileage = raw.indexOf("k") !== -1
+          ? String(parseInt(raw, 10) * 1000)
           : raw.replace(/\D/g, "");
       }
 
-      let veh = detectVehicleFromText(t);
+      var veh = window.detectVehicleFromText && window.detectVehicleFromText(t);
       if (veh) {
         px.pxMake = veh.make || px.pxMake;
         px.pxModel = veh.model || px.pxModel;
@@ -176,16 +165,23 @@
     });
 
     if (px.pxSummary === "No PX") return px;
+
     if (px.pxReg || px.pxMake || px.pxModel || px.pxMileage) {
-      px.pxSummary = buildPxSummary(px);
+      px.pxSummary = window.buildPxSummary(px);
     }
+
     return px;
-  }
+  };
 
   /* =========================
-     REST OF YOUR FILE
-     (renderV2, observer, UI)
-     UNCHANGED
+     DISABLE BOOKING SUMMARY LOGIC
      ========================= */
 
+  window.detectBookingType = function () { return ""; };
+  window.detectDateTime = function () { return { date: "", time: "", dateTime: "" }; };
+  window.detectIntent = function () { return []; };
+  window.detectCustomerRequests = function () { return []; };
+  window.detectFlags = function () { return []; };
+
 })();
+
