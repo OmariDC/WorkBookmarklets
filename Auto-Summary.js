@@ -34,41 +34,64 @@
     navigator.clipboard.writeText(text);
   }
 
-  function make(tag, cls, text) {
-    var el = document.createElement(tag);
-    if (cls) el.className = cls;
-    if (text !== undefined) el.textContent = text;
-    return el;
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
   }
 
   /* =========================
-     STYLE
+     STYLES
   ========================= */
 
-  var style = make("style");
+  var style = el("style");
   style.textContent =
-    "#lpPxPanel{position:fixed;top:0;right:0;width:280px;height:100vh;" +
+    "#lpPxToggle{" +
+    "position:fixed;bottom:12px;right:64px;width:14px;height:14px;" +
+    "border-radius:50%;background:#1e1d49;border:2px solid #000;" +
+    "box-shadow:0 0 4px rgba(0,0,0,.4);cursor:pointer;z-index:100001}" +
+
+    "#lpPxPanel{" +
+    "position:fixed;top:0;right:0;width:280px;height:100vh;" +
     "background:#1e1d49;color:#fff;font-family:Arial;font-size:13px;" +
-    "padding:16px;z-index:999999;box-shadow:-4px 0 10px rgba(0,0,0,.4)}" +
+    "padding:16px;box-shadow:-4px 0 10px rgba(0,0,0,.4);" +
+    "transform:translateX(100%);opacity:0;pointer-events:none;" +
+    "transition:transform .25s ease,opacity .25s ease;" +
+    "z-index:100000}" +
+
+    "#lpPxPanel.open{transform:translateX(0);opacity:1;pointer-events:auto}" +
+
     "#lpPxPanel h3{margin:12px 0 6px;font-size:15px}" +
+
     ".lpPxRow{background:rgba(255,255,255,.08);padding:6px 8px;" +
     "border-radius:4px;margin-bottom:6px;cursor:pointer}" +
+
     ".lpPxRow span{font-weight:bold;display:block;font-size:11px;opacity:.8}" +
+
     ".lpPxRow:hover{background:rgba(255,255,255,.18)}";
 
   document.head.appendChild(style);
 
   /* =========================
-     PANEL
+     UI
   ========================= */
 
-  var panel = make("div");
+  var toggleBtn = el("div");
+  toggleBtn.id = "lpPxToggle";
+
+  var panel = el("div");
   panel.id = "lpPxPanel";
 
-  function addRow(label, getter) {
-    var row = make("div", "lpPxRow");
-    var l = make("span", null, label);
-    var v = make("div");
+  toggleBtn.onclick = function () {
+    panel.classList.toggle("open");
+  };
+
+  function addRow(label) {
+    var row = el("div", "lpPxRow");
+    var l = el("span", null, label);
+    var v = el("div");
+
     row.appendChild(l);
     row.appendChild(v);
 
@@ -88,35 +111,64 @@
   var setEmail = addRow("Email");
   var setPostcode = addRow("Postcode");
 
-  panel.appendChild(make("h3", null, "Part Exchange"));
+  panel.appendChild(el("h3", null, "Part Exchange"));
 
   var setPxReg = addRow("PX Reg");
   var setPxVehicle = addRow("PX Vehicle");
   var setPxMileage = addRow("PX Mileage");
 
+  document.body.appendChild(toggleBtn);
   document.body.appendChild(panel);
 
   /* =========================
-     MESSAGE COLLECTION
+     MESSAGE COLLECTION (FIXED)
   ========================= */
 
   function collectMessages() {
     var nodes = document.querySelectorAll(
-      ".html-content, .text-content, .lp_message, .chatLine, .msg_text"
+      ".html-content.text-content," +
+      ".content," +
+      ".lp_message," +
+      ".lpChatLine," +
+      ".chatLine," +
+      ".msg_text"
     );
 
     var out = [];
     var idx = 0;
 
     nodes.forEach(function (n) {
+      if (panel.contains(n)) return;
+
       var text = (n.innerText || "")
         .replace(new RegExp("\\s+", "g"), " ")
         .trim();
+
       if (!text) return;
+      if (!new RegExp("[A-Za-z0-9]").test(text)) return;
 
       var sender = "customer";
-      var o = n.closest("[class*=originator]");
-      if (o && o.innerText.trim() === AGENT_NAME) sender = "agent";
+
+      // Explicit originator
+      var origin = n.parentElement
+        ? n.parentElement.querySelector(".originator")
+        : null;
+
+      if (origin) {
+        var o = origin.innerText || "";
+        if (o === AGENT_NAME) sender = "agent";
+        else if (o === "Visitor") sender = "customer";
+      } else {
+        // Heuristic fallback
+        if (
+          new RegExp(
+            "how can i help|how may i help|i can help|please provide|can i take your|may i take your",
+            "i"
+          ).test(text)
+        ) {
+          sender = "agent";
+        }
+      }
 
       out.push({ sender: sender, text: text, index: idx++ });
     });
@@ -124,11 +176,15 @@
     return out;
   }
 
-  function getReplies(messages, regex) {
+  /* =========================
+     CAPTURE WINDOWS
+  ========================= */
+
+  function repliesAfter(messages, promptRe) {
     var last = -1;
 
     messages.forEach(function (m) {
-      if (m.sender === "agent" && regex.test(m.text)) last = m.index;
+      if (m.sender === "agent" && promptRe.test(m.text)) last = m.index;
     });
 
     if (last < 0) return [];
@@ -154,7 +210,7 @@
   }
 
   /* =========================
-     EXTRACTORS (NO REGEX LITERALS)
+     EXTRACTORS
   ========================= */
 
   function findName(lines) {
@@ -233,12 +289,16 @@
       m = milesRe.exec(l);
       if (m) {
         var t = m[0].toLowerCase().replace(new RegExp("\\s+", "g"), "");
-        px.mileage = t.indexOf("k") !== -1 ? String(parseInt(t, 10) * 1000) : t.replace(new RegExp("\\D", "g"), "");
+        px.mileage = t.indexOf("k") !== -1
+          ? String(parseInt(t, 10) * 1000)
+          : t.replace(new RegExp("\\D", "g"), "");
       }
 
       m = carRe.exec(l);
       if (m) {
-        px.make = m[1].replace(new RegExp("\\b\\w", "g"), function (c) { return c.toUpperCase(); });
+        px.make = m[1].replace(new RegExp("\\b\\w", "g"), function (c) {
+          return c.toUpperCase();
+        });
         px.model = m[2].toUpperCase();
       }
     });
@@ -253,8 +313,8 @@
   function render() {
     var msgs = collectMessages();
 
-    var custLines = explode(getReplies(msgs, INFO_PROMPTS.customerDetails));
-    var pxLines = explode(getReplies(msgs, INFO_PROMPTS.pxDetails));
+    var custLines = explode(repliesAfter(msgs, INFO_PROMPTS.customerDetails));
+    var pxLines = explode(repliesAfter(msgs, INFO_PROMPTS.pxDetails));
 
     setName(findName(custLines));
     setPhone(findPhone(custLines));
