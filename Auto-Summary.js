@@ -2,10 +2,6 @@
   if (window._lpCustomerPxCapture) return;
   window._lpCustomerPxCapture = true;
 
-  /* =========================
-     CONFIG
-  ========================= */
-
   const AGENT_NAME = "Omari";
 
   const INFO_PROMPTS = {
@@ -17,7 +13,6 @@
       "email address.*postcode",
       "i"
     ),
-
     pxDetails: new RegExp(
       "vehicle to part[\\s-]?exchange|" +
       "registration.*make.*model.*mileage|" +
@@ -26,147 +21,143 @@
     )
   };
 
-  /* =========================
-     MESSAGE COLLECTION
-  ========================= */
-
   function collectMessages() {
-    const nodes = Array.from(
-      document.querySelectorAll(".html-content, .text-content, .lp_message, .chatLine, .msg_text")
+    const nodes = document.querySelectorAll(
+      ".html-content, .text-content, .lp_message, .chatLine, .msg_text"
     );
+    const out = [];
+    let i = 0;
 
-    const raw = [];
-    let index = 0;
-
-    nodes.forEach(node => {
-      const text = (node.innerText || "").replace(/\s+/g, " ").trim();
+    nodes.forEach(n => {
+      const text = (n.innerText || "").replace(/\s+/g, " ").trim();
       if (!text) return;
 
       let sender = "customer";
+      const origin = n.closest("[class*=originator]");
+      if (origin && origin.innerText.trim() === AGENT_NAME) sender = "agent";
 
-      const originator = node.closest("[class*=originator]");
-      if (originator && originator.innerText.trim() === AGENT_NAME) sender = "agent";
-
-      raw.push({ sender, text, index: index++ });
+      out.push({ sender, text, index: i++ });
     });
 
-    return raw;
+    return out;
   }
 
-  /* =========================
-     CAPTURE WINDOW
-  ========================= */
-
   function getRepliesAfterPrompt(messages, promptRegex) {
-    let lastPromptIndex = -1;
+    let lastPrompt = -1;
 
     messages.forEach(m => {
       if (m.sender === "agent" && promptRegex.test(m.text)) {
-        lastPromptIndex = m.index;
+        lastPrompt = m.index;
       }
     });
 
-    if (lastPromptIndex < 0) return [];
+    if (lastPrompt < 0) return [];
 
     return messages.filter(m =>
       m.sender === "customer" &&
-      m.index > lastPromptIndex &&
+      m.index > lastPrompt &&
       !messages.some(a =>
         a.sender === "agent" &&
-        a.index > lastPromptIndex &&
+        a.index > lastPrompt &&
         a.index < m.index
       )
     );
   }
 
-  /* =========================
-     NORMALISATION
-  ========================= */
-
   function explodeToLines(replies) {
     return replies
       .map(r => r.text)
       .join("\n")
-      .split(/\r?\n|[,;]/)
-      .map(l => l.trim())
+      .split(/[\n,;]/)
+      .map(s => s.trim())
       .filter(Boolean);
   }
 
-  /* =========================
-     FIELD EXTRACTORS
-  ========================= */
-
-  function extractEmail(lines) {
-    let out = "";
-    const re = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i;
-    lines.forEach(l => {
-      const m = re.exec(l);
-      if (m) out = m[0].toLowerCase();
-    });
-    return out;
-  }
-
-  function extractPhone(lines) {
-    let out = "";
-    const re = /\b(?:\+44\s?\d{2,4}|0\d{2,4})\s?\d{3,4}\s?\d{3,4}\b/;
-    lines.forEach(l => {
-      const m = re.exec(l);
-      if (m) out = m[0].replace(/\D/g, "");
-    });
-    return out;
-  }
-
-  function extractPostcode(lines) {
-    let out = "";
-    const re = /([A-Z]{1,2}\d{1,2}[A-Z]?)\s?(\d[A-Z]{2})/i;
-    lines.forEach(l => {
-      const m = re.exec(l);
-      if (m) out = (m[1] + " " + m[2]).toUpperCase();
-    });
-    return out;
-  }
-
   function extractName(lines) {
+    const regPattern = new RegExp("[A-Z]{2}\\d{2}\\s?[A-Z]{3}", "i");
+
     for (let l of lines) {
-      if (/@|\d/.test(l)) continue;
-      if (/[A-Z]{2}\d{2}\s?[A-Z]{3}/i.test(l)) continue;
+      if (l.indexOf("@") !== -1) continue;
+      if (/\d/.test(l)) continue;
+      if (regPattern.test(l)) continue;
 
       const clean = l.replace(/[^A-Za-z\s'-]/g, "").trim();
       const parts = clean.split(/\s+/);
 
       if (parts.length >= 1 && parts.length <= 4) {
-        if (parts.every(p => /^[A-Za-z'-]+$/.test(p))) {
-          return parts
-            .map(p => p[0].toUpperCase() + p.slice(1).toLowerCase())
-            .join(" ");
-        }
+        return parts.map(p => p[0].toUpperCase() + p.slice(1).toLowerCase()).join(" ");
       }
     }
     return "";
   }
 
+  function extractPhone(lines) {
+    const re = new RegExp("(?:\\+44\\s?\\d{2,4}|0\\d{2,4})\\s?\\d{3,4}\\s?\\d{3,4}");
+    let out = "";
+
+    lines.forEach(l => {
+      const m = re.exec(l);
+      if (m) out = m[0].replace(/\D/g, "");
+    });
+
+    return out;
+  }
+
+  function extractEmail(lines) {
+    const re = new RegExp("[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}", "i");
+    let out = "";
+
+    lines.forEach(l => {
+      const m = re.exec(l);
+      if (m) out = m[0].toLowerCase();
+    });
+
+    return out;
+  }
+
+  function extractPostcode(lines) {
+    const re = new RegExp("([A-Z]{1,2}\\d{1,2}[A-Z]?)\\s?(\\d[A-Z]{2})", "i");
+    let out = "";
+
+    lines.forEach(l => {
+      const m = re.exec(l);
+      if (m) out = (m[1] + " " + m[2]).toUpperCase();
+    });
+
+    return out;
+  }
+
   function extractPX(lines) {
-    let px = { reg: "", make: "", model: "", mileage: "", summary: "" };
+    const px = { reg: "", make: "", model: "", mileage: "", summary: "" };
 
     if (lines.some(l => /no px|no part exchange/i.test(l))) {
       px.summary = "No PX";
       return px;
     }
 
-    lines.forEach(l => {
-      const reg = /\b([A-Z]{2}\d{2}\s?[A-Z]{3})\b/i.exec(l);
-      if (reg) px.reg = reg[1].replace(/\s+/g, "").toUpperCase();
+    const regRe = new RegExp("([A-Z]{2}\\d{2}\\s?[A-Z]{3})", "i");
+    const milesRe = new RegExp("(\\b\\d{2,3}\\s?k\\b|\\b\\d{4,6}\\b)", "i");
+    const carRe = new RegExp(
+      "(peugeot|citroen|ds|fiat|abarth|alfaromeo|alfa romeo|jeep|vauxhall|leapmotor)\\s+([a-z0-9]+)",
+      "i"
+    );
 
-      const miles = /(\b\d{2,3}\s?k\b|\b\d{4,6}\b)/i.exec(l);
-      if (miles) {
-        let m = miles[0].toLowerCase().replace(/\s+/g, "");
-        px.mileage = m.includes("k") ? String(parseInt(m, 10) * 1000) : m.replace(/\D/g, "");
+    lines.forEach(l => {
+      let m;
+
+      m = regRe.exec(l);
+      if (m) px.reg = m[1].replace(/\s+/g, "").toUpperCase();
+
+      m = milesRe.exec(l);
+      if (m) {
+        let v = m[0].toLowerCase().replace(/\s+/g, "");
+        px.mileage = v.indexOf("k") !== -1 ? String(parseInt(v, 10) * 1000) : v.replace(/\D/g, "");
       }
 
-      const car = /(peugeot|citroen|ds|fiat|abarth|alfa romeo|jeep|vauxhall|leapmotor)\s+([a-z0-9]+)/i.exec(l);
-      if (car) {
-        px.make = car[1][0].toUpperCase() + car[1].slice(1).toLowerCase();
-        px.model = car[2].toUpperCase();
+      m = carRe.exec(l);
+      if (m) {
+        px.make = m[1].replace(/\s+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        px.model = m[2].toUpperCase();
       }
     });
 
@@ -178,10 +169,6 @@
     px.summary = parts.length ? parts.join(" | ") : "";
     return px;
   }
-
-  /* =========================
-     OUTPUT
-  ========================= */
 
   function run() {
     const messages = collectMessages();
