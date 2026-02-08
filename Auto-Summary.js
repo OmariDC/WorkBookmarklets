@@ -9,23 +9,25 @@
   const AGENT_NAME = "Omari";
 
   const INFO_PROMPTS = {
-    customerDetails: /(
-      may i take your full name|
-      just to confirm.*full name|
-      full name.*contact number|
-      contact number.*email|
-      email address.*postcode
-    )/ix,
+    customerDetails: new RegExp(
+      "may i take your full name|" +
+      "just to confirm.*full name|" +
+      "full name.*contact number|" +
+      "contact number.*email|" +
+      "email address.*postcode",
+      "i"
+    ),
 
-    pxDetails: /(
-      vehicle to part[\s-]?exchange|
-      registration.*make.*model.*mileage|
-      take the registration.*model.*mileage
-    )/ix
+    pxDetails: new RegExp(
+      "vehicle to part[\\s-]?exchange|" +
+      "registration.*make.*model.*mileage|" +
+      "take the registration.*model.*mileage",
+      "i"
+    )
   };
 
   /* =========================
-     DOM MESSAGE COLLECTION
+     MESSAGE COLLECTION
   ========================= */
 
   function collectMessages() {
@@ -134,7 +136,9 @@
 
       if (parts.length >= 1 && parts.length <= 4) {
         if (parts.every(p => /^[A-Za-z'-]+$/.test(p))) {
-          return parts.map(p => p[0].toUpperCase() + p.slice(1).toLowerCase()).join(" ");
+          return parts
+            .map(p => p[0].toUpperCase() + p.slice(1).toLowerCase())
+            .join(" ");
         }
       }
     }
@@ -142,13 +146,7 @@
   }
 
   function extractPX(lines) {
-    let px = {
-      reg: "",
-      make: "",
-      model: "",
-      mileage: "",
-      summary: ""
-    };
+    let px = { reg: "", make: "", model: "", mileage: "", summary: "" };
 
     if (lines.some(l => /no px|no part exchange/i.test(l))) {
       px.summary = "No PX";
@@ -162,7 +160,7 @@
       const miles = /(\b\d{2,3}\s?k\b|\b\d{4,6}\b)/i.exec(l);
       if (miles) {
         let m = miles[0].toLowerCase().replace(/\s+/g, "");
-        px.mileage = m.includes("k") ? String(parseInt(m) * 1000) : m.replace(/\D/g, "");
+        px.mileage = m.includes("k") ? String(parseInt(m, 10) * 1000) : m.replace(/\D/g, "");
       }
 
       const car = /(peugeot|citroen|ds|fiat|abarth|alfa romeo|jeep|vauxhall|leapmotor)\s+([a-z0-9]+)/i.exec(l);
@@ -178,31 +176,12 @@
     if (px.mileage) parts.push("Mileage: " + px.mileage);
 
     px.summary = parts.length ? parts.join(" | ") : "";
-
     return px;
   }
 
   /* =========================
-     RENDER + COPY
+     OUTPUT
   ========================= */
-
-  function buildOutput(data) {
-    const lines = [];
-
-    lines.push("Customer Details");
-    lines.push("------------------");
-    if (data.name) lines.push("Name: " + data.name);
-    if (data.phone) lines.push("Phone: " + data.phone);
-    if (data.email) lines.push("Email: " + data.email);
-    if (data.postcode) lines.push("Postcode: " + data.postcode);
-
-    lines.push("");
-    lines.push("Part Exchange");
-    lines.push("------------------");
-    lines.push(data.px.summary || "No PX");
-
-    return lines.join("\n").trim();
-  }
 
   function run() {
     const messages = collectMessages();
@@ -213,21 +192,18 @@
     const customerLines = explodeToLines(customerReplies);
     const pxLines = explodeToLines(pxReplies);
 
-    const data = {
-      name: extractName(customerLines),
-      phone: extractPhone(customerLines),
-      email: extractEmail(customerLines),
-      postcode: extractPostcode(customerLines),
-      px: extractPX(pxLines)
-    };
-
-    const output = buildOutput({
-      name: data.name,
-      phone: data.phone,
-      email: data.email,
-      postcode: data.postcode,
-      px: data.px
-    });
+    const output = [
+      "Customer Details",
+      "------------------",
+      extractName(customerLines) && "Name: " + extractName(customerLines),
+      extractPhone(customerLines) && "Phone: " + extractPhone(customerLines),
+      extractEmail(customerLines) && "Email: " + extractEmail(customerLines),
+      extractPostcode(customerLines) && "Postcode: " + extractPostcode(customerLines),
+      "",
+      "Part Exchange",
+      "------------------",
+      extractPX(pxLines).summary || "No PX"
+    ].filter(Boolean).join("\n");
 
     navigator.clipboard.writeText(output);
     alert("Customer + PX copied");
