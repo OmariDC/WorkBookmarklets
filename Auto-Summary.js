@@ -2,9 +2,13 @@
   if (window._lpCustomerPxCapture) return;
   window._lpCustomerPxCapture = true;
 
-  const AGENT_NAME = "Omari";
+  /* =========================
+     CONFIG
+  ========================= */
 
-  const INFO_PROMPTS = {
+  var AGENT_NAME = "Omari";
+
+  var INFO_PROMPTS = {
     customerDetails: new RegExp(
       "may i take your full name|" +
       "just to confirm.*full name|" +
@@ -21,31 +25,45 @@
     )
   };
 
+  /* =========================
+     MESSAGE COLLECTION
+  ========================= */
+
   function collectMessages() {
-    const nodes = document.querySelectorAll(
+    var nodes = document.querySelectorAll(
       ".html-content, .text-content, .lp_message, .chatLine, .msg_text"
     );
-    const out = [];
-    let i = 0;
 
-    nodes.forEach(n => {
-      const text = (n.innerText || "").replace(/\s+/g, " ").trim();
+    var out = [];
+    var index = 0;
+
+    nodes.forEach(function (node) {
+      var text = (node.innerText || "")
+        .replace(new RegExp("\\s+", "g"), " ")
+        .trim();
+
       if (!text) return;
 
-      let sender = "customer";
-      const origin = n.closest("[class*=originator]");
-      if (origin && origin.innerText.trim() === AGENT_NAME) sender = "agent";
+      var sender = "customer";
+      var origin = node.closest("[class*=originator]");
+      if (origin && origin.innerText.trim() === AGENT_NAME) {
+        sender = "agent";
+      }
 
-      out.push({ sender, text, index: i++ });
+      out.push({ sender: sender, text: text, index: index++ });
     });
 
     return out;
   }
 
-  function getRepliesAfterPrompt(messages, promptRegex) {
-    let lastPrompt = -1;
+  /* =========================
+     CAPTURE WINDOW
+  ========================= */
 
-    messages.forEach(m => {
+  function getRepliesAfterPrompt(messages, promptRegex) {
+    var lastPrompt = -1;
+
+    messages.forEach(function (m) {
       if (m.sender === "agent" && promptRegex.test(m.text)) {
         lastPrompt = m.index;
       }
@@ -53,62 +71,83 @@
 
     if (lastPrompt < 0) return [];
 
-    return messages.filter(m =>
-      m.sender === "customer" &&
-      m.index > lastPrompt &&
-      !messages.some(a =>
-        a.sender === "agent" &&
-        a.index > lastPrompt &&
-        a.index < m.index
-      )
-    );
+    return messages.filter(function (m) {
+      if (m.sender !== "customer") return false;
+      if (m.index <= lastPrompt) return false;
+
+      return !messages.some(function (a) {
+        return (
+          a.sender === "agent" &&
+          a.index > lastPrompt &&
+          a.index < m.index
+        );
+      });
+    });
   }
+
+  /* =========================
+     NORMALISATION
+  ========================= */
 
   function explodeToLines(replies) {
     return replies
-      .map(r => r.text)
+      .map(function (r) { return r.text; })
       .join("\n")
-      .split(/[\n,;]/)
-      .map(s => s.trim())
+      .split(new RegExp("[\\n,;]"))
+      .map(function (s) { return s.trim(); })
       .filter(Boolean);
   }
 
-  function extractName(lines) {
-    const regPattern = new RegExp("[A-Z]{2}\\d{2}\\s?[A-Z]{3}", "i");
+  /* =========================
+     FIELD EXTRACTORS
+  ========================= */
 
-    for (let l of lines) {
-      if (l.indexOf("@") !== -1) continue;
-      if (/\d/.test(l)) continue;
+  function extractName(lines) {
+    var regPattern = new RegExp("[A-Z]{2}\\d{2}\\s?[A-Z]{3}", "i");
+    var digitPattern = new RegExp("\\d");
+    var emailPattern = new RegExp("@");
+
+    for (var i = 0; i < lines.length; i++) {
+      var l = lines[i];
+
+      if (emailPattern.test(l)) continue;
+      if (digitPattern.test(l)) continue;
       if (regPattern.test(l)) continue;
 
-      const clean = l.replace(/[^A-Za-z\s'-]/g, "").trim();
-      const parts = clean.split(/\s+/);
+      var clean = l.replace(new RegExp("[^A-Za-z\\s'-]", "g"), "").trim();
+      if (!clean) continue;
 
-      if (parts.length >= 1 && parts.length <= 4) {
-        return parts.map(p => p[0].toUpperCase() + p.slice(1).toLowerCase()).join(" ");
-      }
+      var parts = clean.split(new RegExp("\\s+"));
+      if (parts.length < 1 || parts.length > 4) continue;
+
+      return parts
+        .map(function (p) {
+          return p.charAt(0).toUpperCase() + p.slice(1).toLowerCase();
+        })
+        .join(" ");
     }
+
     return "";
   }
 
   function extractPhone(lines) {
-    const re = new RegExp("(?:\\+44\\s?\\d{2,4}|0\\d{2,4})\\s?\\d{3,4}\\s?\\d{3,4}");
-    let out = "";
+    var re = new RegExp("(?:\\+44\\s?\\d{2,4}|0\\d{2,4})\\s?\\d{3,4}\\s?\\d{3,4}");
+    var out = "";
 
-    lines.forEach(l => {
-      const m = re.exec(l);
-      if (m) out = m[0].replace(/\D/g, "");
+    lines.forEach(function (l) {
+      var m = re.exec(l);
+      if (m) out = m[0].replace(new RegExp("\\D", "g"), "");
     });
 
     return out;
   }
 
   function extractEmail(lines) {
-    const re = new RegExp("[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}", "i");
-    let out = "";
+    var re = new RegExp("[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}", "i");
+    var out = "";
 
-    lines.forEach(l => {
-      const m = re.exec(l);
+    lines.forEach(function (l) {
+      var m = re.exec(l);
       if (m) out = m[0].toLowerCase();
     });
 
@@ -116,11 +155,11 @@
   }
 
   function extractPostcode(lines) {
-    const re = new RegExp("([A-Z]{1,2}\\d{1,2}[A-Z]?)\\s?(\\d[A-Z]{2})", "i");
-    let out = "";
+    var re = new RegExp("([A-Z]{1,2}\\d{1,2}[A-Z]?)\\s?(\\d[A-Z]{2})", "i");
+    var out = "";
 
-    lines.forEach(l => {
-      const m = re.exec(l);
+    lines.forEach(function (l) {
+      var m = re.exec(l);
       if (m) out = (m[1] + " " + m[2]).toUpperCase();
     });
 
@@ -128,58 +167,69 @@
   }
 
   function extractPX(lines) {
-    const px = { reg: "", make: "", model: "", mileage: "", summary: "" };
+    var px = { reg: "", make: "", model: "", mileage: "", summary: "" };
 
-    if (lines.some(l => /no px|no part exchange/i.test(l))) {
+    var noPxRe = new RegExp("no px|no part exchange", "i");
+    if (lines.some(function (l) { return noPxRe.test(l); })) {
       px.summary = "No PX";
       return px;
     }
 
-    const regRe = new RegExp("([A-Z]{2}\\d{2}\\s?[A-Z]{3})", "i");
-    const milesRe = new RegExp("(\\b\\d{2,3}\\s?k\\b|\\b\\d{4,6}\\b)", "i");
-    const carRe = new RegExp(
-      "(peugeot|citroen|ds|fiat|abarth|alfaromeo|alfa romeo|jeep|vauxhall|leapmotor)\\s+([a-z0-9]+)",
+    var regRe = new RegExp("([A-Z]{2}\\d{2}\\s?[A-Z]{3})", "i");
+    var milesRe = new RegExp("(\\b\\d{2,3}\\s?k\\b|\\b\\d{4,6}\\b)", "i");
+    var carRe = new RegExp(
+      "(peugeot|citroen|ds|fiat|abarth|alfa romeo|jeep|vauxhall|leapmotor)\\s+([a-z0-9]+)",
       "i"
     );
 
-    lines.forEach(l => {
-      let m;
+    lines.forEach(function (l) {
+      var m;
 
       m = regRe.exec(l);
-      if (m) px.reg = m[1].replace(/\s+/g, "").toUpperCase();
+      if (m) px.reg = m[1].replace(new RegExp("\\s+", "g"), "").toUpperCase();
 
       m = milesRe.exec(l);
       if (m) {
-        let v = m[0].toLowerCase().replace(/\s+/g, "");
-        px.mileage = v.indexOf("k") !== -1 ? String(parseInt(v, 10) * 1000) : v.replace(/\D/g, "");
+        var v = m[0].toLowerCase().replace(new RegExp("\\s+", "g"), "");
+        px.mileage = v.indexOf("k") !== -1
+          ? String(parseInt(v, 10) * 1000)
+          : v.replace(new RegExp("\\D", "g"), "");
       }
 
       m = carRe.exec(l);
       if (m) {
-        px.make = m[1].replace(/\s+/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+        px.make = m[1].replace(new RegExp("\\b\\w", "g"), function (c) {
+          return c.toUpperCase();
+        });
         px.model = m[2].toUpperCase();
       }
     });
 
-    const parts = [];
+    var parts = [];
     if (px.reg) parts.push("Reg: " + px.reg);
-    if (px.make || px.model) parts.push("Vehicle: " + [px.make, px.model].filter(Boolean).join(" "));
+    if (px.make || px.model) {
+      parts.push("Vehicle: " + [px.make, px.model].filter(Boolean).join(" "));
+    }
     if (px.mileage) parts.push("Mileage: " + px.mileage);
 
     px.summary = parts.length ? parts.join(" | ") : "";
     return px;
   }
 
+  /* =========================
+     RUN + COPY
+  ========================= */
+
   function run() {
-    const messages = collectMessages();
+    var messages = collectMessages();
 
-    const customerReplies = getRepliesAfterPrompt(messages, INFO_PROMPTS.customerDetails);
-    const pxReplies = getRepliesAfterPrompt(messages, INFO_PROMPTS.pxDetails);
+    var customerReplies = getRepliesAfterPrompt(messages, INFO_PROMPTS.customerDetails);
+    var pxReplies = getRepliesAfterPrompt(messages, INFO_PROMPTS.pxDetails);
 
-    const customerLines = explodeToLines(customerReplies);
-    const pxLines = explodeToLines(pxReplies);
+    var customerLines = explodeToLines(customerReplies);
+    var pxLines = explodeToLines(pxReplies);
 
-    const output = [
+    var output = [
       "Customer Details",
       "------------------",
       extractName(customerLines) && "Name: " + extractName(customerLines),
@@ -190,7 +240,9 @@
       "Part Exchange",
       "------------------",
       extractPX(pxLines).summary || "No PX"
-    ].filter(Boolean).join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
 
     navigator.clipboard.writeText(output);
     alert("Customer + PX copied");
