@@ -9,7 +9,7 @@
 
   /* ================= HELPERS ================= */
 
-  function normalizeText(t) {
+  function norm(t) {
     return (t || "").replace(/\s+/g, " ").trim();
   }
 
@@ -26,248 +26,166 @@
     return n;
   }
 
+  function extractEmail(text) {
+    const m = text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+    return m ? m[0].toLowerCase() : "";
+  }
+
+  function extractPhone(text) {
+    const m = text.match(/(\+44\s?\d{9,11}|0\d{9,10})/);
+    return m ? normalizeUKPhone(m[0]) : "";
+  }
+
+  function extractPostcode(text) {
+    const m = text.match(/\b[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2}\b/i);
+    return m ? m[0].toUpperCase() : "";
+  }
+
+  function extractName(text) {
+    const tokens = text.split(/\s+/);
+    const parts = [];
+    for (let t of tokens) {
+      if (/@/.test(t) || /\d/.test(t)) break;
+      if (/^[A-Za-z][A-Za-z'’-]*$/.test(t)) parts.push(t);
+      else break;
+      if (parts.length === 3) break;
+    }
+    return parts.length ? titleCase(parts.join(" ")) : "";
+  }
+
+  function extractReg(text) {
+    const m = text.match(/\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/i);
+    return m ? m[0].replace(/\s+/g, "").toUpperCase() : "";
+  }
+
+  function extractMileage(text) {
+    const m = text.match(/\b\d{2,3}\s?k\b|\b\d{4,6}\b/i);
+    if (!m) return "";
+    return m[0].toLowerCase().includes("k")
+      ? String(parseInt(m[0], 10) * 1000)
+      : m[0].replace(/\D/g, "");
+  }
+
+  function extractVehicle(text) {
+    const m = text.match(/\b(peugeot|citroen|fiat|jeep|vauxhall|leapmotor)\s+([a-z0-9]+)/i);
+    return m ? { make: titleCase(m[1]), model: m[2].toUpperCase() } : null;
+  }
+
   /* ================= UI ================= */
 
   function injectStyles() {
     if (document.getElementById("lpSumMiniStyle")) return;
-
     const s = document.createElement("style");
     s.id = "lpSumMiniStyle";
     s.textContent = `
-      #lpSumMiniBtn {
-        position: fixed;
-        right: 48px;
-        bottom: 14px;
-        width: 14px;
-        height: 14px;
-        border-radius: 50%;
-        background: #1e1d49;
-        border: 2px solid #000;
-        cursor: pointer;
-        z-index: 100001;
-      }
-      #lpSumMiniPanel {
-        position: fixed;
-        top: 0;
-        right: 0;
-        width: 300px;
-        height: 100vh;
-        background: #1e1d49;
-        color: #fff;
-        font-family: Arial, sans-serif;
-        font-size: 13px;
-        padding: 16px;
-        box-shadow: -5px 0 12px rgba(0,0,0,.4);
-        transform: translateX(100%);
-        opacity: 0;
-        pointer-events: none;
-        transition: .25s;
-        z-index: 100000;
-        overflow-y: auto;
-      }
-      #lpSumMiniPanel.open {
-        transform: translateX(0);
-        opacity: 1;
-        pointer-events: auto;
-      }
-      .lpRow {
-        display: flex;
-        justify-content: space-between;
-        gap: 8px;
-        padding: 6px 8px;
-        margin-bottom: 6px;
-        background: rgba(255,255,255,.08);
-        border-radius: 4px;
-        cursor: pointer;
-      }
-      .lpLabel {
-        font-weight: bold;
-      }
-      .lpValue {
-        flex: 1;
-        text-align: right;
-        word-break: break-word;
-      }
+      #lpSumMiniBtn{position:fixed;right:48px;bottom:14px;width:14px;height:14px;border-radius:50%;background:#1e1d49;border:2px solid #000;cursor:pointer;z-index:100001}
+      #lpSumMiniPanel{position:fixed;top:0;right:0;width:300px;height:100vh;background:#1e1d49;color:#fff;font-family:Arial;font-size:13px;padding:16px;box-shadow:-5px 0 12px rgba(0,0,0,.4);transform:translateX(100%);opacity:0;pointer-events:none;transition:.25s;z-index:100000;overflow-y:auto}
+      #lpSumMiniPanel.open{transform:translateX(0);opacity:1;pointer-events:auto}
+      .lpRow{display:flex;justify-content:space-between;gap:8px;padding:6px 8px;margin-bottom:6px;background:rgba(255,255,255,.08);border-radius:4px;cursor:pointer}
+      .lpLabel{font-weight:bold}
+      .lpValue{flex:1;text-align:right;word-break:break-word}
     `;
     document.head.appendChild(s);
   }
 
-  function createRow(label, key) {
+  function row(label, key) {
     const r = document.createElement("div");
     r.className = "lpRow";
     r.dataset.key = key;
-
     const l = document.createElement("span");
     l.className = "lpLabel";
     l.textContent = label;
-
     const v = document.createElement("span");
     v.className = "lpValue";
-
-    r.appendChild(l);
-    r.appendChild(v);
-
-    r.onclick = () => {
-      if (v.textContent) navigator.clipboard.writeText(v.textContent);
-    };
-
-    r._valueEl = v;
+    r.append(l, v);
+    r.onclick = () => v.textContent && navigator.clipboard.writeText(v.textContent);
+    r._v = v;
     return r;
   }
 
   function createUI() {
     injectStyles();
-
     const btn = document.createElement("div");
     btn.id = "lpSumMiniBtn";
-
     const panel = document.createElement("div");
     panel.id = "lpSumMiniPanel";
-
     btn.onclick = () => panel.classList.toggle("open");
 
     [
-      ["Full Name", "fullName"],
-      ["Email", "email"],
-      ["Phone", "phone"],
-      ["Address", "address"],
-      ["PX Make", "pxMake"],
-      ["PX Model", "pxModel"],
-      ["PX Reg", "pxReg"],
-      ["PX Mileage", "pxMileage"]
-    ].forEach(([l, k]) => panel.appendChild(createRow(l, k)));
+      ["Full Name","fullName"],
+      ["Email","email"],
+      ["Phone","phone"],
+      ["Postcode","postcode"],
+      ["PX Make","pxMake"],
+      ["PX Model","pxModel"],
+      ["PX Reg","pxReg"],
+      ["PX Mileage","pxMileage"]
+    ].forEach(([l,k]) => panel.appendChild(row(l,k)));
 
-    document.body.appendChild(btn);
-    document.body.appendChild(panel);
-
+    document.body.append(btn, panel);
     window._lpSumMiniPanel = panel;
   }
 
-  /* ================= MESSAGE READER ================= */
+  /* ================= MESSAGE COLLECTION ================= */
 
   function collectMessages() {
-    const nodes = Array.from(document.querySelectorAll(
-      ".html-content.text-content, .content, .lp_message, .lpChatLine, .chatLine, .msg_text"
-    ));
-
-    const messages = [];
+    const nodes = document.querySelectorAll(".html-content.text-content, .content, .lp_message, .lpChatLine, .chatLine, .msg_text");
+    const out = [];
     let i = 0;
 
     nodes.forEach(n => {
-      const text = normalizeText(n.innerText);
+      const text = norm(n.innerText);
       if (!text) return;
-
       let sender = "customer";
       const o = n.closest(".originator");
       if (o && o.innerText.trim() === "Omari") sender = "agent";
-
-      messages.push({ sender, text, index: i++ });
+      out.push({ sender, text, index: i++ });
     });
-
-    return messages;
+    return out;
   }
 
   /* ================= PARSER ================= */
 
-  function parse(messages) {
-    const data = {
-      fullName: "",
-      email: "",
-      phone: "",
-      address: "",
-      pxMake: "",
-      pxModel: "",
-      pxReg: "",
-      pxMileage: ""
-    };
+  function parse(msgs) {
+    const data = { fullName:"", email:"", phone:"", postcode:"", pxMake:"", pxModel:"", pxReg:"", pxMileage:"" };
 
-    const agent = messages.filter(m => m.sender === "agent");
-    const customer = messages.filter(m => m.sender === "customer");
+    const agent = msgs.filter(m => m.sender === "agent");
+    const customer = msgs.filter(m => m.sender === "customer");
 
-    function afterPrompt(rx) {
-      let idx = -1;
-      agent.forEach(m => {
-        if (rx.test(m.text)) idx = m.index;
+    // detect question indices
+    let idQ = -1, pxQ = -1;
+    agent.forEach(m => {
+      if (/full name.*(email|contact)|confirm.*full name/i.test(m.text)) idQ = m.index;
+      if (/part.?exchange|registration, make, model and mileage/i.test(m.text)) pxQ = m.index;
+    });
+
+    function process(list, strict) {
+      list.forEach(m => {
+        if (!data.fullName) data.fullName = extractName(m.text) || data.fullName;
+        if (!data.email) data.email = extractEmail(m.text) || data.email;
+        if (!data.phone) data.phone = extractPhone(m.text) || data.phone;
+        if (!data.postcode) data.postcode = extractPostcode(m.text) || data.postcode;
+
+        if (!data.pxReg) data.pxReg = extractReg(m.text) || data.pxReg;
+        if (!data.pxMileage) data.pxMileage = extractMileage(m.text) || data.pxMileage;
+
+        const v = extractVehicle(m.text);
+        if (v) {
+          if (!data.pxMake) data.pxMake = v.make;
+          if (!data.pxModel) data.pxModel = v.model;
+        }
       });
-      return idx >= 0 ? customer.filter(m => m.index > idx) : [];
     }
 
-    /* -------- NAME (FIXED) -------- */
-    afterPrompt(/full name|your name/i).forEach(m => {
-      if (data.fullName) return;
+    // priority pass
+    if (idQ >= 0) process(customer.filter(m => m.index > idQ), true);
+    if (pxQ >= 0) process(customer.filter(m => m.index > pxQ), true);
 
-      const tokens = m.text.split(/\s+/);
-      const nameParts = [];
-
-      for (let i = 0; i < tokens.length; i++) {
-        const t = tokens[i];
-
-        // stop at email, numbers, postcode, etc.
-        if (/@/.test(t) || /\d/.test(t)) break;
-
-        if (/^[A-Za-z][A-Za-z'’-]*$/.test(t)) {
-          nameParts.push(t);
-        } else {
-          break;
-        }
-
-        if (nameParts.length === 3) break;
-      }
-
-      if (nameParts.length >= 1 && nameParts.length <= 3) {
-        data.fullName = titleCase(nameParts.join(" "));
-      }
-    });
-
-    /* -------- EMAIL -------- */
-    messages.forEach(m => {
-      if (data.email) return;
-      const e = m.text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
-      if (e) data.email = e[0].toLowerCase();
-    });
-
-    /* -------- PHONE (UK NORMALISED) -------- */
-    messages.forEach(m => {
-      if (data.phone) return;
-      const p = m.text.match(/(\+44\s?\d{9,11}|0\d{9,10})/);
-      if (!p) return;
-      const n = normalizeUKPhone(p[0]);
-      if (n) data.phone = n;
-    });
-
-    /* -------- ADDRESS / POSTCODE -------- */
-    afterPrompt(/postcode|address/i).forEach(m => {
-      if (data.address) return;
-      if (
-        /[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2}/i.test(m.text) &&
-        !/[a-f0-9-]{30,}/i.test(m.text)
-      ) {
-        data.address = m.text.trim();
-      }
-    });
-
-    /* -------- PART EXCHANGE -------- */
-    afterPrompt(/part.?exchange|registration, make, model/i).forEach(m => {
-      if (!data.pxReg) {
-        const r = m.text.match(/\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/i);
-        if (r) data.pxReg = r[0].replace(/\s+/g, "").toUpperCase();
-      }
-
-      if (!data.pxMileage) {
-        const mi = m.text.match(/\b\d{2,3}\s?k\b|\b\d{4,6}\b/i);
-        if (mi) {
-          data.pxMileage = mi[0].toLowerCase().includes("k")
-            ? String(parseInt(mi[0], 10) * 1000)
-            : mi[0].replace(/\D/g, "");
-        }
-      }
-
-      const v = m.text.match(/\b(peugeot|citroen|fiat|jeep|vauxhall|leapmotor)\s+([a-z0-9]+)/i);
-      if (v) {
-        data.pxMake = titleCase(v[1]);
-        data.pxModel = v[2].toUpperCase();
-      }
-    });
+    // fallback pass
+    process(customer.filter(m =>
+      (idQ < 0 || m.index < idQ) &&
+      (pxQ < 0 || m.index < pxQ)
+    ), false);
 
     return data;
   }
@@ -275,11 +193,9 @@
   /* ================= RENDER ================= */
 
   function render() {
-    const messages = collectMessages();
-    const data = parse(messages);
-
+    const data = parse(collectMessages());
     document.querySelectorAll(".lpRow").forEach(r => {
-      r._valueEl.textContent = data[r.dataset.key] || "";
+      r._v.textContent = data[r.dataset.key] || "";
     });
   }
 
@@ -290,24 +206,14 @@
       if (OBSERVER_TIMER) clearTimeout(OBSERVER_TIMER);
       OBSERVER_TIMER = setTimeout(render, OBSERVER_DELAY);
     });
-    obs.observe(document.body, { childList: true, subtree: true });
+    obs.observe(document.body, { childList:true, subtree:true });
   }
 
   /* ================= INIT ================= */
 
   if (document.readyState === "complete") {
-    createUI();
-    render();
-    initObserver();
+    createUI(); render(); initObserver();
   } else {
-    window.addEventListener(
-      "load",
-      () => {
-        createUI();
-        render();
-        initObserver();
-      },
-      { once: true }
-    );
+    window.addEventListener("load", () => { createUI(); render(); initObserver(); }, { once:true });
   }
 })();
