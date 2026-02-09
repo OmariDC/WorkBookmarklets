@@ -2,15 +2,19 @@
   if (window._lpSumMini) return;
   window._lpSumMini = true;
 
-  /* -------------------- CONFIG -------------------- */
+  /* ================= CONFIG ================= */
 
   const OBSERVER_DELAY = 800;
   let OBSERVER_TIMER = null;
 
-  /* -------------------- HELPERS -------------------- */
+  /* ================= HELPERS ================= */
 
   function normalizeText(t) {
     return (t || "").replace(/\s+/g, " ").trim();
+  }
+
+  function titleCase(str) {
+    return str.replace(/\b\w/g, c => c.toUpperCase());
   }
 
   function normalizeUKPhone(input) {
@@ -22,14 +26,11 @@
     return n;
   }
 
-  function titleCase(str) {
-    return str.replace(/\b\w/g, c => c.toUpperCase());
-  }
-
-  /* -------------------- UI -------------------- */
+  /* ================= UI ================= */
 
   function injectStyles() {
     if (document.getElementById("lpSumMiniStyle")) return;
+
     const s = document.createElement("style");
     s.id = "lpSumMiniStyle";
     s.textContent = `
@@ -79,7 +80,9 @@
         border-radius: 4px;
         cursor: pointer;
       }
-      .lpLabel { font-weight: bold; }
+      .lpLabel {
+        font-weight: bold;
+      }
       .lpValue {
         flex: 1;
         text-align: right;
@@ -140,7 +143,7 @@
     window._lpSumMiniPanel = panel;
   }
 
-  /* -------------------- MESSAGE READER -------------------- */
+  /* ================= MESSAGE READER ================= */
 
   function collectMessages() {
     const nodes = Array.from(document.querySelectorAll(
@@ -164,7 +167,7 @@
     return messages;
   }
 
-  /* -------------------- PARSER -------------------- */
+  /* ================= PARSER ================= */
 
   function parse(messages) {
     const data = {
@@ -183,30 +186,47 @@
 
     function afterPrompt(rx) {
       let idx = -1;
-      agent.forEach(m => { if (rx.test(m.text)) idx = m.index; });
+      agent.forEach(m => {
+        if (rx.test(m.text)) idx = m.index;
+      });
       return idx >= 0 ? customer.filter(m => m.index > idx) : [];
     }
 
-    /* NAME */
+    /* -------- NAME (FIXED) -------- */
     afterPrompt(/full name|your name/i).forEach(m => {
       if (data.fullName) return;
-      const cut = m.text.split(/@|\d{1,2}[A-Z]{2}/i)[0].trim();
-      if (
-        /^[A-Za-z][A-Za-z' -]{1,40}$/.test(cut) &&
-        !/\b(that|this|is|was|are)\b/i.test(cut)
-      ) {
-        data.fullName = titleCase(cut);
+
+      const tokens = m.text.split(/\s+/);
+      const nameParts = [];
+
+      for (let i = 0; i < tokens.length; i++) {
+        const t = tokens[i];
+
+        // stop at email, numbers, postcode, etc.
+        if (/@/.test(t) || /\d/.test(t)) break;
+
+        if (/^[A-Za-z][A-Za-z'’-]*$/.test(t)) {
+          nameParts.push(t);
+        } else {
+          break;
+        }
+
+        if (nameParts.length === 3) break;
+      }
+
+      if (nameParts.length >= 1 && nameParts.length <= 3) {
+        data.fullName = titleCase(nameParts.join(" "));
       }
     });
 
-    /* EMAIL */
+    /* -------- EMAIL -------- */
     messages.forEach(m => {
       if (data.email) return;
       const e = m.text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
       if (e) data.email = e[0].toLowerCase();
     });
 
-    /* PHONE */
+    /* -------- PHONE (UK NORMALISED) -------- */
     messages.forEach(m => {
       if (data.phone) return;
       const p = m.text.match(/(\+44\s?\d{9,11}|0\d{9,10})/);
@@ -215,7 +235,7 @@
       if (n) data.phone = n;
     });
 
-    /* ADDRESS / POSTCODE */
+    /* -------- ADDRESS / POSTCODE -------- */
     afterPrompt(/postcode|address/i).forEach(m => {
       if (data.address) return;
       if (
@@ -226,7 +246,7 @@
       }
     });
 
-    /* PART EXCHANGE */
+    /* -------- PART EXCHANGE -------- */
     afterPrompt(/part.?exchange|registration, make, model/i).forEach(m => {
       if (!data.pxReg) {
         const r = m.text.match(/\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/i);
@@ -237,7 +257,7 @@
         const mi = m.text.match(/\b\d{2,3}\s?k\b|\b\d{4,6}\b/i);
         if (mi) {
           data.pxMileage = mi[0].toLowerCase().includes("k")
-            ? String(parseInt(mi[0]) * 1000)
+            ? String(parseInt(mi[0], 10) * 1000)
             : mi[0].replace(/\D/g, "");
         }
       }
@@ -252,7 +272,7 @@
     return data;
   }
 
-  /* -------------------- RENDER -------------------- */
+  /* ================= RENDER ================= */
 
   function render() {
     const messages = collectMessages();
@@ -263,7 +283,7 @@
     });
   }
 
-  /* -------------------- OBSERVER -------------------- */
+  /* ================= OBSERVER ================= */
 
   function initObserver() {
     const obs = new MutationObserver(() => {
@@ -273,18 +293,21 @@
     obs.observe(document.body, { childList: true, subtree: true });
   }
 
-  /* -------------------- INIT -------------------- */
+  /* ================= INIT ================= */
 
   if (document.readyState === "complete") {
     createUI();
     render();
     initObserver();
   } else {
-    window.addEventListener("load", () => {
-      createUI();
-      render();
-      initObserver();
-    }, { once: true });
+    window.addEventListener(
+      "load",
+      () => {
+        createUI();
+        render();
+        initObserver();
+      },
+      { once: true }
+    );
   }
-
 })();
