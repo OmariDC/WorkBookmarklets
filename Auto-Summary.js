@@ -1,62 +1,91 @@
 (function () {
   if (window._lpSumMini) return;
+  window._lpSumMini = true;
 
-  let RENDER_LOCK = false;
-  let LAST_RENDER = 0;
-  const MIN_RENDER_GAP = 300;
-  let RENDER_SCHEDULED = false;
-  let OBSERVER_DEBOUNCE = null;
+  /* -------------------- CONFIG -------------------- */
+
   const OBSERVER_DELAY = 800;
+  let OBSERVER_TIMER = null;
 
-  function safeRender(fn) {
-    const now = Date.now();
-    if (now - LAST_RENDER < MIN_RENDER_GAP) {
-      if (!RENDER_SCHEDULED) {
-        RENDER_SCHEDULED = true;
-        setTimeout(() => {
-          RENDER_SCHEDULED = false;
-          safeRender(fn);
-        }, MIN_RENDER_GAP);
-      }
-      return;
-    }
-    if (RENDER_LOCK) {
-      if (!RENDER_SCHEDULED) {
-        RENDER_SCHEDULED = true;
-        setTimeout(() => {
-          RENDER_SCHEDULED = false;
-          safeRender(fn);
-        }, 80);
-      }
-      return;
-    }
-    RENDER_LOCK = true;
-    try { fn(); } catch (e) { console.error(e); }
-    LAST_RENDER = Date.now();
-    RENDER_LOCK = false;
+  /* -------------------- HELPERS -------------------- */
+
+  function normalizeText(t) {
+    return (t || "").replace(/\s+/g, " ").trim();
   }
 
-  const app = {
-    styleId: "lpSumMiniStyle",
-    buttonId: "lpSumMiniBtn",
-    panelId: "lpSumMiniPanel",
-    observer: null,
-    data: {}
-  };
+  function normalizeUKPhone(input) {
+    if (!input) return "";
+    let n = input.replace(/[^\d+]/g, "");
+    if (n.startsWith("+44")) n = "0" + n.slice(3);
+    if (!n.startsWith("0")) return "";
+    if (n.length < 10 || n.length > 11) return "";
+    return n;
+  }
 
-  window._lpSumMini = app;
+  function titleCase(str) {
+    return str.replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  /* -------------------- UI -------------------- */
 
   function injectStyles() {
-    if (document.getElementById(app.styleId)) return;
+    if (document.getElementById("lpSumMiniStyle")) return;
     const s = document.createElement("style");
-    s.id = app.styleId;
-    s.textContent =
-      "#" + app.buttonId + "{position:fixed;right:48px;bottom:12px;width:14px;height:14px;border-radius:50%;background:#1e1d49;border:2px solid #000;cursor:pointer;z-index:100001}" +
-      "#" + app.panelId + "{position:fixed;top:0;right:0;width:300px;height:100vh;background:#1e1d49;color:#fff;font-family:Arial;font-size:14px;padding:20px;transform:translateX(100%);opacity:0;pointer-events:none;transition:.25s;z-index:100000;overflow-y:auto}" +
-      "#" + app.panelId + ".open{transform:translateX(0);opacity:1;pointer-events:auto}" +
-      ".lpRow{display:flex;justify-content:space-between;padding:6px 8px;margin-bottom:6px;background:rgba(255,255,255,.08);border-radius:4px;cursor:pointer}" +
-      ".lpLabel{font-weight:bold;margin-right:8px}" +
-      ".lpValue{word-break:break-word;text-align:right;flex:1}";
+    s.id = "lpSumMiniStyle";
+    s.textContent = `
+      #lpSumMiniBtn {
+        position: fixed;
+        right: 48px;
+        bottom: 14px;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: #1e1d49;
+        border: 2px solid #000;
+        cursor: pointer;
+        z-index: 100001;
+      }
+      #lpSumMiniPanel {
+        position: fixed;
+        top: 0;
+        right: 0;
+        width: 300px;
+        height: 100vh;
+        background: #1e1d49;
+        color: #fff;
+        font-family: Arial, sans-serif;
+        font-size: 13px;
+        padding: 16px;
+        box-shadow: -5px 0 12px rgba(0,0,0,.4);
+        transform: translateX(100%);
+        opacity: 0;
+        pointer-events: none;
+        transition: .25s;
+        z-index: 100000;
+        overflow-y: auto;
+      }
+      #lpSumMiniPanel.open {
+        transform: translateX(0);
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .lpRow {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 6px 8px;
+        margin-bottom: 6px;
+        background: rgba(255,255,255,.08);
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .lpLabel { font-weight: bold; }
+      .lpValue {
+        flex: 1;
+        text-align: right;
+        word-break: break-word;
+      }
+    `;
     document.head.appendChild(s);
   }
 
@@ -76,8 +105,7 @@
     r.appendChild(v);
 
     r.onclick = () => {
-      if (!v.textContent) return;
-      navigator.clipboard.writeText(v.textContent);
+      if (v.textContent) navigator.clipboard.writeText(v.textContent);
     };
 
     r._valueEl = v;
@@ -88,81 +116,57 @@
     injectStyles();
 
     const btn = document.createElement("div");
-    btn.id = app.buttonId;
+    btn.id = "lpSumMiniBtn";
 
     const panel = document.createElement("div");
-    panel.id = app.panelId;
+    panel.id = "lpSumMiniPanel";
 
     btn.onclick = () => panel.classList.toggle("open");
 
-    panel.appendChild(createRow("Full Name", "fullName"));
-    panel.appendChild(createRow("Email", "email"));
-    panel.appendChild(createRow("Phone", "phone"));
-    panel.appendChild(createRow("Address", "address"));
-
-    panel.appendChild(document.createElement("hr"));
-
-    panel.appendChild(createRow("PX Make", "pxMake"));
-    panel.appendChild(createRow("PX Model", "pxModel"));
-    panel.appendChild(createRow("PX Reg", "pxReg"));
-    panel.appendChild(createRow("PX Mileage", "pxMileage"));
+    [
+      ["Full Name", "fullName"],
+      ["Email", "email"],
+      ["Phone", "phone"],
+      ["Address", "address"],
+      ["PX Make", "pxMake"],
+      ["PX Model", "pxModel"],
+      ["PX Reg", "pxReg"],
+      ["PX Mileage", "pxMileage"]
+    ].forEach(([l, k]) => panel.appendChild(createRow(l, k)));
 
     document.body.appendChild(btn);
     document.body.appendChild(panel);
 
-    app.button = btn;
-    app.panel = panel;
+    window._lpSumMiniPanel = panel;
   }
+
+  /* -------------------- MESSAGE READER -------------------- */
 
   function collectMessages() {
-    const nodes = Array.from(
-      document.querySelectorAll(
-        ".html-content.text-content, .content, .lp_message, .lpChatLine, .chatLine, .msg_text"
-      )
-    );
+    const nodes = Array.from(document.querySelectorAll(
+      ".html-content.text-content, .content, .lp_message, .lpChatLine, .chatLine, .msg_text"
+    ));
 
-    const raw = [];
-    let index = 0;
+    const messages = [];
+    let i = 0;
 
-    nodes.forEach(node => {
-      if (app.panel && app.panel.contains(node)) return;
+    nodes.forEach(n => {
+      const text = normalizeText(n.innerText);
+      if (!text) return;
 
-      const text = (node.innerText || "").replace(/\s+/g, " ").trim();
-      if (!text || !/[A-Za-z0-9]/.test(text)) return;
-
-      let originatorEl = null;
-
-      if (node.nextElementSibling?.classList.contains("originator")) {
-        originatorEl = node.nextElementSibling;
-      } else if (node.parentElement) {
-        const found = node.parentElement.querySelector(".originator");
-        if (found) originatorEl = found;
-      }
-
-      let origin = originatorEl ? originatorEl.innerText.trim() : "";
       let sender = "customer";
+      const o = n.closest(".originator");
+      if (o && o.innerText.trim() === "Omari") sender = "agent";
 
-      if (origin === "Omari") sender = "agent";
-      else if (origin === "Visitor") sender = "customer";
-      else if (/^sms/i.test(origin)) sender = "customer";
-      else if (/\+44|07\d{9}/.test(origin)) sender = "customer";
-
-      if (!origin) {
-        if (/(may i take|could i take|please provide|can i take|registration|make, model and mileage|part exchange|email address|contact number)/i.test(text)) {
-          sender = "agent";
-        }
-      }
-
-      raw.push({ sender, text, index: index++ });
+      messages.push({ sender, text, index: i++ });
     });
 
-    return raw;
+    return messages;
   }
 
-  function parseMessages(raw) {
-    const agent = raw.filter(m => m.sender === "agent");
-    const customer = raw.filter(m => m.sender === "customer");
+  /* -------------------- PARSER -------------------- */
 
+  function parse(messages) {
     const data = {
       fullName: "",
       email: "",
@@ -174,87 +178,113 @@
       pxMileage: ""
     };
 
-    function afterPrompt(regex) {
+    const agent = messages.filter(m => m.sender === "agent");
+    const customer = messages.filter(m => m.sender === "customer");
+
+    function afterPrompt(rx) {
       let idx = -1;
-      agent.forEach(m => { if (regex.test(m.text)) idx = m.index; });
+      agent.forEach(m => { if (rx.test(m.text)) idx = m.index; });
       return idx >= 0 ? customer.filter(m => m.index > idx) : [];
     }
 
+    /* NAME */
     afterPrompt(/full name|your name/i).forEach(m => {
-      if (!/@|\d/.test(m.text) && m.text.split(/\s+/).length <= 4) {
-        data.fullName = m.text.trim();
+      if (data.fullName) return;
+      const cut = m.text.split(/@|\d{1,2}[A-Z]{2}/i)[0].trim();
+      if (
+        /^[A-Za-z][A-Za-z' -]{1,40}$/.test(cut) &&
+        !/\b(that|this|is|was|are)\b/i.test(cut)
+      ) {
+        data.fullName = titleCase(cut);
       }
     });
 
-    afterPrompt(/email/i).forEach(m => {
+    /* EMAIL */
+    messages.forEach(m => {
+      if (data.email) return;
       const e = m.text.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
       if (e) data.email = e[0].toLowerCase();
     });
 
-    afterPrompt(/phone|contact number/i).forEach(m => {
-      const p = m.text.match(/(?:\+44|0)\d{9,11}/);
-      if (p) data.phone = p[0].replace(/\D/g, "");
+    /* PHONE */
+    messages.forEach(m => {
+      if (data.phone) return;
+      const p = m.text.match(/(\+44\s?\d{9,11}|0\d{9,10})/);
+      if (!p) return;
+      const n = normalizeUKPhone(p[0]);
+      if (n) data.phone = n;
     });
 
-    afterPrompt(/address|postcode/i).forEach(m => {
-      if (/\d+/.test(m.text)) data.address = m.text.trim();
+    /* ADDRESS / POSTCODE */
+    afterPrompt(/postcode|address/i).forEach(m => {
+      if (data.address) return;
+      if (
+        /[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2}/i.test(m.text) &&
+        !/[a-f0-9-]{30,}/i.test(m.text)
+      ) {
+        data.address = m.text.trim();
+      }
     });
 
-    afterPrompt(/part exchange|registration, make, model/i).forEach(m => {
-      const t = m.text;
-
-      const r = t.match(/[A-Z]{2}\d{2}\s?[A-Z]{3}/i);
-      if (r) data.pxReg = r[0].replace(/\s+/g, "").toUpperCase();
-
-      const mi = t.match(/\b\d{2,3}\s?k\b|\b\d{4,6}\b/i);
-      if (mi) {
-        data.pxMileage = mi[0].toLowerCase().includes("k")
-          ? String(parseInt(mi[0]) * 1000)
-          : mi[0].replace(/\D/g, "");
+    /* PART EXCHANGE */
+    afterPrompt(/part.?exchange|registration, make, model/i).forEach(m => {
+      if (!data.pxReg) {
+        const r = m.text.match(/\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/i);
+        if (r) data.pxReg = r[0].replace(/\s+/g, "").toUpperCase();
       }
 
-      const v = t.match(/\b(peugeot|citroen|fiat|jeep|vauxhall|leapmotor)\s+(\w+)/i);
+      if (!data.pxMileage) {
+        const mi = m.text.match(/\b\d{2,3}\s?k\b|\b\d{4,6}\b/i);
+        if (mi) {
+          data.pxMileage = mi[0].toLowerCase().includes("k")
+            ? String(parseInt(mi[0]) * 1000)
+            : mi[0].replace(/\D/g, "");
+        }
+      }
+
+      const v = m.text.match(/\b(peugeot|citroen|fiat|jeep|vauxhall|leapmotor)\s+([a-z0-9]+)/i);
       if (v) {
-        data.pxMake = v[1];
-        data.pxModel = v[2];
+        data.pxMake = titleCase(v[1]);
+        data.pxModel = v[2].toUpperCase();
       }
     });
 
     return data;
   }
 
-  function render() {
-    const raw = collectMessages();
-    app.data = parseMessages(raw);
+  /* -------------------- RENDER -------------------- */
 
-    document.querySelectorAll(".lpRow").forEach(row => {
-      const key = row.dataset.key;
-      row._valueEl.textContent = app.data[key] || "";
+  function render() {
+    const messages = collectMessages();
+    const data = parse(messages);
+
+    document.querySelectorAll(".lpRow").forEach(r => {
+      r._valueEl.textContent = data[r.dataset.key] || "";
     });
   }
 
-  function scheduleRender() {
-    safeRender(render);
-  }
+  /* -------------------- OBSERVER -------------------- */
 
   function initObserver() {
-    if (app.observer) return;
-    app.observer = new MutationObserver(() => {
-      if (OBSERVER_DEBOUNCE) clearTimeout(OBSERVER_DEBOUNCE);
-      OBSERVER_DEBOUNCE = setTimeout(scheduleRender, OBSERVER_DELAY);
+    const obs = new MutationObserver(() => {
+      if (OBSERVER_TIMER) clearTimeout(OBSERVER_TIMER);
+      OBSERVER_TIMER = setTimeout(render, OBSERVER_DELAY);
     });
-    app.observer.observe(document.body, { childList: true, subtree: true });
+    obs.observe(document.body, { childList: true, subtree: true });
   }
+
+  /* -------------------- INIT -------------------- */
 
   if (document.readyState === "complete") {
     createUI();
-    scheduleRender();
+    render();
     initObserver();
   } else {
     window.addEventListener("load", () => {
       createUI();
-      scheduleRender();
+      render();
       initObserver();
     }, { once: true });
   }
+
 })();
