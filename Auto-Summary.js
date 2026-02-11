@@ -17,6 +17,8 @@
     return str.replace(/\b\w/g, c => c.toUpperCase());
   }
 
+  const GREETINGS = /^(hi|hello|hey|ok|okay|thanks|thank you)$/i;
+
   function normalizeUKPhone(input) {
     if (!input) return "";
     let n = input.replace(/[^\d+]/g, "");
@@ -42,15 +44,20 @@
   }
 
   function extractName(text) {
-    const tokens = text.split(/\s+/);
+    const cleaned = norm(text);
+    if (GREETINGS.test(cleaned)) return "";
+
+    const tokens = cleaned.split(/\s+/);
     const parts = [];
+
     for (let t of tokens) {
       if (/@/.test(t) || /\d/.test(t)) break;
       if (/^[A-Za-z][A-Za-z'’-]*$/.test(t)) parts.push(t);
       else break;
       if (parts.length === 3) break;
     }
-    return parts.length ? titleCase(parts.join(" ")) : "";
+
+    return parts.length >= 2 ? titleCase(parts.join(" ")) : "";
   }
 
   function extractReg(text) {
@@ -123,7 +130,6 @@
     ].forEach(([l,k]) => panel.appendChild(row(l,k)));
 
     document.body.append(btn, panel);
-    window._lpSumMiniPanel = panel;
   }
 
   /* ================= MESSAGE COLLECTION ================= */
@@ -152,40 +158,35 @@
     const agent = msgs.filter(m => m.sender === "agent");
     const customer = msgs.filter(m => m.sender === "customer");
 
-    // detect question indices
     let idQ = -1, pxQ = -1;
+
     agent.forEach(m => {
-      if (/full name.*(email|contact)|confirm.*full name/i.test(m.text)) idQ = m.index;
-      if (/part.?exchange|registration, make, model and mileage/i.test(m.text)) pxQ = m.index;
+      if (/full name|confirm.*name|email address/i.test(m.text)) idQ = m.index;
+      if (/part.?exchange|registration, make, model/i.test(m.text)) pxQ = m.index;
     });
 
-    function process(list, strict) {
-      list.forEach(m => {
-        if (!data.fullName) data.fullName = extractName(m.text) || data.fullName;
-        if (!data.email) data.email = extractEmail(m.text) || data.email;
-        if (!data.phone) data.phone = extractPhone(m.text) || data.phone;
-        if (!data.postcode) data.postcode = extractPostcode(m.text) || data.postcode;
+    // Identity: ONLY after question if asked
+    const idSource = idQ >= 0 ? customer.filter(m => m.index > idQ) : customer;
 
-        if (!data.pxReg) data.pxReg = extractReg(m.text) || data.pxReg;
-        if (!data.pxMileage) data.pxMileage = extractMileage(m.text) || data.pxMileage;
+    idSource.forEach(m => {
+      if (!data.fullName) data.fullName = extractName(m.text);
+      if (!data.email) data.email = extractEmail(m.text);
+      if (!data.phone) data.phone = extractPhone(m.text);
+      if (!data.postcode) data.postcode = extractPostcode(m.text);
+    });
 
-        const v = extractVehicle(m.text);
-        if (v) {
-          if (!data.pxMake) data.pxMake = v.make;
-          if (!data.pxModel) data.pxModel = v.model;
-        }
-      });
-    }
+    // PX: ONLY after PX question if asked
+    const pxSource = pxQ >= 0 ? customer.filter(m => m.index > pxQ) : [];
 
-    // priority pass
-    if (idQ >= 0) process(customer.filter(m => m.index > idQ), true);
-    if (pxQ >= 0) process(customer.filter(m => m.index > pxQ), true);
-
-    // fallback pass
-    process(customer.filter(m =>
-      (idQ < 0 || m.index < idQ) &&
-      (pxQ < 0 || m.index < pxQ)
-    ), false);
+    pxSource.forEach(m => {
+      if (!data.pxReg) data.pxReg = extractReg(m.text);
+      if (!data.pxMileage) data.pxMileage = extractMileage(m.text);
+      const v = extractVehicle(m.text);
+      if (v) {
+        if (!data.pxMake) data.pxMake = v.make;
+        if (!data.pxModel) data.pxModel = v.model;
+      }
+    });
 
     return data;
   }
