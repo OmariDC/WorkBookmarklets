@@ -2,10 +2,25 @@
   if (window._lpSumMini) return;
   window._lpSumMini = true;
 
-  /* ================= CONFIG ================= */
-
   const OBSERVER_DELAY = 800;
   let OBSERVER_TIMER = null;
+
+  /* ================= SYSTEM FILTER ================= */
+
+  const SYSTEM_BLOCK = /(
+    you are now connected|
+    we are transferring|
+    welcome!|
+    which department|
+    rich content|
+    connecting you|
+    sales$|
+    service$
+  )/ix;
+
+  function isSystemText(text) {
+    return SYSTEM_BLOCK.test(text.toLowerCase());
+  }
 
   /* ================= HELPERS ================= */
 
@@ -18,6 +33,7 @@
   }
 
   const GREETINGS = /^(hi|hello|hey|ok|okay|thanks|thank you)$/i;
+  const HONORIFICS = /^(mr|mrs|ms|miss|dr)\.?$/i;
 
   function normalizeUKPhone(input) {
     if (!input) return "";
@@ -47,11 +63,12 @@
     const cleaned = norm(text);
     if (GREETINGS.test(cleaned)) return "";
 
-    const tokens = cleaned.split(/\s+/);
+    const tokens = cleaned.split(/[\s,]+/);
     const parts = [];
 
     for (let t of tokens) {
       if (/@/.test(t) || /\d/.test(t)) break;
+      if (HONORIFICS.test(t)) continue;
       if (/^[A-Za-z][A-Za-z'’-]*$/.test(t)) parts.push(t);
       else break;
       if (parts.length === 3) break;
@@ -142,11 +159,15 @@
     nodes.forEach(n => {
       const text = norm(n.innerText);
       if (!text) return;
+      if (isSystemText(text)) return; // HARD FILTER
+
       let sender = "customer";
       const o = n.closest(".originator");
       if (o && o.innerText.trim() === "Omari") sender = "agent";
+
       out.push({ sender, text, index: i++ });
     });
+
     return out;
   }
 
@@ -165,8 +186,8 @@
       if (/part.?exchange|registration, make, model/i.test(m.text)) pxQ = m.index;
     });
 
-    // Identity: ONLY after question if asked
-    const idSource = idQ >= 0 ? customer.filter(m => m.index > idQ) : customer;
+    const idSource = idQ >= 0 ? customer.filter(m => m.index > idQ) : [];
+    const pxSource = pxQ >= 0 ? customer.filter(m => m.index > pxQ) : [];
 
     idSource.forEach(m => {
       if (!data.fullName) data.fullName = extractName(m.text);
@@ -174,9 +195,6 @@
       if (!data.phone) data.phone = extractPhone(m.text);
       if (!data.postcode) data.postcode = extractPostcode(m.text);
     });
-
-    // PX: ONLY after PX question if asked
-    const pxSource = pxQ >= 0 ? customer.filter(m => m.index > pxQ) : [];
 
     pxSource.forEach(m => {
       if (!data.pxReg) data.pxReg = extractReg(m.text);
@@ -191,16 +209,12 @@
     return data;
   }
 
-  /* ================= RENDER ================= */
-
   function render() {
     const data = parse(collectMessages());
     document.querySelectorAll(".lpRow").forEach(r => {
       r._v.textContent = data[r.dataset.key] || "";
     });
   }
-
-  /* ================= OBSERVER ================= */
 
   function initObserver() {
     const obs = new MutationObserver(() => {
@@ -210,11 +224,11 @@
     obs.observe(document.body, { childList:true, subtree:true });
   }
 
-  /* ================= INIT ================= */
-
   if (document.readyState === "complete") {
     createUI(); render(); initObserver();
   } else {
     window.addEventListener("load", () => { createUI(); render(); initObserver(); }, { once:true });
   }
+
 })();
+
