@@ -588,15 +588,28 @@ AC.replaceRange = function (el, start, end, text) {
     return;
   }
   const range = AC.createRangeForContentEditable(el, start, end);
-  if (!range) return;
-  range.deleteContents();
+if (!range) return;
 
-const textNode = document.createTextNode(text);
+range.deleteContents();
+
+let textNode = document.createTextNode(text);
 range.insertNode(textNode);
 
-// Move caret directly after inserted node
+// Merge adjacent text nodes to stabilise DOM
+if (textNode.previousSibling && textNode.previousSibling.nodeType === Node.TEXT_NODE) {
+  textNode.previousSibling.textContent += textNode.textContent;
+  textNode.parentNode.removeChild(textNode);
+  textNode = textNode.previousSibling;
+}
+
+if (textNode.nextSibling && textNode.nextSibling.nodeType === Node.TEXT_NODE) {
+  textNode.textContent += textNode.nextSibling.textContent;
+  textNode.parentNode.removeChild(textNode.nextSibling);
+}
+
+// Safely place caret at end of inserted content
 const newRange = document.createRange();
-newRange.setStartAfter(textNode);
+newRange.setStart(textNode, textNode.textContent.length);
 newRange.collapse(true);
 
 const sel = window.getSelection();
