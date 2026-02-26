@@ -611,14 +611,34 @@ AC.createRangeForContentEditable = function (el, start, end) {
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
   let current = walker.nextNode();
   let index = 0;
-  let range = document.createRange();
+
+  const range = document.createRange();
+  let startSet = false;
+  let endSet = false;
+
   while (current) {
     const nextIndex = index + current.textContent.length;
-    if (start >= index && start <= nextIndex) range.setStart(current, start - index);
-    if (end >= index && end <= nextIndex) { range.setEnd(current, end - index); break; }
+
+    if (!startSet && start >= index && start <= nextIndex) {
+      range.setStart(current, Math.min(start - index, current.textContent.length));
+      startSet = true;
+    }
+
+    if (!endSet && end >= index && end <= nextIndex) {
+      range.setEnd(current, Math.min(end - index, current.textContent.length));
+      endSet = true;
+      break;
+    }
+
     index = nextIndex;
     current = walker.nextNode();
   }
+
+  if (!startSet || !endSet) {
+    range.selectNodeContents(el);
+    range.collapse(false);
+  }
+
   return range;
 };
 
@@ -718,11 +738,12 @@ AC.process = function (el) {
   if (AC.state.recent.length > 50) AC.state.recent.shift();
 };
 
+// - runs on keyup now, so direct call is safest
 AC.handleKey = function (event) {
   const triggers = [' ', '.', ',', '?', '!', ';', ':', 'Enter'];
   const el = event.target;
   if (!triggers.includes(event.key)) return;
-  setTimeout(() => { AC.process(el); }, 0);
+  AC.process(el);
 };
 
 AC.undoLastCorrection = function () {
@@ -745,7 +766,7 @@ AC.bindEditor = function (el) {
   if (AC.state.keyListeners.has(el)) return;
   el.dataset.acAttached = '1';
   const listener = AC.handleKey.bind(AC);
-  el.addEventListener('keydown', listener);
+  el.addEventListener('keyup', listener);
   AC.state.editors.add(el);
   AC.state.keyListeners.set(el, listener);
 };
