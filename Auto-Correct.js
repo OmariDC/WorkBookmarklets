@@ -587,33 +587,24 @@ AC.replaceRange = function (el, start, end, text) {
     AC.setSelectionRange(el, start + text.length);
     return;
   }
-  const range = AC.createRangeForContentEditable(el, start, end);
+const range = AC.createRangeForContentEditable(el, start, end);
 if (!range) return;
 
 range.deleteContents();
+range.insertNode(document.createTextNode(text));
 
-let textNode = document.createTextNode(text);
-range.insertNode(textNode);
+// Calculate new caret character position
+const newPos = start + text.length;
 
-// Merge adjacent text nodes to stabilise DOM
-if (textNode.previousSibling && textNode.previousSibling.nodeType === Node.TEXT_NODE) {
-  textNode.previousSibling.textContent += textNode.textContent;
-  textNode.parentNode.removeChild(textNode);
-  textNode = textNode.previousSibling;
-}
+// Restore caret using character offset rebuild
+requestAnimationFrame(() => {
+  const newRange = AC.createRangeForContentEditable(el, newPos, newPos);
+  if (!newRange) return;
 
-if (textNode.nextSibling && textNode.nextSibling.nodeType === Node.TEXT_NODE) {
-  textNode.textContent += textNode.nextSibling.textContent;
-  textNode.parentNode.removeChild(textNode.nextSibling);
-}
-
-// Move caret safely using the existing range
-range.setStartAfter(textNode);
-range.collapse(true);
-
-const sel = window.getSelection();
-sel.removeAllRanges();
-sel.addRange(range);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(newRange);
+});
 };
 
 AC.createRangeForContentEditable = function (el, start, end) {
