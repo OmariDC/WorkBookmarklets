@@ -607,14 +607,13 @@ if (textNode.nextSibling && textNode.nextSibling.nodeType === Node.TEXT_NODE) {
   textNode.parentNode.removeChild(textNode.nextSibling);
 }
 
-// Safely place caret at end of inserted content
-const newRange = document.createRange();
-newRange.setStart(textNode, textNode.textContent.length);
-newRange.collapse(true);
+// Move caret safely using the existing range
+range.setStartAfter(textNode);
+range.collapse(true);
 
 const sel = window.getSelection();
 sel.removeAllRanges();
-sel.addRange(newRange);
+sel.addRange(range);
 };
 
 AC.createRangeForContentEditable = function (el, start, end) {
