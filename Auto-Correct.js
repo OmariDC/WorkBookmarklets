@@ -590,11 +590,18 @@ AC.replaceRange = function (el, start, end, text) {
   const range = AC.createRangeForContentEditable(el, start, end);
   if (!range) return;
   range.deleteContents();
-  range.insertNode(document.createTextNode(text));
-  const newRange = document.createRange();
-  newRange.setStart(range.endContainer, range.endOffset);
-  newRange.collapse(true);
-  AC.setSelectionRange(el, newRange);
+
+const textNode = document.createTextNode(text);
+range.insertNode(textNode);
+
+// Move caret directly after inserted node
+const newRange = document.createRange();
+newRange.setStartAfter(textNode);
+newRange.collapse(true);
+
+const sel = window.getSelection();
+sel.removeAllRanges();
+sel.addRange(newRange);
 };
 
 AC.createRangeForContentEditable = function (el, start, end) {
