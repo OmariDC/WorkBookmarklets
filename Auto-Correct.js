@@ -596,8 +596,13 @@ range.insertNode(document.createTextNode(text));
 // Calculate new caret character position
 const newPos = start + text.length;
 
-// Restore caret using character offset rebuild
-requestAnimationFrame(() => {
+// Restore caret ASAP (microtask) to avoid racing the next keypress
+const schedule = (fn) => {
+  if (typeof queueMicrotask === 'function') return queueMicrotask(fn);
+  Promise.resolve().then(fn);
+};
+
+schedule(() => {
   const newRange = AC.createRangeForContentEditable(el, newPos, newPos);
   if (!newRange) return;
 
