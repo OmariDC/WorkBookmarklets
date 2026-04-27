@@ -169,19 +169,33 @@
   }
 
   function setVal(selector, val, overwrite) {
-    if (!val) return;
+  if (!val) return;
 
-    const el = document.querySelector(selector);
-    if (!el || (!overwrite && el.value)) return;
+  const matches = Array.from(document.querySelectorAll(selector));
+  const el = matches.find(x => x.offsetParent !== null) || matches[0];
 
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-    setter.call(el, val);
+  if (!el || (!overwrite && el.value)) return;
 
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-    el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
-    el.dispatchEvent(new Event("blur", { bubbles: true }));
-  }
+  el.focus();
+
+  const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+  nativeSetter.call(el, "");
+
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+
+  nativeSetter.call(el, val);
+
+  el.dispatchEvent(new InputEvent("input", {
+    bubbles: true,
+    inputType: "insertText",
+    data: val
+  }));
+
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+  el.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Tab" }));
+  el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Tab" }));
+  el.blur();
+}
 
   function buildData() {
     const messages = getMessages();
