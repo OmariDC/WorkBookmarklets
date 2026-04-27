@@ -6,15 +6,15 @@
   const LPAF = window.LPAF = {};
 
   const fields = {
-    firstName: 'input[name="firstName"],input[placeholder="First Name"]',
-    lastName: 'input[name="lastName"],input[placeholder="Last Name"]',
-    email: 'input[name="email"],input[placeholder="Email"]',
-    phone: 'input[name="phone"],input[placeholder="Phone"]',
-    postcode: 'input[placeholder="Customer\'s Postcode"]',
-    pxMake: 'input[placeholder="Customer Vehicle Make"]',
-    pxModel: 'input[placeholder="Customer Vehicle Model"]',
-    pxReg: 'input[placeholder="Customer Vehicle Registration Number"]',
-    pxMileage: 'input[placeholder="Customer Vehicle Mileage"]'
+    firstName: "First Name",
+    lastName: "Last Name",
+    email: "Email",
+    phone: "Phone",
+    postcode: "Customer's Postcode",
+    pxMake: "Customer Vehicle Make",
+    pxModel: "Customer Vehicle Model",
+    pxReg: "Customer Vehicle Registration Number",
+    pxMileage: "Customer Vehicle Mileage"
   };
 
   const detailAnchors = [
@@ -168,41 +168,36 @@
     };
   }
 
-  function setVal(selector, val, overwrite) {
-  if (!val) return;
+  function setVal(fieldKey, val, overwrite) {
+    if (!val) return;
 
-  const matches = Array.from(document.querySelectorAll(selector));
-  const el = matches.find(x => x.offsetParent !== null) || matches[0];
+    const wanted = fields[fieldKey];
 
-  if (!el || (!overwrite && el.value)) return;
+    const el = Array.from(document.querySelectorAll("input"))
+      .find(i => i.placeholder && i.placeholder.trim() === wanted);
 
-  el.focus();
-  el.click();
+    if (!el || (!overwrite && el.value)) return;
 
-  try {
-    el.select();
-    document.execCommand("delete");
-  } catch (e) {}
+    el.focus();
+    el.click();
 
-  const dataTransfer = new DataTransfer();
-  dataTransfer.setData("text/plain", val);
+    el.value = "";
 
-  const pasteEvent = new ClipboardEvent("paste", {
-    bubbles: true,
-    cancelable: true,
-    clipboardData: dataTransfer
-  });
+    el.dispatchEvent(new Event("input", { bubbles: true }));
 
-  el.dispatchEvent(pasteEvent);
+    for (const char of val) {
+      el.value += char;
+      el.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertText",
+        data: char
+      }));
+    }
 
-  if (!el.value) {
-    document.execCommand("insertText", false, val);
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
+    el.blur();
   }
-
-  el.dispatchEvent(new Event("input", { bubbles: true }));
-  el.dispatchEvent(new Event("change", { bubbles: true }));
-  el.blur();
-}
 
   function buildData() {
     const messages = getMessages();
@@ -280,7 +275,7 @@
 
     fill.onclick = function () {
       rows.forEach(([key]) => {
-        setVal(fields[key], inputs[key].value.trim(), overwrite.checked);
+        setVal(key, inputs[key].value.trim(), overwrite.checked);
       });
       removePanel();
     };
