@@ -6,10 +6,10 @@
   const LPAF = window.LPAF = {};
 
   const fields = {
-    firstName: "First Name",
-    lastName: "Last Name",
-    email: "Email",
-    phone: "Phone",
+    firstName: "firstName",
+    lastName: "lastName",
+    email: "email",
+    phone: "phone",
     postcode: "Customer's Postcode",
     pxMake: "Customer Vehicle Make",
     pxModel: "Customer Vehicle Model",
@@ -173,16 +173,17 @@
   }
 
   function cacheInputs() {
-    cachedInputs = {};
-
-    Object.keys(fields).forEach(key => {
-      const wanted = fields[key];
-
-      const el = Array.from(document.querySelectorAll("input"))
-        .find(i => i.placeholder && i.placeholder.trim() === wanted);
-
-      if (el) cachedInputs[key] = el;
-    });
+    cachedInputs = {
+      firstName: document.querySelector('input[name="firstName"]'),
+      lastName: document.querySelector('input[name="lastName"]'),
+      email: document.querySelector('input[name="email"]'),
+      phone: document.querySelector('input[name="phone"]'),
+      postcode: Array.from(document.querySelectorAll("input")).find(i => i.placeholder?.includes("Postcode")),
+      pxMake: Array.from(document.querySelectorAll("input")).find(i => i.placeholder?.includes("Make")),
+      pxModel: Array.from(document.querySelectorAll("input")).find(i => i.placeholder?.includes("Model")),
+      pxReg: Array.from(document.querySelectorAll("input")).find(i => i.placeholder?.includes("Registration")),
+      pxMileage: Array.from(document.querySelectorAll("input")).find(i => i.placeholder?.includes("Mileage"))
+    };
 
     console.log("Cached inputs:", cachedInputs);
   }
@@ -298,29 +299,31 @@
   }
 
   function run() {
+    const firstInput = document.querySelector('input[name="firstName"]');
 
-  // Step 1: force focus into the lead form
-  const firstInput = document.querySelector('input[name="firstName"]');
+    if (firstInput) {
+      firstInput.focus();
+      firstInput.click();
+    }
 
-  if (firstInput) {
-    firstInput.focus();
-    firstInput.click();
+    setTimeout(() => {
+      console.log("Activating form and caching...");
+      cacheInputs();
+
+      const data = buildData();
+      console.log("Auto-Fill extracted:", data);
+
+      showPreview(data);
+    }, 100);
   }
 
-  // Step 2: small delay to let LivePerson activate the form context
-  setTimeout(() => {
-
-    console.log("Forcing form context, now caching...");
-
-    cacheInputs();
-
-    const data = buildData();
-    console.log("Auto-Fill extracted:", data);
-
-    showPreview(data);
-
-  }, 100);
-}
+  LPAF.listener = function (e) {
+    if (e.altKey && e.key.toLowerCase() === "d") {
+      e.preventDefault();
+      e.stopPropagation();
+      run();
+    }
+  };
 
   document.addEventListener("keydown", LPAF.listener, true);
 
