@@ -298,18 +298,29 @@
   }
 
   function run() {
-    cacheInputs();
-    const data = buildData();
-    console.log("Auto-Fill extracted:", data);
-    showPreview(data);
+
+  // Step 1: force focus into the lead form
+  const firstInput = document.querySelector('input[name="firstName"]');
+
+  if (firstInput) {
+    firstInput.focus();
+    firstInput.click();
   }
 
-  LPAF.listener = function (e) {
-    if (e.altKey && e.key.toLowerCase() === "d") {
-      e.preventDefault();
-      e.stopPropagation();
-      run();
-    }
+  // Step 2: small delay to let LivePerson activate the form context
+  setTimeout(() => {
+
+    console.log("Forcing form context, now caching...");
+
+    cacheInputs();
+
+    const data = buildData();
+    console.log("Auto-Fill extracted:", data);
+
+    showPreview(data);
+
+  }, 100);
+}
   };
 
   document.addEventListener("keydown", LPAF.listener, true);
