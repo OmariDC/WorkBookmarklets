@@ -169,35 +169,23 @@
   }
 
   function setVal(fieldKey, val, overwrite) {
-    if (!val) return;
+  if (!val) return;
 
-    const wanted = fields[fieldKey];
+  const wanted = fields[fieldKey];
 
-    const el = Array.from(document.querySelectorAll("input"))
-      .find(i => i.placeholder && i.placeholder.trim() === wanted);
+  const el = Array.from(document.querySelectorAll("input"))
+    .find(i => i.placeholder && i.placeholder.trim() === wanted);
 
-    if (!el || (!overwrite && el.value)) return;
+  console.log("Auto-Fill setting:", fieldKey, wanted, el, val);
 
-    el.focus();
-    el.click();
+  if (!el) return;
+  if (!overwrite && el.value) return;
 
-    el.value = "";
-
-    el.dispatchEvent(new Event("input", { bubbles: true }));
-
-    for (const char of val) {
-      el.value += char;
-      el.dispatchEvent(new InputEvent("input", {
-        bubbles: true,
-        inputType: "insertText",
-        data: char
-      }));
-    }
-
-    el.dispatchEvent(new Event("change", { bubbles: true }));
-    el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true }));
-    el.blur();
-  }
+  el.focus();
+  el.value = val;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event("change", { bubbles: true }));
+}
 
   function buildData() {
     const messages = getMessages();
