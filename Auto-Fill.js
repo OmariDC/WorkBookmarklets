@@ -177,23 +177,30 @@
   if (!el || (!overwrite && el.value)) return;
 
   el.focus();
+  el.click();
 
-  const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-  nativeSetter.call(el, "");
+  try {
+    el.select();
+    document.execCommand("delete");
+  } catch (e) {}
+
+  const dataTransfer = new DataTransfer();
+  dataTransfer.setData("text/plain", val);
+
+  const pasteEvent = new ClipboardEvent("paste", {
+    bubbles: true,
+    cancelable: true,
+    clipboardData: dataTransfer
+  });
+
+  el.dispatchEvent(pasteEvent);
+
+  if (!el.value) {
+    document.execCommand("insertText", false, val);
+  }
 
   el.dispatchEvent(new Event("input", { bubbles: true }));
-
-  nativeSetter.call(el, val);
-
-  el.dispatchEvent(new InputEvent("input", {
-    bubbles: true,
-    inputType: "insertText",
-    data: val
-  }));
-
   el.dispatchEvent(new Event("change", { bubbles: true }));
-  el.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Tab" }));
-  el.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Tab" }));
   el.blur();
 }
 
