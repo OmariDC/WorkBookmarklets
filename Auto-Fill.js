@@ -17,6 +17,8 @@
     pxMileage: "Customer Vehicle Mileage"
   };
 
+  let cachedInputs = {};
+
   const detailAnchors = [
     "full name, contact number, email address and postcode",
     "full name, contact number and email address"
@@ -31,8 +33,8 @@
   ];
 
   const blockedNames = [
-    "thank you", "thanks", "no thank you", "yes please", "no problem",
-    "ok thanks", "okay thanks", "that is fine", "sounds good"
+    "thank you","thanks","no thank you","yes please","no problem",
+    "ok thanks","okay thanks","that is fine","sounds good"
   ];
 
   function clean(t) {
@@ -53,7 +55,7 @@
   function getMessages() {
     return Array.from(document.querySelectorAll(".html-content.text-content"))
       .map((el, i) => ({
-        i: i,
+        i,
         text: clean(el.innerText || el.textContent || ""),
         agent: isAgent(el)
       }))
@@ -73,7 +75,9 @@
       return messages.slice(idx + 1).filter(m => !m.agent).map(m => m.text).join("\n");
     }
 
-    return fallbackAllCustomer ? messages.filter(m => !m.agent).map(m => m.text).join("\n") : "";
+    return fallbackAllCustomer
+      ? messages.filter(m => !m.agent).map(m => m.text).join("\n")
+      : "";
   }
 
   function extractEmail(t) {
@@ -140,9 +144,9 @@
     return {
       firstName: name.firstName,
       lastName: name.lastName,
-      email: email,
-      phone: phone,
-      postcode: postcode
+      email,
+      phone,
+      postcode
     };
   }
 
@@ -168,24 +172,37 @@
     };
   }
 
+  function cacheInputs() {
+    cachedInputs = {};
+
+    Object.keys(fields).forEach(key => {
+      const wanted = fields[key];
+
+      const el = Array.from(document.querySelectorAll("input"))
+        .find(i => i.placeholder && i.placeholder.trim() === wanted);
+
+      if (el) cachedInputs[key] = el;
+    });
+
+    console.log("Cached inputs:", cachedInputs);
+  }
+
   function setVal(fieldKey, val, overwrite) {
-  if (!val) return;
+    if (!val) return;
 
-  const wanted = fields[fieldKey];
+    const el = cachedInputs[fieldKey];
 
-  const el = Array.from(document.querySelectorAll("input"))
-    .find(i => i.placeholder && i.placeholder.trim() === wanted);
+    console.log("FILL USING CACHE:", fieldKey, el, val);
 
-  console.log("Auto-Fill setting:", fieldKey, wanted, el, val);
+    if (!el) return;
+    if (!overwrite && el.value) return;
 
-  if (!el) return;
-  if (!overwrite && el.value) return;
+    el.focus();
+    el.value = val;
 
-  el.focus();
-  el.value = val;
-  el.dispatchEvent(new Event("input", { bubbles: true }));
-  el.dispatchEvent(new Event("change", { bubbles: true }));
-}
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
 
   function buildData() {
     const messages = getMessages();
@@ -217,20 +234,20 @@
     panel.appendChild(title);
 
     const rows = [
-      ["firstName", "First Name"],
-      ["lastName", "Last Name"],
-      ["email", "Email"],
-      ["phone", "Phone"],
-      ["postcode", "Postcode"],
-      ["pxMake", "PX Make"],
-      ["pxModel", "PX Model"],
-      ["pxReg", "PX Reg"],
-      ["pxMileage", "PX Mileage"]
+      ["firstName","First Name"],
+      ["lastName","Last Name"],
+      ["email","Email"],
+      ["phone","Phone"],
+      ["postcode","Postcode"],
+      ["pxMake","PX Make"],
+      ["pxModel","PX Model"],
+      ["pxReg","PX Reg"],
+      ["pxMileage","PX Mileage"]
     ];
 
     const inputs = {};
 
-    rows.forEach(([key, label]) => {
+    rows.forEach(([key,label]) => {
       const wrap = document.createElement("label");
       wrap.style.cssText = "display:block;font-size:12px;margin-bottom:6px;";
       wrap.textContent = label;
@@ -281,6 +298,7 @@
   }
 
   function run() {
+    cacheInputs();
     const data = buildData();
     console.log("Auto-Fill extracted:", data);
     showPreview(data);
