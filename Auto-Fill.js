@@ -1,18 +1,16 @@
 (function () {
-  if (window.LPAF && window.LPAF.installed) {
-    alert("Auto-Fill already installed. Refresh the page to reinstall.");
-    return;
+  if (window.LPAF && window.LPAF.listener) {
+    document.removeEventListener("keydown", window.LPAF.listener, true);
   }
 
-  const LPAF = window.LPAF = window.LPAF || {};
-  LPAF.installed = true;
+  const LPAF = window.LPAF = {};
 
   const fields = {
     firstName: 'input[name="firstName"],input[placeholder="First Name"]',
     lastName: 'input[name="lastName"],input[placeholder="Last Name"]',
     email: 'input[name="email"],input[placeholder="Email"]',
     phone: 'input[name="phone"],input[placeholder="Phone"]',
-    postcode: 'input[placeholder="Customer\\\'s Postcode"]',
+    postcode: 'input[placeholder="Customer\'s Postcode"]',
     pxMake: 'input[placeholder="Customer Vehicle Make"]',
     pxModel: 'input[placeholder="Customer Vehicle Model"]',
     pxReg: 'input[placeholder="Customer Vehicle Registration Number"]',
@@ -32,22 +30,15 @@
     "current vehicle"
   ];
 
-  const blockedNameLines = [
-    "thank you",
-    "thanks",
-    "no thank you",
-    "yes please",
-    "no problem",
-    "that is fine",
-    "sounds good",
-    "ok thanks",
-    "okay thanks"
+  const blockedNames = [
+    "thank you", "thanks", "no thank you", "yes please", "no problem",
+    "ok thanks", "okay thanks", "that is fine", "sounds good"
   ];
 
   function clean(t) {
     return String(t || "")
       .replace(/\u00a0/g, " ")
-      .replace(/[|]+/g, "\n")
+      .replace(/[|/]+/g, "\n")
       .replace(/\.{2,}/g, "\n")
       .replace(/\s+\n/g, "\n")
       .replace(/\n\s+/g, "\n")
@@ -62,29 +53,27 @@
   function getMessages() {
     return Array.from(document.querySelectorAll(".html-content.text-content"))
       .map((el, i) => ({
-        i,
+        i: i,
         text: clean(el.innerText || el.textContent || ""),
         agent: isAgent(el)
       }))
       .filter(m => m.text);
   }
 
-  function getAfterAnchor(messages, anchors, fallbackAllCustomer) {
+  function textAfterLatestAgentAnchor(messages, anchors, fallbackAllCustomer) {
     let idx = -1;
 
     messages.forEach((m, i) => {
       if (!m.agent) return;
       const low = m.text.toLowerCase();
-      if (anchors.some(a => low.includes(a.toLowerCase()))) idx = i;
+      if (anchors.some(a => low.includes(a))) idx = i;
     });
 
     if (idx >= 0) {
       return messages.slice(idx + 1).filter(m => !m.agent).map(m => m.text).join("\n");
     }
 
-    return fallbackAllCustomer
-      ? messages.filter(m => !m.agent).map(m => m.text).join("\n")
-      : "";
+    return fallbackAllCustomer ? messages.filter(m => !m.agent).map(m => m.text).join("\n") : "";
   }
 
   function extractEmail(t) {
@@ -115,29 +104,25 @@
   }
 
   function extractName(t, email, phone, postcode) {
-    let txt = clean(t)
-      .replace(/[\/]+/g, "\n")
+    const lines = clean(t)
       .replace(email, "\n")
       .replace(phone, "\n")
-      .replace(postcode, "\n");
-
-    let lines = txt
+      .replace(postcode, "\n")
       .split(/\n+/)
       .map(x => x.trim())
       .filter(Boolean);
 
-    lines = lines.filter(l => {
-      const low = l.toLowerCase().replace(/[.!?,]/g, "").trim();
-      if (blockedNameLines.includes(low)) return false;
-      if (/[0-9@]/.test(l)) return false;
+    const best = lines.find(line => {
+      const low = line.toLowerCase().replace(/[.!?,]/g, "").trim();
+      if (blockedNames.includes(low)) return false;
+      if (/[0-9@]/.test(line)) return false;
 
-      const words = l.split(/\s+/).filter(Boolean);
+      const words = line.split(/\s+/).filter(Boolean);
       if (words.length < 2 || words.length > 4) return false;
 
       return words.every(w => /^[A-Za-z'’-]+$/.test(w));
-    });
+    }) || "";
 
-    const best = lines[0] || "";
     const parts = best.split(/\s+/).filter(Boolean);
 
     return {
@@ -155,9 +140,9 @@
     return {
       firstName: name.firstName,
       lastName: name.lastName,
-      email,
-      phone,
-      postcode
+      email: email,
+      phone: phone,
+      postcode: postcode
     };
   }
 
@@ -165,7 +150,7 @@
     const reg = extractReg(t);
     const mileage = extractMileage(t);
 
-    let cleaned = clean(t)
+    const cleaned = clean(t)
       .replace(reg, " ")
       .replace(mileage, " ")
       .replace(/miles|mile|mi|mileage|registration|reg|make|model|current vehicle|part-exchange|part exchange/ig, " ")
@@ -201,8 +186,8 @@
   function buildData() {
     const messages = getMessages();
 
-    const detailsText = getAfterAnchor(messages, detailAnchors, true);
-    const pxText = getAfterAnchor(messages, pxAnchors, false);
+    const detailsText = textAfterLatestAgentAnchor(messages, detailAnchors, true);
+    const pxText = textAfterLatestAgentAnchor(messages, pxAnchors, false);
 
     return {
       ...extractCustomer(detailsText),
@@ -271,6 +256,7 @@
     const fill = document.createElement("button");
     fill.textContent = "Fill";
     fill.style.cssText = "flex:1;padding:8px;border:0;border-radius:4px;background:#f9772e;color:#040134;font-weight:bold;cursor:pointer;";
+
     fill.onclick = function () {
       rows.forEach(([key]) => {
         setVal(fields[key], inputs[key].value.trim(), overwrite.checked);
@@ -291,16 +277,20 @@
   }
 
   function run() {
-    showPreview(buildData());
+    const data = buildData();
+    console.log("Auto-Fill extracted:", data);
+    showPreview(data);
   }
 
-  document.addEventListener("keydown", function (e) {
+  LPAF.listener = function (e) {
     if (e.altKey && e.key.toLowerCase() === "d") {
       e.preventDefault();
       e.stopPropagation();
       run();
     }
-  }, true);
+  };
+
+  document.addEventListener("keydown", LPAF.listener, true);
 
   alert("Auto-Fill installed.\n\nPress ALT + D to scan the current chat and preview details.");
 })();
