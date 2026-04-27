@@ -321,7 +321,6 @@
 
   }, 100);
 }
-  };
 
   document.addEventListener("keydown", LPAF.listener, true);
 
