@@ -1,9 +1,10 @@
 (function () {
-  if (window.LPAF3 && window.LPAF3.listener) {
-    document.removeEventListener("keydown", window.LPAF3.listener, true);
+  if (window.LPAF4 && window.LPAF4.cleanup) {
+    window.LPAF4.cleanup();
   }
 
-  const LPAF3 = window.LPAF3 = {};
+  const LPAF4 = window.LPAF4 = {};
+  let lastInput = null;
 
   function clean(t) {
     return String(t || "")
@@ -65,71 +66,73 @@
     };
   }
 
-  function forceInput(el, value) {
+  function rememberInput(e) {
+    const el = e.target;
+    if (el && el.tagName === "INPUT") {
+      lastInput = el;
+      console.log("AF remembered input:", el);
+    }
+  }
+
+  function setInput(el, value) {
     if (!el || !value) return;
 
     el.focus();
-    el.click();
-    el.select && el.select();
 
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
     setter.call(el, value);
 
-    el.dispatchEvent(new InputEvent("input", {
-      bubbles: true,
-      composed: true,
-      inputType: "insertText",
-      data: value
-    }));
-
-    el.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
-    el.dispatchEvent(new Event("blur", { bubbles: true, composed: true }));
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.blur();
   }
 
-  function findInForm(form, matcher) {
-    return Array.from(form.querySelectorAll("input"))
-      .find(input => matcher(input));
+  function findInput(form, matcher) {
+    return Array.from(form.querySelectorAll("input")).find(matcher);
   }
 
-  function fillFromActiveField() {
-    const active = document.activeElement;
-
-    if (!active || active.tagName !== "INPUT") {
-      alert("Click inside the First Name box first, then press ALT + F.");
+  function fill() {
+    if (!lastInput) {
+      alert("Click inside the First Name box first.");
       return;
     }
 
-    const form = active.closest("form") || active.closest("#vue-app") || document;
-
+    const form = lastInput.closest("form") || lastInput.closest("#vue-app") || document;
     const data = extract();
-    console.log("AUTO-FILL ACTIVE-FORM DATA:", data);
 
     const targets = {
-      firstName: active.name === "firstName" ? active : findInForm(form, i => i.name === "firstName" || i.placeholder === "First Name"),
-      lastName: findInForm(form, i => i.name === "lastName" || i.placeholder === "Last Name"),
-      email: findInForm(form, i => i.name === "email" || i.placeholder === "Email"),
-      phone: findInForm(form, i => i.name === "phone" || i.placeholder === "Phone"),
-      postcode: findInForm(form, i => (i.placeholder || "").includes("Postcode"))
+      firstName: findInput(form, i => i.name === "firstName" || i.placeholder === "First Name"),
+      lastName: findInput(form, i => i.name === "lastName" || i.placeholder === "Last Name"),
+      email: findInput(form, i => i.name === "email" || i.placeholder === "Email"),
+      phone: findInput(form, i => i.name === "phone" || i.placeholder === "Phone"),
+      postcode: findInput(form, i => (i.placeholder || "").includes("Postcode"))
     };
 
-    console.log("AUTO-FILL ACTIVE-FORM TARGETS:", targets);
+    console.log("AF data:", data);
+    console.log("AF targets:", targets);
 
-    forceInput(targets.firstName, data.firstName);
-    forceInput(targets.lastName, data.lastName);
-    forceInput(targets.email, data.email);
-    forceInput(targets.phone, data.phone);
-    forceInput(targets.postcode, data.postcode);
+    setInput(targets.firstName, data.firstName);
+    setInput(targets.lastName, data.lastName);
+    setInput(targets.email, data.email);
+    setInput(targets.phone, data.phone);
+    setInput(targets.postcode, data.postcode);
   }
 
-  LPAF3.listener = function (e) {
-    if (e.altKey && e.key.toLowerCase() === "f") {
-      e.preventDefault();
-      e.stopPropagation();
-      fillFromActiveField();
-    }
+  document.addEventListener("mousedown", rememberInput, true);
+
+  const btn = document.createElement("button");
+  btn.id = "lpaf4-btn";
+  btn.textContent = "AF";
+  btn.title = "Auto-Fill";
+  btn.style.cssText = "position:fixed;right:18px;bottom:54px;width:34px;height:34px;border-radius:50%;background:#f9772e;color:#040134;border:2px solid #000;z-index:999999;font-weight:bold;cursor:pointer;";
+  btn.onclick = fill;
+  document.body.appendChild(btn);
+
+  LPAF4.cleanup = function () {
+    document.removeEventListener("mousedown", rememberInput, true);
+    const old = document.getElementById("lpaf4-btn");
+    if (old) old.remove();
   };
 
-  document.addEventListener("keydown", LPAF3.listener, true);
-
-  alert("Auto-Fill V3 installed.\n\nClick First Name, then press ALT + F.");
+  alert("Auto-Fill V4 installed.\n\nClick First Name, then click the AF button.");
 })();
