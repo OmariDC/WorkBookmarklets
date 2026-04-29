@@ -55,11 +55,18 @@
     messages.forEach((m, i) => {
       if (!m.agent) return;
       const low = m.text.toLowerCase();
-      if (anchors.some(a => low.includes(a))) idx = i;
+      if (anchors.some(a => low.includes(a.toLowerCase()))) idx = i;
     });
 
     if (idx >= 0) {
-      return messages.slice(idx + 1).filter(m => !m.agent).map(m => m.text).join("\n");
+      const replies = [];
+
+      for (let i = idx + 1; i < messages.length; i++) {
+        if (messages[i].agent && replies.length) break;
+        if (!messages[i].agent) replies.push(messages[i].text);
+      }
+
+      return replies.join("\n");
     }
 
     return fallbackAllCustomer
@@ -179,13 +186,12 @@
     if (!el || !value) return false;
 
     el.focus();
-
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-    setter.call(el, value);
+    el.value = value;
 
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
 
+    console.log("PASTED:", el, value, "NOW:", el.value);
     return true;
   }
 
