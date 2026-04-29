@@ -10,21 +10,18 @@
     "full name, contact number and email address"
   ];
 
+  const pxAnchors = [
+    "vehicle to part-exchange",
+    "vehicle to part exchange",
+    "registration, make, model and mileage",
+    "registration, make, model and current mileage",
+    "current vehicle"
+  ];
+
   const blockedNameLines = [
-    "thank you",
-    "thanks",
-    "no thank you",
-    "yes please",
-    "no problem",
-    "ok thanks",
-    "okay thanks",
-    "that is fine",
-    "sounds good",
-    "i have a question",
-    "i already have a",
-    "just need to",
-    "no",
-    "yes"
+    "thank you", "thanks", "no thank you", "yes please", "no problem",
+    "ok thanks", "okay thanks", "that is fine", "sounds good",
+    "i have a question", "i already have a", "just need to", "no", "yes"
   ];
 
   function clean(t) {
@@ -52,20 +49,22 @@
       .filter(m => m.text);
   }
 
-  function textAfterDetailsQuestion(messages) {
+  function textAfterAnchor(messages, anchors, fallbackAllCustomer) {
     let idx = -1;
 
     messages.forEach((m, i) => {
       if (!m.agent) return;
       const low = m.text.toLowerCase();
-      if (detailAnchors.some(a => low.includes(a))) idx = i;
+      if (anchors.some(a => low.includes(a))) idx = i;
     });
 
     if (idx >= 0) {
       return messages.slice(idx + 1).filter(m => !m.agent).map(m => m.text).join("\n");
     }
 
-    return messages.filter(m => !m.agent).map(m => m.text).join("\n");
+    return fallbackAllCustomer
+      ? messages.filter(m => !m.agent).map(m => m.text).join("\n")
+      : "";
   }
 
   function extractEmail(t) {
@@ -81,6 +80,18 @@
   function extractPostcode(t) {
     const m = t.toUpperCase().match(/\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b/);
     return m ? m[0].replace(/\s+/g, "").replace(/^(.+)(\d[A-Z]{2})$/, "$1 $2") : "";
+  }
+
+  function extractReg(t) {
+    const m = t.toUpperCase().match(/\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/);
+    return m ? m[0].replace(/\s+/g, "") : "";
+  }
+
+  function extractMileage(t) {
+    const m = t.match(/\b(\d{1,3}(?:,\d{3})+|\d{4,6})\s*(?:miles|mile|mi|mileage)?\b/i);
+    if (!m) return "";
+    const n = m[1].replace(/,/g, "");
+    return Number(n) >= 1000 ? n : "";
   }
 
   function extractName(t, email, phone, postcode) {
@@ -111,14 +122,11 @@
     };
   }
 
-  function extractData() {
-    const messages = getMessages();
-    const text = textAfterDetailsQuestion(messages);
-
-    const email = extractEmail(text);
-    const phone = extractPhone(text);
-    const postcode = extractPostcode(text);
-    const name = extractName(text, email, phone, postcode);
+  function extractCustomer(t) {
+    const email = extractEmail(t);
+    const phone = extractPhone(t);
+    const postcode = extractPostcode(t);
+    const name = extractName(t, email, phone, postcode);
 
     return {
       firstName: name.firstName,
@@ -126,6 +134,44 @@
       email,
       phone,
       postcode
+    };
+  }
+
+  function extractPX(t) {
+    const reg = extractReg(t);
+    const mileage = extractMileage(t);
+
+    if (!reg && !mileage) {
+      return { pxMake: "", pxModel: "", pxReg: "", pxMileage: "" };
+    }
+
+    const cleaned = clean(t)
+      .replace(reg, " ")
+      .replace(mileage, " ")
+      .replace(/miles|mile|mi|mileage|registration|reg|make|model|current vehicle|part-exchange|part exchange/ig, " ")
+      .replace(/[,:;-]/g, " ")
+      .replace(/\b(no|yes|i|already|have|a|just|need|to|question)\b/ig, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const words = cleaned.split(/\s+/).filter(w => /^[A-Za-z0-9-]+$/.test(w));
+
+    return {
+      pxMake: words[0] || "",
+      pxModel: words.slice(1, 4).join(" "),
+      pxReg: reg,
+      pxMileage: mileage
+    };
+  }
+
+  function buildData() {
+    const messages = getMessages();
+    const detailsText = textAfterAnchor(messages, detailAnchors, true);
+    const pxText = textAfterAnchor(messages, pxAnchors, false);
+
+    return {
+      ...extractCustomer(detailsText),
+      ...extractPX(pxText)
     };
   }
 
@@ -144,13 +190,18 @@
   }
 
   function findTargetsFresh() {
+    const inputs = Array.from(document.querySelectorAll("input"));
+
     return {
       firstName: document.querySelector('input[name="firstName"]'),
       lastName: document.querySelector('input[name="lastName"]'),
       email: document.querySelector('input[name="email"]'),
       phone: document.querySelector('input[name="phone"]'),
-      postcode: Array.from(document.querySelectorAll("input"))
-        .find(i => (i.placeholder || "").includes("Postcode"))
+      postcode: inputs.find(i => (i.placeholder || "").includes("Postcode")),
+      pxMake: inputs.find(i => i.placeholder === "Customer Vehicle Make"),
+      pxModel: inputs.find(i => i.placeholder === "Customer Vehicle Model"),
+      pxReg: inputs.find(i => i.placeholder === "Customer Vehicle Registration Number"),
+      pxMileage: inputs.find(i => i.placeholder === "Customer Vehicle Mileage")
     };
   }
 
@@ -164,7 +215,7 @@
 
     const panel = document.createElement("div");
     panel.id = "lpaf-final-panel";
-    panel.style.cssText = "position:fixed;right:20px;top:100px;width:330px;background:#040134;color:#fff;padding:12px;z-index:999999;border-radius:8px;font-family:Arial,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.35);";
+    panel.style.cssText = "position:fixed;right:20px;top:100px;width:340px;background:#040134;color:#fff;padding:12px;z-index:999999;border-radius:8px;font-family:Arial,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.35);";
 
     const title = document.createElement("div");
     title.textContent = "Auto-Fill Preview";
@@ -176,10 +227,14 @@
       ["lastName", "Last Name"],
       ["email", "Email"],
       ["phone", "Phone"],
-      ["postcode", "Postcode"]
+      ["postcode", "Postcode"],
+      ["pxMake", "PX Make"],
+      ["pxModel", "PX Model"],
+      ["pxReg", "PX Reg"],
+      ["pxMileage", "PX Mileage"]
     ];
 
-    const inputs = {};
+    const previewInputs = {};
 
     rows.forEach(([key, label]) => {
       const wrap = document.createElement("label");
@@ -192,7 +247,7 @@
 
       wrap.appendChild(input);
       panel.appendChild(wrap);
-      inputs[key] = input;
+      previewInputs[key] = input;
     });
 
     const fillBtn = document.createElement("button");
@@ -202,7 +257,7 @@
     fillBtn.onclick = function () {
       const finalData = {};
       rows.forEach(([key]) => {
-        finalData[key] = inputs[key].value.trim();
+        finalData[key] = previewInputs[key].value.trim();
       });
 
       const targets = findTargetsFresh();
@@ -215,6 +270,10 @@
       setInput(targets.email, finalData.email);
       setInput(targets.phone, finalData.phone);
       setInput(targets.postcode, finalData.postcode);
+      setInput(targets.pxMake, finalData.pxMake);
+      setInput(targets.pxModel, finalData.pxModel);
+      setInput(targets.pxReg, finalData.pxReg);
+      setInput(targets.pxMileage, finalData.pxMileage);
 
       removePanel();
     };
@@ -230,7 +289,7 @@
   }
 
   function run() {
-    const data = extractData();
+    const data = buildData();
     console.log("AUTO-FILL EXTRACTED:", data);
     showPanel(data);
   }
