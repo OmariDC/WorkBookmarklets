@@ -369,6 +369,7 @@
     }
     updateLauncher();
     if (!state.target && state.open) closePalette();
+    else if (state.open) positionPalette();
   }
 
   function scheduleScan() {
@@ -388,7 +389,7 @@
       .kn-launcher-clipboard::before { content: ''; position: absolute; width: 12px; height: 5px; border: 2px solid #fff; border-radius: 3px; background: #1e1d49; top: -7px; left: 3px; }
       .kn-launcher-bolt { position: absolute; right: -10px; bottom: -8px; display: flex; align-items: center; justify-content: center; width: 19px; height: 19px; border-radius: 50%; background: #f9772e; color: #fff; font: 900 14px/1 Arial, sans-serif; }
       .kn-ui, .kn-ui * { box-sizing: border-box; font-family: Arial, sans-serif; }
-      #${PALETTE_ID} { position: fixed; top: 86px; left: 245px; width: min(470px, calc(100vw - 270px)); max-height: calc(100vh - 120px); z-index: 2147483000; display: none; flex-direction: column; overflow: hidden; color: #fff; background: #1e1d49; border: 2px solid #040134; border-radius: 9px; box-shadow: 0 12px 34px rgba(0,0,0,.42); }
+      #${PALETTE_ID} { position: fixed; top: 0; left: 0; width: 210px; max-height: 620px; z-index: 2147483000; display: none; flex-direction: column; overflow: hidden; color: #fff; background: #1e1d49; border: 2px solid #040134; border-radius: 9px; box-shadow: 0 12px 34px rgba(0,0,0,.42); }
       #${PALETTE_ID}.kn-open { display: flex; }
       .kn-header { display: flex; align-items: center; gap: 8px; padding: 11px 12px; background: #483a73; }
       .kn-title { flex: 1; font-size: 16px; font-weight: 700; }
@@ -401,7 +402,7 @@
       .kn-search, .kn-input, .kn-textarea, .kn-select { width: 100%; padding: 8px 9px; color: #fff; background: #34416a; border: 1px solid #bdbde3; border-radius: 5px; }
       .kn-search { margin-bottom: 10px; font-size: 14px; }
       .kn-search::placeholder, .kn-input::placeholder, .kn-textarea::placeholder { color: #d9daf3; }
-      .kn-quick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 10px; }
+      .kn-quick-grid { display: grid; grid-template-columns: 1fr; gap: 7px; margin-bottom: 10px; }
       .kn-quick { position: relative; min-height: 48px; padding: 8px 9px 8px 33px; background: #34416a; color: #fff; text-align: left; }
       .kn-quick-key { position: absolute; top: 8px; left: 8px; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 3px; background: #f9772e; color: #1e1d49; font-weight: 700; }
       .kn-categories { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 3px; }
@@ -431,8 +432,7 @@
       .kn-form-actions { display: flex; gap: 7px; margin-top: 12px; }
       .kn-export { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
       @media (max-width: 720px) {
-        #${PALETTE_ID} { left: 12px; right: 12px; top: 70px; width: auto; }
-        .kn-quick-grid { grid-template-columns: 1fr; }
+        #${PALETTE_ID} { width: 190px; }
       }
     `;
     document.head.appendChild(style);
@@ -459,6 +459,25 @@
     document.body.appendChild(palette);
     state.palette = palette;
     return palette;
+  }
+
+  function positionPalette() {
+    if (!state.palette || !state.launcherSection?.isConnected || !state.target) return;
+    const rail = state.launcherSection.closest('.userQuotesAffix');
+    const anchorRect = state.launcherSection.getBoundingClientRect();
+    const railRect = rail?.getBoundingClientRect() || anchorRect;
+    const targetRect = state.target.getBoundingClientRect();
+    const safeRight = Math.max(128, Math.round(targetRect.left) - 12);
+    const preferredWidth = 210;
+    const left = Math.max(8, Math.min(Math.round(railRect.left), safeRight - preferredWidth));
+    const width = Math.max(120, Math.min(230, safeRight - left));
+    const top = Math.max(8, Math.round(anchorRect.bottom + 6));
+    const availableHeight = Math.max(120, window.innerHeight - top - 10);
+
+    state.palette.style.left = `${left}px`;
+    state.palette.style.top = `${top}px`;
+    state.palette.style.width = `${width}px`;
+    state.palette.style.maxHeight = `${Math.min(620, availableHeight)}px`;
   }
 
   function renderHeader(title, backAction, showSettings) {
@@ -956,6 +975,7 @@
     palette.textContent = '';
     palette.classList.toggle('kn-open', state.open);
     if (!state.open) return;
+    positionPalette();
     if (state.view === 'attempt') renderAttempt();
     else if (state.view === 'settings') renderSettings();
     else if (state.view === 'edit') renderEditor();
@@ -999,19 +1019,31 @@
     }
   }
 
+  function emailFromElement(candidate) {
+    if (!(candidate instanceof Element)) return '';
+    const parts = [];
+    if (candidate instanceof HTMLInputElement) parts.push(candidate.value);
+    parts.push(candidate.getAttribute('href') || '');
+    parts.push(candidate.innerText || '');
+    parts.push(candidate.textContent || '');
+    const match = parts.join(' ').match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+    return match ? match[0] : '';
+  }
+
   function findTopEmail() {
-    const labels = Array.from(document.querySelectorAll('b'))
+    const labels = Array.from(document.querySelectorAll('b,strong,label,span,th,td'))
       .filter((node) => isVisible(node) && ownText(node).toLowerCase() === 'email')
       .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+
     for (const label of labels) {
-      const row = label.closest('.row') || label.parentElement;
-      if (!row) continue;
-      const candidates = row.querySelectorAll('a,span,input');
-      for (const candidate of candidates) {
-        if (candidate === label) continue;
-        const raw = candidate instanceof HTMLInputElement ? candidate.value : candidate.textContent;
-        const match = String(raw || '').match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
-        if (match) return match[0];
+      let container = label.parentElement;
+      for (let depth = 0; container && depth < 6; depth += 1, container = container.parentElement) {
+        const candidates = Array.from(container.querySelectorAll('a,input,span'))
+          .filter((candidate) => candidate !== label && !candidate.closest(`#${PALETTE_ID}`));
+        for (const candidate of candidates) {
+          const email = emailFromElement(candidate);
+          if (email) return email;
+        }
       }
     }
     return '';
@@ -1158,6 +1190,7 @@
     document.addEventListener('click', handleTargetActivity, true);
     document.addEventListener('select', handleTargetActivity, true);
     document.addEventListener('input', handleTargetActivity, true);
+    window.addEventListener('resize', positionPalette);
   }
 
   KN.togglePalette = togglePalette;
