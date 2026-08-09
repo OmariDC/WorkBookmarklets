@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.0.1'
+    version: '1.1.0'
   };
 
   const CONFIG_URL = 'https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Notes-Phrases.json';
@@ -389,11 +389,11 @@
       .kn-launcher-clipboard::before { content: ''; position: absolute; width: 12px; height: 5px; border: 2px solid #fff; border-radius: 3px; background: #1e1d49; top: -7px; left: 3px; }
       .kn-launcher-bolt { position: absolute; right: -10px; bottom: -8px; display: flex; align-items: center; justify-content: center; width: 19px; height: 19px; border-radius: 50%; background: #f9772e; color: #fff; font: 900 14px/1 Arial, sans-serif; }
       .kn-ui, .kn-ui * { box-sizing: border-box; font-family: Arial, sans-serif; }
-      #${PALETTE_ID} { position: fixed; top: 0; left: 0; width: 210px; max-height: 620px; z-index: 2147483000; display: none; flex-direction: column; overflow: hidden; color: #fff; background: #1e1d49; border: 2px solid #040134; border-radius: 9px; box-shadow: 0 12px 34px rgba(0,0,0,.42); }
+      #${PALETTE_ID} { position: fixed; top: 0; left: 0; width: 230px; max-height: 360px; z-index: 2147483000; display: none; flex-direction: column; overflow: hidden; color: #fff; background: #1e1d49; border: 2px solid #040134; border-radius: 9px; box-shadow: 0 12px 34px rgba(0,0,0,.42); }
       #${PALETTE_ID}.kn-open { display: flex; }
-      .kn-header { display: flex; align-items: center; gap: 8px; padding: 11px 12px; background: #483a73; }
+      .kn-header { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 11px 12px; background: #483a73; }
       .kn-title { flex: 1; font-size: 16px; font-weight: 700; }
-      .kn-body { padding: 12px; overflow-y: auto; }
+      .kn-body { flex: 1 1 auto; min-height: 0; padding: 12px; overflow-y: auto; }
       .kn-icon-button, .kn-button, .kn-chip, .kn-result, .kn-quick, .kn-attempt { border: 1px solid #bdbde3; border-radius: 5px; cursor: pointer; }
       .kn-icon-button { min-width: 32px; height: 30px; padding: 3px 8px; background: #34416a; color: #fff; font-weight: 700; }
       .kn-button { padding: 7px 10px; background: #34416a; color: #fff; }
@@ -431,6 +431,8 @@
       .kn-check-row { display: flex; align-items: center; gap: 7px; margin: 8px 0; }
       .kn-form-actions { display: flex; gap: 7px; margin-top: 12px; }
       .kn-export { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+      .kn-browse-button { width: 100%; margin-bottom: 8px; }
+      .kn-shortcut-hint { text-align: center; }
       @media (max-width: 720px) {
         #${PALETTE_ID} { width: 190px; }
       }
@@ -467,17 +469,39 @@
     const anchorRect = state.launcherSection.getBoundingClientRect();
     const railRect = rail?.getBoundingClientRect() || anchorRect;
     const targetRect = state.target.getBoundingClientRect();
-    const safeRight = Math.max(128, Math.round(targetRect.left) - 12);
-    const preferredWidth = 210;
-    const left = Math.max(8, Math.min(Math.round(railRect.left), safeRight - preferredWidth));
-    const width = Math.max(120, Math.min(230, safeRight - left));
-    const top = Math.max(8, Math.round(anchorRect.bottom + 6));
-    const availableHeight = Math.max(120, window.innerHeight - top - 10);
+    const isContext = state.view !== 'main';
+    let left;
+    let top;
+    let width;
+    let maxHeight;
+
+    if (!isContext) {
+      const safeRight = Math.max(128, Math.round(targetRect.left) - 18);
+      const preferredWidth = 240;
+      left = Math.max(8, Math.min(Math.round(railRect.left) - 18, safeRight - preferredWidth));
+      width = Math.max(120, Math.min(260, safeRight - left));
+      top = Math.max(8, Math.round(anchorRect.bottom + 6));
+      maxHeight = Math.max(160, Math.min(440, window.innerHeight - top - 10));
+    } else {
+      const viewportBottom = window.innerHeight - 10;
+      const desiredHeight = 340;
+      left = Math.max(8, Math.round(anchorRect.right + 12));
+      width = Math.max(300, Math.min(470, window.innerWidth - left - 12));
+
+      if (targetRect.top >= 190) {
+        const bottom = Math.min(viewportBottom, Math.round(targetRect.top) - 12);
+        maxHeight = Math.max(150, Math.min(desiredHeight, bottom - 8));
+        top = Math.max(8, bottom - maxHeight);
+      } else {
+        top = Math.max(8, Math.round(targetRect.bottom + 12));
+        maxHeight = Math.max(150, Math.min(desiredHeight, viewportBottom - top));
+      }
+    }
 
     state.palette.style.left = `${left}px`;
     state.palette.style.top = `${top}px`;
     state.palette.style.width = `${width}px`;
-    state.palette.style.maxHeight = `${Math.min(620, availableHeight)}px`;
+    state.palette.style.maxHeight = `${maxHeight}px`;
   }
 
   function renderHeader(title, backAction, showSettings) {
@@ -572,13 +596,6 @@
     const palette = ensurePalette();
     palette.appendChild(renderHeader('Konnect Notes', null, true));
     const body = element('div', 'kn-body');
-    if (state.configStatus) body.appendChild(element('div', 'kn-status', state.configStatus));
-
-    const search = element('input', 'kn-search');
-    search.type = 'search';
-    search.placeholder = 'Search phrases or use an abbreviation...';
-    search.value = state.searchQuery;
-    body.appendChild(search);
 
     if (state.config) {
       const quickGrid = element('div', 'kn-quick-grid');
@@ -594,7 +611,35 @@
           quickGrid.appendChild(quick);
         });
       body.appendChild(quickGrid);
+      const browse = button('Search / browse all phrases', 'kn-primary kn-browse-button', () => {
+        state.view = 'browse';
+        state.selectedResult = 0;
+        renderPalette();
+      });
+      body.appendChild(browse);
+      body.appendChild(element('div', 'kn-muted kn-shortcut-hint', 'Keys 1–5 select a quick option'));
+    } else {
+      if (state.configStatus) body.appendChild(element('div', 'kn-status', state.configStatus));
+      body.appendChild(element('div', 'kn-muted', 'Phrase configuration has not loaded yet.'));
+    }
 
+    palette.appendChild(body);
+  }
+
+  function renderBrowse() {
+    const palette = ensurePalette();
+    palette.appendChild(renderHeader('Search all phrases', () => {
+      state.view = 'main';
+      renderPalette();
+    }, false));
+    const body = element('div', 'kn-body');
+    const search = element('input', 'kn-search');
+    search.type = 'search';
+    search.placeholder = 'Search phrases or use an abbreviation...';
+    search.value = state.searchQuery;
+    body.appendChild(search);
+
+    if (state.config) {
       const categories = element('div', 'kn-categories');
       const categoryItems = [{ id: 'all', label: 'All' }].concat(state.config.categories);
       categoryItems.forEach((category) => {
@@ -624,14 +669,6 @@
     });
     search.addEventListener('keydown', (event) => {
       const results = search._results || [];
-      if (!state.searchQuery && /^[1-5]$/.test(event.key)) {
-        const phrase = state.config?.phrases.find((item) => item.quickOrder === Number(event.key));
-        if (phrase) {
-          event.preventDefault();
-          choosePhrase(phrase);
-        }
-        return;
-      }
       if (event.key === 'ArrowDown' && results.length) {
         event.preventDefault();
         state.selectedResult = (state.selectedResult + 1) % results.length;
@@ -977,6 +1014,7 @@
     if (!state.open) return;
     positionPalette();
     if (state.view === 'attempt') renderAttempt();
+    else if (state.view === 'browse') renderBrowse();
     else if (state.view === 'settings') renderSettings();
     else if (state.view === 'edit') renderEditor();
     else if (state.view === 'export') renderExport();
@@ -1170,6 +1208,14 @@
     if (event.key === 'Escape') {
       event.preventDefault();
       closePalette();
+      return;
+    }
+    if (state.view === 'main' && /^[1-5]$/.test(event.key)) {
+      const phrase = state.config?.phrases.find((item) => item.quickOrder === Number(event.key));
+      if (phrase) {
+        event.preventDefault();
+        choosePhrase(phrase);
+      }
       return;
     }
     if (state.view === 'attempt' && !state.otherAttemptOpen && /^[1-4]$/.test(event.key)) {
