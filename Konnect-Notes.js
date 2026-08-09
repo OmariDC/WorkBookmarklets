@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.2.0'
+    version: '1.3.0'
   };
 
   const CONFIG_URL = 'https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Notes-Phrases.json';
@@ -1141,6 +1141,78 @@
     return '';
   }
 
+  function cleanNoteLines(value) {
+    return String(value || '')
+      .replace(/\r\n?/g, '\n')
+      .split('\n')
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+  }
+
+  function noteLineKey(value) {
+    return normaliseText(value)
+      .toLowerCase()
+      .replace(/[–—]/g, '-')
+      .replace(/\s*-\s*/g, ' - ');
+  }
+
+  function readInitialNotes() {
+    const labels = Array.from(document.querySelectorAll('label,legend,dt,th,span,strong,b,p,div'))
+      .filter((element) => isVisible(element) && ownText(element).toLowerCase() === 'initial notes')
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+    const callLabels = exactCallNotesLabels()
+      .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+
+    for (const label of labels) {
+      const endLabel = callLabels.find((candidate) =>
+        candidate.getBoundingClientRect().top > label.getBoundingClientRect().top
+      );
+      if (!endLabel) continue;
+
+      let container = label.parentElement;
+      while (container && !container.contains(endLabel)) container = container.parentElement;
+      if (!container) continue;
+
+      const lines = cleanNoteLines(container.innerText || container.textContent || '');
+      const start = lines.findIndex((line) => noteLineKey(line) === 'initial notes');
+      const end = lines.findIndex((line, index) =>
+        index > start && noteLineKey(line) === 'call notes'
+      );
+      if (start >= 0 && end > start + 1) return lines.slice(start + 1, end).join('\n');
+    }
+    return '';
+  }
+
+  function stripCopiedCatchAll(line) {
+    const match = String(line || '').match(/(?:\*+\s*)?catch\s+all\s+return\s+lead/i);
+    return match ? line.slice(0, match.index).trim() : line;
+  }
+
+  function buildPostClosureNotes(selectedText) {
+    const initialLines = cleanNoteLines(readInitialNotes());
+    if (!initialLines.length) return null;
+
+    const initialKeys = new Set(initialLines.map(noteLineKey));
+    const callLines = cleanNoteLines(state.target?.value || '')
+      .map(stripCopiedCatchAll)
+      .filter(Boolean)
+      .filter((line) => !initialKeys.has(noteLineKey(line)));
+    const existingLines = cleanNoteLines(state.postClosureTarget?.value || '');
+    const selectedLines = cleanNoteLines(selectedText);
+    const output = [];
+    const seen = new Set();
+
+    [initialLines, callLines, existingLines, selectedLines].forEach((source) => {
+      source.forEach((line) => {
+        const key = noteLineKey(line);
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        output.push(line);
+      });
+    });
+    return output.join('\n');
+  }
+
   function setNativeValue(target, value) {
     const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
     if (descriptor?.set) descriptor.set.call(target, value);
@@ -1206,6 +1278,22 @@
       const email = findTopEmail();
       emailMissing = !email;
       text = text.replaceAll('{{email}}', email ? ` ${email}` : '');
+    }
+
+    if (isCatchAll) {
+      const merged = buildPostClosureNotes(text);
+      if (merged == null) {
+        state.statusMessage = 'Initial Notes could not be read, so Post Closure Notes was not changed.';
+        state.view = 'browse';
+        renderPalette();
+        return;
+      }
+      replaceTextUndoably(target, 0, target.value.length, merged, merged);
+      target.setSelectionRange(merged.length, merged.length);
+      state.targetHadFocus = true;
+      state.lastSelection = { target, start: merged.length, end: merged.length };
+      closePalette();
+      return;
     }
 
     const range = resolveRange(target, rangeOverride);
