@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.1.0'
+    version: '1.2.0'
   };
 
   const CONFIG_URL = 'https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Notes-Phrases.json';
@@ -26,6 +26,8 @@
     configStatus: 'Loading phrases...',
     target: null,
     targetLabel: null,
+    postClosureTarget: null,
+    postClosureLabel: null,
     targetHadFocus: false,
     lastSelection: null,
     launcherSection: null,
@@ -278,6 +280,40 @@
     return matches[0] || null;
   }
 
+  function findPostClosureNotesTarget() {
+    const labels = Array.from(document.querySelectorAll('label,legend,dt,th,span,strong,b,p,div'))
+      .filter((element) => isVisible(element) && ownText(element).toLowerCase() === 'post closure notes');
+    const matches = [];
+
+    labels.forEach((label) => {
+      const labelRect = label.getBoundingClientRect();
+      let container = label.parentElement;
+      const candidates = new Set();
+      for (let depth = 0; container && depth < 7; depth += 1, container = container.parentElement) {
+        container.querySelectorAll('textarea.form-control, textarea').forEach((editor) => {
+          if (isVisible(editor)) candidates.add(editor);
+        });
+        const below = Array.from(candidates).filter((editor) =>
+          editor.getBoundingClientRect().top >= labelRect.top - 4
+        );
+        if (below.length) break;
+      }
+
+      const editor = Array.from(candidates)
+        .filter((candidate) => candidate.getBoundingClientRect().top >= labelRect.top - 4)
+        .sort((a, b) =>
+          Math.abs(a.getBoundingClientRect().top - labelRect.bottom) -
+          Math.abs(b.getBoundingClientRect().top - labelRect.bottom)
+        )[0];
+      if (editor) matches.push({ label, editor });
+    });
+
+    matches.sort((a, b) =>
+      a.editor.getBoundingClientRect().top - b.editor.getBoundingClientRect().top
+    );
+    return matches[0] || null;
+  }
+
   function isGreen(element) {
     const parts = String(getComputedStyle(element).backgroundColor).match(/[\d.]+/g);
     if (!parts) return false;
@@ -291,8 +327,21 @@
     return controls.find((control) => isVisible(control) && isGreen(control)) || null;
   }
 
+  function findTurquoiseCar(rail) {
+    if (!rail) return null;
+    const controls = Array.from(rail.querySelectorAll('a.btn.btn-circle.btn-lgr.btn-call-nav'));
+    return controls.find((control) => {
+      if (!isVisible(control)) return false;
+      const parts = String(getComputedStyle(control).backgroundColor).match(/[\d.]+/g);
+      if (!parts) return false;
+      const [red, green, blue] = parts.slice(0, 3).map(Number);
+      return green > 120 && blue > 120 && red < green * 0.86 && Math.abs(green - blue) < 55;
+    }) || null;
+  }
+
   function rememberSelection(target) {
-    if (!(target instanceof HTMLTextAreaElement) || target !== state.target) return;
+    if (!(target instanceof HTMLTextAreaElement) ||
+        (target !== state.target && target !== state.postClosureTarget)) return;
     state.targetHadFocus = true;
     state.lastSelection = {
       target,
@@ -324,7 +373,9 @@
     button.appendChild(clipboard);
 
     button.addEventListener('mousedown', () => {
-      if (state.target) rememberSelection(state.target);
+      const active = document.activeElement;
+      if (active === state.target || active === state.postClosureTarget) rememberSelection(active);
+      else if (state.target) rememberSelection(state.target);
     });
     button.addEventListener('click', (event) => {
       event.preventDefault();
@@ -360,16 +411,22 @@
 
   function scanPage() {
     const found = findCallNotesTarget();
+    const postClosure = findPostClosureNotesTarget();
     const nextTarget = found?.editor || null;
-    if (nextTarget !== state.target) {
+    const nextPostClosureTarget = postClosure?.editor || null;
+    const targetChanged = nextTarget !== state.target;
+    const postClosureChanged = nextPostClosureTarget !== state.postClosureTarget;
+    if (targetChanged || postClosureChanged) {
       state.target = nextTarget;
       state.targetLabel = found?.label || null;
+      state.postClosureTarget = nextPostClosureTarget;
+      state.postClosureLabel = postClosure?.label || null;
       state.targetHadFocus = false;
       state.lastSelection = null;
     }
     updateLauncher();
     if (!state.target && state.open) closePalette();
-    else if (state.open) positionPalette();
+    else if (state.open && targetChanged) positionPalette();
   }
 
   function scheduleScan() {
@@ -393,7 +450,7 @@
       #${PALETTE_ID}.kn-open { display: flex; }
       .kn-header { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 11px 12px; background: #483a73; }
       .kn-title { flex: 1; font-size: 16px; font-weight: 700; }
-      .kn-body { flex: 1 1 auto; min-height: 0; padding: 12px; overflow-y: auto; }
+      .kn-body { flex: 1 1 auto; min-height: 0; padding: 12px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
       .kn-icon-button, .kn-button, .kn-chip, .kn-result, .kn-quick, .kn-attempt { border: 1px solid #bdbde3; border-radius: 5px; cursor: pointer; }
       .kn-icon-button { min-width: 32px; height: 30px; padding: 3px 8px; background: #34416a; color: #fff; font-weight: 700; }
       .kn-button { padding: 7px 10px; background: #34416a; color: #fff; }
@@ -484,18 +541,13 @@
       maxHeight = Math.max(160, Math.min(440, window.innerHeight - top - 10));
     } else {
       const viewportBottom = window.innerHeight - 10;
-      const desiredHeight = 340;
+      const turquoiseCar = findTurquoiseCar(rail);
+      const contextAnchor = turquoiseCar?.closest('section.cassini-section') || turquoiseCar;
+      const contextRect = contextAnchor?.getBoundingClientRect() || anchorRect;
       left = Math.max(8, Math.round(anchorRect.right + 12));
-      width = Math.max(300, Math.min(470, window.innerWidth - left - 12));
-
-      if (targetRect.top >= 190) {
-        const bottom = Math.min(viewportBottom, Math.round(targetRect.top) - 12);
-        maxHeight = Math.max(150, Math.min(desiredHeight, bottom - 8));
-        top = Math.max(8, bottom - maxHeight);
-      } else {
-        top = Math.max(8, Math.round(targetRect.bottom + 12));
-        maxHeight = Math.max(150, Math.min(desiredHeight, viewportBottom - top));
-      }
+      width = Math.max(320, Math.min(540, window.innerWidth - left - 12));
+      top = Math.max(8, Math.min(Math.round(contextRect.top), viewportBottom - 240));
+      maxHeight = Math.max(240, Math.min(460, viewportBottom - top));
     }
 
     state.palette.style.left = `${left}px`;
@@ -633,6 +685,7 @@
       renderPalette();
     }, false));
     const body = element('div', 'kn-body');
+    if (state.statusMessage) body.appendChild(element('div', 'kn-status', state.statusMessage));
     const search = element('input', 'kn-search');
     search.type = 'search';
     search.placeholder = 'Search phrases or use an abbreviation...';
@@ -1025,7 +1078,8 @@
   function openPalette() {
     scanPage();
     if (!state.target) return;
-    if (document.activeElement === state.target) rememberSelection(state.target);
+    const active = document.activeElement;
+    if (active === state.target || active === state.postClosureTarget) rememberSelection(active);
     state.open = true;
     state.view = 'main';
     state.attemptPhrase = null;
@@ -1129,8 +1183,16 @@
 
   function insertPhrase(phrase, attempt, rangeOverride) {
     scanPage();
-    const target = state.target;
+    const isCatchAll = phrase?.category === 'catch-all';
+    const target = isCatchAll ? state.postClosureTarget : state.target;
+    if (isCatchAll && !(target instanceof HTMLTextAreaElement)) {
+      state.statusMessage = 'Post Closure Notes is not available on this lead.';
+      state.view = 'browse';
+      renderPalette();
+      return;
+    }
     if (!(target instanceof HTMLTextAreaElement) || !phrase) return;
+    state.statusMessage = '';
 
     let text = String(phrase.text || '');
     if (phrase.requiresAttempt) {
@@ -1184,14 +1246,19 @@
 
   function handleAbbreviation(event) {
     if (event.key !== ' ' && event.key !== 'Enter') return;
-    if (event.target !== state.target || !(state.target instanceof HTMLTextAreaElement)) return;
-    const target = state.target;
+    const target = event.target;
+    if (!(target instanceof HTMLTextAreaElement) ||
+        (target !== state.target && target !== state.postClosureTarget)) return;
     if (target.selectionStart !== target.selectionEnd) return;
     const before = target.value.slice(0, target.selectionStart);
     const match = before.match(/(^|\s)([a-z][a-z0-9_-]*)$/i);
     if (!match) return;
     const found = abbreviationMatch(match[2]);
     if (!found) return;
+    const expectedTarget = found.phrase.category === 'catch-all'
+      ? state.postClosureTarget
+      : state.target;
+    if (target !== expectedTarget) return;
     event.preventDefault();
     const end = target.selectionStart;
     const start = end - match[2].length;
@@ -1230,7 +1297,9 @@
   }
 
   function handleTargetActivity(event) {
-    if (event.target === state.target) rememberSelection(state.target);
+    if (event.target === state.target || event.target === state.postClosureTarget) {
+      rememberSelection(event.target);
+    }
   }
 
   function startObserver() {
