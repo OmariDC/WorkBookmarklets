@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.0.0'
+    version: '1.0.1'
   };
 
   const CONFIG_URL = 'https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Notes-Phrases.json';
@@ -1055,6 +1055,29 @@
     else target.value = value;
   }
 
+  function replaceTextUndoably(target, start, end, replacement, expectedValue) {
+    let inputFired = false;
+    const noteInput = () => { inputFired = true; };
+    target.addEventListener('input', noteInput, { once: true });
+    target.focus({ preventScroll: true });
+    target.setSelectionRange(start, end);
+
+    try {
+      document.execCommand('insertText', false, replacement);
+    } catch (error) {
+      // The native-value fallback below keeps insertion working if Chrome blocks the command.
+    }
+
+    target.removeEventListener('input', noteInput);
+    const usedFallback = target.value !== expectedValue;
+    if (usedFallback) {
+      setNativeValue(target, expectedValue);
+    }
+    if (usedFallback || !inputFired) {
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+
   function resolveRange(target, override) {
     if (override) return override;
     if (state.lastSelection && state.lastSelection.target === target && state.targetHadFocus) {
@@ -1098,9 +1121,7 @@
     const nextLinePosition = textEnd + (existingNewline ? 1 : suffix.length);
     const caret = emailMissing ? textEnd : nextLinePosition;
 
-    setNativeValue(target, nextValue);
-    target.dispatchEvent(new Event('input', { bubbles: true }));
-    target.focus();
+    replaceTextUndoably(target, start, end, replacement, nextValue);
     target.setSelectionRange(caret, caret);
     state.targetHadFocus = true;
     state.lastSelection = { target, start: caret, end: caret };
