@@ -1,0 +1,207 @@
+{
+  "schemaVersion": 1,
+  "name": "Konnect Notes",
+  "categories": [
+    {
+      "id": "calls",
+      "label": "Calls / Voicemails",
+      "order": 1
+    },
+    {
+      "id": "email",
+      "label": "Email Leads",
+      "order": 2
+    },
+    {
+      "id": "catch-all",
+      "label": "Catch All Return Leads",
+      "order": 3
+    },
+    {
+      "id": "finance",
+      "label": "Finance",
+      "order": 4
+    },
+    {
+      "id": "appointments",
+      "label": "Appointment Outcomes",
+      "order": 5
+    }
+  ],
+  "phrases": [
+    {
+      "id": "vm-left",
+      "label": "VM left",
+      "category": "calls",
+      "text": "{{attempt}} - VM left -- Omari",
+      "aliases": ["vm"],
+      "requiresAttempt": true,
+      "quickOrder": 1
+    },
+    {
+      "id": "line-ringing",
+      "label": "Line ringing",
+      "category": "calls",
+      "text": "{{attempt}} - Line ringing -- Omari",
+      "aliases": ["ringing"],
+      "requiresAttempt": true,
+      "quickOrder": 2
+    },
+    {
+      "id": "could-not-reach",
+      "label": "Could not reach lead",
+      "category": "calls",
+      "text": "{{attempt}} - Could not reach lead -- Omari",
+      "aliases": ["cnr"],
+      "requiresAttempt": true,
+      "quickOrder": 3
+    },
+    {
+      "id": "line-failed-email-only",
+      "label": "Line failed - email only",
+      "category": "email",
+      "text": "Line failed EMAIL LEAD ONLY:",
+      "aliases": ["lfe"],
+      "requiresAttempt": false,
+      "quickOrder": 4
+    },
+    {
+      "id": "precall-declined-vm",
+      "label": "Precall, Declined VM",
+      "category": "calls",
+      "text": "{{attempt}} - Precall, Declined VM -- Omari",
+      "aliases": ["pdvm"],
+      "requiresAttempt": true,
+      "quickOrder": 5
+    },
+    {
+      "id": "line-engaged",
+      "label": "Line engaged",
+      "category": "calls",
+      "text": "{{attempt}} - Line engaged -- Omari",
+      "aliases": ["engaged"],
+      "requiresAttempt": true
+    },
+    {
+      "id": "line-rang-then-failed",
+      "label": "Line rang then failed",
+      "category": "calls",
+      "text": "{{attempt}} - Line rang then failed -- Omari",
+      "aliases": ["failed"],
+      "requiresAttempt": true
+    },
+    {
+      "id": "mail-box-full",
+      "label": "Mail box full",
+      "category": "calls",
+      "text": "{{attempt}} - Mail box full -- Omari",
+      "aliases": ["mbf"],
+      "requiresAttempt": true
+    },
+    {
+      "id": "not-interested",
+      "label": "Not interested",
+      "category": "calls",
+      "text": "Not interested -- Omari",
+      "aliases": [],
+      "requiresAttempt": false
+    },
+    {
+      "id": "confirm-provisional-booking",
+      "label": "Confirm provisional booking",
+      "category": "appointments",
+      "text": "VM left -- Omari - Please confirm provisional booking with customer",
+      "aliases": [],
+      "requiresAttempt": false
+    },
+    {
+      "id": "email-only-lead-short",
+      "label": "EMAIL ONLY LEAD",
+      "category": "email",
+      "text": "EMAIL ONLY LEAD:",
+      "aliases": [],
+      "requiresAttempt": false
+    },
+    {
+      "id": "customer-requested-email-contact",
+      "label": "Customer Requested EMAIL CONTACT",
+      "category": "email",
+      "text": "Customer Requested EMAIL CONTACT:",
+      "aliases": [],
+      "requiresAttempt": false
+    },
+    {
+      "id": "email-sent-attempts",
+      "label": "Email sent attempts",
+      "category": "email",
+      "text": "1 - Email Sent -- Omari (Close ON attempt 3 if no response)\n2 -\n3 -",
+      "aliases": [],
+      "requiresAttempt": false
+    },
+    {
+      "id": "email-only-full",
+      "label": "Email only - no valid contact method",
+      "category": "email",
+      "text": "**** **EMAIL ONLY LEAD** – NO FURTHER CONTACT METHOD VALID/GIVEN ****\nEMAIL ADDRESS -{{email}}",
+      "aliases": [],
+      "requiresAttempt": false,
+      "emailSource": "top"
+    },
+    {
+      "id": "catch-all-attempt-1",
+      "label": "Catch All - Attempt 1 VM Left",
+      "category": "catch-all",
+      "text": "**** Catch All Return Lead **** **Attempt 1 – VM Left** – Omari",
+      "aliases": [],
+      "requiresAttempt": false
+    },
+    {
+      "id": "catch-all-attempt-2",
+      "label": "Catch All - Attempt 2 VM Left",
+      "category": "catch-all",
+      "text": "**** Catch All Return Lead **** **Attempt 2 – VM Left** – Omari",
+      "aliases": [],
+      "requiresAttempt": false
+    },
+    {
+      "id": "catch-all-attempt-3",
+      "label": "Catch All - Attempt 3 VM Left",
+      "category": "catch-all",
+      "text": "**** Catch All Return Lead **** **Attempt 3 – VM Left** – Omari",
+      "aliases": [],
+      "requiresAttempt": false
+    },
+    {
+      "id": "catch-all-customer-hub-no-contact",
+      "label": "Catch All - Customer Hub will not contact",
+      "category": "catch-all",
+      "text": "**** Catch All Return Lead **** **Customer Hub will not contact this lead type** - please contact and update Emax",
+      "aliases": [],
+      "requiresAttempt": false
+    },
+    {
+      "id": "catch-all-actioned-by-dealer",
+      "label": "Catch All - Actioned by dealer",
+      "category": "catch-all",
+      "text": "**** Catch All Return Lead **** Lead has been **actioned by dealer**",
+      "aliases": [],
+      "requiresAttempt": false
+    },
+    {
+      "id": "catch-all-appointment-booked",
+      "label": "Catch All - Appointment Now Booked",
+      "category": "catch-all",
+      "text": "**** Catch All Return Lead **** **Appointment Now Booked** – See New Lead",
+      "aliases": [],
+      "requiresAttempt": false
+    },
+    {
+      "id": "finance-contact-customer",
+      "label": "Finance related lead",
+      "category": "finance",
+      "text": "**** Finance Related Lead – Please contact customer ****",
+      "aliases": [],
+      "requiresAttempt": false
+    }
+  ]
+}
