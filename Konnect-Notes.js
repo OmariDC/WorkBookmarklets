@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.3.0'
+    version: '1.3.1'
   };
 
   const CONFIG_URL = 'https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Notes-Phrases.json';
@@ -1111,6 +1111,11 @@
     }
   }
 
+  function emailFromText(value) {
+    const match = String(value || '').match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+    return match ? match[0] : '';
+  }
+
   function emailFromElement(candidate) {
     if (!(candidate instanceof Element)) return '';
     const parts = [];
@@ -1118,8 +1123,7 @@
     parts.push(candidate.getAttribute('href') || '');
     parts.push(candidate.innerText || '');
     parts.push(candidate.textContent || '');
-    const match = parts.join(' ').match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
-    return match ? match[0] : '';
+    return emailFromText(parts.join(' '));
   }
 
   function findTopEmail() {
@@ -1128,14 +1132,25 @@
       .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
 
     for (const label of labels) {
-      let container = label.parentElement;
-      for (let depth = 0; container && depth < 6; depth += 1, container = container.parentElement) {
-        const candidates = Array.from(container.querySelectorAll('a,input,span'))
-          .filter((candidate) => candidate !== label && !candidate.closest(`#${PALETTE_ID}`));
+      const row = label.closest('.row') || label.parentElement;
+      const containers = [];
+      let container = row;
+      for (let depth = 0; container && depth < 5; depth += 1, container = container.parentElement) {
+        if (!containers.includes(container)) containers.push(container);
+      }
+
+      for (const current of containers) {
+        const candidates = Array.from(current.querySelectorAll(
+          'a[href^="mailto:"],input[type="email"],span.ng-scope,a,input,span'
+        )).filter((candidate) =>
+          candidate !== label && isVisible(candidate) && !candidate.closest(`#${PALETTE_ID}`)
+        );
         for (const candidate of candidates) {
           const email = emailFromElement(candidate);
           if (email) return email;
         }
+        const containerEmail = emailFromText(current.innerText || current.textContent || '');
+        if (containerEmail) return containerEmail;
       }
     }
     return '';
@@ -1274,10 +1289,18 @@
     }
 
     let emailMissing = false;
-    if (phrase.emailSource === 'top' || text.includes('{{email}}')) {
+    const usesTopEmail = phrase.id === 'email-only-full' ||
+      phrase.emailSource === 'top' || text.includes('{{email}}');
+    if (usesTopEmail) {
       const email = findTopEmail();
       emailMissing = !email;
-      text = text.replaceAll('{{email}}', email ? ` ${email}` : '');
+      if (text.includes('{{email}}')) {
+        text = text.replaceAll('{{email}}', email ? ` ${email}` : '');
+      } else if (phrase.id === 'email-only-full') {
+        text = text.replace(/(EMAIL ADDRESS\s*-\s*)$/im, (line) =>
+          `${line.trimEnd()}${email ? ` ${email}` : ''}`
+        );
+      }
     }
 
     if (isCatchAll) {
@@ -1422,6 +1445,7 @@
   KN.closePalette = closePalette;
   KN.refreshRemote = refreshRemoteConfig;
   KN.scanPage = scanPage;
+  KN.findTopEmail = findTopEmail;
   KN.state = state;
 
   init();
