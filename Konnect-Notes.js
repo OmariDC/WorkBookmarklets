@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.4.0'
+    version: '1.5.0'
   };
 
   const CONFIG_URL = 'https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Notes-Phrases.json';
@@ -43,7 +43,8 @@
     attemptPhrase: null,
     otherAttemptOpen: false,
     editingPhraseId: null,
-    statusMessage: ''
+    statusMessage: '',
+    lastPostClosureTransaction: null
   };
 
   function normaliseText(value) {
@@ -312,6 +313,76 @@
       a.editor.getBoundingClientRect().top - b.editor.getBoundingClientRect().top
     );
     return matches[0] || null;
+  }
+
+  function findPanelNoteField(panel, labelText) {
+    if (!(panel instanceof Element)) return null;
+    const expected = String(labelText || '').toLowerCase();
+    const labels = Array.from(panel.querySelectorAll('label,legend,dt,th,span,strong,b,p,div'))
+      .filter((element) => ownText(element).toLowerCase() === expected);
+
+    for (const label of labels) {
+      let container = label.parentElement;
+      for (let depth = 0; container && container !== panel.parentElement && depth < 7;
+        depth += 1, container = container.parentElement) {
+        const editors = Array.from(container.querySelectorAll(
+          'footer.text-primary textarea.form-control, footer textarea, textarea.form-control, textarea'
+        ));
+        if (editors.length === 1) return { label, editor: editors[0], container };
+      }
+    }
+    return null;
+  }
+
+  function panelNoteSet(panel) {
+    if (!(panel instanceof Element)) return null;
+    return {
+      panel,
+      initial: findPanelNoteField(panel, 'initial notes'),
+      call: findPanelNoteField(panel, 'call notes'),
+      postClosure: findPanelNoteField(panel, 'post closure notes')
+    };
+  }
+
+  function noteValueKey(value) {
+    return noteLineKey(normaliseText(value));
+  }
+
+  function postClosureFieldIsHidden(field) {
+    if (!field?.editor) return true;
+    let container = field.container;
+    for (let depth = 0; container && depth < 4; depth += 1, container = container.parentElement) {
+      if (container.classList?.contains('ng-hide') || getComputedStyle(container).display === 'none') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function findMountedDuplicateNoteSet(activeNotes) {
+    if (!activeNotes?.panel || !activeNotes.initial?.editor) return null;
+    const tabContent = activeNotes.panel.parentElement;
+    if (!tabContent?.classList?.contains('tab-content')) return null;
+
+    const activeInitialKey = noteValueKey(activeNotes.initial.editor.value);
+    if (!activeInitialKey) return null;
+
+    const candidates = Array.from(tabContent.children)
+      .filter((panel) => panel !== activeNotes.panel && panel.classList?.contains('tab-pane'))
+      .map(panelNoteSet)
+      .filter((notes) => notes?.initial?.editor && notes.call?.editor)
+      .filter((notes) => noteValueKey(notes.initial.editor.value) === activeInitialKey);
+
+    candidates.sort((a, b) => {
+      const score = (notes) => {
+        const callValue = String(notes.call.editor.value || '');
+        const catchAllCount = (callValue.match(/catch\s+all\s+return\s+lead/ig) || []).length;
+        return (postClosureFieldIsHidden(notes.postClosure) ? 0 : 100000) +
+          (catchAllCount * 10000) + callValue.length;
+      };
+      return score(a) - score(b);
+    });
+    return candidates[0] || null;
   }
 
   function isGreen(element) {
@@ -1178,6 +1249,10 @@
   }
 
   function readInitialNotes() {
+    const activePanel = state.target?.closest('.tab-pane') || state.postClosureTarget?.closest('.tab-pane');
+    const activeInitial = findPanelNoteField(activePanel, 'initial notes')?.editor?.value;
+    if (cleanNoteLines(activeInitial).length) return String(activeInitial);
+
     const labels = Array.from(document.querySelectorAll('label,legend,dt,th,span,strong,b,p,div'))
       .filter((element) => isVisible(element) && ownText(element).toLowerCase() === 'initial notes')
       .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
@@ -1204,26 +1279,74 @@
     return '';
   }
 
-  function stripCopiedCatchAll(line) {
-    const match = String(line || '').match(/(?:\*+\s*)?catch\s+all\s+return\s+lead/i);
-    return match ? line.slice(0, match.index).trim() : line;
+  function whitespaceFlexiblePattern(value) {
+    const tokens = normaliseText(value).split(' ').filter(Boolean);
+    if (!tokens.length) return null;
+    return new RegExp(tokens
+      .map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('\\s+'), 'ig');
   }
 
-  function buildPostClosureNotes(selectedText) {
-    const initialLines = cleanNoteLines(readInitialNotes());
+  function removeKnownNoteBlocks(value, knownValues) {
+    let output = String(value || '').replace(/\r\n?/g, '\n');
+    knownValues.forEach((known) => {
+      const pattern = whitespaceFlexiblePattern(known);
+      if (pattern) output = output.replace(pattern, '\n');
+    });
+    return output;
+  }
+
+  function splitEmbeddedCatchAll(line) {
+    const value = String(line || '').trim();
+    if (!value) return [];
+    const marker = /(?:\*+\s*)?catch\s+all\s+return\s+lead/ig;
+    const indexes = Array.from(value.matchAll(marker), (match) => match.index);
+    if (!indexes.length) return [value];
+
+    const output = [];
+    const prefix = value.slice(0, indexes[0]).trim();
+    if (prefix) output.push(prefix);
+    indexes.forEach((start, index) => {
+      const end = indexes[index + 1] ?? value.length;
+      const segment = value.slice(start, end).trim();
+      if (segment) output.push(segment);
+    });
+    return output;
+  }
+
+  function meaningfulNoteLines(value) {
+    const labelKeys = new Set(['initial notes', 'call notes', 'post closure notes']);
+    return cleanNoteLines(value)
+      .flatMap(splitEmbeddedCatchAll)
+      .filter((line) => !labelKeys.has(noteLineKey(line)));
+  }
+
+  function buildPostClosurePlan(input) {
+    const initialText = String(input?.initialText || '');
+    const initialLines = cleanNoteLines(initialText);
     if (!initialLines.length) return null;
 
-    const initialKeys = new Set(initialLines.map(noteLineKey));
-    const callLines = cleanNoteLines(state.target?.value || '')
-      .map(stripCopiedCatchAll)
-      .filter(Boolean)
-      .filter((line) => !initialKeys.has(noteLineKey(line)));
-    const existingLines = cleanNoteLines(state.postClosureTarget?.value || '');
-    const selectedLines = cleanNoteLines(selectedText);
+    const activeCallText = String(input?.activeCallText || '');
+    const hasCanonicalCall = input?.canonicalCallText != null;
+    const canonicalCallText = hasCanonicalCall ? String(input.canonicalCallText) : activeCallText;
+    const canonicalCallLines = meaningfulNoteLines(
+      removeKnownNoteBlocks(canonicalCallText, [initialText])
+    );
+    const knownBlocks = [initialText];
+    if (hasCanonicalCall) knownBlocks.push(canonicalCallText);
+
+    const migratedCallLines = hasCanonicalCall
+      ? meaningfulNoteLines(removeKnownNoteBlocks(activeCallText, knownBlocks))
+      : [];
+    const existingLines = meaningfulNoteLines(
+      removeKnownNoteBlocks(String(input?.existingPostText || ''), knownBlocks)
+    );
+    const selectedLines = meaningfulNoteLines(input?.selectedText || '');
+
     const output = [];
     const seen = new Set();
 
-    [initialLines, callLines, existingLines, selectedLines].forEach((source) => {
+    [initialLines, canonicalCallLines, existingLines, migratedCallLines, selectedLines].forEach((source) => {
       source.forEach((line) => {
         const key = noteLineKey(line);
         if (!key || seen.has(key)) return;
@@ -1231,7 +1354,29 @@
         output.push(line);
       });
     });
-    return output.join('\n');
+    return {
+      postClosureValue: output.join('\n'),
+      cleanCallValue: canonicalCallLines.join('\n'),
+      shouldCleanCall: hasCanonicalCall &&
+        noteValueKey(activeCallText) !== noteValueKey(canonicalCallLines.join('\n')),
+      usedMountedDuplicate: hasCanonicalCall,
+      migratedLineCount: migratedCallLines.length
+    };
+  }
+
+  function buildPostClosureNotes(selectedText) {
+    const activePanel = state.target?.closest('.tab-pane') || state.postClosureTarget?.closest('.tab-pane');
+    const activeNotes = panelNoteSet(activePanel);
+    const duplicateNotes = findMountedDuplicateNoteSet(activeNotes);
+    return buildPostClosurePlan({
+      initialText: activeNotes?.initial?.editor?.value || readInitialNotes(),
+      activeCallText: state.target?.value || '',
+      canonicalCallText: duplicateNotes?.call?.editor
+        ? duplicateNotes.call.editor.value
+        : null,
+      existingPostText: state.postClosureTarget?.value || '',
+      selectedText
+    });
   }
 
   function setNativeValue(target, value) {
@@ -1310,20 +1455,51 @@
     }
 
     if (isCatchAll) {
-      const merged = buildPostClosureNotes(text);
-      if (merged == null) {
+      const plan = buildPostClosureNotes(text);
+      if (plan == null) {
         state.statusMessage = 'Initial Notes could not be read, so Post Closure Notes was not changed.';
         state.view = 'browse';
         renderPalette();
         return;
       }
-      replaceTextUndoably(target, 0, target.value.length, merged, merged);
-      target.setSelectionRange(merged.length, merged.length);
+
+      const transaction = {
+        callTarget: state.target,
+        callBefore: String(state.target?.value || ''),
+        callAfter: plan.shouldCleanCall ? plan.cleanCallValue : String(state.target?.value || ''),
+        postTarget: target,
+        postBefore: String(target.value || ''),
+        postAfter: plan.postClosureValue
+      };
+      if (plan.shouldCleanCall && state.target instanceof HTMLTextAreaElement) {
+        replaceTextUndoably(
+          state.target,
+          0,
+          state.target.value.length,
+          plan.cleanCallValue,
+          plan.cleanCallValue
+        );
+      }
+      replaceTextUndoably(
+        target,
+        0,
+        target.value.length,
+        plan.postClosureValue,
+        plan.postClosureValue
+      );
+      target.setSelectionRange(plan.postClosureValue.length, plan.postClosureValue.length);
       state.targetHadFocus = true;
-      state.lastSelection = { target, start: merged.length, end: merged.length };
+      state.lastSelection = {
+        target,
+        start: plan.postClosureValue.length,
+        end: plan.postClosureValue.length
+      };
+      state.lastPostClosureTransaction = plan.shouldCleanCall ? transaction : null;
       closePalette();
       return;
     }
+
+    state.lastPostClosureTransaction = null;
 
     const range = resolveRange(target, rangeOverride);
     const value = target.value;
@@ -1383,6 +1559,28 @@
   }
 
   function handleGlobalKey(event) {
+    const undo = state.lastPostClosureTransaction;
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey &&
+        event.key.toLowerCase() === 'z' && undo &&
+        (event.target === undo.callTarget || event.target === undo.postTarget) &&
+        undo.callTarget?.value === undo.callAfter && undo.postTarget?.value === undo.postAfter) {
+      event.preventDefault();
+      event.stopPropagation();
+      setNativeValue(undo.callTarget, undo.callBefore);
+      undo.callTarget.dispatchEvent(new Event('input', { bubbles: true }));
+      setNativeValue(undo.postTarget, undo.postBefore);
+      undo.postTarget.dispatchEvent(new Event('input', { bubbles: true }));
+      undo.postTarget.focus({ preventScroll: true });
+      undo.postTarget.setSelectionRange(undo.postBefore.length, undo.postBefore.length);
+      state.lastSelection = {
+        target: undo.postTarget,
+        start: undo.postBefore.length,
+        end: undo.postBefore.length
+      };
+      state.lastPostClosureTransaction = null;
+      return;
+    }
+
     if (event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'n') {
       event.preventDefault();
       togglePalette();
