@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.3.1'
+    version: '1.4.0'
   };
 
   const CONFIG_URL = 'https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Notes-Phrases.json';
@@ -468,9 +468,12 @@
       .kn-results { display: flex; flex-direction: column; gap: 5px; }
       .kn-result { padding: 8px 9px; background: #292c55; color: #fff; text-align: left; }
       .kn-result.kn-selected, .kn-result:hover { border-color: #f9772e; background: #3b3f70; }
-      .kn-result-label { display: block; font-weight: 700; }
-      .kn-result-preview { display: block; margin-top: 3px; color: #d9daf3; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .kn-result-label { display: block; font-size: 14px; font-weight: 700; }
+      .kn-result-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: #c9cae7; font-size: 10px; }
+      .kn-result-shortcut { display: inline-flex; padding: 2px 6px; border-radius: 3px; background: #f9772e; color: #1e1d49; font-weight: 800; }
+      .kn-result-preview { display: -webkit-box; margin-top: 5px; color: #e1e2f5; font-size: 11px; line-height: 1.35; white-space: normal; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
       .kn-alias { display: inline-block; margin: 4px 4px 0 0; padding: 1px 4px; border-radius: 3px; background: #483a73; color: #eee; font-size: 10px; }
+      .kn-browse-controls { position: sticky; top: -12px; z-index: 2; margin-top: -12px; padding-top: 12px; background: #1e1d49; }
       .kn-muted { color: #d9daf3; font-size: 12px; }
       .kn-status { margin: 0 0 9px; padding: 7px 8px; background: rgba(255,255,255,.08); border-radius: 5px; color: #d9daf3; font-size: 12px; }
       .kn-attempt-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 14px 0; }
@@ -592,6 +595,7 @@
   function searchPhrases(query) {
     if (!state.config) return [];
     const terms = normaliseText(query).toLowerCase().split(' ').filter(Boolean);
+    const configuredOrder = new Map(state.config.phrases.map((phrase, index) => [phrase.id, index]));
     return state.config.phrases
       .filter((phrase) => state.activeCategory === 'all' || phrase.category === state.activeCategory)
       .filter((phrase) => {
@@ -599,11 +603,7 @@
         const haystack = `${phrase.label} ${phrase.text} ${(phrase.aliases || []).join(' ')}`.toLowerCase();
         return terms.every((term) => haystack.includes(term));
       })
-      .sort((a, b) => {
-        const aQuick = a.quickOrder || 99;
-        const bQuick = b.quickOrder || 99;
-        return aQuick - bQuick || a.label.localeCompare(b.label);
-      });
+      .sort((a, b) => configuredOrder.get(a.id) - configuredOrder.get(b.id));
   }
 
   function phrasePreview(phrase) {
@@ -626,11 +626,15 @@
       const row = element('button', `kn-result${index === state.selectedResult ? ' kn-selected' : ''}`);
       row.type = 'button';
       row.appendChild(element('span', 'kn-result-label', phrase.label));
+      const meta = element('span', 'kn-result-meta');
+      meta.appendChild(element('span', '', getCategoryLabel(phrase.category)));
+      const preferredAlias = (phrase.aliases || [])[0];
+      if (preferredAlias) {
+        const example = `${preferredAlias}${phrase.requiresAttempt ? '1' : ''}`;
+        meta.appendChild(element('span', 'kn-result-shortcut', example));
+      }
+      row.appendChild(meta);
       row.appendChild(element('span', 'kn-result-preview', phrasePreview(phrase)));
-      (phrase.aliases || []).forEach((alias) => {
-        const suffix = phrase.requiresAttempt ? '[number]' : '';
-        row.appendChild(element('span', 'kn-alias', `${alias}${suffix}`));
-      });
       row.addEventListener('mouseenter', () => {
         state.selectedResult = index;
         list.querySelectorAll('.kn-result').forEach((item, itemIndex) =>
@@ -686,11 +690,13 @@
     }, false));
     const body = element('div', 'kn-body');
     if (state.statusMessage) body.appendChild(element('div', 'kn-status', state.statusMessage));
+    const controls = element('div', 'kn-browse-controls');
+    body.appendChild(controls);
     const search = element('input', 'kn-search');
     search.type = 'search';
     search.placeholder = 'Search phrases or use an abbreviation...';
     search.value = state.searchQuery;
-    body.appendChild(search);
+    controls.appendChild(search);
 
     if (state.config) {
       const categories = element('div', 'kn-categories');
@@ -709,7 +715,7 @@
         });
         categories.appendChild(chip);
       });
-      body.appendChild(categories);
+      controls.appendChild(categories);
       renderResults(body, search);
     } else {
       body.appendChild(element('div', 'kn-muted', 'Phrase configuration has not loaded yet.'));

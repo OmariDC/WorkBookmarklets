@@ -43,7 +43,7 @@
       "label": "Line ringing",
       "category": "calls",
       "text": "{{attempt}} - Line ringing -- Omari",
-      "aliases": ["ringing"],
+      "aliases": ["ring", "ringing"],
       "requiresAttempt": true,
       "quickOrder": 2
     },
@@ -71,7 +71,7 @@
       "label": "Precall, Declined VM",
       "category": "calls",
       "text": "{{attempt}} - Precall, Declined VM -- Omari",
-      "aliases": ["pdvm"],
+      "aliases": ["dvm", "pdvm"],
       "requiresAttempt": true,
       "quickOrder": 5
     },
@@ -80,7 +80,7 @@
       "label": "Line engaged",
       "category": "calls",
       "text": "{{attempt}} - Line engaged -- Omari",
-      "aliases": ["engaged"],
+      "aliases": ["eng", "engaged"],
       "requiresAttempt": true
     },
     {
@@ -88,7 +88,7 @@
       "label": "Line rang then failed",
       "category": "calls",
       "text": "{{attempt}} - Line rang then failed -- Omari",
-      "aliases": ["failed"],
+      "aliases": ["rf", "failed"],
       "requiresAttempt": true
     },
     {
@@ -104,7 +104,7 @@
       "label": "Not interested",
       "category": "calls",
       "text": "Not interested -- Omari",
-      "aliases": [],
+      "aliases": ["ni"],
       "requiresAttempt": false
     },
     {
@@ -112,7 +112,7 @@
       "label": "Confirm provisional booking",
       "category": "appointments",
       "text": "VM left -- Omari - Please confirm provisional booking with customer",
-      "aliases": [],
+      "aliases": ["book"],
       "requiresAttempt": false
     },
     {
@@ -120,7 +120,7 @@
       "label": "EMAIL ONLY LEAD",
       "category": "email",
       "text": "EMAIL ONLY LEAD:{{email}}",
-      "aliases": [],
+      "aliases": ["eo"],
       "requiresAttempt": false,
       "emailSource": "top"
     },
@@ -129,7 +129,7 @@
       "label": "Customer Requested EMAIL CONTACT",
       "category": "email",
       "text": "Customer Requested EMAIL CONTACT:{{email}}",
-      "aliases": [],
+      "aliases": ["ec"],
       "requiresAttempt": false,
       "emailSource": "top"
     },
@@ -138,7 +138,7 @@
       "label": "Email sent attempts",
       "category": "email",
       "text": "1 - Email Sent -- Omari (Close ON attempt 3 if no response)\n2 -\n3 -",
-      "aliases": [],
+      "aliases": ["es"],
       "requiresAttempt": false
     },
     {
@@ -155,7 +155,7 @@
       "label": "Catch All - Attempt 1 VM Left",
       "category": "catch-all",
       "text": "**** Catch All Return Lead **** **Attempt 1 – VM Left** – Omari",
-      "aliases": [],
+      "aliases": ["ca1"],
       "requiresAttempt": false
     },
     {
@@ -163,7 +163,7 @@
       "label": "Catch All - Attempt 2 VM Left",
       "category": "catch-all",
       "text": "**** Catch All Return Lead **** **Attempt 2 – VM Left** – Omari",
-      "aliases": [],
+      "aliases": ["ca2"],
       "requiresAttempt": false
     },
     {
@@ -171,7 +171,7 @@
       "label": "Catch All - Attempt 3 VM Left",
       "category": "catch-all",
       "text": "**** Catch All Return Lead **** **Attempt 3 – VM Left** – Omari",
-      "aliases": [],
+      "aliases": ["ca3"],
       "requiresAttempt": false
     },
     {
@@ -179,7 +179,7 @@
       "label": "Catch All - Customer Hub will not contact",
       "category": "catch-all",
       "text": "**** Catch All Return Lead **** **Customer Hub will not contact this lead type** - please contact and update Emax",
-      "aliases": [],
+      "aliases": ["cah"],
       "requiresAttempt": false
     },
     {
@@ -187,7 +187,7 @@
       "label": "Catch All - Actioned by dealer",
       "category": "catch-all",
       "text": "**** Catch All Return Lead **** Lead has been **actioned by dealer**",
-      "aliases": [],
+      "aliases": ["cad"],
       "requiresAttempt": false
     },
     {
@@ -195,7 +195,7 @@
       "label": "Catch All - Appointment Now Booked",
       "category": "catch-all",
       "text": "**** Catch All Return Lead **** **Appointment Now Booked** – See New Lead",
-      "aliases": [],
+      "aliases": ["cab"],
       "requiresAttempt": false
     },
     {
@@ -203,7 +203,7 @@
       "label": "Finance related lead",
       "category": "finance",
       "text": "**** Finance Related Lead – Please contact customer ****",
-      "aliases": [],
+      "aliases": ["fin"],
       "requiresAttempt": false
     }
   ]
