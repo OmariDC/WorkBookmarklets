@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.5.0'
+    version: '1.5.1'
   };
 
   const CONFIG_URL = 'https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Notes-Phrases.json';
@@ -44,7 +44,8 @@
     otherAttemptOpen: false,
     editingPhraseId: null,
     statusMessage: '',
-    lastPostClosureTransaction: null
+    lastPostClosureTransaction: null,
+    applyingPostClosureTransaction: false
   };
 
   function normaliseText(value) {
@@ -494,6 +495,7 @@
       state.postClosureLabel = postClosure?.label || null;
       state.targetHadFocus = false;
       state.lastSelection = null;
+      state.lastPostClosureTransaction = null;
     }
     updateLauncher();
     if (!state.target && state.open) closePalette();
@@ -1314,11 +1316,15 @@
     return output;
   }
 
-  function meaningfulNoteLines(value) {
+  function meaningfulNoteLines(value, ignoredLineKeys) {
     const labelKeys = new Set(['initial notes', 'call notes', 'post closure notes']);
+    const ignored = ignoredLineKeys instanceof Set ? ignoredLineKeys : new Set();
     return cleanNoteLines(value)
       .flatMap(splitEmbeddedCatchAll)
-      .filter((line) => !labelKeys.has(noteLineKey(line)));
+      .filter((line) => {
+        const key = noteLineKey(line);
+        return !labelKeys.has(key) && !ignored.has(key);
+      });
   }
 
   function buildPostClosurePlan(input) {
@@ -1327,21 +1333,26 @@
     if (!initialLines.length) return null;
 
     const activeCallText = String(input?.activeCallText || '');
+    const ignoredLineKeys = new Set(
+      (Array.isArray(input?.ignoredLines) ? input.ignoredLines : []).map(noteLineKey)
+    );
     const hasCanonicalCall = input?.canonicalCallText != null;
     const canonicalCallText = hasCanonicalCall ? String(input.canonicalCallText) : activeCallText;
     const canonicalCallLines = meaningfulNoteLines(
-      removeKnownNoteBlocks(canonicalCallText, [initialText])
+      removeKnownNoteBlocks(canonicalCallText, [initialText]),
+      ignoredLineKeys
     );
     const knownBlocks = [initialText];
     if (hasCanonicalCall) knownBlocks.push(canonicalCallText);
 
     const migratedCallLines = hasCanonicalCall
-      ? meaningfulNoteLines(removeKnownNoteBlocks(activeCallText, knownBlocks))
+      ? meaningfulNoteLines(removeKnownNoteBlocks(activeCallText, knownBlocks), ignoredLineKeys)
       : [];
     const existingLines = meaningfulNoteLines(
-      removeKnownNoteBlocks(String(input?.existingPostText || ''), knownBlocks)
+      removeKnownNoteBlocks(String(input?.existingPostText || ''), knownBlocks),
+      ignoredLineKeys
     );
-    const selectedLines = meaningfulNoteLines(input?.selectedText || '');
+    const selectedLines = meaningfulNoteLines(input?.selectedText || '', ignoredLineKeys);
 
     const output = [];
     const seen = new Set();
@@ -1364,25 +1375,44 @@
     };
   }
 
-  function buildPostClosureNotes(selectedText) {
+  function buildPostClosureNotes(selectedText, existingPostText) {
     const activePanel = state.target?.closest('.tab-pane') || state.postClosureTarget?.closest('.tab-pane');
     const activeNotes = panelNoteSet(activePanel);
     const duplicateNotes = findMountedDuplicateNoteSet(activeNotes);
+    const catchAllAliases = state.config?.phrases
+      .filter((phrase) => phrase.category === 'catch-all')
+      .flatMap((phrase) => phrase.aliases || []) || [];
     return buildPostClosurePlan({
       initialText: activeNotes?.initial?.editor?.value || readInitialNotes(),
       activeCallText: state.target?.value || '',
       canonicalCallText: duplicateNotes?.call?.editor
         ? duplicateNotes.call.editor.value
         : null,
-      existingPostText: state.postClosureTarget?.value || '',
-      selectedText
+      existingPostText: existingPostText == null
+        ? state.postClosureTarget?.value || ''
+        : existingPostText,
+      selectedText,
+      ignoredLines: catchAllAliases
     });
+  }
+
+  function valueWithoutRange(value, range) {
+    const text = String(value || '');
+    if (!range) return text;
+    const start = Math.max(0, Math.min(Number(range.start) || 0, text.length));
+    const end = Math.max(start, Math.min(Number(range.end) || start, text.length));
+    return text.slice(0, start) + text.slice(end);
   }
 
   function setNativeValue(target, value) {
     const descriptor = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
     if (descriptor?.set) descriptor.set.call(target, value);
     else target.value = value;
+  }
+
+  function setValueAndNotify(target, value) {
+    setNativeValue(target, value);
+    target.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
   function replaceTextUndoably(target, start, end, replacement, expectedValue) {
@@ -1455,7 +1485,8 @@
     }
 
     if (isCatchAll) {
-      const plan = buildPostClosureNotes(text);
+      const postBefore = valueWithoutRange(target.value, rangeOverride);
+      const plan = buildPostClosureNotes(text, postBefore);
       if (plan == null) {
         state.statusMessage = 'Initial Notes could not be read, so Post Closure Notes was not changed.';
         state.view = 'browse';
@@ -1468,25 +1499,19 @@
         callBefore: String(state.target?.value || ''),
         callAfter: plan.shouldCleanCall ? plan.cleanCallValue : String(state.target?.value || ''),
         postTarget: target,
-        postBefore: String(target.value || ''),
+        postBefore,
         postAfter: plan.postClosureValue
       };
-      if (plan.shouldCleanCall && state.target instanceof HTMLTextAreaElement) {
-        replaceTextUndoably(
-          state.target,
-          0,
-          state.target.value.length,
-          plan.cleanCallValue,
-          plan.cleanCallValue
-        );
+      state.applyingPostClosureTransaction = true;
+      try {
+        if (plan.shouldCleanCall && state.target instanceof HTMLTextAreaElement) {
+          setValueAndNotify(state.target, plan.cleanCallValue);
+        }
+        setValueAndNotify(target, plan.postClosureValue);
+      } finally {
+        state.applyingPostClosureTransaction = false;
       }
-      replaceTextUndoably(
-        target,
-        0,
-        target.value.length,
-        plan.postClosureValue,
-        plan.postClosureValue
-      );
+      target.focus({ preventScroll: true });
       target.setSelectionRange(plan.postClosureValue.length, plan.postClosureValue.length);
       state.targetHadFocus = true;
       state.lastSelection = {
@@ -1494,7 +1519,7 @@
         start: plan.postClosureValue.length,
         end: plan.postClosureValue.length
       };
-      state.lastPostClosureTransaction = plan.shouldCleanCall ? transaction : null;
+      state.lastPostClosureTransaction = transaction;
       closePalette();
       return;
     }
@@ -1562,14 +1587,16 @@
     const undo = state.lastPostClosureTransaction;
     if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey &&
         event.key.toLowerCase() === 'z' && undo &&
-        (event.target === undo.callTarget || event.target === undo.postTarget) &&
-        undo.callTarget?.value === undo.callAfter && undo.postTarget?.value === undo.postAfter) {
+        (event.target === undo.callTarget || event.target === undo.postTarget)) {
       event.preventDefault();
-      event.stopPropagation();
-      setNativeValue(undo.callTarget, undo.callBefore);
-      undo.callTarget.dispatchEvent(new Event('input', { bubbles: true }));
-      setNativeValue(undo.postTarget, undo.postBefore);
-      undo.postTarget.dispatchEvent(new Event('input', { bubbles: true }));
+      event.stopImmediatePropagation();
+      state.applyingPostClosureTransaction = true;
+      try {
+        setValueAndNotify(undo.callTarget, undo.callBefore);
+        setValueAndNotify(undo.postTarget, undo.postBefore);
+      } finally {
+        state.applyingPostClosureTransaction = false;
+      }
       undo.postTarget.focus({ preventScroll: true });
       undo.postTarget.setSelectionRange(undo.postBefore.length, undo.postBefore.length);
       state.lastSelection = {
@@ -1612,6 +1639,11 @@
   }
 
   function handleTargetActivity(event) {
+    const undo = state.lastPostClosureTransaction;
+    if (event.type === 'input' && !state.applyingPostClosureTransaction && undo &&
+        (event.target === undo.callTarget || event.target === undo.postTarget)) {
+      state.lastPostClosureTransaction = null;
+    }
     if (event.target === state.target || event.target === state.postClosureTarget) {
       rememberSelection(event.target);
     }
