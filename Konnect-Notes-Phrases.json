@@ -60,10 +60,11 @@
       "id": "line-failed-email-only",
       "label": "Line failed - email only",
       "category": "email",
-      "text": "Line failed EMAIL LEAD ONLY:",
+      "text": "Line failed EMAIL LEAD ONLY:{{email}}",
       "aliases": ["lfe"],
       "requiresAttempt": false,
-      "quickOrder": 4
+      "quickOrder": 4,
+      "emailSource": "top"
     },
     {
       "id": "precall-declined-vm",
@@ -118,17 +119,19 @@
       "id": "email-only-lead-short",
       "label": "EMAIL ONLY LEAD",
       "category": "email",
-      "text": "EMAIL ONLY LEAD:",
+      "text": "EMAIL ONLY LEAD:{{email}}",
       "aliases": [],
-      "requiresAttempt": false
+      "requiresAttempt": false,
+      "emailSource": "top"
     },
     {
       "id": "customer-requested-email-contact",
       "label": "Customer Requested EMAIL CONTACT",
       "category": "email",
-      "text": "Customer Requested EMAIL CONTACT:",
+      "text": "Customer Requested EMAIL CONTACT:{{email}}",
       "aliases": [],
-      "requiresAttempt": false
+      "requiresAttempt": false,
+      "emailSource": "top"
     },
     {
       "id": "email-sent-attempts",
