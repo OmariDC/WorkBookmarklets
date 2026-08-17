@@ -21,15 +21,60 @@ const COL_SLA_DATE = 6;
 const COL_STATUS = 7;
 const COL_ASSIGN = 8;
 
+// Pending Customers table columns: Dealer, Brand, Customer, Reg, Email,
+// Mobile, Landline, Campaign, Callback Type, Last Action Date,
+// Next Action Date, Assign. Reg here is plain text (unlike the SLA
+// table's linked Registration column) and Email/Mobile/Landline are
+// plain text too, so no modal click-and-wait is needed on this page.
+const PC_COL_DEALER = 0;
+const PC_COL_BRAND = 1;
+const PC_COL_CUSTOMER = 2;
+const PC_COL_REG = 3;
+const PC_COL_EMAIL = 4;
+const PC_COL_MOBILE = 5;
+const PC_COL_LANDLINE = 6;
+const PC_COL_CAMPAIGN = 7;
+const PC_COL_CALLBACK_TYPE = 8;
+const PC_COL_LAST_ACTION = 9;
+const PC_COL_NEXT_ACTION = 10;
+const PC_COL_ASSIGN = 11;
+
 // How far a Missed lead's sort position gets pushed back relative to its
 // real due time - keeps it from always beating a Critical lead due in
 // minutes, while still generally sorting ahead of anything due much later.
 const MISSED_PENALTY_MS = 30 * 60 * 1000;
 
+const PAGE_SLA = 'sla';
+const PAGE_PENDING = 'pending';
+const SLA_HEADERS = ['Customer', 'Registration', 'Source', 'Campaign', 'Created', 'Received', 'SLA Date', 'Status', 'Assign'];
+const PENDING_HEADERS = ['Dealer', 'Brand', 'Customer', 'Reg', 'Email', 'Mobile', 'Landline', 'Campaign', 'Callback Type', 'Last Action Date', 'Next Action Date', 'Assign'];
+
+function headersMatch(actual, expected) {
+return actual.length === expected.length && actual.every((h, i) => h === expected[i]);
+}
+
+// Detects which page we're on from the table's header row rather than the
+// URL, so it keeps working regardless of route changes - and refuses to
+// run at all (returns null) rather than guessing at an unrecognized table.
+function detectPageType() {
+const table = document.querySelector('table');
+if (!table) return null;
+const headerRow = table.querySelector('tr');
+if (!headerRow) return null;
+const headers = Array.from(headerRow.querySelectorAll('th')).map(th => th.textContent.trim());
+if (headers.length === 0) return null;
+
+if (headersMatch(headers, SLA_HEADERS)) return PAGE_SLA;
+if (headersMatch(headers, PENDING_HEADERS)) return PAGE_PENDING;
+return null;
+}
+
 let badge = null;
 let panelElement = null;
 let extracting = false;
+let currentPageType = null;
 let currentCustomers = [];
+let currentPendingCustomers = [];
 
 function categorizeTier(campaign, source) {
 const camp = campaign.toLowerCase();
@@ -215,7 +260,7 @@ return `<span class="sla-copyable" data-value="${display}" style="cursor: pointe
 }
 
 // ===================================================================
-// ASSIGNMENT ENGINE (SLA tab)
+// ASSIGNMENT ENGINE (shared between the SLA tab and Pending Customers)
 //
 // Two pieces here are unconfirmed until agents are actually online and
 // this has run against a live populated dropdown:
@@ -224,11 +269,16 @@ return `<span class="sla-copyable" data-value="${display}" style="cursor: pointe
 //   2. findAgentMenuItem() matches a populated <li> by its visible text -
 //      confirm this still finds the right element once agents render.
 // Everything else below (priority sort, filtering, round robin, the click
-// pipeline, the UI) shouldn't need structural changes.
+// pipeline) shouldn't need structural changes - both pages' Assign column
+// use the identical div.dropdown.ng-scope structure, confirmed live.
 // ===================================================================
 
-function parseSlaDate(text) {
-// Matches "Tue, 18 Aug 2026 09:15" - the weekday prefix is ignored.
+function parseKonnectDate(text) {
+// Matches "Tue, 18 Aug 2026 09:15" - the weekday prefix is ignored. Used
+// for SLA Date on the SLA table and Last/Next Action Date on the Pending
+// Customers table - same app-wide date rendering, unconfirmed for the
+// latter two but a reasonable assumption; a lead with an unparseable date
+// simply gets excluded from date-filtered results rather than guessed at.
 const MONTHS = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
 const match = text.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\s+(\d{1,2}):(\d{2})/);
 if (!match) return null;
@@ -285,7 +335,7 @@ if (!name || !campaign) return;
 
 const registration = cells[COL_REGISTRATION]?.textContent?.trim();
 const source = cells[COL_SOURCE]?.textContent?.trim();
-const slaDate = parseSlaDate(cells[COL_SLA_DATE]?.textContent?.trim() || '');
+const slaDate = parseKonnectDate(cells[COL_SLA_DATE]?.textContent?.trim() || '');
 const status = cells[COL_STATUS]?.textContent?.trim();
 const tierInfo = categorizeTier(campaign, source);
 const assignState = getAssignCellState(cells[COL_ASSIGN]);
@@ -385,13 +435,13 @@ observer.observe(cell, { childList: true, subtree: true });
 });
 }
 
-async function runAssignmentPlan(plan, onProgress) {
+async function runAssignmentPlan(plan, locateCellFn, onProgress) {
 const results = [];
 for (const { lead, agent } of plan) {
 let ok = false;
 let reason = null;
 try {
-const cell = locateAssignCell(lead);
+const cell = locateCellFn(lead);
 if (!cell) {
 reason = 'Row no longer found on page';
 } else {
@@ -463,8 +513,241 @@ ${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
 </div>`;
 }
 
+// ===================================================================
+// PENDING CUSTOMERS TAB
+// ===================================================================
+
+const CALLBACK_TYPES_PRIMARY = ['New (SLA)', 'Auto Rescheduled'];
+const CALLBACK_TYPES_ADVANCED = ['Manual Rescheduled', 'Post Closure'];
+const CALLBACK_TYPE_ORDER = [...CALLBACK_TYPES_PRIMARY, ...CALLBACK_TYPES_ADVANCED];
+const CALLBACK_TYPE_COLORS = {
+'New (SLA)': '#e74c3c',
+'Auto Rescheduled': '#3498db',
+'Manual Rescheduled': '#f39c12',
+'Post Closure': '#95a5a6'
+};
+
+function collectPendingCustomers() {
+const table = document.querySelector('table');
+if (!table) return [];
+
+const leads = [];
+table.querySelectorAll('tbody tr').forEach((row) => {
+const cells = row.querySelectorAll('td');
+if (cells.length < 12) return;
+
+const name = cells[PC_COL_CUSTOMER]?.textContent?.trim();
+if (!name) return;
+
+const dealer = cells[PC_COL_DEALER]?.textContent?.trim();
+const brand = cells[PC_COL_BRAND]?.textContent?.trim();
+const reg = cells[PC_COL_REG]?.textContent?.trim();
+const email = cells[PC_COL_EMAIL]?.textContent?.trim();
+const mobile = cells[PC_COL_MOBILE]?.textContent?.trim();
+const landline = cells[PC_COL_LANDLINE]?.textContent?.trim();
+const campaign = cells[PC_COL_CAMPAIGN]?.textContent?.trim();
+const callbackType = cells[PC_COL_CALLBACK_TYPE]?.textContent?.trim();
+const nextActionText = cells[PC_COL_NEXT_ACTION]?.textContent?.trim() || '';
+const lastActionDate = parseKonnectDate(cells[PC_COL_LAST_ACTION]?.textContent?.trim() || '');
+const nextActionDate = parseKonnectDate(nextActionText);
+const assignState = getAssignCellState(cells[PC_COL_ASSIGN]);
+
+leads.push({
+key: `${name}||${reg}||${campaign}||${callbackType}||${nextActionText}`,
+name, dealer, brand, reg, email, mobile, landline, campaign,
+callbackType, lastActionDate, nextActionDate,
+assigned: assignState.assigned,
+agentName: assignState.agentName
+});
+});
+
+return leads;
+}
+
+function prioritizePendingLeads(leads) {
+return [...leads].sort((a, b) =>
+(a.nextActionDate ? a.nextActionDate.getTime() : Infinity) - (b.nextActionDate ? b.nextActionDate.getTime() : Infinity)
+);
+}
+
+// A lead with no parseable Next Action Date is excluded rather than
+// guessed at - if the date format assumption turns out to be wrong,
+// this fails loudly (nothing matches) instead of assigning on unknown
+// urgency.
+function filterPendingLeads(leads, { callbackTypes, cutoffDate }) {
+return leads.filter((lead) => {
+if (lead.assigned) return false;
+if (!callbackTypes.has(lead.callbackType)) return false;
+if (!lead.nextActionDate) return false;
+if (cutoffDate && lead.nextActionDate.getTime() >= cutoffDate.getTime()) return false;
+return true;
+});
+}
+
+// "Due within the hour" means up to the top of the next clock hour (e.g.
+// at 12:47 that's 13:00), not a rolling 60-minute lookahead.
+function defaultHourCutoff() {
+const now = new Date();
+return new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0, 0);
+}
+
+function formatTimeForInput(date) {
+const hh = String(date.getHours()).padStart(2, '0');
+const mm = String(date.getMinutes()).padStart(2, '0');
+return `${hh}:${mm}`;
+}
+
+function parseCutoffFromInput(value) {
+if (!value) return defaultHourCutoff();
+const [hh, mm] = value.split(':').map(Number);
+const now = new Date();
+return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
+}
+
+// Re-locates a lead's Assign cell fresh at click time - same reasoning as
+// locateAssignCell on the SLA tab.
+function locatePendingAssignCell(lead) {
+const table = document.querySelector('table');
+if (!table) return null;
+const rows = table.querySelectorAll('tbody tr');
+for (const row of rows) {
+const cells = row.querySelectorAll('td');
+if (cells.length < 12) continue;
+const name = cells[PC_COL_CUSTOMER]?.textContent?.trim();
+const reg = cells[PC_COL_REG]?.textContent?.trim();
+const campaign = cells[PC_COL_CAMPAIGN]?.textContent?.trim();
+const callbackType = cells[PC_COL_CALLBACK_TYPE]?.textContent?.trim();
+const nextActionText = cells[PC_COL_NEXT_ACTION]?.textContent?.trim() || '';
+const key = `${name}||${reg}||${campaign}||${callbackType}||${nextActionText}`;
+if (key === lead.key) return cells[PC_COL_ASSIGN];
+}
+return null;
+}
+
+function slugify(value) {
+return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+function renderPendingAssignSection() {
+const leads = collectPendingCustomers();
+const agents = getAgentRoster();
+const countFor = (type) => leads.filter(l => l.callbackType === type && !l.assigned).length;
+
+const primaryCheckboxes = CALLBACK_TYPES_PRIMARY.map(type => `
+<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" checked> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
+</label>`).join('');
+
+const advancedCheckboxes = CALLBACK_TYPES_ADVANCED.map(type => `
+<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
+</label>`).join('');
+
+const agentCheckboxes = agents.length === 0
+? `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`
+: agents.map(a => `
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" checked> ${escapeHtml(a.name)}
+</label>`).join('');
+
+const buttonDisabled = agents.length === 0;
+const defaultCutoff = formatTimeForInput(defaultHourCutoff());
+
+return `
+<div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #ecf0f1;">
+<div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+<span style="font-weight: 700; color: #2c3e50; font-size: 14px;">⚡ Assign Leads</span>
+<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▼</span>
+</div>
+<div id="assignSectionBody" style="margin-top: 12px;">
+<div style="margin-bottom: 10px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">CALLBACK TYPE</div>
+<div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
+<div onclick="window._toggleAdvancedCallbackTypes()" style="margin-top: 6px; font-size: 11px; color: #3498db; cursor: pointer;">
+<span id="advancedCallbackToggle">▶</span> Advanced (Manual Rescheduled, Post Closure)
+</div>
+<div id="advancedCallbackTypes" style="display: none; gap: 10px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
+</div>
+<div style="margin-bottom: 10px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE BEFORE</div>
+<input id="assignCutoffTime" type="time" value="${defaultCutoff}" style="padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">
+<span style="font-size: 11px; color: #95a5a6; margin-left: 6px;">defaults to the top of the next hour</span>
+</div>
+<div style="margin-bottom: 10px;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+<span style="font-size: 11px; font-weight: 700; color: #7f8c8d;">AGENTS ONLINE</span>
+<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
+</div>
+<div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
+</div>
+<button id="assignRunButton" onclick="window._runPendingAssignment()" ${buttonDisabled ? 'disabled' : ''}
+style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
+${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
+</button>
+<div id="assignResultsLog" style="margin-top: 10px; font-size: 11px; color: #7f8c8d; max-height: 100px; overflow-y: auto;"></div>
+</div>
+</div>`;
+}
+
+function renderCallbackTypeSection(typeName, customers, color) {
+const sectionId = 'cb-' + slugify(typeName);
+
+if (customers.length === 0) {
+return `<div style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 8px;
+border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+<h3 style="margin: 0; color: ${color}; font-size: 14px; font-weight: 600;">${escapeHtml(typeName)}</h3>
+<p style="margin: 8px 0 0 0; color: #95a5a6; font-size: 13px;">No customers</p>
+</div>`;
+}
+
+return `<div style="margin-bottom: 20px;">
+<div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 14px; background: white; border-radius: 8px 8px 0 0;
+display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
+border-bottom: 2px solid #ecf0f1;">
+<div>
+<span style="font-weight: 700; color: #2c3e50; font-size: 14px;">${escapeHtml(typeName)}</span>
+<span style="font-size: 12px; color: #95a5a6; margin-left: 10px;">${customers.length}</span>
+</div>
+<span id="toggle-${sectionId}" style="font-size: 14px; color: ${color};">▼</span>
+</div>
+<div id="${sectionId}" style="display: grid; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
+${customers.map(c => `<div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
+<div style="font-weight: 700; color: #2c3e50; margin-bottom: 10px; font-size: 14px;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50;">${escapeHtml(c.name)}</span>
+</div>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
+<div>
+<div style="color: #7f8c8d; font-size: 11px; font-weight: 700; margin-bottom: 4px;">MOBILE</div>
+${renderCopyableField(c.mobile)}
+</div>
+<div>
+<div style="color: #7f8c8d; font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
+${renderCopyableField(c.email)}
+</div>
+</div>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
+<div>
+<div style="color: #7f8c8d; font-size: 11px; font-weight: 700; margin-bottom: 4px;">LANDLINE</div>
+${renderCopyableField(c.landline)}
+</div>
+<div>
+<div style="color: #7f8c8d; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
+<span style="font-size: 13px; color: #2c3e50;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
+</div>
+</div>
+<div style="padding-top: 10px; border-top: 1px solid #ecf0f1; display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
+<span style="background: #ecf0f1; color: #2c3e50; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.brand || '')}</span>
+<span style="background: #e8f5e9; color: #27ae60; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.campaign || '')}</span>
+</div>
+</div>`).join('')}
+</div>
+</div>`;
+}
+
 function resetBookmarklet() {
 currentCustomers = [];
+currentPendingCustomers = [];
+currentPageType = null;
 extracting = false;
 
 if (panelElement) {
@@ -480,22 +763,16 @@ badge = null;
 console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
 }
 
-function displayPanel(customers, newCount = 0, removedCount = 0) {
-currentCustomers = customers;
-const tiered = {
-tier1: customers.filter(c => c.tier === 1),
-tier2: customers.filter(c => c.tier === 2),
-tier3: customers.filter(c => c.tier === 3),
-tier4: customers.filter(c => c.tier === 4)
-};
-
+// Shared panel chrome (positioning, header, footer) for both pages - only
+// the title/counts, the assign section, and the body content differ.
+function renderPanelShell({ title, count, newCount, removedCount, assignSectionHtml, bodyHtml }) {
 const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 const isFull = panelSize === 'full';
 const positionStyle = isFull
 ? 'top: 0; right: 0; bottom: 0; height: 100vh; width: 450px; border-radius: 0;'
 : 'bottom: 20px; right: 20px; width: 400px; height: min(560px, calc(100vh - 90px)); border-radius: 16px;';
 
-const panelHTML = `
+return `
 <div id="${PANEL_BOX_ID}" style="position: fixed; ${positionStyle}
 background: #f8f9fa; box-shadow: 0 8px 30px rgba(0,0,0,0.25);
 z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -505,13 +782,13 @@ display: flex; flex-direction: column; transition: transform 0.3s ease;">
 display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #27ae60;
 flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
 <div style="display: flex; align-items: center; gap: 12px;">
-<h2 style="margin: 0; font-size: 18px; font-weight: 700;">SLA Report</h2>
-<span style="background: #27ae60; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">${customers.length}</span>
+<h2 style="margin: 0; font-size: 18px; font-weight: 700;">${title}</h2>
+<span style="background: #27ae60; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">${count}</span>
 ${newCount > 0 ? `<span style="background: #f39c12; color: white; padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;">+${newCount}</span>` : ''}
 ${removedCount > 0 ? `<span style="background: #7f8c8d; color: white; padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;">−${removedCount}</span>` : ''}
 </div>
 <div style="display: flex; gap: 8px;">
-<button onclick="window._toggleSlaPanelSize();"
+<button onclick="window._togglePanelSize();"
 style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
 title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${isFull ? '⤡' : '⤢'}</button>
 <button onclick="document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0;"
@@ -523,21 +800,10 @@ title="Minimize">−</button>
 </div>
 </div>
 
-${renderAssignSection()}
+${assignSectionHtml}
 
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
-${customers.length === 0 ? `
-<div style="padding: 40px 20px; text-align: center;">
-<div style="font-size: 56px; margin-bottom: 16px;">📭</div>
-<h3 style="color: #2c3e50; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Leads in Queue</h3>
-<p style="color: #7f8c8d; margin: 0; font-size: 14px; line-height: 1.6;">The SLA queue is empty. Check back when new leads arrive.</p>
-</div>
-` : `
-${renderTierSection('Tier 1 - Priority', tiered.tier1, '#e74c3c', 'tier1')}
-${renderTierSection('Tier 2 - High', tiered.tier2, '#f39c12', 'tier2')}
-${renderTierSection('Tier 3 - Medium', tiered.tier3, '#3498db', 'tier3')}
-${renderTierSection('Tier 4 - Standard', tiered.tier4, '#95a5a6', 'tier4')}
-`}
+${bodyHtml}
 </div>
 
 <div style="border-top: 1px solid #ddd; padding: 14px; background: white; flex-shrink: 0; display: flex; gap: 10px; box-shadow: 0 -2px 8px rgba(0,0,0,0.05);">
@@ -548,7 +814,9 @@ style="flex: 1; padding: 10px; background: #3498db; color: white; border: none; 
 </div>
 </div>
 `;
+}
 
+function mountPanel(panelHTML) {
 if (panelElement) panelElement.remove();
 panelElement = document.createElement('div');
 panelElement.id = PANEL_ID;
@@ -567,6 +835,65 @@ el.addEventListener('click', function() {
 copyToClipboard(this.dataset.value, this);
 });
 });
+}
+
+function displayPanel(customers, newCount = 0, removedCount = 0) {
+currentCustomers = customers;
+currentPageType = PAGE_SLA;
+const tiered = {
+tier1: customers.filter(c => c.tier === 1),
+tier2: customers.filter(c => c.tier === 2),
+tier3: customers.filter(c => c.tier === 3),
+tier4: customers.filter(c => c.tier === 4)
+};
+
+const bodyHtml = customers.length === 0 ? `
+<div style="padding: 40px 20px; text-align: center;">
+<div style="font-size: 56px; margin-bottom: 16px;">📭</div>
+<h3 style="color: #2c3e50; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Leads in Queue</h3>
+<p style="color: #7f8c8d; margin: 0; font-size: 14px; line-height: 1.6;">The SLA queue is empty. Check back when new leads arrive.</p>
+</div>
+` : `
+${renderTierSection('Tier 1 - Priority', tiered.tier1, '#e74c3c', 'tier1')}
+${renderTierSection('Tier 2 - High', tiered.tier2, '#f39c12', 'tier2')}
+${renderTierSection('Tier 3 - Medium', tiered.tier3, '#3498db', 'tier3')}
+${renderTierSection('Tier 4 - Standard', tiered.tier4, '#95a5a6', 'tier4')}
+`;
+
+mountPanel(renderPanelShell({
+title: 'SLA Report',
+count: customers.length,
+newCount, removedCount,
+assignSectionHtml: renderAssignSection(),
+bodyHtml
+}));
+}
+
+function displayPendingPanel(customers, newCount = 0, removedCount = 0) {
+currentPendingCustomers = customers;
+currentPageType = PAGE_PENDING;
+
+const grouped = CALLBACK_TYPE_ORDER.map(type => ({
+type,
+color: CALLBACK_TYPE_COLORS[type],
+customers: customers.filter(c => c.callbackType === type)
+}));
+
+const bodyHtml = customers.length === 0 ? `
+<div style="padding: 40px 20px; text-align: center;">
+<div style="font-size: 56px; margin-bottom: 16px;">📭</div>
+<h3 style="color: #2c3e50; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Pending Customers</h3>
+<p style="color: #7f8c8d; margin: 0; font-size: 14px; line-height: 1.6;">Nothing in the queue right now.</p>
+</div>
+` : grouped.map(g => renderCallbackTypeSection(g.type, g.customers, g.color)).join('');
+
+mountPanel(renderPanelShell({
+title: 'Pending Customers',
+count: customers.length,
+newCount, removedCount,
+assignSectionHtml: renderPendingAssignSection(),
+bodyHtml
+}));
 }
 
 function renderTierSection(tierName, customers, color, tierId) {
@@ -612,7 +939,7 @@ ${renderCopyableField(c.email)}
 </div>`;
 }
 
-async function extractAndExport() {
+async function extractAndExportSla() {
 if (extracting) return;
 extracting = true;
 
@@ -696,6 +1023,55 @@ extracting = false;
 }
 }
 
+// No modal click-and-wait needed here - Email/Mobile/Landline are plain
+// text columns, so this is a single synchronous pass over the table.
+async function extractAndExportPending() {
+if (extracting) return;
+extracting = true;
+
+try {
+const table = document.querySelector('table');
+if (!table) {
+console.error('Pending Customers table not found');
+return;
+}
+
+const previousByKey = new Map(currentPendingCustomers.map(c => [c.key, c]));
+const leads = collectPendingCustomers();
+const seenKeys = new Set(leads.map(l => l.key));
+const addedCount = leads.filter(l => !previousByKey.has(l.key)).length;
+const removedCount = currentPendingCustomers.filter(c => !seenKeys.has(c.key)).length;
+
+displayPendingPanel(leads, addedCount, removedCount);
+console.info(`✅ Pending Customers report generated (${leads.length} customers, +${addedCount}/-${removedCount})`);
+} catch (error) {
+console.error('Pending Customers Export Error:', error);
+} finally {
+const panelBox = document.getElementById(PANEL_BOX_ID);
+if (panelBox) panelBox.style.transform = '';
+setBadgeProgress(0);
+extracting = false;
+}
+}
+
+// Entry point wired to the badge - detects which page we're on and routes
+// to the matching extraction path, refusing to run on anything else.
+function runExtraction() {
+const pageType = detectPageType();
+if (pageType === PAGE_SLA) {
+extractAndExportSla();
+} else if (pageType === PAGE_PENDING) {
+extractAndExportPending();
+} else {
+console.error('SLA Manager: unrecognized page - expected the SLA queue or Pending Customers queue.');
+if (badge) {
+const original = badge.textContent;
+badge.textContent = '❓';
+setTimeout(() => { badge.textContent = original; }, 1500);
+}
+}
+}
+
 function setBadgeProgress(remaining) {
 if (!badge) return;
 if (remaining > 0) {
@@ -712,7 +1088,7 @@ badge = document.getElementById(BADGE_ID);
 if (badge) badge.remove();
 badge = document.createElement('div');
 badge.id = BADGE_ID;
-badge.onclick = extractAndExport;
+badge.onclick = runExtraction;
 document.documentElement.appendChild(badge);
 Object.assign(badge.style, {
 position: 'fixed', right: '12px', top: '12px', width: '48px', height: '48px',
@@ -722,7 +1098,7 @@ display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px
 fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
 badge.textContent = '📋';
-badge.title = 'Extract SLA customers';
+badge.title = 'Extract leads (SLA queue or Pending Customers)';
 badge.addEventListener('mouseenter', () => {
 badge.style.transform = 'scale(1.15)';
 badge.style.boxShadow = '0 6px 16px rgba(39, 174, 96, 0.5)';
@@ -734,10 +1110,14 @@ badge.style.boxShadow = '0 4px 12px rgba(39, 174, 96, 0.3)';
 }
 
 window._slaResetBookmarklet = resetBookmarklet;
-window._toggleSlaPanelSize = function() {
+window._togglePanelSize = function() {
 const current = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 localStorage.setItem(PANEL_SIZE_KEY, current === 'full' ? 'compact' : 'full');
+if (currentPageType === PAGE_PENDING) {
+displayPendingPanel(currentPendingCustomers);
+} else {
 displayPanel(currentCustomers);
+}
 };
 window._toggleTier = function(tierId) {
 const tierContent = document.getElementById(tierId);
@@ -745,6 +1125,16 @@ const toggle = document.getElementById('toggle-' + tierId);
 if (tierContent && toggle) {
 const isHidden = tierContent.style.display === 'none';
 tierContent.style.display = isHidden ? 'grid' : 'none';
+toggle.textContent = isHidden ? '▼' : '▶';
+}
+};
+
+window._toggleCallbackType = function(sectionId) {
+const content = document.getElementById(sectionId);
+const toggle = document.getElementById('toggle-' + sectionId);
+if (content && toggle) {
+const isHidden = content.style.display === 'none';
+content.style.display = isHidden ? 'grid' : 'none';
 toggle.textContent = isHidden ? '▼' : '▶';
 }
 };
@@ -758,33 +1148,50 @@ body.style.display = isHidden ? 'block' : 'none';
 toggle.textContent = isHidden ? '▼' : '▶';
 };
 
+window._toggleAdvancedCallbackTypes = function(forceOpen) {
+const body = document.getElementById('advancedCallbackTypes');
+const toggle = document.getElementById('advancedCallbackToggle');
+if (!body || !toggle) return;
+const isCurrentlyOpen = body.style.display === 'flex';
+const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !isCurrentlyOpen;
+body.style.display = shouldOpen ? 'flex' : 'none';
+toggle.textContent = shouldOpen ? '▼' : '▶';
+};
+
 window._refreshAssignSection = function() {
 const container = document.getElementById('assignSectionContainer');
 if (!container) return;
 
-// Preserve deliberate exclusions (unchecked tiers/agents) and the
-// timeframe value across a manual refresh instead of resetting them.
+// Preserve deliberate exclusions (unchecked tiers/callback types/agents)
+// and the timeframe value across a manual refresh instead of resetting
+// them.
 const uncheckedAgentIds = new Set(
 Array.from(document.querySelectorAll('.assign-agent-checkbox:not(:checked)')).map(el => el.value)
 );
-const uncheckedTiers = new Set(
-Array.from(document.querySelectorAll('.assign-tier-checkbox:not(:checked)')).map(el => el.value)
+const uncheckedFilters = new Set(
+Array.from(document.querySelectorAll('.assign-tier-checkbox:not(:checked), .assign-callback-checkbox:not(:checked)')).map(el => el.value)
 );
 const windowInput = document.getElementById('assignWindowMinutes');
 const windowValue = windowInput ? windowInput.value : '';
+const cutoffInput = document.getElementById('assignCutoffTime');
+const cutoffValue = cutoffInput ? cutoffInput.value : '';
+const advancedWasOpen = document.getElementById('advancedCallbackTypes')?.style.display === 'flex';
 
-container.outerHTML = renderAssignSection();
+container.outerHTML = currentPageType === PAGE_PENDING ? renderPendingAssignSection() : renderAssignSection();
 
 uncheckedAgentIds.forEach((id) => {
 const el = document.querySelector(`.assign-agent-checkbox[value="${CSS.escape(id)}"]`);
 if (el) el.checked = false;
 });
-uncheckedTiers.forEach((t) => {
-const el = document.querySelector(`.assign-tier-checkbox[value="${CSS.escape(t)}"]`);
+uncheckedFilters.forEach((v) => {
+const el = document.querySelector(`.assign-tier-checkbox[value="${CSS.escape(v)}"], .assign-callback-checkbox[value="${CSS.escape(v)}"]`);
 if (el) el.checked = false;
 });
 const newWindowInput = document.getElementById('assignWindowMinutes');
 if (newWindowInput && windowValue) newWindowInput.value = windowValue;
+const newCutoffInput = document.getElementById('assignCutoffTime');
+if (newCutoffInput && cutoffValue) newCutoffInput.value = cutoffValue;
+if (advancedWasOpen) window._toggleAdvancedCallbackTypes(true);
 };
 
 window._runSlaAssignment = async function() {
@@ -827,7 +1234,61 @@ button.disabled = true;
 button.textContent = `Assigning 0/${plan.length}...`;
 log.innerHTML = '';
 
-const results = await runAssignmentPlan(plan, (soFar) => {
+const results = await runAssignmentPlan(plan, locateAssignCell, (soFar) => {
+button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
+log.innerHTML = soFar.map(r =>
+`<div style="color: ${r.ok ? '#27ae60' : '#e74c3c'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
+).join('');
+log.scrollTop = log.scrollHeight;
+});
+
+const succeeded = results.filter(r => r.ok).length;
+button.disabled = false;
+button.textContent = 'Assign Unassigned Leads';
+console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
+};
+
+window._runPendingAssignment = async function() {
+const button = document.getElementById('assignRunButton');
+const log = document.getElementById('assignResultsLog');
+if (!button || !log) return;
+
+const selectedTypes = new Set(
+Array.from(document.querySelectorAll('.assign-callback-checkbox:checked')).map(el => el.value)
+);
+const selectedAgentIds = new Set(
+Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map(el => el.value)
+);
+const cutoffInput = document.getElementById('assignCutoffTime');
+const cutoffDate = parseCutoffFromInput(cutoffInput ? cutoffInput.value : '');
+
+if (selectedTypes.size === 0) {
+log.textContent = 'Select at least one callback type.';
+return;
+}
+
+const agents = getAgentRoster().filter(a => selectedAgentIds.has(a.id));
+if (agents.length === 0) {
+log.textContent = 'Select at least one agent.';
+return;
+}
+
+const leads = collectPendingCustomers();
+const eligible = filterPendingLeads(leads, { callbackTypes: selectedTypes, cutoffDate });
+const prioritized = prioritizePendingLeads(eligible);
+
+if (prioritized.length === 0) {
+log.textContent = 'No unassigned leads match the selected callback types/timeframe.';
+return;
+}
+
+const plan = roundRobinAssign(prioritized, agents);
+
+button.disabled = true;
+button.textContent = `Assigning 0/${plan.length}...`;
+log.innerHTML = '';
+
+const results = await runAssignmentPlan(plan, locatePendingAssignCell, (soFar) => {
 button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
 log.innerHTML = soFar.map(r =>
 `<div style="color: ${r.ok ? '#27ae60' : '#e74c3c'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
