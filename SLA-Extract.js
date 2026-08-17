@@ -4,6 +4,7 @@ const BADGE_COLOR = '#2c3e50';
 const BADGE_BORDER_COLOR = '#27ae60';
 const PANEL_ID = '_slaPanel';
 const PANEL_STATE_KEY = '_slaPanelState';
+const PANEL_SIZE_KEY = '_slaPanelSize';
 
 let badge = null;
 let panelElement = null;
@@ -127,7 +128,7 @@ badge = null;
 console.info('🔄 SLA Extractor stopped - click bookmarklet again to run');
 }
 
-function displayPanel(customers, newCount = 0) {
+function displayPanel(customers, newCount = 0, removedCount = 0) {
 currentCustomers = customers;
 const tiered = {
 tier1: customers.filter(c => c.tier === 1),
@@ -136,9 +137,15 @@ tier3: customers.filter(c => c.tier === 3),
 tier4: customers.filter(c => c.tier === 4)
 };
 
+const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
+const isFull = panelSize === 'full';
+const positionStyle = isFull
+? 'top: 0; right: 0; bottom: 0; height: 100vh; width: 450px; border-radius: 0;'
+: 'bottom: 20px; right: 20px; width: 400px; height: min(640px, calc(100vh - 40px)); border-radius: 16px;';
+
 const panelHTML = `
-<div style="position: fixed; top: 0; right: 0; width: 450px; height: 100vh;
-background: #f8f9fa; box-shadow: -2px 0 12px rgba(0,0,0,0.15);
+<div style="position: fixed; ${positionStyle}
+background: #f8f9fa; box-shadow: 0 8px 30px rgba(0,0,0,0.25);
 z-index: 10000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 display: flex; flex-direction: column; transition: transform 0.3s ease;">
 
@@ -148,13 +155,17 @@ flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
 <div style="display: flex; align-items: center; gap: 12px;">
 <h2 style="margin: 0; font-size: 18px; font-weight: 700;">SLA Report</h2>
 <span style="background: #27ae60; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">${customers.length}</span>
-${newCount > 0 ? `<span style="background: #f39c12; color: white; padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;">+${newCount} new</span>` : ''}
+${newCount > 0 ? `<span style="background: #f39c12; color: white; padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;">+${newCount}</span>` : ''}
+${removedCount > 0 ? `<span style="background: #7f8c8d; color: white; padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;">−${removedCount}</span>` : ''}
 </div>
 <div style="display: flex; gap: 8px;">
+<button onclick="window._toggleSlaPanelSize();"
+style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
+title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${isFull ? '⤡' : '⤢'}</button>
 <button onclick="document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0;"
 style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
 title="Top">↑</button>
-<button onclick="(function() { const panel = document.getElementById('${PANEL_ID}'); if (!panel) return; const btn = event.target; const isHidden = panel.style.transform === 'translateX(100%)'; panel.style.transform = isHidden ? 'translateX(0)' : 'translateX(100%)'; btn.textContent = isHidden ? '−' : '□'; localStorage.setItem('${PANEL_STATE_KEY}', isHidden ? 'visible' : 'hidden'); })();"
+<button onclick="(function() { const panel = document.getElementById('${PANEL_ID}'); if (!panel) return; const btn = event.target; const isHidden = panel.style.transform === 'translateX(150%)'; panel.style.transform = isHidden ? 'translateX(0)' : 'translateX(150%)'; btn.textContent = isHidden ? '−' : '□'; localStorage.setItem('${PANEL_STATE_KEY}', isHidden ? 'visible' : 'hidden'); })();"
 style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
 title="Minimize">−</button>
 </div>
@@ -259,7 +270,10 @@ extracting = false;
 return;
 }
 
+const previousByKey = new Map(currentCustomers.map(c => [c.key, c]));
+const seenKeys = new Set();
 const customers = [];
+let addedCount = 0;
 const rows = table.querySelectorAll('tbody tr');
 
 for (const row of rows) {
@@ -271,10 +285,20 @@ const campaign = cells[3]?.textContent?.trim();
 
 if (!name || !campaign) continue;
 
+const key = `${name}||${source}||${campaign}`;
+seenKeys.add(key);
+
+const existing = previousByKey.get(key);
+if (existing) {
+customers.push(existing);
+continue;
+}
+
 const tierInfo = categorizeTier(campaign, source);
 const details = await extractCustomerDetails(cells[0]);
 
 customers.push({
+key,
 name,
 campaign,
 source,
@@ -283,15 +307,18 @@ reason: tierInfo.reason,
 phone: details.phone,
 email: details.email
 });
+addedCount++;
 } catch (error) {
 console.warn('Error processing row:', error);
 }
 }
 
+const removedCount = currentCustomers.filter(c => !seenKeys.has(c.key)).length;
+
 const startTime = Date.now();
-displayPanel(customers);
+displayPanel(customers, addedCount, removedCount);
 const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
-console.info(`✅ SLA Report generated in ${totalTime}s (${customers.length} customers)`);
+console.info(`✅ SLA Report generated in ${totalTime}s (${customers.length} customers, +${addedCount}/-${removedCount})`);
 } catch (error) {
 console.error('SLA Export Error:', error);
 } finally {
@@ -327,6 +354,11 @@ badge.style.boxShadow = '0 4px 12px rgba(39, 174, 96, 0.3)';
 }
 
 window._slaResetBookmarklet = resetBookmarklet;
+window._toggleSlaPanelSize = function() {
+const current = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
+localStorage.setItem(PANEL_SIZE_KEY, current === 'full' ? 'compact' : 'full');
+displayPanel(currentCustomers);
+};
 window._toggleTier = function(tierId) {
 const tierContent = document.getElementById(tierId);
 const toggle = document.getElementById('toggle-' + tierId);
