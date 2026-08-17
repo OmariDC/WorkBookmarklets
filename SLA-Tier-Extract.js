@@ -111,25 +111,22 @@ element.style.color = '';
 }
 
 function resetBookmarklet() {
-// Clear all variables
 currentCustomers = [];
 extracting = false;
 localStorage.removeItem('_slaPanelScroll');
 localStorage.removeItem(PANEL_STATE_KEY);
 
-// Remove panel
 if (panelElement) {
 panelElement.remove();
 panelElement = null;
 }
 
-// Reset badge to initial state
 if (badge) {
-badge.style.transform = 'scale(1)';
-badge.style.opacity = '1';
+badge.remove();
+badge = null;
 }
 
-console.info('🔄 SLA Extractor reset - ready to run again');
+console.info('🔄 SLA Extractor stopped - click bookmarklet again to run');
 }
 
 function displayPanel(customers) {
@@ -175,9 +172,9 @@ ${renderTierSection('Tier 4 - Check Fourth', tiered.tier4, '#f39c12')}
 
 <!-- Footer -->
 <div style="border-top: 1px solid #ecf0f1; padding: 12px; background: #f8f9fa; flex-shrink: 0; display: flex; gap: 8px;">
-<button onclick="(function() { if (confirm('Clear all extracted data and reset?')) { window._slaResetBookmarklet(); } })();"
+<button onclick="(function() { if (confirm('Clear all extracted data and stop bookmarklet?')) { window._slaResetBookmarklet(); } })();"
 style="flex: 1; padding: 8px; background: #e74c3c; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
-Clear Data
+Clear & Stop
 </button>
 <button onclick="(function() { const panel = document.getElementById('${PANEL_ID}'); if (!panel) return; const content = panel.querySelector('.panelContent'); content.scrollTop = 0; })();"
 style="flex: 1; padding: 8px; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
@@ -196,7 +193,6 @@ panelElement.id = PANEL_ID;
 panelElement.innerHTML = panelHTML;
 document.body.appendChild(panelElement);
 
-// Restore scroll position
 const savedScroll = localStorage.getItem('_slaPanelScroll');
 if (savedScroll) {
 setTimeout(() => {
@@ -205,7 +201,6 @@ if (content) content.scrollTop = parseInt(savedScroll);
 }, 100);
 }
 
-// Save scroll position on scroll
 const contentArea = panelElement.querySelector('.panelContent');
 if (contentArea) {
 contentArea.addEventListener('scroll', () => {
@@ -213,7 +208,6 @@ localStorage.setItem('_slaPanelScroll', contentArea.scrollTop);
 });
 }
 
-// Add copy listeners
 panelElement.querySelectorAll('.sla-copyable').forEach(el => {
 el.addEventListener('click', function() {
 copyToClipboard(this.dataset.value, this);
@@ -276,7 +270,7 @@ return;
 }
 
 const allRows = table.querySelectorAll('tbody tr');
-console.info(`📊 Found ${allRows.length} customers, extracting details...`);
+console.info(`📊 Found ${allRows.length} rows, extracting valid customers...`);
 
 for (let i = 0; i < allRows.length; i++) {
 const row = allRows[i];
@@ -288,7 +282,10 @@ const name = cells[0].textContent.trim();
 const source = cells[2].textContent.trim();
 const campaign = cells[3].textContent.trim();
 
-if (!name || name.includes('Customer')) {
+if (name === 'Customer' || !name) {
+continue;
+}
+
 const details = await extractCustomerDetails(row);
 customers.push({
 name,
@@ -300,13 +297,12 @@ tier: null,
 tierReason: ''
 });
 console.info(`✓ ${name}`);
-}
 
 await new Promise(setTimeout, 600);
 }
 
 if (customers.length === 0) {
-console.warn('No customers found in SLA queue');
+console.warn('No valid customers found in SLA queue');
 extracting = false;
 return;
 }
@@ -375,7 +371,6 @@ badge.style.boxShadow = '0 0 10px rgba(39, 174, 96, 0.7)';
 });
 }
 
-// Expose reset function globally
 window._slaResetBookmarklet = resetBookmarklet;
 
 createBadge();
