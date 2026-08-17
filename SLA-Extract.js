@@ -1,4 +1,4 @@
-(function() {
+1(function() {
 const BADGE_ID = '_slaBadge';
 const BADGE_COLOR = '#2c3e50';
 const BADGE_BORDER_COLOR = '#27ae60';
@@ -205,7 +205,12 @@ panelElement = null;
 }
 
 if (badge) {
-badge.remove();
+// Badge now lives inside a wrapping <li> in the host navbar (see
+// createBadge) - remove that wrapper too, or the fallback fixed-position
+// case's plain badge.remove(), so nothing gets left behind either way.
+const navItem = document.getElementById('_slaBadgeNavItem');
+if (navItem) navItem.remove();
+else badge.remove();
 badge = null;
 }
 
@@ -437,9 +442,31 @@ badge.style.fontSize = '22px';
 }
 }
 
+function attachBadgeHoverEffects() {
+badge.addEventListener('mouseenter', () => {
+badge.style.transform = 'scale(1.15)';
+badge.style.boxShadow = '0 6px 16px rgba(39, 174, 96, 0.5)';
+});
+badge.addEventListener('mouseleave', () => {
+badge.style.transform = 'scale(1)';
+badge.style.boxShadow = '0 4px 12px rgba(39, 174, 96, 0.3)';
+});
+}
+
 function createBadge() {
-badge = document.getElementById(BADGE_ID);
-if (badge) badge.remove();
+// Remove any existing instance before recreating
+const existingItem = document.getElementById('_slaBadgeNavItem');
+if (existingItem) existingItem.remove();
+const existingBadge = document.getElementById(BADGE_ID);
+if (existingBadge) existingBadge.remove();
+
+// Find the LEFT navbar <ul> specifically, the one containing "Client Config" -
+// both nav lists share the class "nav navbar-nav", so match by content, not position.
+const targetUl = Array.from(document.querySelectorAll('ul.nav.navbar-nav'))
+.find(ul => Array.from(ul.querySelectorAll('a')).some(a => a.textContent.trim() === 'Client Config'));
+
+if (!targetUl) {
+console.warn('SLA Extractor: navbar structure not found, falling back to fixed position');
 badge = document.createElement('div');
 badge.id = BADGE_ID;
 badge.onclick = extractAndExport;
@@ -453,14 +480,34 @@ fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
 badge.textContent = '📋';
 badge.title = 'Extract SLA customers';
-badge.addEventListener('mouseenter', () => {
-badge.style.transform = 'scale(1.15)';
-badge.style.boxShadow = '0 6px 16px rgba(39, 174, 96, 0.5)';
+attachBadgeHoverEffects();
+return;
+}
+
+// Plain <li>, no "dropdown" class - sibling items use that for their caret/toggle
+// behavior, which this item doesn't need.
+const navItem = document.createElement('li');
+navItem.id = '_slaBadgeNavItem';
+Object.assign(navItem.style, {
+display: 'flex', alignItems: 'center', height: '50px', padding: '0 8px'
 });
-badge.addEventListener('mouseleave', () => {
-badge.style.transform = 'scale(1)';
-badge.style.boxShadow = '0 4px 12px rgba(39, 174, 96, 0.3)';
+
+badge = document.createElement('div');
+badge.id = BADGE_ID;
+Object.assign(badge.style, {
+boxSizing: 'border-box', width: '48px', height: '48px',
+background: BADGE_COLOR, border: `2px solid ${BADGE_BORDER_COLOR}`, borderRadius: '50%',
+boxShadow: '0 4px 12px rgba(39, 174, 96, 0.3)', cursor: 'pointer',
+display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px',
+fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
+badge.textContent = '📋';
+badge.title = 'Extract SLA customers';
+badge.onclick = extractAndExport;
+attachBadgeHoverEffects();
+
+navItem.appendChild(badge);
+targetUl.appendChild(navItem); // last item in the left nav = immediately after "Client Config"
 }
 
 window._slaResetBookmarklet = resetBookmarklet;
