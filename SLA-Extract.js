@@ -141,12 +141,12 @@ const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 const isFull = panelSize === 'full';
 const positionStyle = isFull
 ? 'top: 0; right: 0; bottom: 0; height: 100vh; width: 450px; border-radius: 0;'
-: 'bottom: 20px; right: 20px; width: 400px; height: min(640px, calc(100vh - 40px)); border-radius: 16px;';
+: 'bottom: 20px; right: 20px; width: 400px; height: min(560px, calc(100vh - 90px)); border-radius: 16px;';
 
 const panelHTML = `
 <div style="position: fixed; ${positionStyle}
 background: #f8f9fa; box-shadow: 0 8px 30px rgba(0,0,0,0.25);
-z-index: 10000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 display: flex; flex-direction: column; transition: transform 0.3s ease;">
 
 <div style="position: sticky; top: 0; background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); color: white; padding: 20px;
@@ -199,7 +199,7 @@ if (panelElement) panelElement.remove();
 panelElement = document.createElement('div');
 panelElement.id = PANEL_ID;
 panelElement.innerHTML = panelHTML;
-document.body.appendChild(panelElement);
+document.documentElement.appendChild(panelElement);
 
 const contentArea = panelElement.querySelector('.panelContent');
 if (contentArea) {
@@ -333,7 +333,7 @@ if (badge) badge.remove();
 badge = document.createElement('div');
 badge.id = BADGE_ID;
 badge.onclick = extractAndExport;
-document.body.appendChild(badge);
+document.documentElement.appendChild(badge);
 Object.assign(badge.style, {
 position: 'fixed', right: '12px', top: '12px', width: '48px', height: '48px',
 background: BADGE_COLOR, border: `2px solid ${BADGE_BORDER_COLOR}`, borderRadius: '50%',
