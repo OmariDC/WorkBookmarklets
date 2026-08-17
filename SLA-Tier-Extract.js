@@ -121,200 +121,90 @@ function resetBookmarklet() {
 }
 
 function displayPanel() {
-  // Remove existing panel if present
   const existingPanel = document.getElementById(PANEL_ID);
   if (existingPanel) {
     existingPanel.remove();
   }
 
-  // Create the fixed bottom panel container
   panelElement = document.createElement('div');
   panelElement.id = PANEL_ID;
-  panelElement.setAttribute('style', `
-    position: fixed;
-    bottom: 0;
-    right: 0;
-    left: 0;
-    width: 100%;
-    height: 35vh;
-    max-height: 35vh;
-    background: white;
-    border-top: 3px solid #2c3e50;
-    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.15);
-    z-index: 10000;
-    display: flex;
-    flex-direction: column;
-    font-family: Arial, sans-serif;
-    overflow: hidden;
-  `);
+  panelElement.style.cssText = 'position: fixed; bottom: 0; right: 0; width: 400px; height: 500px; background: white; border: 2px solid #2c3e50; border-radius: 4px; box-shadow: 0 -2px 10px rgba(0,0,0,0.2); z-index: 10000; display: flex; flex-direction: column; font-family: Arial, sans-serif; overflow: hidden;';
 
-  // Create header section (non-scrollable)
-  const headerSection = document.createElement('div');
-  headerSection.setAttribute('style', `
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 12px 15px;
-    background: #f5f5f5;
-    border-bottom: 1px solid #ddd;
-    flex-shrink: 0;
-  `);
+  const header = document.createElement('div');
+  header.style.cssText = 'display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #2c3e50; color: white; border-bottom: 1px solid #ddd; flex-shrink: 0;';
+  
+  const title = document.createElement('h3');
+  title.textContent = 'SLA Report';
+  title.style.cssText = 'margin: 0; font-size: 16px; font-weight: bold;';
+  
+  const controls = document.createElement('div');
+  controls.style.cssText = 'display: flex; gap: 5px;';
 
-  const headerTitle = document.createElement('h3');
-  headerTitle.setAttribute('style', `
-    margin: 0;
-    font-size: 16px;
-    color: #2c3e50;
-    font-weight: 600;
-  `);
-  headerTitle.textContent = 'SLA Report';
+  const topBtn = document.createElement('button');
+  topBtn.textContent = 'Top';
+  topBtn.style.cssText = 'padding: 4px 8px; background: #3498db; color: white; border: none; cursor: pointer; font-size: 11px;';
+  
+  const minimizeBtn = document.createElement('button');
+  minimizeBtn.textContent = '-';
+  minimizeBtn.style.cssText = 'padding: 4px 8px; background: #95a5a6; color: white; border: none; cursor: pointer; font-size: 11px; width: 25px;';
 
-  const headerControls = document.createElement('div');
-  headerControls.setAttribute('style', `
-    display: flex;
-    gap: 8px;
-  `);
+  controls.appendChild(topBtn);
+  controls.appendChild(minimizeBtn);
+  header.appendChild(title);
+  header.appendChild(controls);
 
-  const topButton = document.createElement('button');
-  topButton.textContent = 'Top';
-  topButton.setAttribute('style', `
-    padding: 6px 12px;
-    background: #3498db;
-    color: white;
-    border: none;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 500;
-  `);
+  const content = document.createElement('div');
+  content.style.cssText = 'flex: 1; overflow-y: auto; padding: 10px; background: white;';
 
-  const clearButton = document.createElement('button');
-  clearButton.textContent = 'Clear & Stop';
-  clearButton.setAttribute('style', `
-    padding: 6px 12px;
-    background: #e74c3c;
-    color: white;
-    border: none;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 500;
-  `);
-
-  headerControls.appendChild(topButton);
-  headerControls.appendChild(clearButton);
-  headerSection.appendChild(headerTitle);
-  headerSection.appendChild(headerControls);
-
-  // Create scrollable content section
-  const contentScroller = document.createElement('div');
-  contentScroller.setAttribute('style', `
-    flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
-    padding: 12px 15px;
-  `);
-
-  // Add tier sections to scrollable content
   for (let tier = 1; tier <= 4; tier++) {
-    renderTierSection(contentScroller, tier);
+    renderTierSection(content, tier);
   }
 
-  // Assemble panel
-  panelElement.appendChild(headerSection);
-  panelElement.appendChild(contentScroller);
+  panelElement.appendChild(header);
+  panelElement.appendChild(content);
   document.body.appendChild(panelElement);
 
-  // Setup button event listeners
-  topButton.onclick = () => {
-    contentScroller.scrollTop = 0;
+  topBtn.onclick = () => {
+    content.scrollTop = 0;
   };
 
-  clearButton.onclick = () => {
-    resetBookmarklet();
-    panelElement.remove();
-    badge.remove();
+  minimizeBtn.onclick = () => {
+    panelElement.style.display = panelElement.style.display === 'none' ? 'flex' : 'none';
   };
 
-  // Adjust main content area to prevent overlap
-  const mainContent = document.querySelector('[role="main"], main, .main-content, .content, .ng-scope') ||
-                      document.querySelector('table') ||
-                      document.body;
-  
-  if (mainContent && mainContent !== document.body) {
-    mainContent.style.paddingBottom = '35vh';
-    mainContent.style.boxSizing = 'border-box';
-  }
-
-  // Save panel state
   localStorage.setItem(PANEL_STATE_KEY, 'visible');
 }
 
 function renderTierSection(container, tier) {
-  const tierData = currentCustomers.filter(c => c.tier === tier);
+  const tierCustomers = currentCustomers.filter(c => c.tier === tier);
   
-  const tierSection = document.createElement('div');
-  tierSection.setAttribute('style', `
-    margin-bottom: 15px;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-    overflow: hidden;
-  `);
+  const tierDiv = document.createElement('div');
+  tierDiv.style.cssText = 'margin-bottom: 10px; border: 1px solid #ddd; border-radius: 3px; overflow: hidden;';
 
   const tierHeader = document.createElement('div');
-  tierHeader.setAttribute('style', `
-    background: ${getTierColor(tier)};
-    color: white;
-    padding: 10px;
-    cursor: pointer;
-    font-weight: bold;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  `);
-  tierHeader.innerHTML = `Tier ${tier} (${tierData.length})`;
+  const tierColors = { 1: '#e74c3c', 2: '#f39c12', 3: '#3498db', 4: '#95a5a6' };
+  tierHeader.style.cssText = `background: ${tierColors[tier]}; color: white; padding: 8px; cursor: pointer; font-weight: bold; user-select: none;`;
+  tierHeader.textContent = `Tier ${tier} - ${tierCustomers.length} customers`;
 
   const tierContent = document.createElement('div');
-  tierContent.setAttribute('style', `
-    display: ${tier === 4 ? 'block' : 'none'};
-    max-height: 200px;
-    overflow-y: auto;
-    background: white;
-  `);
+  tierContent.style.cssText = 'display: none; max-height: 200px; overflow-y: auto; background: #f9f9f9; border-top: 1px solid #ddd;';
 
-  tierData.forEach(customer => {
-    const customerDiv = document.createElement('div');
-    customerDiv.setAttribute('style', `
-      padding: 10px;
-      border-bottom: 1px solid #eee;
-      font-size: 12px;
-    `);
-    customerDiv.innerHTML = `
-      <strong>${customer.name}</strong><br/>
-      ${customer.phone ? `Phone: ${customer.phone}<br/>` : ''}
-      ${customer.email ? `Email: ${customer.email}<br/>` : ''}
-      <small>${customer.source}</small>
-    `;
-    tierContent.appendChild(customerDiv);
+  tierCustomers.forEach(customer => {
+    const custDiv = document.createElement('div');
+    custDiv.style.cssText = 'padding: 8px; border-bottom: 1px solid #eee; font-size: 11px; cursor: pointer; background: white;';
+    custDiv.onmouseover = () => custDiv.style.background = '#f0f0f0';
+    custDiv.onmouseout = () => custDiv.style.background = 'white';
+    custDiv.innerHTML = `<strong>${customer.name}</strong><br/>${customer.phone}<br/><small>${customer.campaign}</small>`;
+    tierContent.appendChild(custDiv);
   });
 
   tierHeader.onclick = () => {
     tierContent.style.display = tierContent.style.display === 'none' ? 'block' : 'none';
   };
 
-  tierSection.appendChild(tierHeader);
-  tierSection.appendChild(tierContent);
-  container.appendChild(tierSection);
-}
-
-function getTierColor(tier) {
-  const colors = {
-    1: '#e74c3c',
-    2: '#f39c12',
-    3: '#3498db',
-    4: '#95a5a6'
-  };
-  return colors[tier] || '#95a5a6';
+  tierDiv.appendChild(tierHeader);
+  tierDiv.appendChild(tierContent);
+  container.appendChild(tierDiv);
 }
 
 async function extractAndExport() {
@@ -324,7 +214,7 @@ async function extractAndExport() {
 
   const table = document.querySelector('table');
   if (!table) {
-    alert('No leads table found');
+    alert('No table found');
     extracting = false;
     return;
   }
@@ -336,73 +226,44 @@ async function extractAndExport() {
       const cells = row.querySelectorAll('td');
       if (cells.length < 4) continue;
 
-      const nameCell = cells[0];
-      const campaignCell = cells[3];
-      const sourceCell = cells[2];
-
-      const name = nameCell.textContent.trim();
-      const campaign = campaignCell.textContent.trim();
-      const source = sourceCell.textContent.trim();
+      const name = cells[0].textContent.trim();
+      const source = cells[2].textContent.trim();
+      const campaign = cells[3].textContent.trim();
 
       if (extractedLeadIds.has(name)) continue;
 
-      const tierInfo = categorizeTier(campaign, source);
-      const details = await extractCustomerDetails(nameCell);
+      const { tier, reason } = categorizeTier(campaign, source);
+      const { phone, email } = await extractCustomerDetails(cells[0]);
 
-      const customer = {
+      currentCustomers.push({
         name,
         campaign,
         source,
-        tier: tierInfo.tier,
-        reason: tierInfo.reason,
-        phone: details.phone,
-        email: details.email
-      };
+        tier,
+        reason,
+        phone,
+        email
+      });
 
-      currentCustomers.push(customer);
       extractedLeadIds.add(name);
-
-      badge.textContent = `Extracted: ${extractedLeadIds.size}`;
-      badge.style.background = getTierColor(tierInfo.tier);
+      badge.textContent = `${extractedLeadIds.size}`;
     } catch (error) {
-      console.warn('Error processing row:', error);
+      console.warn('Error:', error);
     }
   }
 
   displayPanel();
   extracting = false;
-  badge.textContent = `Done (${extractedLeadIds.size})`;
 }
 
 function createBadge() {
   badge = document.createElement('button');
   badge.id = BADGE_ID;
   badge.textContent = 'Extract SLA';
-  badge.setAttribute('style', `
-    position: fixed;
-    bottom: 20px;
-    right: 20px;
-    padding: 10px 15px;
-    background: ${BADGE_COLOR};
-    color: white;
-    border: 3px solid ${BADGE_BORDER_COLOR};
-    border-radius: 50%;
-    cursor: pointer;
-    z-index: 9999;
-    font-weight: bold;
-    font-size: 12px;
-    width: 60px;
-    height: 60px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-  `);
-
+  badge.style.cssText = 'position: fixed; bottom: 20px; right: 20px; width: 70px; height: 70px; background: ' + BADGE_COLOR + '; color: white; border: 3px solid ' + BADGE_BORDER_COLOR + '; border-radius: 50%; cursor: pointer; z-index: 9999; font-weight: bold; font-size: 12px; padding: 0;';
   badge.onclick = extractAndExport;
   document.body.appendChild(badge);
 }
 
-// Initialize
 createBadge();
 })();
