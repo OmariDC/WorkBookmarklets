@@ -522,15 +522,18 @@ function handleSettle() {
 highlightAndSettle(Math.round(el.scrollTop / WHEEL_ROW_HEIGHT));
 }
 
+// Both listeners are attached unconditionally (not either/or) - if
+// scrollend ever fails to fire for some host-page-specific reason, the
+// debounced scroll listener still catches the settle instead of the
+// wheel silently never reporting a value.
 if ('onscrollend' in window) {
 el.addEventListener('scrollend', handleSettle);
-} else {
+}
 let scrollDebounce = null;
 el.addEventListener('scroll', () => {
 clearTimeout(scrollDebounce);
 scrollDebounce = setTimeout(handleSettle, 120);
 });
-}
 
 const startIndex = Math.max(0, values.indexOf(initialValue));
 el.scrollTop = startIndex * WHEEL_ROW_HEIGHT;
