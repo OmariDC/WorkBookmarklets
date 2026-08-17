@@ -463,6 +463,107 @@ onProgress(results.slice());
 return results;
 }
 
+// ===================================================================
+// WHEEL PICKERS (shared between both assign sections' time inputs)
+//
+// Each wheel writes its settled value into the same hidden <input> the
+// rest of the code already reads (#assignWindowMinutes / #assignCutoffTime)
+// so parseCutoffFromInput(), the assignment handlers, and the refresh
+// value-preservation logic all need zero changes - the wheel is purely a
+// presentation-layer swap for the plain inputs that used to be there.
+// ===================================================================
+
+const WHEEL_ROW_HEIGHT = 32;
+const WHEEL_VISIBLE_ROWS = 3;
+const SLA_WINDOW_PRESETS = ['All', '5', '10', '15', '20', '30', '45', '60', '90', '120'];
+const HOUR_VALUES = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+const MINUTE_VALUES = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
+
+function ensureWheelStyles() {
+if (document.getElementById('_slaWheelStyles')) return;
+const style = document.createElement('style');
+style.id = '_slaWheelStyles';
+style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; }';
+document.head.appendChild(style);
+}
+
+function renderWheelColumnHtml(id, values, widthPx) {
+const spacerHeight = Math.floor(WHEEL_VISIBLE_ROWS / 2) * WHEEL_ROW_HEIGHT;
+const items = values.map(v => `<div class="wheel-item" style="height: ${WHEEL_ROW_HEIGHT}px; display: flex; align-items: center; justify-content: center; font-size: 13px; scroll-snap-align: center; color: #95a5a6; transition: color 0.15s, font-weight 0.15s;">${escapeHtml(String(v))}</div>`).join('');
+return `<div style="position: relative; width: ${widthPx}px;">
+<div style="position: absolute; top: ${spacerHeight}px; left: 0; right: 0; height: ${WHEEL_ROW_HEIGHT}px; background: #e8f4f8; border-radius: 4px; pointer-events: none;"></div>
+<div id="${id}" class="wheel-scroll" style="position: relative; height: ${WHEEL_VISIBLE_ROWS * WHEEL_ROW_HEIGHT}px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; border: 1px solid #ddd; border-radius: 4px; background: white;">
+<div style="height: ${spacerHeight}px;"></div>
+${items}
+<div style="height: ${spacerHeight}px;"></div>
+</div>
+</div>`;
+}
+
+// Wires scroll-snap "settle" detection onto an already-mounted wheel
+// column - can only run after the HTML has actually been inserted into
+// the DOM, so callers invoke this post-mount, never inline with the HTML
+// string building above.
+function initWheelColumn(id, values, initialValue, onSettle) {
+const el = document.getElementById(id);
+if (!el) return;
+
+function highlightAndSettle(index) {
+index = Math.max(0, Math.min(values.length - 1, index));
+const value = values[index];
+el.querySelectorAll('.wheel-item').forEach((item, i) => {
+item.style.fontWeight = i === index ? '700' : '400';
+item.style.color = i === index ? '#2c3e50' : '#95a5a6';
+});
+if (onSettle) onSettle(value);
+}
+
+function handleSettle() {
+highlightAndSettle(Math.round(el.scrollTop / WHEEL_ROW_HEIGHT));
+}
+
+if ('onscrollend' in window) {
+el.addEventListener('scrollend', handleSettle);
+} else {
+let scrollDebounce = null;
+el.addEventListener('scroll', () => {
+clearTimeout(scrollDebounce);
+scrollDebounce = setTimeout(handleSettle, 120);
+});
+}
+
+const startIndex = Math.max(0, values.indexOf(initialValue));
+el.scrollTop = startIndex * WHEEL_ROW_HEIGHT;
+highlightAndSettle(startIndex);
+}
+
+// Reads whichever wheels are actually present in the currently-mounted
+// assign section (SLA's single minutes wheel, or Pending Customers' hour
+// + minute pair) and wires them up, seeding each from its hidden input's
+// current value so a manual refresh's preserved value is respected.
+function initAssignSectionWheels() {
+if (document.getElementById('assignWindowMinutesWheel')) {
+const hidden = document.getElementById('assignWindowMinutes');
+const current = hidden && hidden.value ? hidden.value : 'All';
+initWheelColumn('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, current, (value) => {
+if (hidden) hidden.value = value === 'All' ? '' : value;
+});
+}
+
+const hourWheel = document.getElementById('assignCutoffHourWheel');
+const minuteWheel = document.getElementById('assignCutoffMinuteWheel');
+if (hourWheel && minuteWheel) {
+const hidden = document.getElementById('assignCutoffTime');
+const [currentHour, currentMinute] = (hidden && hidden.value ? hidden.value : formatTimeForInput(defaultHourCutoff())).split(':');
+let selectedHour = currentHour;
+let selectedMinute = currentMinute;
+const sync = () => { if (hidden) hidden.value = `${selectedHour}:${selectedMinute}`; };
+
+initWheelColumn('assignCutoffHourWheel', HOUR_VALUES, currentHour, (value) => { selectedHour = value; sync(); });
+initWheelColumn('assignCutoffMinuteWheel', MINUTE_VALUES, currentMinute, (value) => { selectedMinute = value; sync(); });
+}
+}
+
 function renderAssignSection() {
 const leads = collectAssignableLeads();
 const agents = getAgentRoster();
@@ -494,8 +595,9 @@ return `
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${tierCheckboxes}</div>
 </div>
 <div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE WITHIN (MINUTES, BLANK = ALL)</div>
-<input id="assignWindowMinutes" type="number" min="1" placeholder="All" style="width: 100px; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
+<input id="assignWindowMinutes" type="hidden" value="">
+${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
 </div>
 <div style="margin-bottom: 10px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
@@ -517,11 +619,11 @@ ${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
 // PENDING CUSTOMERS TAB
 // ===================================================================
 
-const CALLBACK_TYPES_PRIMARY = ['New (SLA)', 'Auto Rescheduled'];
+const CALLBACK_TYPES_PRIMARY = ['New', 'Auto Rescheduled'];
 const CALLBACK_TYPES_ADVANCED = ['Manual Rescheduled', 'Post Closure'];
 const CALLBACK_TYPE_ORDER = [...CALLBACK_TYPES_PRIMARY, ...CALLBACK_TYPES_ADVANCED];
 const CALLBACK_TYPE_COLORS = {
-'New (SLA)': '#e74c3c',
+'New': '#e74c3c',
 'Auto Rescheduled': '#3498db',
 'Manual Rescheduled': '#f39c12',
 'Post Closure': '#95a5a6'
@@ -669,9 +771,13 @@ return `
 <div id="advancedCallbackTypes" style="display: none; gap: 10px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
 </div>
 <div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE BEFORE</div>
-<input id="assignCutoffTime" type="time" value="${defaultCutoff}" style="padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">
-<span style="font-size: 11px; color: #95a5a6; margin-left: 6px;">defaults to the top of the next hour</span>
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE BEFORE <span style="font-weight: 400; color: #95a5a6;">(defaults to the top of the next hour)</span></div>
+<input id="assignCutoffTime" type="hidden" value="${defaultCutoff}">
+<div style="display: flex; align-items: center; gap: 6px;">
+${renderWheelColumnHtml('assignCutoffHourWheel', HOUR_VALUES, 56)}
+<span style="font-weight: 700; color: #2c3e50;">:</span>
+${renderWheelColumnHtml('assignCutoffMinuteWheel', MINUTE_VALUES, 56)}
+</div>
 </div>
 <div style="margin-bottom: 10px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
@@ -835,6 +941,8 @@ el.addEventListener('click', function() {
 copyToClipboard(this.dataset.value, this);
 });
 });
+
+initAssignSectionWheels();
 }
 
 function displayPanel(customers, newCount = 0, removedCount = 0) {
@@ -1192,6 +1300,8 @@ if (newWindowInput && windowValue) newWindowInput.value = windowValue;
 const newCutoffInput = document.getElementById('assignCutoffTime');
 if (newCutoffInput && cutoffValue) newCutoffInput.value = cutoffValue;
 if (advancedWasOpen) window._toggleAdvancedCallbackTypes(true);
+
+initAssignSectionWheels();
 };
 
 window._runSlaAssignment = async function() {
@@ -1302,6 +1412,28 @@ button.textContent = 'Assign Unassigned Leads';
 console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
 };
 
+// Auto-detects switching between the SLA queue and Pending Customers
+// (both live under the same #/Queue/... route pattern, and the badge/
+// script survive the in-app navigation - no full reload), so the panel
+// updates itself instead of waiting for a manual badge click. Debounced
+// to let Angular finish rendering the new view before we scan it.
+let lastAutoPageType = detectPageType();
+let autoDetectTimer = null;
+function scheduleAutoDetect() {
+clearTimeout(autoDetectTimer);
+autoDetectTimer = setTimeout(() => {
+const pageType = detectPageType();
+if (pageType && pageType !== lastAutoPageType) {
+lastAutoPageType = pageType;
+runExtraction();
+} else if (pageType) {
+lastAutoPageType = pageType;
+}
+}, 500);
+}
+window.addEventListener('hashchange', scheduleAutoDetect);
+
+ensureWheelStyles();
 createBadge();
 console.info('✅ SLA Manager ready');
 })();
