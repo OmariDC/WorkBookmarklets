@@ -129,6 +129,13 @@ badge = null;
 console.info('🔄 SLA Extractor stopped - click bookmarklet again to run');
 }
 
+function toggleTier(tierId) {
+const tierContent = document.getElementById(tierId);
+if (tierContent) {
+tierContent.style.display = tierContent.style.display === 'none' ? 'grid' : 'none';
+}
+}
+
 function displayPanel(customers) {
 currentCustomers = customers;
 const tiered = {
@@ -171,10 +178,10 @@ ${customers.length === 0 ? `
 <p style="color: #7f8c8d; margin: 0; font-size: 14px;">The SLA queue is empty. Check back later!</p>
 </div>
 ` : `
-${renderTierSection('Tier 1 - Check First', tiered.tier1, '#e74c3c')}
-${renderTierSection('Tier 2 - Check Second', tiered.tier2, '#3498db')}
-${renderTierSection('Tier 3 - Check Third', tiered.tier3, '#27ae60')}
-${renderTierSection('Tier 4 - Check Fourth', tiered.tier4, '#f39c12')}
+${renderTierSection('Tier 1 - Check First', tiered.tier1, '#e74c3c', 'tier1')}
+${renderTierSection('Tier 2 - Check Second', tiered.tier2, '#3498db', 'tier2')}
+${renderTierSection('Tier 3 - Check Third', tiered.tier3, '#27ae60', 'tier3')}
+${renderTierSection('Tier 4 - Check Fourth', tiered.tier4, '#f39c12', 'tier4')}
 `}
 </div>
 
@@ -223,7 +230,7 @@ copyToClipboard(this.dataset.value, this);
 });
 }
 
-function renderTierSection(tierName, customers, color) {
+function renderTierSection(tierName, customers, color, tierId) {
 if (customers.length === 0) {
 return `<div style="margin-bottom: 16px; padding: 12px; background: #f5f5f5; border-radius: 6px;
 border-left: 4px solid ${color};">
@@ -233,9 +240,13 @@ border-left: 4px solid ${color};">
 }
 
 return `<div style="margin-bottom: 16px;">
-<h3 style="margin: 0 0 10px 0; padding: 8px 12px; background: ${color}; color: white;
-border-radius: 6px; font-size: 13px; font-weight: 600;">${tierName} - ${customers.length} customer${customers.length !== 1 ? 's' : ''}</h3>
-<div style="display: grid; gap: 8px;">
+<div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; margin: 0 0 10px 0; padding: 8px 12px; background: ${color}; color: white;
+border-radius: 6px; font-size: 13px; font-weight: 600; display: flex; justify-content: space-between; align-items: center;
+transition: all 0.2s;" onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
+<span>${tierName} - ${customers.length} customer${customers.length !== 1 ? 's' : ''}</span>
+<span id="toggle-${tierId}" style="font-size: 16px;">▼</span>
+</div>
+<div id="${tierId}" style="display: grid; gap: 8px;">
 ${customers.map(c => `<div style="border: 1px solid #ecf0f1; border-radius: 6px; padding: 10px; background: #fafafa; transition: all 0.2s;">
 <div style="font-weight: 600; color: #2c3e50; margin-bottom: 6px; font-size: 14px;">
 <span class="sla-copyable" data-value="${c.name}" style="cursor: pointer; padding: 2px 6px; border-radius: 3px; transition: all 0.2s;" 
@@ -374,6 +385,15 @@ badge.style.boxShadow = '0 0 10px rgba(39, 174, 96, 0.7)';
 }
 
 window._slaResetBookmarklet = resetBookmarklet;
+window._toggleTier = function(tierId) {
+const tierContent = document.getElementById(tierId);
+const toggle = document.getElementById('toggle-' + tierId);
+if (tierContent && toggle) {
+const isHidden = tierContent.style.display === 'none';
+tierContent.style.display = isHidden ? 'grid' : 'none';
+toggle.textContent = isHidden ? '▼' : '▶';
+}
+};
 
 createBadge();
 console.info('✅ SLA Tier Extractor ready - click green badge to extract');
