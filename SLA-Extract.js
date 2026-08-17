@@ -78,6 +78,32 @@ observer.observe(document.body, { childList: true, subtree: true });
 });
 }
 
+// Waits for the currently-open modal to actually leave the DOM, so the
+// next row's click doesn't race a still-closing modal and get matched to
+// it by waitForModal's "already exists" fast path.
+function waitForModalGone(timeout = 500) {
+return new Promise((resolve) => {
+if (!findDetailModal()) {
+resolve();
+return;
+}
+
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve();
+}, timeout);
+
+const observer = new MutationObserver(() => {
+if (!findDetailModal()) {
+clearTimeout(timer);
+observer.disconnect();
+resolve();
+}
+});
+observer.observe(document.body, { childList: true, subtree: true });
+});
+}
+
 async function extractCustomerDetails(customerElement) {
 const nameLink = customerElement.querySelector('a');
 if (!nameLink) {
@@ -117,6 +143,8 @@ bubbles: true
 });
 document.dispatchEvent(escEvent);
 }
+
+await waitForModalGone();
 
 return { phone, email };
 } catch (error) {
