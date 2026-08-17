@@ -7,6 +7,25 @@ const PANEL_BOX_ID = '_slaPanelBox';
 const PANEL_STATE_KEY = '_slaPanelState';
 const PANEL_SIZE_KEY = '_slaPanelSize';
 
+// SLA table columns: Customer, Registration, Source, Campaign, Created,
+// Received, SLA Date, Status, Assign. td-only queries mean the bare
+// <tr><th>...</th></tr> header row (no real <thead> on this page) is
+// skipped automatically, since row.querySelectorAll('td') is empty for it.
+const COL_CUSTOMER = 0;
+const COL_REGISTRATION = 1;
+const COL_SOURCE = 2;
+const COL_CAMPAIGN = 3;
+const COL_CREATED = 4;
+const COL_RECEIVED = 5;
+const COL_SLA_DATE = 6;
+const COL_STATUS = 7;
+const COL_ASSIGN = 8;
+
+// How far a Missed lead's sort position gets pushed back relative to its
+// real due time - keeps it from always beating a Critical lead due in
+// minutes, while still generally sorting ahead of anything due much later.
+const MISSED_PENALTY_MS = 30 * 60 * 1000;
+
 let badge = null;
 let panelElement = null;
 let extracting = false;
@@ -195,6 +214,255 @@ const display = escapeHtml(value);
 return `<span class="sla-copyable" data-value="${display}" style="cursor: pointer; padding: 4px 6px; border-radius: 4px; background: #e8f4f8; color: #2c3e50; display: inline-block; font-size: 13px;">${display}</span>`;
 }
 
+// ===================================================================
+// ASSIGNMENT ENGINE (SLA tab)
+//
+// Two pieces here are unconfirmed until agents are actually online and
+// this has run against a live populated dropdown:
+//   1. normalizeAgent() guesses at the field names on the objects in the
+//      Angular scope's `agents` array - adjust once we've seen a real one.
+//   2. findAgentMenuItem() matches a populated <li> by its visible text -
+//      confirm this still finds the right element once agents render.
+// Everything else below (priority sort, filtering, round robin, the click
+// pipeline, the UI) shouldn't need structural changes.
+// ===================================================================
+
+function parseSlaDate(text) {
+// Matches "Tue, 18 Aug 2026 09:15" - the weekday prefix is ignored.
+const MONTHS = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+const match = text.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\s+(\d{1,2}):(\d{2})/);
+if (!match) return null;
+const [, day, monName, year, hour, minute] = match;
+const month = MONTHS[monName];
+if (month === undefined) return null;
+return new Date(Number(year), month, Number(day), Number(hour), Number(minute));
+}
+
+function getAssignCellState(cell) {
+const dropdown = cell.querySelector('.dropdown');
+if (dropdown) {
+return { assigned: false, agentName: null };
+}
+return { assigned: true, agentName: cell.textContent.trim() };
+}
+
+// TODO: confirm these field names once a real agent is online (see the
+// module comment above).
+function normalizeAgent(agent) {
+if (typeof agent === 'string') return { id: agent, name: agent, raw: agent };
+const name = agent.name || agent.Name || agent.displayName || agent.fullName || agent.agentName || String(agent);
+const id = agent.id ?? agent.Id ?? agent.agentId ?? name;
+return { id: String(id), name: String(name), raw: agent };
+}
+
+function getAgentRoster() {
+// Scoped to the SLA table first so an unrelated page dropdown sharing
+// the same classes can't get picked up by accident.
+const scopeHost = document.querySelector('table .dropdown.ng-scope') || document.querySelector('.dropdown.ng-scope');
+if (!scopeHost || typeof angular === 'undefined') return [];
+try {
+const scope = angular.element(scopeHost).scope();
+const agents = (scope && scope.agents) || [];
+return agents.map(normalizeAgent);
+} catch (error) {
+console.warn('Could not read agent roster:', error);
+return [];
+}
+}
+
+function collectAssignableLeads() {
+const table = document.querySelector('table');
+if (!table) return [];
+
+const leads = [];
+table.querySelectorAll('tbody tr').forEach((row) => {
+const cells = row.querySelectorAll('td');
+if (cells.length < 9) return;
+
+const name = cells[COL_CUSTOMER]?.textContent?.trim();
+const campaign = cells[COL_CAMPAIGN]?.textContent?.trim();
+if (!name || !campaign) return;
+
+const registration = cells[COL_REGISTRATION]?.textContent?.trim();
+const source = cells[COL_SOURCE]?.textContent?.trim();
+const slaDate = parseSlaDate(cells[COL_SLA_DATE]?.textContent?.trim() || '');
+const status = cells[COL_STATUS]?.textContent?.trim();
+const tierInfo = categorizeTier(campaign, source);
+const assignState = getAssignCellState(cells[COL_ASSIGN]);
+
+leads.push({
+key: `${name}||${registration}||${source}||${campaign}`,
+name, registration, source, campaign,
+slaDate, status, tier: tierInfo.tier,
+assigned: assignState.assigned,
+agentName: assignState.agentName
+});
+});
+
+return leads;
+}
+
+function computeSortKey(lead) {
+if (!lead.slaDate) return Infinity;
+const time = lead.slaDate.getTime();
+return lead.status === 'Missed' ? time + MISSED_PENALTY_MS : time;
+}
+
+function prioritizeLeads(leads) {
+return [...leads].sort((a, b) => computeSortKey(a) - computeSortKey(b));
+}
+
+function filterAssignableLeads(leads, { tiers, windowMinutes }) {
+const now = Date.now();
+return leads.filter((lead) => {
+if (lead.assigned) return false;
+if (!tiers.has(lead.tier)) return false;
+if (windowMinutes != null && lead.slaDate) {
+const minutesUntilDue = (lead.slaDate.getTime() - now) / 60000;
+if (minutesUntilDue > windowMinutes) return false;
+}
+return true;
+});
+}
+
+function roundRobinAssign(leads, agents) {
+const plan = [];
+for (let i = 0; i < leads.length; i++) {
+plan.push({ lead: leads[i], agent: agents[i % agents.length] });
+}
+return plan;
+}
+
+// Re-locates a lead's Assign cell fresh at click time, rather than reusing
+// a reference captured earlier - protects against the row/cell being
+// re-rendered (e.g. by an Angular digest from a prior assignment) between
+// when the plan was built and when this particular lead's turn comes up.
+function locateAssignCell(lead) {
+const table = document.querySelector('table');
+if (!table) return null;
+const rows = table.querySelectorAll('tbody tr');
+for (const row of rows) {
+const cells = row.querySelectorAll('td');
+if (cells.length < 9) continue;
+const name = cells[COL_CUSTOMER]?.textContent?.trim();
+const registration = cells[COL_REGISTRATION]?.textContent?.trim();
+const source = cells[COL_SOURCE]?.textContent?.trim();
+const campaign = cells[COL_CAMPAIGN]?.textContent?.trim();
+const key = `${name}||${registration}||${source}||${campaign}`;
+if (key === lead.key) return cells[COL_ASSIGN];
+}
+return null;
+}
+
+// TODO: confirm this still matches once a real <li> is available - see
+// the module comment above.
+function findAgentMenuItem(cell, agent) {
+const items = cell.querySelectorAll('.dropdown-menu li a');
+for (const item of items) {
+if (item.textContent.trim() === agent.name) return item;
+}
+return null;
+}
+
+function waitForAssignConfirmed(cell, timeout = 3000) {
+return new Promise((resolve) => {
+if (!cell.querySelector('.dropdown')) {
+resolve(true);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(false);
+}, timeout);
+const observer = new MutationObserver(() => {
+if (!cell.querySelector('.dropdown')) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(true);
+}
+});
+observer.observe(cell, { childList: true, subtree: true });
+});
+}
+
+async function runAssignmentPlan(plan, onProgress) {
+const results = [];
+for (const { lead, agent } of plan) {
+let ok = false;
+let reason = null;
+try {
+const cell = locateAssignCell(lead);
+if (!cell) {
+reason = 'Row no longer found on page';
+} else {
+const menuItem = findAgentMenuItem(cell, agent);
+if (!menuItem) {
+reason = 'Agent option not found in menu';
+} else {
+menuItem.click();
+ok = await waitForAssignConfirmed(cell);
+if (!ok) reason = 'Timed out waiting for confirmation';
+}
+}
+} catch (error) {
+reason = String(error);
+}
+results.push({ lead, agent, ok, reason });
+onProgress(results.slice());
+}
+return results;
+}
+
+function renderAssignSection() {
+const leads = collectAssignableLeads();
+const agents = getAgentRoster();
+const tierCounts = [1, 2, 3, 4].map(t => leads.filter(l => l.tier === t && !l.assigned).length);
+
+const tierCheckboxes = [1, 2, 3, 4].map(t => `
+<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" class="assign-tier-checkbox" value="${t}" checked> Tier ${t} <span style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
+</label>`).join('');
+
+const agentCheckboxes = agents.length === 0
+? `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`
+: agents.map(a => `
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" checked> ${escapeHtml(a.name)}
+</label>`).join('');
+
+const buttonDisabled = agents.length === 0;
+
+return `
+<div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #ecf0f1;">
+<div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+<span style="font-weight: 700; color: #2c3e50; font-size: 14px;">⚡ Assign Leads</span>
+<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▼</span>
+</div>
+<div id="assignSectionBody" style="margin-top: 12px;">
+<div style="margin-bottom: 10px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">TIERS</div>
+<div style="display: flex; gap: 10px; flex-wrap: wrap;">${tierCheckboxes}</div>
+</div>
+<div style="margin-bottom: 10px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE WITHIN (MINUTES, BLANK = ALL)</div>
+<input id="assignWindowMinutes" type="number" min="1" placeholder="All" style="width: 100px; padding: 6px 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">
+</div>
+<div style="margin-bottom: 10px;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+<span style="font-size: 11px; font-weight: 700; color: #7f8c8d;">AGENTS ONLINE</span>
+<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
+</div>
+<div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
+</div>
+<button id="assignRunButton" onclick="window._runSlaAssignment()" ${buttonDisabled ? 'disabled' : ''}
+style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
+${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
+</button>
+<div id="assignResultsLog" style="margin-top: 10px; font-size: 11px; color: #7f8c8d; max-height: 100px; overflow-y: auto;"></div>
+</div>
+</div>`;
+}
+
 function resetBookmarklet() {
 currentCustomers = [];
 extracting = false;
@@ -209,7 +477,7 @@ badge.remove();
 badge = null;
 }
 
-console.info('🔄 SLA Extractor stopped - click bookmarklet again to run');
+console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
 }
 
 function displayPanel(customers, newCount = 0, removedCount = 0) {
@@ -254,6 +522,8 @@ style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: po
 title="Minimize">−</button>
 </div>
 </div>
+
+${renderAssignSection()}
 
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
 ${customers.length === 0 ? `
@@ -479,6 +749,98 @@ toggle.textContent = isHidden ? '▼' : '▶';
 }
 };
 
+window._toggleAssignSection = function() {
+const body = document.getElementById('assignSectionBody');
+const toggle = document.getElementById('assignSectionToggle');
+if (!body || !toggle) return;
+const isHidden = body.style.display === 'none';
+body.style.display = isHidden ? 'block' : 'none';
+toggle.textContent = isHidden ? '▼' : '▶';
+};
+
+window._refreshAssignSection = function() {
+const container = document.getElementById('assignSectionContainer');
+if (!container) return;
+
+// Preserve deliberate exclusions (unchecked tiers/agents) and the
+// timeframe value across a manual refresh instead of resetting them.
+const uncheckedAgentIds = new Set(
+Array.from(document.querySelectorAll('.assign-agent-checkbox:not(:checked)')).map(el => el.value)
+);
+const uncheckedTiers = new Set(
+Array.from(document.querySelectorAll('.assign-tier-checkbox:not(:checked)')).map(el => el.value)
+);
+const windowInput = document.getElementById('assignWindowMinutes');
+const windowValue = windowInput ? windowInput.value : '';
+
+container.outerHTML = renderAssignSection();
+
+uncheckedAgentIds.forEach((id) => {
+const el = document.querySelector(`.assign-agent-checkbox[value="${CSS.escape(id)}"]`);
+if (el) el.checked = false;
+});
+uncheckedTiers.forEach((t) => {
+const el = document.querySelector(`.assign-tier-checkbox[value="${CSS.escape(t)}"]`);
+if (el) el.checked = false;
+});
+const newWindowInput = document.getElementById('assignWindowMinutes');
+if (newWindowInput && windowValue) newWindowInput.value = windowValue;
+};
+
+window._runSlaAssignment = async function() {
+const button = document.getElementById('assignRunButton');
+const log = document.getElementById('assignResultsLog');
+if (!button || !log) return;
+
+const selectedTiers = new Set(
+Array.from(document.querySelectorAll('.assign-tier-checkbox:checked')).map(el => Number(el.value))
+);
+const selectedAgentIds = new Set(
+Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map(el => el.value)
+);
+const windowInput = document.getElementById('assignWindowMinutes');
+const windowMinutes = windowInput && windowInput.value ? Number(windowInput.value) : null;
+
+if (selectedTiers.size === 0) {
+log.textContent = 'Select at least one tier.';
+return;
+}
+
+const agents = getAgentRoster().filter(a => selectedAgentIds.has(a.id));
+if (agents.length === 0) {
+log.textContent = 'Select at least one agent.';
+return;
+}
+
+const leads = collectAssignableLeads();
+const eligible = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes });
+const prioritized = prioritizeLeads(eligible);
+
+if (prioritized.length === 0) {
+log.textContent = 'No unassigned leads match the selected tiers/timeframe.';
+return;
+}
+
+const plan = roundRobinAssign(prioritized, agents);
+
+button.disabled = true;
+button.textContent = `Assigning 0/${plan.length}...`;
+log.innerHTML = '';
+
+const results = await runAssignmentPlan(plan, (soFar) => {
+button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
+log.innerHTML = soFar.map(r =>
+`<div style="color: ${r.ok ? '#27ae60' : '#e74c3c'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
+).join('');
+log.scrollTop = log.scrollHeight;
+});
+
+const succeeded = results.filter(r => r.ok).length;
+button.disabled = false;
+button.textContent = 'Assign Unassigned Leads';
+console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
+};
+
 createBadge();
-console.info('✅ SLA Extractor ready');
+console.info('✅ SLA Manager ready');
 })();
