@@ -3,6 +3,7 @@ const BADGE_ID = '_slaBadge';
 const BADGE_COLOR = '#2c3e50';
 const BADGE_BORDER_COLOR = '#27ae60';
 const PANEL_ID = '_slaPanel';
+const PANEL_BOX_ID = '_slaPanelBox';
 const PANEL_STATE_KEY = '_slaPanelState';
 const PANEL_SIZE_KEY = '_slaPanelSize';
 
@@ -144,7 +145,7 @@ const positionStyle = isFull
 : 'bottom: 20px; right: 20px; width: 400px; height: min(560px, calc(100vh - 90px)); border-radius: 16px;';
 
 const panelHTML = `
-<div style="position: fixed; ${positionStyle}
+<div id="${PANEL_BOX_ID}" style="position: fixed; ${positionStyle}
 background: #f8f9fa; box-shadow: 0 8px 30px rgba(0,0,0,0.25);
 z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 display: flex; flex-direction: column; transition: transform 0.3s ease;">
@@ -165,7 +166,7 @@ title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${isFull ? '⤡' :
 <button onclick="document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0;"
 style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
 title="Top">↑</button>
-<button onclick="(function() { const panel = document.getElementById('${PANEL_ID}'); if (!panel) return; const btn = event.target; const isHidden = panel.style.transform === 'translateX(150%)'; panel.style.transform = isHidden ? 'translateX(0)' : 'translateX(150%)'; btn.textContent = isHidden ? '−' : '□'; localStorage.setItem('${PANEL_STATE_KEY}', isHidden ? 'visible' : 'hidden'); })();"
+<button onclick="(function() { const panel = document.getElementById('${PANEL_BOX_ID}'); if (!panel) return; const btn = event.target; const isHidden = panel.style.transform === 'translateX(150%)'; panel.style.transform = isHidden ? '' : 'translateX(150%)'; btn.textContent = isHidden ? '−' : '□'; localStorage.setItem('${PANEL_STATE_KEY}', isHidden ? 'visible' : 'hidden'); })();"
 style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
 title="Minimize">−</button>
 </div>
@@ -322,7 +323,8 @@ console.info(`✅ SLA Report generated in ${totalTime}s (${customers.length} cus
 } catch (error) {
 console.error('SLA Export Error:', error);
 } finally {
-if (panelElement) panelElement.style.transform = 'translateX(0)';
+const panelBox = document.getElementById(PANEL_BOX_ID);
+if (panelBox) panelBox.style.transform = '';
 extracting = false;
 }
 }
