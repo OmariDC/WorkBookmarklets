@@ -49,20 +49,52 @@ return { tier: 4, reason: 'Inbound' };
 return { tier: 4, reason: 'Uncategorized' };
 }
 
-async function extractCustomerDetails(customerElement) {
+function findDetailModal() {
+return document.querySelector('[role="alertdialog"]') || document.querySelector('.modal');
+}
+
+function waitForModal(timeout = 3000) {
 return new Promise((resolve) => {
+const existing = findDetailModal();
+if (existing) {
+resolve(existing);
+return;
+}
+
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(null);
+}, timeout);
+
+const observer = new MutationObserver(() => {
+const modal = findDetailModal();
+if (modal) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(modal);
+}
+});
+observer.observe(document.body, { childList: true, subtree: true });
+});
+}
+
+async function extractCustomerDetails(customerElement) {
 const nameLink = customerElement.querySelector('a');
 if (!nameLink) {
-resolve({ phone: '', email: '' });
-return;
+return { phone: '', email: '' };
 }
 
 nameLink.click();
 
-setTimeout(() => {
+const modal = await waitForModal();
+if (!modal) {
+return { phone: '', email: '' };
+}
+
+// Give the modal's async content a brief moment to render after it mounts.
+await new Promise(resolve => setTimeout(resolve, 150));
+
 try {
-const modal = document.querySelector('[role="alertdialog"]') || document.querySelector('.modal');
-if (modal) {
 const modalText = modal.innerText || modal.textContent;
 
 const phoneMatch = modalText.match(/\b(07\d{9}|0\d{3}\s?\d{3}\s?\d{3,4}|0\d{10})\b/);
@@ -86,21 +118,16 @@ bubbles: true
 document.dispatchEvent(escEvent);
 }
 
-resolve({ phone, email });
-} else {
-resolve({ phone: '', email: '' });
-}
+return { phone, email };
 } catch (error) {
 console.warn('Detail extraction error:', error);
-resolve({ phone: '', email: '' });
+return { phone: '', email: '' };
 }
-}, 800);
-});
 }
 
 function copyToClipboard(text, element) {
-navigator.clipboard.writeText(text).then(() => {
 const originalText = element.textContent;
+navigator.clipboard.writeText(text).then(() => {
 element.textContent = '✓ Copied!';
 element.style.background = '#27ae60';
 element.style.color = 'white';
@@ -109,7 +136,35 @@ element.textContent = originalText;
 element.style.background = '';
 element.style.color = '';
 }, 1500);
+}).catch((error) => {
+console.warn('Copy failed:', error);
+element.textContent = '✗ Failed';
+element.style.background = '#e74c3c';
+element.style.color = 'white';
+setTimeout(() => {
+element.textContent = originalText;
+element.style.background = '';
+element.style.color = '';
+}, 1500);
 });
+}
+
+function escapeHtml(value) {
+return String(value).replace(/[&<>"']/g, (c) => ({
+'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+}[c]));
+}
+
+function stripTitle(name) {
+return name.replace(/^(mr|mrs|miss|ms|mx|dr|prof|rev|sir|lady)\.?\s+/i, '').trim();
+}
+
+function renderCopyableField(value) {
+if (!value) {
+return `<span style="padding: 4px 6px; border-radius: 4px; background: #ecf0f1; color: #95a5a6; display: inline-block; font-size: 13px;">N/A</span>`;
+}
+const display = escapeHtml(value);
+return `<span class="sla-copyable" data-value="${display}" style="cursor: pointer; padding: 4px 6px; border-radius: 4px; background: #e8f4f8; color: #2c3e50; display: inline-block; font-size: 13px;">${display}</span>`;
 }
 
 function resetBookmarklet() {
@@ -238,21 +293,21 @@ border-bottom: 2px solid #ecf0f1;">
 <div id="${tierId}" style="display: grid; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
 ${customers.map(c => `<div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
 <div style="font-weight: 700; color: #2c3e50; margin-bottom: 10px; font-size: 14px;">
-<span class="sla-copyable" data-value="${c.name}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50;">${c.name}</span>
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50;">${escapeHtml(c.name)}</span>
 </div>
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
 <div>
 <div style="color: #7f8c8d; font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
-<span class="sla-copyable" data-value="${c.phone || 'N/A'}" style="cursor: pointer; padding: 4px 6px; border-radius: 4px; background: #e8f4f8; color: #2c3e50; display: inline-block; font-size: 13px;">${c.phone || 'N/A'}</span>
+${renderCopyableField(c.phone)}
 </div>
 <div>
 <div style="color: #7f8c8d; font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
-<span class="sla-copyable" data-value="${c.email || 'N/A'}" style="cursor: pointer; padding: 4px 6px; border-radius: 4px; background: #e8f4f8; color: #2c3e50; display: inline-block; font-size: 13px;">${c.email || 'N/A'}</span>
+${renderCopyableField(c.email)}
 </div>
 </div>
 <div style="padding-top: 10px; border-top: 1px solid #ecf0f1; display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
-<span style="background: #ecf0f1; color: #2c3e50; padding: 4px 8px; border-radius: 4px;">${c.source}</span>
-<span style="background: #e8f5e9; color: #27ae60; padding: 4px 8px; border-radius: 4px;">${c.campaign}</span>
+<span style="background: #ecf0f1; color: #2c3e50; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.source)}</span>
+<span style="background: #e8f5e9; color: #27ae60; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.campaign)}</span>
 </div>
 </div>`).join('')}
 </div>
@@ -267,7 +322,6 @@ try {
 const table = document.querySelector('table');
 if (!table) {
 console.error('SLA Table not found');
-extracting = false;
 return;
 }
 
@@ -277,32 +331,43 @@ const customers = [];
 let addedCount = 0;
 const rows = table.querySelectorAll('tbody tr');
 
+const rowDescriptors = [];
 for (const row of rows) {
-try {
 const cells = row.querySelectorAll('td');
 const name = cells[0]?.textContent?.trim();
+const registration = cells[1]?.textContent?.trim();
 const source = cells[2]?.textContent?.trim();
 const campaign = cells[3]?.textContent?.trim();
 
 if (!name || !campaign) continue;
 
-const key = `${name}||${source}||${campaign}`;
+// Registration is folded into the key (not displayed) so same-name
+// leads from the same source/campaign don't collide with each other.
+const key = `${name}||${registration}||${source}||${campaign}`;
 seenKeys.add(key);
+rowDescriptors.push({ cells, name, source, campaign, key });
+}
 
-const existing = previousByKey.get(key);
+const pendingCount = rowDescriptors.filter(d => !previousByKey.has(d.key)).length;
+let remaining = pendingCount;
+setBadgeProgress(remaining);
+
+for (const d of rowDescriptors) {
+const existing = previousByKey.get(d.key);
 if (existing) {
 customers.push(existing);
 continue;
 }
 
-const tierInfo = categorizeTier(campaign, source);
-const details = await extractCustomerDetails(cells[0]);
+try {
+const tierInfo = categorizeTier(d.campaign, d.source);
+const details = await extractCustomerDetails(d.cells[0]);
 
 customers.push({
-key,
-name,
-campaign,
-source,
+key: d.key,
+name: d.name,
+campaign: d.campaign,
+source: d.source,
 tier: tierInfo.tier,
 reason: tierInfo.reason,
 phone: details.phone,
@@ -311,6 +376,9 @@ email: details.email
 addedCount++;
 } catch (error) {
 console.warn('Error processing row:', error);
+} finally {
+remaining--;
+setBadgeProgress(remaining);
 }
 }
 
@@ -325,7 +393,19 @@ console.error('SLA Export Error:', error);
 } finally {
 const panelBox = document.getElementById(PANEL_BOX_ID);
 if (panelBox) panelBox.style.transform = '';
+setBadgeProgress(0);
 extracting = false;
+}
+}
+
+function setBadgeProgress(remaining) {
+if (!badge) return;
+if (remaining > 0) {
+badge.textContent = String(remaining);
+badge.style.fontSize = '18px';
+} else {
+badge.textContent = '📋';
+badge.style.fontSize = '22px';
 }
 }
 
