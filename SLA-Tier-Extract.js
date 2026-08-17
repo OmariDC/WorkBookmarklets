@@ -164,10 +164,18 @@ title="Minimize">−</button>
 
 <!-- Content Area -->
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 16px; padding-right: 12px;">
+${customers.length === 0 ? `
+<div style="padding: 20px; text-align: center;">
+<div style="font-size: 48px; margin-bottom: 10px;">📭</div>
+<h3 style="color: #2c3e50; margin: 0 0 10px 0;">No Leads in Queue</h3>
+<p style="color: #7f8c8d; margin: 0; font-size: 14px;">The SLA queue is empty. Check back later!</p>
+</div>
+` : `
 ${renderTierSection('Tier 1 - Check First', tiered.tier1, '#e74c3c')}
 ${renderTierSection('Tier 2 - Check Second', tiered.tier2, '#3498db')}
 ${renderTierSection('Tier 3 - Check Third', tiered.tier3, '#27ae60')}
 ${renderTierSection('Tier 4 - Check Fourth', tiered.tier4, '#f39c12')}
+`}
 </div>
 
 <!-- Footer -->
@@ -301,12 +309,6 @@ console.info(`✓ ${name}`);
 await new Promise(setTimeout, 600);
 }
 
-if (customers.length === 0) {
-console.warn('No valid customers found in SLA queue');
-extracting = false;
-return;
-}
-
 customers.forEach(customer => {
 const tierInfo = categorizeTier(customer.campaign, customer.source);
 customer.tier = tierInfo.tier;
@@ -316,7 +318,7 @@ customer.tierReason = tierInfo.reason;
 displayPanel(customers);
 
 const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
-console.info(`✅ SLA Report Generated in ${totalTime}s`);
+console.info(`✅ SLA Report Generated in ${totalTime}s - Found ${customers.length} customer${customers.length !== 1 ? 's' : ''}`);
 } catch (error) {
 console.error('SLA Export Error:', error);
 } finally {
