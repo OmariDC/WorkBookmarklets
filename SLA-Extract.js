@@ -1,4 +1,4 @@
-1(function() {
+(function() {
 const BADGE_ID = '_slaBadge';
 const BADGE_COLOR = '#2c3e50';
 const BADGE_BORDER_COLOR = '#27ae60';
