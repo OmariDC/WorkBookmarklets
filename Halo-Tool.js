@@ -89,9 +89,8 @@
   // native property setter + 'input' event (the standard way to drive a
   // framework-controlled field), Enter is a full keydown/keypress/keyup
   // sequence, and the owner <select> is changed the same way a real
-  // selection changes it: set value, fire 'input' + 'change'. Buttons and
-  // checkboxes are triggered with the native .click() method, which is the
-  // closest thing to a real click a script can produce.
+  // selection changes it: set value, fire 'input' + 'change'. Buttons are
+  // triggered with the native .click() method (works fine for these).
 
   function setNativeValue(el, value) {
     const proto = Object.getPrototypeOf(el);
@@ -99,6 +98,23 @@
     if (desc && desc.set) desc.set.call(el, value);
     else el.value = value;
     el.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  // Plain checkbox.click() does NOT toggle this app's checkboxes — confirmed
+  // live: calling .click() on the row checkbox leaves .checked === false and
+  // the "Allocate (N)" button never appears, so the automation hangs waiting
+  // for a button that will never show up. Something on the checkbox (or an
+  // ancestor) intercepts the click and blocks the native default toggle
+  // behaviour. Setting `checked` via the native property setter and firing
+  // 'input' + 'change' ourselves — the same pattern already used for text
+  // inputs above — reliably ticks the box and updates the Allocate count.
+  function setNativeChecked(el, checked) {
+    const proto = Object.getPrototypeOf(el);
+    const desc = Object.getOwnPropertyDescriptor(proto, 'checked');
+    if (desc && desc.set) desc.set.call(el, checked);
+    else el.checked = checked;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
   function pressEnter(el) {
@@ -231,14 +247,6 @@
     if (!searchInput || !tableBefore) return null;
     const prevText = tableBefore.querySelector('tbody') ? tableBefore.querySelector('tbody').textContent : '';
 
-    // NOTE: we used to clear the box first (setNativeValue(searchInput, ''))
-    // before typing the email. That fired its own 'input' event and made the
-    // table briefly re-render to the full, unfiltered list — a second table
-    // change racing the real search. waitForTableUpdate couldn't tell that
-    // render apart from the real one, so it sometimes locked onto the
-    // unfiltered list as "the result" and returned before the actual
-    // email-filtered rows ever loaded. Setting the value directly (no clear
-    // step) removes that race entirely.
     setNativeValue(searchInput, email);
     await sleep(60);
     pressEnter(searchInput);
@@ -272,7 +280,7 @@
   async function allocateRow(row, actionPrefix) {
     const checkbox = row.querySelector('input[type="checkbox"]');
     if (!checkbox) throw new Error('Could not find the row checkbox.');
-    if (!checkbox.checked) checkbox.click();
+    if (!checkbox.checked) setNativeChecked(checkbox, true);
     await sleep(200);
 
     const btnRegex = new RegExp('^' + actionPrefix + '\\s*\\(\\d+\\)$', 'i');
