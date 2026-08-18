@@ -604,9 +604,9 @@ return `
 <div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #ecf0f1;">
 <div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
 <span style="font-weight: 700; color: #2c3e50; font-size: 14px;">⚡ Assign Leads</span>
-<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▼</span>
+<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▶</span>
 </div>
-<div id="assignSectionBody" style="margin-top: 12px;">
+<div id="assignSectionBody" style="margin-top: 12px; display: none;">
 <div style="font-size: 11px; color: #7f8c8d; background: #f8f9fa; border-radius: 4px; padding: 8px 10px; margin-bottom: 12px; line-height: 1.5;">
 Leads go out in order of <strong>when they're due</strong>, not by tier — tiers below only narrow which leads are included.
 </div>
@@ -791,9 +791,9 @@ return `
 <div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #ecf0f1;">
 <div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
 <span style="font-weight: 700; color: #2c3e50; font-size: 14px;">⚡ Assign Leads</span>
-<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▼</span>
+<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▶</span>
 </div>
-<div id="assignSectionBody" style="margin-top: 12px;">
+<div id="assignSectionBody" style="margin-top: 12px; display: none;">
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">CALLBACK TYPE</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
@@ -1499,15 +1499,25 @@ button.textContent = 'Assign Unassigned Leads';
 console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
 };
 
-// Disabled: auto-detecting page switches via hashchange caused more harm
-// than the convenience was worth. This app's customer-detail modal (and
-// likely other in-page interactions) also fire hashchange, which was
-// re-triggering full panel rebuilds (mountPanel()) far more often than
-// intended - undoing manual collapse/minimize clicks and interfering with
-// the modal-scraping loop mid-extraction. Reverted to manual-click-only
-// page detection (still handled correctly per-click by runExtraction()/
-// detectPageType()) until this can be redesigned and actually verified
-// live rather than patched blind.
+// Detects switching between the SLA queue and Pending Customers by
+// polling detectPageType() on a timer, rather than reacting to
+// hashchange - this app's customer-detail modal (and likely other
+// in-page interactions) also fire hashchange, which was re-triggering
+// full panel rebuilds far more often than intended. Polling only
+// samples state at fixed intervals regardless of what caused any given
+// DOM/hash change in between, so brief modal-related noise is a
+// non-issue, and it skips entirely while a scrape is actively running.
+let lastKnownPageType = detectPageType();
+setInterval(() => {
+if (extracting) return;
+const pageType = detectPageType();
+if (pageType && pageType !== lastKnownPageType) {
+lastKnownPageType = pageType;
+runExtraction();
+} else if (pageType) {
+lastKnownPageType = pageType;
+}
+}, 2500);
 
 ensureWheelStyles();
 createBadge();
