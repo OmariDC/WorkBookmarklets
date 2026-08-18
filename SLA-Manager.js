@@ -1507,8 +1507,22 @@ console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
 // samples state at fixed intervals regardless of what caused any given
 // DOM/hash change in between, so brief modal-related noise is a
 // non-issue, and it skips entirely while a scrape is actively running.
+//
+// Re-running the bookmarklet re-executes this whole script as a fresh,
+// independent instance with its own closures - nothing tears down a
+// previous instance's background work. window._slaAutoDetectInterval
+// persists across re-invocations specifically so a new instance can
+// find and clear an old one's still-running interval before starting
+// its own; otherwise every past click leaves a zombie poll behind, each
+// with its own stale panelElement/currentCustomers, all fighting over
+// the same shared badge/panel DOM every 2.5s - which looks exactly like
+// "click minimize, it animates away, then reverts" the moment a zombie
+// instance's poll fires and rebuilds the panel from scratch.
+if (window._slaAutoDetectInterval) {
+clearInterval(window._slaAutoDetectInterval);
+}
 let lastKnownPageType = detectPageType();
-setInterval(() => {
+window._slaAutoDetectInterval = setInterval(() => {
 if (extracting) return;
 const pageType = detectPageType();
 if (pageType && pageType !== lastKnownPageType) {
