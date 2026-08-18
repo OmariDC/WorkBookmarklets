@@ -262,15 +262,12 @@ return `<span class="sla-copyable" data-value="${display}" style="cursor: pointe
 // ===================================================================
 // ASSIGNMENT ENGINE (shared between the SLA tab and Pending Customers)
 //
-// Two pieces here are unconfirmed until agents are actually online and
-// this has run against a live populated dropdown:
-//   1. normalizeAgent() guesses at the field names on the objects in the
-//      Angular scope's `agents` array - adjust once we've seen a real one.
-//   2. findAgentMenuItem() matches a populated <li> by its visible text -
-//      confirm this still finds the right element once agents render.
-// Everything else below (priority sort, filtering, round robin, the click
-// pipeline) shouldn't need structural changes - both pages' Assign column
-// use the identical div.dropdown.ng-scope structure, confirmed live.
+// Agent shape and dropdown markup both confirmed live (see normalizeAgent
+// and findAgentMenuItem below). Both pages' Assign column use the
+// identical div.dropdown.ng-scope structure. The one thing still
+// genuinely untested end-to-end is a real click actually completing an
+// assignment - runAssignmentPlan/waitForAssignConfirmed are built and
+// unit-tested against fabricated data, but not yet run against Konnect.
 // ===================================================================
 
 function parseKonnectDate(text) {
@@ -296,13 +293,15 @@ return { assigned: false, agentName: null };
 return { assigned: true, agentName: cell.textContent.trim() };
 }
 
-// TODO: confirm these field names once a real agent is online (see the
-// module comment above).
+// Confirmed live: {ID: 1809, DisplayText: "Daniel Paling",
+// CurrentStatusName: "Live Chat", $$hashKey: "object:223"}.
 function normalizeAgent(agent) {
-if (typeof agent === 'string') return { id: agent, name: agent, raw: agent };
-const name = agent.name || agent.Name || agent.displayName || agent.fullName || agent.agentName || String(agent);
-const id = agent.id ?? agent.Id ?? agent.agentId ?? name;
-return { id: String(id), name: String(name), raw: agent };
+return {
+id: String(agent.ID),
+name: agent.DisplayText,
+status: agent.CurrentStatusName || '',
+raw: agent
+};
 }
 
 function getAgentRoster() {
@@ -419,14 +418,28 @@ if (key === lead.key) return cells[COL_ASSIGN];
 return null;
 }
 
-// TODO: confirm this still matches once a real <li> is available - see
-// the module comment above.
+// Confirmed live markup: <li ng-repeat="agent in agents"
+// ng-click="assignToAgentQueue(lead, agent)"><a><span>{icon} {DisplayText}
+// ({CurrentStatusName})</span></a></li> - the visible text is not the
+// bare name, so matching on it would never work. ng-repeat guarantees the
+// <li> elements render in the same order as scope.agents, so matching the
+// target agent's position in that array (re-read fresh, not cached) is a
+// direct match against ground truth regardless of text/markup - clicking
+// the <li> itself, since that's what actually carries ng-click.
 function findAgentMenuItem(cell, agent) {
-const items = cell.querySelectorAll('.dropdown-menu li a');
-for (const item of items) {
-if (item.textContent.trim() === agent.name) return item;
-}
+const dropdown = cell.querySelector('.dropdown');
+if (!dropdown || typeof angular === 'undefined') return null;
+try {
+const scope = angular.element(dropdown).scope();
+const agents = (scope && scope.agents) || [];
+const index = agents.findIndex(a => String(a.ID) === agent.id);
+if (index === -1) return null;
+const items = cell.querySelectorAll('.dropdown-menu li');
+return items[index] || null;
+} catch (error) {
+console.warn('Could not resolve agent menu item:', error);
 return null;
+}
 }
 
 function waitForAssignConfirmed(cell, timeout = 3000) {
@@ -595,7 +608,7 @@ const agentCheckboxes = agents.length === 0
 ? `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`
 : agents.map(a => `
 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" checked> ${escapeHtml(a.name)}
+<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" checked> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
 </label>`).join('');
 
 const buttonDisabled = agents.length === 0;
@@ -781,7 +794,7 @@ const agentCheckboxes = agents.length === 0
 ? `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`
 : agents.map(a => `
 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" checked> ${escapeHtml(a.name)}
+<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" checked> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
 </label>`).join('');
 
 const buttonDisabled = agents.length === 0;
