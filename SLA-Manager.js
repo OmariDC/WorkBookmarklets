@@ -1499,32 +1499,15 @@ button.textContent = 'Assign Unassigned Leads';
 console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
 };
 
-// Auto-detects switching between the SLA queue and Pending Customers
-// (both live under the same #/Queue/... route pattern, and the badge/
-// script survive the in-app navigation - no full reload), so the panel
-// updates itself instead of waiting for a manual badge click. Debounced
-// to let Angular finish rendering the new view before we scan it.
-let lastAutoPageType = detectPageType();
-let autoDetectTimer = null;
-function scheduleAutoDetect() {
-clearTimeout(autoDetectTimer);
-autoDetectTimer = setTimeout(() => {
-// The badge now lives inside the host page's own navbar rather than a
-// document-level fixed element - heal it here in case a route change
-// ever replaces that nav rather than just re-rendering its content.
-if (!document.getElementById(BADGE_ID)) {
-createBadge();
-}
-const pageType = detectPageType();
-if (pageType && pageType !== lastAutoPageType) {
-lastAutoPageType = pageType;
-runExtraction();
-} else if (pageType) {
-lastAutoPageType = pageType;
-}
-}, 500);
-}
-window.addEventListener('hashchange', scheduleAutoDetect);
+// Disabled: auto-detecting page switches via hashchange caused more harm
+// than the convenience was worth. This app's customer-detail modal (and
+// likely other in-page interactions) also fire hashchange, which was
+// re-triggering full panel rebuilds (mountPanel()) far more often than
+// intended - undoing manual collapse/minimize clicks and interfering with
+// the modal-scraping loop mid-extraction. Reverted to manual-click-only
+// page detection (still handled correctly per-click by runExtraction()/
+// detectPageType()) until this can be redesigned and actually verified
+// live rather than patched blind.
 
 ensureWheelStyles();
 createBadge();
