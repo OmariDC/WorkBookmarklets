@@ -565,6 +565,17 @@ el.scrollTop = startIndex * WHEEL_ROW_HEIGHT;
 highlightAndSettle(startIndex);
 }
 
+// Compact mode's panel has a fixed, fairly short total height and the
+// panel box itself clips overflow - without a cap here, an expanded
+// assign section can push content past that boundary with nothing able
+// to scroll it into view (the panel's own scroll only covers the tier/
+// lead list below it, not the assign section). Full mode has much more
+// room, so it gets a looser cap.
+function assignSectionBodyMaxHeight() {
+const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
+return panelSize === 'full' ? '55vh' : '280px';
+}
+
 // Reads whichever wheels are actually present in the currently-mounted
 // assign section (SLA's single minutes wheel, or Pending Customers' hour
 // + minute pair) and wires them up, seeding each from its hidden input's
@@ -619,7 +630,7 @@ return `
 <span style="font-weight: 700; color: #2c3e50; font-size: 14px;">⚡ Assign Leads</span>
 <span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▶</span>
 </div>
-<div id="assignSectionBody" style="margin-top: 12px; display: none;">
+<div id="assignSectionBody" style="margin-top: 12px; display: none; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="font-size: 11px; color: #7f8c8d; background: #f8f9fa; border-radius: 4px; padding: 8px 10px; margin-bottom: 12px; line-height: 1.5;">
 Leads go out in order of <strong>when they're due</strong>, not by tier — tiers below only narrow which leads are included.
 </div>
@@ -806,7 +817,7 @@ return `
 <span style="font-weight: 700; color: #2c3e50; font-size: 14px;">⚡ Assign Leads</span>
 <span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▶</span>
 </div>
-<div id="assignSectionBody" style="margin-top: 12px; display: none;">
+<div id="assignSectionBody" style="margin-top: 12px; display: none; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">CALLBACK TYPE</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
