@@ -184,7 +184,11 @@
     return cellEmail && cellEmail === email.toLowerCase() ? row : null;
   }
 
-  async function waitForTableUpdate(headingText, previousText, { timeout = 7000 } = {}) {
+  // Polls the table's tbody text until it changes from `previousText` and
+  // then holds steady for `requiredStable` consecutive polls in a row.
+  // Requiring several stable polls (not just two) makes it much less likely
+  // that a transient re-render gets mistaken for the real, settled result.
+  async function waitForTableUpdate(headingText, previousText, { timeout = 7000, requiredStable = 3, interval = 200 } = {}) {
     const start = Date.now();
     let lastText = null;
     let stableCount = 0;
@@ -196,13 +200,13 @@
       if (current !== previousText) {
         if (current === lastText) {
           stableCount++;
-          if (stableCount >= 2) return;
+          if (stableCount >= requiredStable) return;
         } else {
           stableCount = 0;
           lastText = current;
         }
       }
-      await sleep(150);
+      await sleep(interval);
     }
     // Timed out — proceed with whatever is currently on screen rather than
     // hanging forever; the exact-match check afterwards protects us from
@@ -215,8 +219,15 @@
     if (!searchInput || !tableBefore) return null;
     const prevText = tableBefore.querySelector('tbody') ? tableBefore.querySelector('tbody').textContent : '';
 
-    setNativeValue(searchInput, '');
-    await sleep(60);
+    // Previously this cleared the box first (setNativeValue(searchInput, ''))
+    // before typing the email. That fired its own 'input' event and made the
+    // table briefly re-render to the full, unfiltered list — a second table
+    // change racing the real search. waitForTableUpdate couldn't tell that
+    // render apart from the real one, so it sometimes locked onto the
+    // unfiltered list as "the result" and returned before the actual
+    // email-filtered rows ever loaded — which is why matches came back
+    // inconsistently rather than reliably. Setting the value directly (no
+    // clear step) removes that race entirely.
     setNativeValue(searchInput, email);
     await sleep(60);
     pressEnter(searchInput);
