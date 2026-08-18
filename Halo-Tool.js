@@ -170,6 +170,17 @@
     return cells.findIndex((c) => c.textContent.trim().toLowerCase() === headerName.toLowerCase());
   }
 
+  // Each cell wraps its value in a <label> that also contains a visually-
+  // hidden (ui-sr-only) column-name label sitting directly next to the value
+  // with no separator — e.g. cell.textContent reads as
+  // "Emailfinleydoodle25@outlook.com" instead of "finleydoodle25@outlook.com".
+  // This strips those sr-only nodes out first so we read only the real value.
+  function getCellValueText(cell) {
+    const clone = cell.cloneNode(true);
+    clone.querySelectorAll('[class*="sr-only"]').forEach((el) => el.remove());
+    return clone.textContent.trim();
+  }
+
   // Only ever looks at the FIRST body row, and requires an exact
   // (case-insensitive) email match — matching the requirement that
   // multiple fuzzy results may appear but only the first row counts.
@@ -180,14 +191,15 @@
     if (!row) return null;
     const cell = row.children[emailIdx];
     if (!cell) return null;
-    const cellEmail = extractEmail(cell.textContent).toLowerCase();
+    const cellEmail = extractEmail(getCellValueText(cell)).toLowerCase();
     return cellEmail && cellEmail === email.toLowerCase() ? row : null;
   }
 
   // Polls the table's tbody text until it changes from `previousText` and
   // then holds steady for `requiredStable` consecutive polls in a row.
   // Requiring several stable polls (not just two) makes it much less likely
-  // that a transient re-render gets mistaken for the real, settled result.
+  // that a transient re-render — e.g. the table briefly redrawing for an
+  // unrelated reason — gets mistaken for the real, settled search result.
   async function waitForTableUpdate(headingText, previousText, { timeout = 7000, requiredStable = 3, interval = 200 } = {}) {
     const start = Date.now();
     let lastText = null;
@@ -219,15 +231,14 @@
     if (!searchInput || !tableBefore) return null;
     const prevText = tableBefore.querySelector('tbody') ? tableBefore.querySelector('tbody').textContent : '';
 
-    // Previously this cleared the box first (setNativeValue(searchInput, ''))
+    // NOTE: we used to clear the box first (setNativeValue(searchInput, ''))
     // before typing the email. That fired its own 'input' event and made the
     // table briefly re-render to the full, unfiltered list — a second table
     // change racing the real search. waitForTableUpdate couldn't tell that
     // render apart from the real one, so it sometimes locked onto the
     // unfiltered list as "the result" and returned before the actual
-    // email-filtered rows ever loaded — which is why matches came back
-    // inconsistently rather than reliably. Setting the value directly (no
-    // clear step) removes that race entirely.
+    // email-filtered rows ever loaded. Setting the value directly (no clear
+    // step) removes that race entirely.
     setNativeValue(searchInput, email);
     await sleep(60);
     pressEnter(searchInput);
