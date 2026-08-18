@@ -517,10 +517,10 @@ document.head.appendChild(style);
 
 function renderWheelColumnHtml(id, values, widthPx) {
 const spacerHeight = Math.floor(WHEEL_VISIBLE_ROWS / 2) * WHEEL_ROW_HEIGHT;
-const items = values.map(v => `<div class="wheel-item" style="height: ${WHEEL_ROW_HEIGHT}px; display: flex; align-items: center; justify-content: center; font-size: 13px; scroll-snap-align: center; color: #95a5a6; transition: color 0.15s, font-weight 0.15s;">${escapeHtml(String(v))}</div>`).join('');
+const items = values.map(v => `<div class="wheel-item" style="height: ${WHEEL_ROW_HEIGHT}px; display: flex; align-items: center; justify-content: center; font-size: 13px; scroll-snap-align: center; color: #95a5a6; cursor: pointer; transition: color 0.15s, font-weight 0.15s;">${escapeHtml(String(v))}</div>`).join('');
 return `<div style="position: relative; width: ${widthPx}px;">
 <div style="position: absolute; top: ${spacerHeight}px; left: 0; right: 0; height: ${WHEEL_ROW_HEIGHT}px; background: #e8f4f8; border-radius: 4px; pointer-events: none;"></div>
-<div id="${id}" class="wheel-scroll" style="position: relative; height: ${WHEEL_VISIBLE_ROWS * WHEEL_ROW_HEIGHT}px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; border: 1px solid #ddd; border-radius: 4px; background: white;">
+<div id="${id}" class="wheel-scroll" style="position: relative; height: ${WHEEL_VISIBLE_ROWS * WHEEL_ROW_HEIGHT}px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: grab;">
 <div style="height: ${spacerHeight}px;"></div>
 ${items}
 <div style="height: ${spacerHeight}px;"></div>
@@ -528,13 +528,46 @@ ${items}
 </div>`;
 }
 
-// Wires scroll-snap "settle" detection onto an already-mounted wheel
-// column - can only run after the HTML has actually been inserted into
-// the DOM, so callers invoke this post-mount, never inline with the HTML
-// string building above.
+// Click-and-drag needs mousemove/mouseup to keep tracking even once the
+// cursor leaves the small wheel area, which means binding to window - but
+// initWheelColumn runs on every panel re-render (every refresh, every
+// extraction), and a plain window.addEventListener there would stack a
+// new pair on top of every previous render's, forever (the exact class of
+// bug that broke the auto-detect interval earlier). Installed at most
+// once per script execution, and at most once ever across re-invocations
+// via the window-level guard; all wheels share it through
+// window._slaWheelDragState rather than each wheel owning its own pair.
+function ensureWheelDragHandlers() {
+if (window._slaWheelDragHandlersInstalled) return;
+window._slaWheelDragHandlersInstalled = true;
+window._slaWheelDragState = null;
+
+window.addEventListener('mousemove', (event) => {
+const drag = window._slaWheelDragState;
+if (!drag) return;
+const dy = event.clientY - drag.startY;
+if (Math.abs(dy) > 4) drag.moved = true;
+drag.el.scrollTop = drag.startScrollTop - dy;
+});
+
+window.addEventListener('mouseup', () => {
+const drag = window._slaWheelDragState;
+if (!drag) return;
+window._slaWheelDragState = null;
+drag.el.style.cursor = 'grab';
+if (drag.moved) drag.settleFromDrag();
+});
+}
+
+// Wires scroll-snap "settle" detection, click-to-select, and click-and-
+// drag onto an already-mounted wheel column - can only run after the
+// HTML has actually been inserted into the DOM, so callers invoke this
+// post-mount, never inline with the HTML string building above.
 function initWheelColumn(id, values, initialValue, onSettle) {
 const el = document.getElementById(id);
 if (!el) return;
+
+ensureWheelDragHandlers();
 
 function highlightAndSettle(index) {
 index = Math.max(0, Math.min(values.length - 1, index));
@@ -546,19 +579,53 @@ item.style.color = i === index ? '#2c3e50' : '#95a5a6';
 if (onSettle) onSettle(value);
 }
 
+function scrollToIndex(index, smooth) {
+index = Math.max(0, Math.min(values.length - 1, index));
+el.scrollTo({ top: index * WHEEL_ROW_HEIGHT, behavior: smooth ? 'smooth' : 'auto' });
+highlightAndSettle(index);
+}
+
 function handleSettle() {
 highlightAndSettle(Math.round(el.scrollTop / WHEEL_ROW_HEIGHT));
 }
 
 if ('onscrollend' in window) {
 el.addEventListener('scrollend', handleSettle);
-} else {
+}
 let scrollDebounce = null;
 el.addEventListener('scroll', () => {
 clearTimeout(scrollDebounce);
 scrollDebounce = setTimeout(handleSettle, 120);
 });
+
+// Click any visible row (not just the centered one) to jump straight to
+// it - mouse-wheel notches alone are too coarse to land precisely.
+let suppressNextClick = false;
+el.querySelectorAll('.wheel-item').forEach((item, index) => {
+item.addEventListener('click', () => {
+if (suppressNextClick) { suppressNextClick = false; return; }
+scrollToIndex(index, true);
+});
+});
+
+// Click-and-drag for direct, precise control. mousedown is scoped to
+// this el (fine to re-attach every render - it's garbage-collected along
+// with the old el once a re-render replaces it); mousemove/mouseup are
+// the single shared pair from ensureWheelDragHandlers.
+el.addEventListener('mousedown', (event) => {
+el.style.cursor = 'grabbing';
+window._slaWheelDragState = {
+el,
+startY: event.clientY,
+startScrollTop: el.scrollTop,
+moved: false,
+settleFromDrag: () => {
+suppressNextClick = true;
+scrollToIndex(Math.round(el.scrollTop / WHEEL_ROW_HEIGHT), true);
 }
+};
+event.preventDefault();
+});
 
 const startIndex = Math.max(0, values.indexOf(initialValue));
 el.scrollTop = startIndex * WHEEL_ROW_HEIGHT;
