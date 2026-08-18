@@ -324,6 +324,15 @@ function collectAssignableLeads() {
 const table = document.querySelector('table');
 if (!table) return [];
 
+// collectAssignableLeads() stays a fast synchronous scan (no modal
+// click-and-wait) - phone/email for the "Email only" filter come from
+// currentCustomers, the cache already populated by a normal extraction
+// (extractAndExportSla), rather than re-scraping every row here. A lead
+// never scanned yet has unknown phone/email and is excluded from the
+// Email only filter rather than guessed at (same "unknown -> excluded"
+// approach used for unparseable dates elsewhere in this file).
+const cachedByKey = new Map(currentCustomers.map(c => [c.key, c]));
+
 const leads = [];
 table.querySelectorAll('tbody tr').forEach((row) => {
 const cells = row.querySelectorAll('td');
@@ -339,13 +348,17 @@ const slaDate = parseKonnectDate(cells[COL_SLA_DATE]?.textContent?.trim() || '')
 const status = cells[COL_STATUS]?.textContent?.trim();
 const tierInfo = categorizeTier(campaign, source);
 const assignState = getAssignCellState(cells[COL_ASSIGN]);
+const key = `${name}||${registration}||${source}||${campaign}`;
+const cached = cachedByKey.get(key);
 
 leads.push({
-key: `${name}||${registration}||${source}||${campaign}`,
+key,
 name, registration, source, campaign,
 slaDate, status, tier: tierInfo.tier,
 assigned: assignState.assigned,
-agentName: assignState.agentName
+agentName: assignState.agentName,
+isCustomerFirst: source.toLowerCase().includes('customer first'),
+isEmailOnly: !!cached && !cached.phone && !!cached.email
 });
 });
 
@@ -362,11 +375,13 @@ function prioritizeLeads(leads) {
 return [...leads].sort((a, b) => computeSortKey(a) - computeSortKey(b));
 }
 
-function filterAssignableLeads(leads, { tiers, windowMinutes }) {
+function filterAssignableLeads(leads, { tiers, windowMinutes, customerFirstOnly, emailOnly }) {
 const now = Date.now();
 return leads.filter((lead) => {
 if (lead.assigned) return false;
 if (!tiers.has(lead.tier)) return false;
+if (customerFirstOnly && !lead.isCustomerFirst) return false;
+if (emailOnly && !lead.isEmailOnly) return false;
 if (windowMinutes != null && lead.slaDate) {
 const minutesUntilDue = (lead.slaDate.getTime() - now) / 60000;
 if (minutesUntilDue > windowMinutes) return false;
@@ -522,18 +537,15 @@ function handleSettle() {
 highlightAndSettle(Math.round(el.scrollTop / WHEEL_ROW_HEIGHT));
 }
 
-// Both listeners are attached unconditionally (not either/or) - if
-// scrollend ever fails to fire for some host-page-specific reason, the
-// debounced scroll listener still catches the settle instead of the
-// wheel silently never reporting a value.
 if ('onscrollend' in window) {
 el.addEventListener('scrollend', handleSettle);
-}
+} else {
 let scrollDebounce = null;
 el.addEventListener('scroll', () => {
 clearTimeout(scrollDebounce);
 scrollDebounce = setTimeout(handleSettle, 120);
 });
+}
 
 const startIndex = Math.max(0, values.indexOf(initialValue));
 el.scrollTop = startIndex * WHEEL_ROW_HEIGHT;
@@ -571,6 +583,8 @@ function renderAssignSection() {
 const leads = collectAssignableLeads();
 const agents = getAgentRoster();
 const tierCounts = [1, 2, 3, 4].map(t => leads.filter(l => l.tier === t && !l.assigned).length);
+const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).length;
+const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
 
 const tierCheckboxes = [1, 2, 3, 4].map(t => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
@@ -593,9 +607,24 @@ return `
 <span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▼</span>
 </div>
 <div id="assignSectionBody" style="margin-top: 12px;">
+<div style="font-size: 11px; color: #7f8c8d; background: #f8f9fa; border-radius: 4px; padding: 8px 10px; margin-bottom: 12px; line-height: 1.5;">
+Leads go out in order of <strong>when they're due</strong>, not by tier — tiers below only narrow which leads are included.
+</div>
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">TIERS</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${tierCheckboxes}</div>
+</div>
+<div style="margin-bottom: 10px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">SPECIAL FILTERS</div>
+<div style="display: flex; flex-direction: column; gap: 6px;">
+<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" id="assignCustomerFirstOnly"> Customer First only <span style="color:#95a5a6;">(${customerFirstCount})</span>
+</label>
+<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" id="assignEmailOnly"> Email only (no phone) <span style="color:#95a5a6;">(${emailOnlyCount})</span>
+</label>
+</div>
+<div style="font-size: 10px; color: #95a5a6; margin-top: 4px;">Based on the last scan — click the badge first if these counts look stale.</div>
 </div>
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
@@ -1334,6 +1363,8 @@ const windowValue = windowInput ? windowInput.value : '';
 const cutoffInput = document.getElementById('assignCutoffTime');
 const cutoffValue = cutoffInput ? cutoffInput.value : '';
 const advancedWasOpen = document.getElementById('advancedCallbackTypes')?.style.display === 'flex';
+const customerFirstChecked = document.getElementById('assignCustomerFirstOnly')?.checked;
+const emailOnlyChecked = document.getElementById('assignEmailOnly')?.checked;
 
 container.outerHTML = currentPageType === PAGE_PENDING ? renderPendingAssignSection() : renderAssignSection();
 
@@ -1350,6 +1381,10 @@ if (newWindowInput && windowValue) newWindowInput.value = windowValue;
 const newCutoffInput = document.getElementById('assignCutoffTime');
 if (newCutoffInput && cutoffValue) newCutoffInput.value = cutoffValue;
 if (advancedWasOpen) window._toggleAdvancedCallbackTypes(true);
+const newCustomerFirst = document.getElementById('assignCustomerFirstOnly');
+if (newCustomerFirst && customerFirstChecked) newCustomerFirst.checked = true;
+const newEmailOnly = document.getElementById('assignEmailOnly');
+if (newEmailOnly && emailOnlyChecked) newEmailOnly.checked = true;
 
 initAssignSectionWheels();
 };
@@ -1367,6 +1402,8 @@ Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map(el =
 );
 const windowInput = document.getElementById('assignWindowMinutes');
 const windowMinutes = windowInput && windowInput.value ? Number(windowInput.value) : null;
+const customerFirstOnly = document.getElementById('assignCustomerFirstOnly')?.checked || false;
+const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
 
 if (selectedTiers.size === 0) {
 log.textContent = 'Select at least one tier.';
@@ -1380,11 +1417,11 @@ return;
 }
 
 const leads = collectAssignableLeads();
-const eligible = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes });
+const eligible = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes, customerFirstOnly, emailOnly });
 const prioritized = prioritizeLeads(eligible);
 
 if (prioritized.length === 0) {
-log.textContent = 'No unassigned leads match the selected tiers/timeframe.';
+log.textContent = 'No unassigned leads match the selected tiers/filters/timeframe.';
 return;
 }
 
