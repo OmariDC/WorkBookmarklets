@@ -659,6 +659,7 @@ const hidden = document.getElementById('assignWindowMinutes');
 const current = hidden && hidden.value ? hidden.value : 'All';
 initWheelColumn('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, current, (value) => {
 if (hidden) hidden.value = value === 'All' ? '' : value;
+if (window._updateAssignPreview) window._updateAssignPreview();
 });
 }
 
@@ -669,11 +670,16 @@ const hidden = document.getElementById('assignCutoffTime');
 const [currentHour, currentMinute] = (hidden && hidden.value ? hidden.value : formatTimeForInput(defaultHourCutoff())).split(':');
 let selectedHour = currentHour;
 let selectedMinute = currentMinute;
-const sync = () => { if (hidden) hidden.value = `${selectedHour}:${selectedMinute}`; };
+const sync = () => {
+if (hidden) hidden.value = `${selectedHour}:${selectedMinute}`;
+if (window._updateAssignPreview) window._updateAssignPreview();
+};
 
 initWheelColumn('assignCutoffHourWheel', HOUR_VALUES, currentHour, (value) => { selectedHour = value; sync(); });
 initWheelColumn('assignCutoffMinuteWheel', MINUTE_VALUES, currentMinute, (value) => { selectedMinute = value; sync(); });
 }
+
+if (window._updateAssignPreview) window._updateAssignPreview();
 }
 
 // Always-visible, no interaction needed - answers "how many are due
@@ -721,7 +727,7 @@ const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
 
 const tierCheckboxes = [1, 2, 3, 4].map(t => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-tier-checkbox" value="${t}" checked> Tier ${t} <span style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
+<input type="checkbox" class="assign-tier-checkbox" value="${t}" checked onchange="window._updateAssignPreview()"> Tier ${t} <span style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
 </label>`).join('');
 
 const agentCheckboxes = agents.length === 0
@@ -751,10 +757,10 @@ Leads go out in order of <strong>when they're due</strong>, not by tier — tier
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">SPECIAL FILTERS</div>
 <div style="display: flex; flex-direction: column; gap: 6px;">
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" id="assignCustomerFirstOnly"> Customer First only <span style="color:#95a5a6;">(${customerFirstCount})</span>
+<input type="checkbox" id="assignCustomerFirstOnly" onchange="window._updateAssignPreview()"> Customer First only <span style="color:#95a5a6;">(${customerFirstCount})</span>
 </label>
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" id="assignEmailOnly"> Email only (no phone) <span style="color:#95a5a6;">(${emailOnlyCount})</span>
+<input type="checkbox" id="assignEmailOnly" onchange="window._updateAssignPreview()"> Email only (no phone) <span style="color:#95a5a6;">(${emailOnlyCount})</span>
 </label>
 </div>
 <div style="font-size: 10px; color: #95a5a6; margin-top: 4px;">Based on the last scan — click the badge first if these counts look stale.</div>
@@ -771,6 +777,7 @@ ${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
 </div>
+<div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
 <button id="assignRunButton" onclick="window._runSlaAssignment()" ${buttonDisabled ? 'disabled' : ''}
 style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
 ${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
@@ -930,12 +937,12 @@ const countFor = (type) => leads.filter(l => l.callbackType === type && !l.assig
 
 const primaryCheckboxes = CALLBACK_TYPES_PRIMARY.map(type => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" checked> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" checked onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
 </label>`).join('');
 
 const advancedCheckboxes = CALLBACK_TYPES_ADVANCED.map(type => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
 </label>`).join('');
 
 const agentCheckboxes = agents.length === 0
@@ -979,6 +986,7 @@ ${renderWheelColumnHtml('assignCutoffMinuteWheel', MINUTE_VALUES, 56)}
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
 </div>
+<div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
 <button id="assignRunButton" onclick="window._runPendingAssignment()" ${buttonDisabled ? 'disabled' : ''}
 style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
 ${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
@@ -1516,6 +1524,41 @@ const isCurrentlyOpen = body.style.display === 'flex';
 const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !isCurrentlyOpen;
 body.style.display = shouldOpen ? 'flex' : 'none';
 toggle.textContent = shouldOpen ? '▼' : '▶';
+};
+
+// Recomputes and displays "N leads match" before the button is even
+// clicked, so a filter combination that matches nothing (or an
+// unexpectedly large batch) is visible immediately rather than found out
+// via an empty/surprising results log after the fact. Deliberately
+// excludes agent selection - that decides who gets the leads, not how
+// many qualify.
+window._updateAssignPreview = function() {
+const previewEl = document.getElementById('assignMatchPreview');
+if (!previewEl) return;
+
+let count;
+if (currentPageType === PAGE_PENDING) {
+const selectedTypes = new Set(
+Array.from(document.querySelectorAll('.assign-callback-checkbox:checked')).map(el => el.value)
+);
+const cutoffInput = document.getElementById('assignCutoffTime');
+const cutoffDate = parseCutoffFromInput(cutoffInput ? cutoffInput.value : '');
+const leads = collectPendingCustomers();
+count = filterPendingLeads(leads, { callbackTypes: selectedTypes, cutoffDate }).length;
+} else {
+const selectedTiers = new Set(
+Array.from(document.querySelectorAll('.assign-tier-checkbox:checked')).map(el => Number(el.value))
+);
+const windowInput = document.getElementById('assignWindowMinutes');
+const windowMinutes = windowInput && windowInput.value ? Number(windowInput.value) : null;
+const customerFirstOnly = document.getElementById('assignCustomerFirstOnly')?.checked || false;
+const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
+const leads = collectAssignableLeads();
+count = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes, customerFirstOnly, emailOnly }).length;
+}
+
+previewEl.textContent = `${count} lead${count === 1 ? '' : 's'} match${count === 1 ? 'es' : ''} the current filters`;
+previewEl.style.color = count === 0 ? '#e74c3c' : '#7f8c8d';
 };
 
 window._refreshAssignSection = function() {
