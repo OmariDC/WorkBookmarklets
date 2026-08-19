@@ -7,10 +7,74 @@ const PANEL_BOX_ID = '_slaPanelBox';
 const PANEL_STATE_KEY = '_slaPanelState';
 const PANEL_SIZE_KEY = '_slaPanelSize';
 
+// SLA table columns: Customer, Registration, Source, Campaign, Created,
+// Received, SLA Date, Status, Assign. td-only queries mean the bare
+// <tr><th>...</th></tr> header row (no real <thead> on this page) is
+// skipped automatically, since row.querySelectorAll('td') is empty for it.
+const COL_CUSTOMER = 0;
+const COL_REGISTRATION = 1;
+const COL_SOURCE = 2;
+const COL_CAMPAIGN = 3;
+const COL_CREATED = 4;
+const COL_RECEIVED = 5;
+const COL_SLA_DATE = 6;
+const COL_STATUS = 7;
+const COL_ASSIGN = 8;
+
+// Pending Customers table columns: Dealer, Brand, Customer, Reg, Email,
+// Mobile, Landline, Campaign, Callback Type, Last Action Date,
+// Next Action Date, Assign. Reg here is plain text (unlike the SLA
+// table's linked Registration column) and Email/Mobile/Landline are
+// plain text too, so no modal click-and-wait is needed on this page.
+const PC_COL_DEALER = 0;
+const PC_COL_BRAND = 1;
+const PC_COL_CUSTOMER = 2;
+const PC_COL_REG = 3;
+const PC_COL_EMAIL = 4;
+const PC_COL_MOBILE = 5;
+const PC_COL_LANDLINE = 6;
+const PC_COL_CAMPAIGN = 7;
+const PC_COL_CALLBACK_TYPE = 8;
+const PC_COL_LAST_ACTION = 9;
+const PC_COL_NEXT_ACTION = 10;
+const PC_COL_ASSIGN = 11;
+
+// How far a Missed lead's sort position gets pushed back relative to its
+// real due time - keeps it from always beating a Critical lead due in
+// minutes, while still generally sorting ahead of anything due much later.
+const MISSED_PENALTY_MS = 30 * 60 * 1000;
+
+const PAGE_SLA = 'sla';
+const PAGE_PENDING = 'pending';
+const SLA_HEADERS = ['Customer', 'Registration', 'Source', 'Campaign', 'Created', 'Received', 'SLA Date', 'Status', 'Assign'];
+const PENDING_HEADERS = ['Dealer', 'Brand', 'Customer', 'Reg', 'Email', 'Mobile', 'Landline', 'Campaign', 'Callback Type', 'Last Action Date', 'Next Action Date', 'Assign'];
+
+function headersMatch(actual, expected) {
+return actual.length === expected.length && actual.every((h, i) => h === expected[i]);
+}
+
+// Detects which page we're on from the table's header row rather than the
+// URL, so it keeps working regardless of route changes - and refuses to
+// run at all (returns null) rather than guessing at an unrecognized table.
+function detectPageType() {
+const table = document.querySelector('table');
+if (!table) return null;
+const headerRow = table.querySelector('tr');
+if (!headerRow) return null;
+const headers = Array.from(headerRow.querySelectorAll('th')).map(th => th.textContent.trim());
+if (headers.length === 0) return null;
+
+if (headersMatch(headers, SLA_HEADERS)) return PAGE_SLA;
+if (headersMatch(headers, PENDING_HEADERS)) return PAGE_PENDING;
+return null;
+}
+
 let badge = null;
 let panelElement = null;
 let extracting = false;
+let currentPageType = null;
 let currentCustomers = [];
+let currentPendingCustomers = [];
 
 function categorizeTier(campaign, source) {
 const camp = campaign.toLowerCase();
@@ -195,8 +259,724 @@ const display = escapeHtml(value);
 return `<span class="sla-copyable" data-value="${display}" style="cursor: pointer; padding: 4px 6px; border-radius: 4px; background: #e8f4f8; color: #2c3e50; display: inline-block; font-size: 13px;">${display}</span>`;
 }
 
+// ===================================================================
+// ASSIGNMENT ENGINE (shared between the SLA tab and Pending Customers)
+//
+// Agent shape and dropdown markup both confirmed live (see normalizeAgent
+// and findAgentMenuItem below). Both pages' Assign column use the
+// identical div.dropdown.ng-scope structure. The one thing still
+// genuinely untested end-to-end is a real click actually completing an
+// assignment - runAssignmentPlan/waitForAssignConfirmed are built and
+// unit-tested against fabricated data, but not yet run against Konnect.
+// ===================================================================
+
+function parseKonnectDate(text) {
+// Matches "Tue, 18 Aug 2026 09:15" - the weekday prefix is ignored. Used
+// for SLA Date on the SLA table and Last/Next Action Date on the Pending
+// Customers table - same app-wide date rendering, unconfirmed for the
+// latter two but a reasonable assumption; a lead with an unparseable date
+// simply gets excluded from date-filtered results rather than guessed at.
+const MONTHS = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+const match = text.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\s+(\d{1,2}):(\d{2})/);
+if (!match) return null;
+const [, day, monName, year, hour, minute] = match;
+const month = MONTHS[monName];
+if (month === undefined) return null;
+return new Date(Number(year), month, Number(day), Number(hour), Number(minute));
+}
+
+function getAssignCellState(cell) {
+const dropdown = cell.querySelector('.dropdown');
+if (dropdown) {
+return { assigned: false, agentName: null };
+}
+return { assigned: true, agentName: cell.textContent.trim() };
+}
+
+// Confirmed live: {ID: 1809, DisplayText: "Daniel Paling",
+// CurrentStatusName: "Live Chat", $$hashKey: "object:223"}.
+function normalizeAgent(agent) {
+return {
+id: String(agent.ID),
+name: agent.DisplayText,
+status: agent.CurrentStatusName || '',
+raw: agent
+};
+}
+
+function getAgentRoster() {
+// Scoped to the SLA table first so an unrelated page dropdown sharing
+// the same classes can't get picked up by accident.
+const scopeHost = document.querySelector('table .dropdown.ng-scope') || document.querySelector('.dropdown.ng-scope');
+if (!scopeHost || typeof angular === 'undefined') return [];
+try {
+const scope = angular.element(scopeHost).scope();
+const agents = (scope && scope.agents) || [];
+return agents.map(normalizeAgent);
+} catch (error) {
+console.warn('Could not read agent roster:', error);
+return [];
+}
+}
+
+function collectAssignableLeads() {
+const table = document.querySelector('table');
+if (!table) return [];
+
+// collectAssignableLeads() stays a fast synchronous scan (no modal
+// click-and-wait) - phone/email for the "Email only" filter come from
+// currentCustomers, the cache already populated by a normal extraction
+// (extractAndExportSla), rather than re-scraping every row here. A lead
+// never scanned yet has unknown phone/email and is excluded from the
+// Email only filter rather than guessed at (same "unknown -> excluded"
+// approach used for unparseable dates elsewhere in this file).
+const cachedByKey = new Map(currentCustomers.map(c => [c.key, c]));
+
+const leads = [];
+table.querySelectorAll('tbody tr').forEach((row) => {
+const cells = row.querySelectorAll('td');
+if (cells.length < 9) return;
+
+const name = cells[COL_CUSTOMER]?.textContent?.trim();
+const campaign = cells[COL_CAMPAIGN]?.textContent?.trim();
+if (!name || !campaign) return;
+
+const registration = cells[COL_REGISTRATION]?.textContent?.trim();
+const source = cells[COL_SOURCE]?.textContent?.trim();
+const slaDate = parseKonnectDate(cells[COL_SLA_DATE]?.textContent?.trim() || '');
+const status = cells[COL_STATUS]?.textContent?.trim();
+const tierInfo = categorizeTier(campaign, source);
+const assignState = getAssignCellState(cells[COL_ASSIGN]);
+const key = `${name}||${registration}||${source}||${campaign}`;
+const cached = cachedByKey.get(key);
+
+leads.push({
+key,
+name, registration, source, campaign,
+slaDate, status, tier: tierInfo.tier,
+assigned: assignState.assigned,
+agentName: assignState.agentName,
+isCustomerFirst: source.toLowerCase().includes('customer first'),
+isEmailOnly: !!cached && !cached.phone && !!cached.email
+});
+});
+
+return leads;
+}
+
+function computeSortKey(lead) {
+if (!lead.slaDate) return Infinity;
+const time = lead.slaDate.getTime();
+return lead.status === 'Missed' ? time + MISSED_PENALTY_MS : time;
+}
+
+function prioritizeLeads(leads) {
+return [...leads].sort((a, b) => computeSortKey(a) - computeSortKey(b));
+}
+
+function filterAssignableLeads(leads, { tiers, windowMinutes, customerFirstOnly, emailOnly }) {
+const now = Date.now();
+return leads.filter((lead) => {
+if (lead.assigned) return false;
+if (!tiers.has(lead.tier)) return false;
+if (customerFirstOnly && !lead.isCustomerFirst) return false;
+if (emailOnly && !lead.isEmailOnly) return false;
+if (windowMinutes != null && lead.slaDate) {
+const minutesUntilDue = (lead.slaDate.getTime() - now) / 60000;
+if (minutesUntilDue > windowMinutes) return false;
+}
+return true;
+});
+}
+
+function roundRobinAssign(leads, agents) {
+const plan = [];
+for (let i = 0; i < leads.length; i++) {
+plan.push({ lead: leads[i], agent: agents[i % agents.length] });
+}
+return plan;
+}
+
+// Re-locates a lead's Assign cell fresh at click time, rather than reusing
+// a reference captured earlier - protects against the row/cell being
+// re-rendered (e.g. by an Angular digest from a prior assignment) between
+// when the plan was built and when this particular lead's turn comes up.
+function locateAssignCell(lead) {
+const table = document.querySelector('table');
+if (!table) return null;
+const rows = table.querySelectorAll('tbody tr');
+for (const row of rows) {
+const cells = row.querySelectorAll('td');
+if (cells.length < 9) continue;
+const name = cells[COL_CUSTOMER]?.textContent?.trim();
+const registration = cells[COL_REGISTRATION]?.textContent?.trim();
+const source = cells[COL_SOURCE]?.textContent?.trim();
+const campaign = cells[COL_CAMPAIGN]?.textContent?.trim();
+const key = `${name}||${registration}||${source}||${campaign}`;
+if (key === lead.key) return cells[COL_ASSIGN];
+}
+return null;
+}
+
+// Confirmed live markup: <li ng-repeat="agent in agents"
+// ng-click="assignToAgentQueue(lead, agent)"><a><span>{icon} {DisplayText}
+// ({CurrentStatusName})</span></a></li> - the visible text is not the
+// bare name, so matching on it would never work. ng-repeat guarantees the
+// <li> elements render in the same order as scope.agents, so matching the
+// target agent's position in that array (re-read fresh, not cached) is a
+// direct match against ground truth regardless of text/markup - clicking
+// the <li> itself, since that's what actually carries ng-click.
+function findAgentMenuItem(cell, agent) {
+const dropdown = cell.querySelector('.dropdown');
+if (!dropdown || typeof angular === 'undefined') return null;
+try {
+const scope = angular.element(dropdown).scope();
+const agents = (scope && scope.agents) || [];
+const index = agents.findIndex(a => String(a.ID) === agent.id);
+if (index === -1) return null;
+const items = cell.querySelectorAll('.dropdown-menu li');
+return items[index] || null;
+} catch (error) {
+console.warn('Could not resolve agent menu item:', error);
+return null;
+}
+}
+
+function waitForAssignConfirmed(cell, timeout = 3000) {
+return new Promise((resolve) => {
+if (!cell.querySelector('.dropdown')) {
+resolve(true);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(false);
+}, timeout);
+const observer = new MutationObserver(() => {
+if (!cell.querySelector('.dropdown')) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(true);
+}
+});
+observer.observe(cell, { childList: true, subtree: true });
+});
+}
+
+async function runAssignmentPlan(plan, locateCellFn, onProgress) {
+const results = [];
+for (const { lead, agent } of plan) {
+let ok = false;
+let reason = null;
+try {
+const cell = locateCellFn(lead);
+if (!cell) {
+reason = 'Row no longer found on page';
+} else {
+const menuItem = findAgentMenuItem(cell, agent);
+if (!menuItem) {
+reason = 'Agent option not found in menu';
+} else {
+menuItem.click();
+ok = await waitForAssignConfirmed(cell);
+if (!ok) reason = 'Timed out waiting for confirmation';
+}
+}
+} catch (error) {
+reason = String(error);
+}
+results.push({ lead, agent, ok, reason });
+onProgress(results.slice());
+}
+return results;
+}
+
+// ===================================================================
+// WHEEL PICKERS (shared between both assign sections' time inputs)
+//
+// Each wheel writes its settled value into the same hidden <input> the
+// rest of the code already reads (#assignWindowMinutes / #assignCutoffTime)
+// so parseCutoffFromInput(), the assignment handlers, and the refresh
+// value-preservation logic all need zero changes - the wheel is purely a
+// presentation-layer swap for the plain inputs that used to be there.
+// ===================================================================
+
+const WHEEL_ROW_HEIGHT = 32;
+const WHEEL_VISIBLE_ROWS = 3;
+const SLA_WINDOW_PRESETS = ['All', '5', '10', '15', '20', '30', '45', '60', '90', '120'];
+const HOUR_VALUES = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+const MINUTE_VALUES = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
+
+function ensureWheelStyles() {
+if (document.getElementById('_slaWheelStyles')) return;
+const style = document.createElement('style');
+style.id = '_slaWheelStyles';
+style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; }';
+document.head.appendChild(style);
+}
+
+function renderWheelColumnHtml(id, values, widthPx) {
+const spacerHeight = Math.floor(WHEEL_VISIBLE_ROWS / 2) * WHEEL_ROW_HEIGHT;
+const items = values.map(v => `<div class="wheel-item" style="height: ${WHEEL_ROW_HEIGHT}px; display: flex; align-items: center; justify-content: center; font-size: 13px; scroll-snap-align: center; color: #95a5a6; cursor: pointer; transition: color 0.15s, font-weight 0.15s;">${escapeHtml(String(v))}</div>`).join('');
+return `<div style="position: relative; width: ${widthPx}px;">
+<div style="position: absolute; top: ${spacerHeight}px; left: 0; right: 0; height: ${WHEEL_ROW_HEIGHT}px; background: #e8f4f8; border-radius: 4px; pointer-events: none;"></div>
+<div id="${id}" class="wheel-scroll" style="position: relative; height: ${WHEEL_VISIBLE_ROWS * WHEEL_ROW_HEIGHT}px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; border: 1px solid #ddd; border-radius: 4px; background: white; cursor: grab;">
+<div style="height: ${spacerHeight}px;"></div>
+${items}
+<div style="height: ${spacerHeight}px;"></div>
+</div>
+</div>`;
+}
+
+// Click-and-drag needs mousemove/mouseup to keep tracking even once the
+// cursor leaves the small wheel area, which means binding to window - but
+// initWheelColumn runs on every panel re-render (every refresh, every
+// extraction), and a plain window.addEventListener there would stack a
+// new pair on top of every previous render's, forever (the exact class of
+// bug that broke the auto-detect interval earlier). Installed at most
+// once per script execution, and at most once ever across re-invocations
+// via the window-level guard; all wheels share it through
+// window._slaWheelDragState rather than each wheel owning its own pair.
+function ensureWheelDragHandlers() {
+if (window._slaWheelDragHandlersInstalled) return;
+window._slaWheelDragHandlersInstalled = true;
+window._slaWheelDragState = null;
+
+window.addEventListener('mousemove', (event) => {
+const drag = window._slaWheelDragState;
+if (!drag) return;
+const dy = event.clientY - drag.startY;
+if (Math.abs(dy) > 4) drag.moved = true;
+drag.el.scrollTop = drag.startScrollTop - dy;
+});
+
+window.addEventListener('mouseup', () => {
+const drag = window._slaWheelDragState;
+if (!drag) return;
+window._slaWheelDragState = null;
+drag.el.style.cursor = 'grab';
+if (drag.moved) drag.settleFromDrag();
+});
+}
+
+// Wires scroll-snap "settle" detection, click-to-select, and click-and-
+// drag onto an already-mounted wheel column - can only run after the
+// HTML has actually been inserted into the DOM, so callers invoke this
+// post-mount, never inline with the HTML string building above.
+function initWheelColumn(id, values, initialValue, onSettle) {
+const el = document.getElementById(id);
+if (!el) return;
+
+ensureWheelDragHandlers();
+
+function highlightAndSettle(index) {
+index = Math.max(0, Math.min(values.length - 1, index));
+const value = values[index];
+el.querySelectorAll('.wheel-item').forEach((item, i) => {
+item.style.fontWeight = i === index ? '700' : '400';
+item.style.color = i === index ? '#2c3e50' : '#95a5a6';
+});
+if (onSettle) onSettle(value);
+}
+
+function scrollToIndex(index, smooth) {
+index = Math.max(0, Math.min(values.length - 1, index));
+el.scrollTo({ top: index * WHEEL_ROW_HEIGHT, behavior: smooth ? 'smooth' : 'auto' });
+highlightAndSettle(index);
+}
+
+function handleSettle() {
+highlightAndSettle(Math.round(el.scrollTop / WHEEL_ROW_HEIGHT));
+}
+
+if ('onscrollend' in window) {
+el.addEventListener('scrollend', handleSettle);
+}
+let scrollDebounce = null;
+el.addEventListener('scroll', () => {
+clearTimeout(scrollDebounce);
+scrollDebounce = setTimeout(handleSettle, 120);
+});
+
+// Click any visible row (not just the centered one) to jump straight to
+// it - mouse-wheel notches alone are too coarse to land precisely.
+let suppressNextClick = false;
+el.querySelectorAll('.wheel-item').forEach((item, index) => {
+item.addEventListener('click', () => {
+if (suppressNextClick) { suppressNextClick = false; return; }
+scrollToIndex(index, true);
+});
+});
+
+// Click-and-drag for direct, precise control. mousedown is scoped to
+// this el (fine to re-attach every render - it's garbage-collected along
+// with the old el once a re-render replaces it); mousemove/mouseup are
+// the single shared pair from ensureWheelDragHandlers.
+el.addEventListener('mousedown', (event) => {
+el.style.cursor = 'grabbing';
+window._slaWheelDragState = {
+el,
+startY: event.clientY,
+startScrollTop: el.scrollTop,
+moved: false,
+settleFromDrag: () => {
+suppressNextClick = true;
+scrollToIndex(Math.round(el.scrollTop / WHEEL_ROW_HEIGHT), true);
+}
+};
+event.preventDefault();
+});
+
+const startIndex = Math.max(0, values.indexOf(initialValue));
+el.scrollTop = startIndex * WHEEL_ROW_HEIGHT;
+highlightAndSettle(startIndex);
+}
+
+// Compact mode's panel has a fixed, fairly short total height and the
+// panel box itself clips overflow - without a cap here, an expanded
+// assign section can push content past that boundary with nothing able
+// to scroll it into view (the panel's own scroll only covers the tier/
+// lead list below it, not the assign section). Full mode has much more
+// room, so it gets a looser cap.
+function assignSectionBodyMaxHeight() {
+const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
+return panelSize === 'full' ? '55vh' : '280px';
+}
+
+// Reads whichever wheels are actually present in the currently-mounted
+// assign section (SLA's single minutes wheel, or Pending Customers' hour
+// + minute pair) and wires them up, seeding each from its hidden input's
+// current value so a manual refresh's preserved value is respected.
+function initAssignSectionWheels() {
+if (document.getElementById('assignWindowMinutesWheel')) {
+const hidden = document.getElementById('assignWindowMinutes');
+const current = hidden && hidden.value ? hidden.value : 'All';
+initWheelColumn('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, current, (value) => {
+if (hidden) hidden.value = value === 'All' ? '' : value;
+});
+}
+
+const hourWheel = document.getElementById('assignCutoffHourWheel');
+const minuteWheel = document.getElementById('assignCutoffMinuteWheel');
+if (hourWheel && minuteWheel) {
+const hidden = document.getElementById('assignCutoffTime');
+const [currentHour, currentMinute] = (hidden && hidden.value ? hidden.value : formatTimeForInput(defaultHourCutoff())).split(':');
+let selectedHour = currentHour;
+let selectedMinute = currentMinute;
+const sync = () => { if (hidden) hidden.value = `${selectedHour}:${selectedMinute}`; };
+
+initWheelColumn('assignCutoffHourWheel', HOUR_VALUES, currentHour, (value) => { selectedHour = value; sync(); });
+initWheelColumn('assignCutoffMinuteWheel', MINUTE_VALUES, currentMinute, (value) => { selectedMinute = value; sync(); });
+}
+}
+
+function renderAssignSection() {
+const leads = collectAssignableLeads();
+const agents = getAgentRoster();
+const tierCounts = [1, 2, 3, 4].map(t => leads.filter(l => l.tier === t && !l.assigned).length);
+const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).length;
+const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
+
+const tierCheckboxes = [1, 2, 3, 4].map(t => `
+<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" class="assign-tier-checkbox" value="${t}" checked> Tier ${t} <span style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
+</label>`).join('');
+
+const agentCheckboxes = agents.length === 0
+? `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`
+: agents.map(a => `
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" checked> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
+</label>`).join('');
+
+const buttonDisabled = agents.length === 0;
+
+return `
+<div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #ecf0f1;">
+<div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+<span style="font-weight: 700; color: #2c3e50; font-size: 14px;">⚡ Assign Leads</span>
+<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▶</span>
+</div>
+<div id="assignSectionBody" style="margin-top: 12px; display: none; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
+<div style="font-size: 11px; color: #7f8c8d; background: #f8f9fa; border-radius: 4px; padding: 8px 10px; margin-bottom: 12px; line-height: 1.5;">
+Leads go out in order of <strong>when they're due</strong>, not by tier — tiers below only narrow which leads are included.
+</div>
+<div style="margin-bottom: 10px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">TIERS</div>
+<div style="display: flex; gap: 10px; flex-wrap: wrap;">${tierCheckboxes}</div>
+</div>
+<div style="margin-bottom: 10px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">SPECIAL FILTERS</div>
+<div style="display: flex; flex-direction: column; gap: 6px;">
+<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" id="assignCustomerFirstOnly"> Customer First only <span style="color:#95a5a6;">(${customerFirstCount})</span>
+</label>
+<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" id="assignEmailOnly"> Email only (no phone) <span style="color:#95a5a6;">(${emailOnlyCount})</span>
+</label>
+</div>
+<div style="font-size: 10px; color: #95a5a6; margin-top: 4px;">Based on the last scan — click the badge first if these counts look stale.</div>
+</div>
+<div style="margin-bottom: 10px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
+<input id="assignWindowMinutes" type="hidden" value="">
+${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
+</div>
+<div style="margin-bottom: 10px;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+<span style="font-size: 11px; font-weight: 700; color: #7f8c8d;">AGENTS ONLINE</span>
+<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
+</div>
+<div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
+</div>
+<button id="assignRunButton" onclick="window._runSlaAssignment()" ${buttonDisabled ? 'disabled' : ''}
+style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
+${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
+</button>
+<div id="assignResultsLog" style="margin-top: 10px; font-size: 11px; color: #7f8c8d; max-height: 100px; overflow-y: auto;"></div>
+</div>
+</div>`;
+}
+
+// ===================================================================
+// PENDING CUSTOMERS TAB
+// ===================================================================
+
+const CALLBACK_TYPES_PRIMARY = ['New', 'Auto Rescheduled'];
+const CALLBACK_TYPES_ADVANCED = ['Manual Rescheduled', 'Post Closure'];
+const CALLBACK_TYPE_ORDER = [...CALLBACK_TYPES_PRIMARY, ...CALLBACK_TYPES_ADVANCED];
+const CALLBACK_TYPE_COLORS = {
+'New': '#e74c3c',
+'Auto Rescheduled': '#3498db',
+'Manual Rescheduled': '#f39c12',
+'Post Closure': '#95a5a6'
+};
+
+function collectPendingCustomers() {
+const table = document.querySelector('table');
+if (!table) return [];
+
+const leads = [];
+table.querySelectorAll('tbody tr').forEach((row) => {
+const cells = row.querySelectorAll('td');
+if (cells.length < 12) return;
+
+const name = cells[PC_COL_CUSTOMER]?.textContent?.trim();
+if (!name) return;
+
+const dealer = cells[PC_COL_DEALER]?.textContent?.trim();
+const brand = cells[PC_COL_BRAND]?.textContent?.trim();
+const reg = cells[PC_COL_REG]?.textContent?.trim();
+const email = cells[PC_COL_EMAIL]?.textContent?.trim();
+const mobile = cells[PC_COL_MOBILE]?.textContent?.trim();
+const landline = cells[PC_COL_LANDLINE]?.textContent?.trim();
+const campaign = cells[PC_COL_CAMPAIGN]?.textContent?.trim();
+const callbackType = cells[PC_COL_CALLBACK_TYPE]?.textContent?.trim();
+const nextActionText = cells[PC_COL_NEXT_ACTION]?.textContent?.trim() || '';
+const lastActionDate = parseKonnectDate(cells[PC_COL_LAST_ACTION]?.textContent?.trim() || '');
+const nextActionDate = parseKonnectDate(nextActionText);
+const assignState = getAssignCellState(cells[PC_COL_ASSIGN]);
+
+leads.push({
+key: `${name}||${reg}||${campaign}||${callbackType}||${nextActionText}`,
+name, dealer, brand, reg, email, mobile, landline, campaign,
+callbackType, lastActionDate, nextActionDate,
+assigned: assignState.assigned,
+agentName: assignState.agentName
+});
+});
+
+return leads;
+}
+
+function prioritizePendingLeads(leads) {
+return [...leads].sort((a, b) =>
+(a.nextActionDate ? a.nextActionDate.getTime() : Infinity) - (b.nextActionDate ? b.nextActionDate.getTime() : Infinity)
+);
+}
+
+// A lead with no parseable Next Action Date is excluded rather than
+// guessed at - if the date format assumption turns out to be wrong,
+// this fails loudly (nothing matches) instead of assigning on unknown
+// urgency.
+function filterPendingLeads(leads, { callbackTypes, cutoffDate }) {
+return leads.filter((lead) => {
+if (lead.assigned) return false;
+if (!callbackTypes.has(lead.callbackType)) return false;
+if (!lead.nextActionDate) return false;
+if (cutoffDate && lead.nextActionDate.getTime() >= cutoffDate.getTime()) return false;
+return true;
+});
+}
+
+// "Due within the hour" means up to the top of the next clock hour (e.g.
+// at 12:47 that's 13:00), not a rolling 60-minute lookahead.
+function defaultHourCutoff() {
+const now = new Date();
+return new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours() + 1, 0, 0, 0);
+}
+
+function formatTimeForInput(date) {
+const hh = String(date.getHours()).padStart(2, '0');
+const mm = String(date.getMinutes()).padStart(2, '0');
+return `${hh}:${mm}`;
+}
+
+function parseCutoffFromInput(value) {
+if (!value) return defaultHourCutoff();
+const [hh, mm] = value.split(':').map(Number);
+const now = new Date();
+return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
+}
+
+// Re-locates a lead's Assign cell fresh at click time - same reasoning as
+// locateAssignCell on the SLA tab.
+function locatePendingAssignCell(lead) {
+const table = document.querySelector('table');
+if (!table) return null;
+const rows = table.querySelectorAll('tbody tr');
+for (const row of rows) {
+const cells = row.querySelectorAll('td');
+if (cells.length < 12) continue;
+const name = cells[PC_COL_CUSTOMER]?.textContent?.trim();
+const reg = cells[PC_COL_REG]?.textContent?.trim();
+const campaign = cells[PC_COL_CAMPAIGN]?.textContent?.trim();
+const callbackType = cells[PC_COL_CALLBACK_TYPE]?.textContent?.trim();
+const nextActionText = cells[PC_COL_NEXT_ACTION]?.textContent?.trim() || '';
+const key = `${name}||${reg}||${campaign}||${callbackType}||${nextActionText}`;
+if (key === lead.key) return cells[PC_COL_ASSIGN];
+}
+return null;
+}
+
+function slugify(value) {
+return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
+
+function renderPendingAssignSection() {
+const leads = collectPendingCustomers();
+const agents = getAgentRoster();
+const countFor = (type) => leads.filter(l => l.callbackType === type && !l.assigned).length;
+
+const primaryCheckboxes = CALLBACK_TYPES_PRIMARY.map(type => `
+<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" checked> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
+</label>`).join('');
+
+const advancedCheckboxes = CALLBACK_TYPES_ADVANCED.map(type => `
+<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
+</label>`).join('');
+
+const agentCheckboxes = agents.length === 0
+? `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`
+: agents.map(a => `
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" checked> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
+</label>`).join('');
+
+const buttonDisabled = agents.length === 0;
+const defaultCutoff = formatTimeForInput(defaultHourCutoff());
+
+return `
+<div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #ecf0f1;">
+<div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+<span style="font-weight: 700; color: #2c3e50; font-size: 14px;">⚡ Assign Leads</span>
+<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▶</span>
+</div>
+<div id="assignSectionBody" style="margin-top: 12px; display: none; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
+<div style="margin-bottom: 10px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">CALLBACK TYPE</div>
+<div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
+<div onclick="window._toggleAdvancedCallbackTypes()" style="margin-top: 6px; font-size: 11px; color: #3498db; cursor: pointer;">
+<span id="advancedCallbackToggle">▶</span> Advanced (Manual Rescheduled, Post Closure)
+</div>
+<div id="advancedCallbackTypes" style="display: none; gap: 10px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
+</div>
+<div style="margin-bottom: 10px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE BEFORE <span style="font-weight: 400; color: #95a5a6;">(defaults to the top of the next hour)</span></div>
+<input id="assignCutoffTime" type="hidden" value="${defaultCutoff}">
+<div style="display: flex; align-items: center; gap: 6px;">
+${renderWheelColumnHtml('assignCutoffHourWheel', HOUR_VALUES, 56)}
+<span style="font-weight: 700; color: #2c3e50;">:</span>
+${renderWheelColumnHtml('assignCutoffMinuteWheel', MINUTE_VALUES, 56)}
+</div>
+</div>
+<div style="margin-bottom: 10px;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+<span style="font-size: 11px; font-weight: 700; color: #7f8c8d;">AGENTS ONLINE</span>
+<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
+</div>
+<div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
+</div>
+<button id="assignRunButton" onclick="window._runPendingAssignment()" ${buttonDisabled ? 'disabled' : ''}
+style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
+${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
+</button>
+<div id="assignResultsLog" style="margin-top: 10px; font-size: 11px; color: #7f8c8d; max-height: 100px; overflow-y: auto;"></div>
+</div>
+</div>`;
+}
+
+function renderCallbackTypeSection(typeName, customers, color) {
+const sectionId = 'cb-' + slugify(typeName);
+
+if (customers.length === 0) {
+return `<div style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 8px;
+border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+<h3 style="margin: 0; color: ${color}; font-size: 14px; font-weight: 600;">${escapeHtml(typeName)}</h3>
+<p style="margin: 8px 0 0 0; color: #95a5a6; font-size: 13px;">No customers</p>
+</div>`;
+}
+
+return `<div style="margin-bottom: 20px;">
+<div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 14px; background: white; border-radius: 8px 8px 0 0;
+display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
+border-bottom: 2px solid #ecf0f1;">
+<div>
+<span style="font-weight: 700; color: #2c3e50; font-size: 14px;">${escapeHtml(typeName)}</span>
+<span style="font-size: 12px; color: #95a5a6; margin-left: 10px;">${customers.length}</span>
+</div>
+<span id="toggle-${sectionId}" style="font-size: 14px; color: ${color};">▼</span>
+</div>
+<div id="${sectionId}" style="display: grid; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
+${customers.map(c => `<div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
+<div style="font-weight: 700; color: #2c3e50; margin-bottom: 10px; font-size: 14px;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50;">${escapeHtml(c.name)}</span>
+</div>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
+<div>
+<div style="color: #7f8c8d; font-size: 11px; font-weight: 700; margin-bottom: 4px;">MOBILE</div>
+${renderCopyableField(c.mobile)}
+</div>
+<div>
+<div style="color: #7f8c8d; font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
+${renderCopyableField(c.email)}
+</div>
+</div>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
+<div>
+<div style="color: #7f8c8d; font-size: 11px; font-weight: 700; margin-bottom: 4px;">LANDLINE</div>
+${renderCopyableField(c.landline)}
+</div>
+<div>
+<div style="color: #7f8c8d; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
+<span style="font-size: 13px; color: #2c3e50;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
+</div>
+</div>
+<div style="padding-top: 10px; border-top: 1px solid #ecf0f1; display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
+<span style="background: #ecf0f1; color: #2c3e50; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.brand || '')}</span>
+<span style="background: #e8f5e9; color: #27ae60; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.campaign || '')}</span>
+</div>
+</div>`).join('')}
+</div>
+</div>`;
+}
+
 function resetBookmarklet() {
 currentCustomers = [];
+currentPendingCustomers = [];
+currentPageType = null;
 extracting = false;
 
 if (panelElement) {
@@ -214,25 +994,19 @@ else badge.remove();
 badge = null;
 }
 
-console.info('🔄 SLA Extractor stopped - click bookmarklet again to run');
+console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
 }
 
-function displayPanel(customers, newCount = 0, removedCount = 0) {
-currentCustomers = customers;
-const tiered = {
-tier1: customers.filter(c => c.tier === 1),
-tier2: customers.filter(c => c.tier === 2),
-tier3: customers.filter(c => c.tier === 3),
-tier4: customers.filter(c => c.tier === 4)
-};
-
+// Shared panel chrome (positioning, header, footer) for both pages - only
+// the title/counts, the assign section, and the body content differ.
+function renderPanelShell({ title, count, newCount, removedCount, assignSectionHtml, bodyHtml }) {
 const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 const isFull = panelSize === 'full';
 const positionStyle = isFull
 ? 'top: 0; right: 0; bottom: 0; height: 100vh; width: 450px; border-radius: 0;'
 : 'bottom: 20px; right: 20px; width: 400px; height: min(560px, calc(100vh - 90px)); border-radius: 16px;';
 
-const panelHTML = `
+return `
 <div id="${PANEL_BOX_ID}" style="position: fixed; ${positionStyle}
 background: #f8f9fa; box-shadow: 0 8px 30px rgba(0,0,0,0.25);
 z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -242,13 +1016,13 @@ display: flex; flex-direction: column; transition: transform 0.3s ease;">
 display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #27ae60;
 flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
 <div style="display: flex; align-items: center; gap: 12px;">
-<h2 style="margin: 0; font-size: 18px; font-weight: 700;">SLA Report</h2>
-<span style="background: #27ae60; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">${customers.length}</span>
+<h2 style="margin: 0; font-size: 18px; font-weight: 700;">${title}</h2>
+<span style="background: #27ae60; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">${count}</span>
 ${newCount > 0 ? `<span style="background: #f39c12; color: white; padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;">+${newCount}</span>` : ''}
 ${removedCount > 0 ? `<span style="background: #7f8c8d; color: white; padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;">−${removedCount}</span>` : ''}
 </div>
 <div style="display: flex; gap: 8px;">
-<button onclick="window._toggleSlaPanelSize();"
+<button onclick="window._togglePanelSize();"
 style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
 title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${isFull ? '⤡' : '⤢'}</button>
 <button onclick="document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0;"
@@ -260,19 +1034,10 @@ title="Minimize">−</button>
 </div>
 </div>
 
+${assignSectionHtml}
+
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
-${customers.length === 0 ? `
-<div style="padding: 40px 20px; text-align: center;">
-<div style="font-size: 56px; margin-bottom: 16px;">📭</div>
-<h3 style="color: #2c3e50; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Leads in Queue</h3>
-<p style="color: #7f8c8d; margin: 0; font-size: 14px; line-height: 1.6;">The SLA queue is empty. Check back when new leads arrive.</p>
-</div>
-` : `
-${renderTierSection('Tier 1 - Priority', tiered.tier1, '#e74c3c', 'tier1')}
-${renderTierSection('Tier 2 - High', tiered.tier2, '#f39c12', 'tier2')}
-${renderTierSection('Tier 3 - Medium', tiered.tier3, '#3498db', 'tier3')}
-${renderTierSection('Tier 4 - Standard', tiered.tier4, '#95a5a6', 'tier4')}
-`}
+${bodyHtml}
 </div>
 
 <div style="border-top: 1px solid #ddd; padding: 14px; background: white; flex-shrink: 0; display: flex; gap: 10px; box-shadow: 0 -2px 8px rgba(0,0,0,0.05);">
@@ -283,7 +1048,9 @@ style="flex: 1; padding: 10px; background: #3498db; color: white; border: none; 
 </div>
 </div>
 `;
+}
 
+function mountPanel(panelHTML) {
 if (panelElement) panelElement.remove();
 panelElement = document.createElement('div');
 panelElement.id = PANEL_ID;
@@ -302,6 +1069,67 @@ el.addEventListener('click', function() {
 copyToClipboard(this.dataset.value, this);
 });
 });
+
+initAssignSectionWheels();
+}
+
+function displayPanel(customers, newCount = 0, removedCount = 0) {
+currentCustomers = customers;
+currentPageType = PAGE_SLA;
+const tiered = {
+tier1: customers.filter(c => c.tier === 1),
+tier2: customers.filter(c => c.tier === 2),
+tier3: customers.filter(c => c.tier === 3),
+tier4: customers.filter(c => c.tier === 4)
+};
+
+const bodyHtml = customers.length === 0 ? `
+<div style="padding: 40px 20px; text-align: center;">
+<div style="font-size: 56px; margin-bottom: 16px;">📭</div>
+<h3 style="color: #2c3e50; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Leads in Queue</h3>
+<p style="color: #7f8c8d; margin: 0; font-size: 14px; line-height: 1.6;">The SLA queue is empty. Check back when new leads arrive.</p>
+</div>
+` : `
+${renderTierSection('Tier 1 - Priority', tiered.tier1, '#e74c3c', 'tier1')}
+${renderTierSection('Tier 2 - High', tiered.tier2, '#f39c12', 'tier2')}
+${renderTierSection('Tier 3 - Medium', tiered.tier3, '#3498db', 'tier3')}
+${renderTierSection('Tier 4 - Standard', tiered.tier4, '#95a5a6', 'tier4')}
+`;
+
+mountPanel(renderPanelShell({
+title: 'SLA Report',
+count: customers.length,
+newCount, removedCount,
+assignSectionHtml: renderAssignSection(),
+bodyHtml
+}));
+}
+
+function displayPendingPanel(customers, newCount = 0, removedCount = 0) {
+currentPendingCustomers = customers;
+currentPageType = PAGE_PENDING;
+
+const grouped = CALLBACK_TYPE_ORDER.map(type => ({
+type,
+color: CALLBACK_TYPE_COLORS[type],
+customers: customers.filter(c => c.callbackType === type)
+}));
+
+const bodyHtml = customers.length === 0 ? `
+<div style="padding: 40px 20px; text-align: center;">
+<div style="font-size: 56px; margin-bottom: 16px;">📭</div>
+<h3 style="color: #2c3e50; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Pending Customers</h3>
+<p style="color: #7f8c8d; margin: 0; font-size: 14px; line-height: 1.6;">Nothing in the queue right now.</p>
+</div>
+` : grouped.map(g => renderCallbackTypeSection(g.type, g.customers, g.color)).join('');
+
+mountPanel(renderPanelShell({
+title: 'Pending Customers',
+count: customers.length,
+newCount, removedCount,
+assignSectionHtml: renderPendingAssignSection(),
+bodyHtml
+}));
 }
 
 function renderTierSection(tierName, customers, color, tierId) {
@@ -347,7 +1175,7 @@ ${renderCopyableField(c.email)}
 </div>`;
 }
 
-async function extractAndExport() {
+async function extractAndExportSla() {
 if (extracting) return;
 extracting = true;
 
@@ -431,6 +1259,55 @@ extracting = false;
 }
 }
 
+// No modal click-and-wait needed here - Email/Mobile/Landline are plain
+// text columns, so this is a single synchronous pass over the table.
+async function extractAndExportPending() {
+if (extracting) return;
+extracting = true;
+
+try {
+const table = document.querySelector('table');
+if (!table) {
+console.error('Pending Customers table not found');
+return;
+}
+
+const previousByKey = new Map(currentPendingCustomers.map(c => [c.key, c]));
+const leads = collectPendingCustomers();
+const seenKeys = new Set(leads.map(l => l.key));
+const addedCount = leads.filter(l => !previousByKey.has(l.key)).length;
+const removedCount = currentPendingCustomers.filter(c => !seenKeys.has(c.key)).length;
+
+displayPendingPanel(leads, addedCount, removedCount);
+console.info(`✅ Pending Customers report generated (${leads.length} customers, +${addedCount}/-${removedCount})`);
+} catch (error) {
+console.error('Pending Customers Export Error:', error);
+} finally {
+const panelBox = document.getElementById(PANEL_BOX_ID);
+if (panelBox) panelBox.style.transform = '';
+setBadgeProgress(0);
+extracting = false;
+}
+}
+
+// Entry point wired to the badge - detects which page we're on and routes
+// to the matching extraction path, refusing to run on anything else.
+function runExtraction() {
+const pageType = detectPageType();
+if (pageType === PAGE_SLA) {
+extractAndExportSla();
+} else if (pageType === PAGE_PENDING) {
+extractAndExportPending();
+} else {
+console.error('SLA Manager: unrecognized page - expected the SLA queue or Pending Customers queue.');
+if (badge) {
+const original = badge.textContent;
+badge.textContent = '❓';
+setTimeout(() => { badge.textContent = original; }, 1500);
+}
+}
+}
+
 function setBadgeProgress(remaining) {
 if (!badge) return;
 if (remaining > 0) {
@@ -466,10 +1343,10 @@ const targetUl = Array.from(document.querySelectorAll('ul.nav.navbar-nav'))
 .find(ul => Array.from(ul.querySelectorAll('a')).some(a => a.textContent.trim() === 'Client Config'));
 
 if (!targetUl) {
-console.warn('SLA Extractor: navbar structure not found, falling back to fixed position');
+console.warn('SLA Manager: navbar structure not found, falling back to fixed position');
 badge = document.createElement('div');
 badge.id = BADGE_ID;
-badge.onclick = extractAndExport;
+badge.onclick = runExtraction;
 document.documentElement.appendChild(badge);
 Object.assign(badge.style, {
 position: 'fixed', right: '12px', top: '12px', width: '48px', height: '48px',
@@ -479,7 +1356,7 @@ display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px
 fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
 badge.textContent = '📋';
-badge.title = 'Extract SLA customers';
+badge.title = 'Extract leads (SLA queue or Pending Customers)';
 attachBadgeHoverEffects();
 return;
 }
@@ -502,8 +1379,8 @@ display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px
 fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
 badge.textContent = '📋';
-badge.title = 'Extract SLA customers';
-badge.onclick = extractAndExport;
+badge.title = 'Extract leads (SLA queue or Pending Customers)';
+badge.onclick = runExtraction;
 attachBadgeHoverEffects();
 
 navItem.appendChild(badge);
@@ -511,10 +1388,14 @@ targetUl.appendChild(navItem); // last item in the left nav = immediately after 
 }
 
 window._slaResetBookmarklet = resetBookmarklet;
-window._toggleSlaPanelSize = function() {
+window._togglePanelSize = function() {
 const current = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 localStorage.setItem(PANEL_SIZE_KEY, current === 'full' ? 'compact' : 'full');
+if (currentPageType === PAGE_PENDING) {
+displayPendingPanel(currentPendingCustomers);
+} else {
 displayPanel(currentCustomers);
+}
 };
 window._toggleTier = function(tierId) {
 const tierContent = document.getElementById(tierId);
@@ -526,6 +1407,224 @@ toggle.textContent = isHidden ? '▼' : '▶';
 }
 };
 
+window._toggleCallbackType = function(sectionId) {
+const content = document.getElementById(sectionId);
+const toggle = document.getElementById('toggle-' + sectionId);
+if (content && toggle) {
+const isHidden = content.style.display === 'none';
+content.style.display = isHidden ? 'grid' : 'none';
+toggle.textContent = isHidden ? '▼' : '▶';
+}
+};
+
+window._toggleAssignSection = function() {
+const body = document.getElementById('assignSectionBody');
+const toggle = document.getElementById('assignSectionToggle');
+if (!body || !toggle) return;
+const isHidden = body.style.display === 'none';
+body.style.display = isHidden ? 'block' : 'none';
+toggle.textContent = isHidden ? '▼' : '▶';
+};
+
+window._toggleAdvancedCallbackTypes = function(forceOpen) {
+const body = document.getElementById('advancedCallbackTypes');
+const toggle = document.getElementById('advancedCallbackToggle');
+if (!body || !toggle) return;
+const isCurrentlyOpen = body.style.display === 'flex';
+const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !isCurrentlyOpen;
+body.style.display = shouldOpen ? 'flex' : 'none';
+toggle.textContent = shouldOpen ? '▼' : '▶';
+};
+
+window._refreshAssignSection = function() {
+const container = document.getElementById('assignSectionContainer');
+if (!container) return;
+
+// Preserve deliberate exclusions (unchecked tiers/callback types/agents)
+// and the timeframe value across a manual refresh instead of resetting
+// them.
+const uncheckedAgentIds = new Set(
+Array.from(document.querySelectorAll('.assign-agent-checkbox:not(:checked)')).map(el => el.value)
+);
+const uncheckedFilters = new Set(
+Array.from(document.querySelectorAll('.assign-tier-checkbox:not(:checked), .assign-callback-checkbox:not(:checked)')).map(el => el.value)
+);
+const windowInput = document.getElementById('assignWindowMinutes');
+const windowValue = windowInput ? windowInput.value : '';
+const cutoffInput = document.getElementById('assignCutoffTime');
+const cutoffValue = cutoffInput ? cutoffInput.value : '';
+const advancedWasOpen = document.getElementById('advancedCallbackTypes')?.style.display === 'flex';
+const customerFirstChecked = document.getElementById('assignCustomerFirstOnly')?.checked;
+const emailOnlyChecked = document.getElementById('assignEmailOnly')?.checked;
+
+container.outerHTML = currentPageType === PAGE_PENDING ? renderPendingAssignSection() : renderAssignSection();
+
+uncheckedAgentIds.forEach((id) => {
+const el = document.querySelector(`.assign-agent-checkbox[value="${CSS.escape(id)}"]`);
+if (el) el.checked = false;
+});
+uncheckedFilters.forEach((v) => {
+const el = document.querySelector(`.assign-tier-checkbox[value="${CSS.escape(v)}"], .assign-callback-checkbox[value="${CSS.escape(v)}"]`);
+if (el) el.checked = false;
+});
+const newWindowInput = document.getElementById('assignWindowMinutes');
+if (newWindowInput && windowValue) newWindowInput.value = windowValue;
+const newCutoffInput = document.getElementById('assignCutoffTime');
+if (newCutoffInput && cutoffValue) newCutoffInput.value = cutoffValue;
+if (advancedWasOpen) window._toggleAdvancedCallbackTypes(true);
+const newCustomerFirst = document.getElementById('assignCustomerFirstOnly');
+if (newCustomerFirst && customerFirstChecked) newCustomerFirst.checked = true;
+const newEmailOnly = document.getElementById('assignEmailOnly');
+if (newEmailOnly && emailOnlyChecked) newEmailOnly.checked = true;
+
+initAssignSectionWheels();
+};
+
+window._runSlaAssignment = async function() {
+const button = document.getElementById('assignRunButton');
+const log = document.getElementById('assignResultsLog');
+if (!button || !log) return;
+
+const selectedTiers = new Set(
+Array.from(document.querySelectorAll('.assign-tier-checkbox:checked')).map(el => Number(el.value))
+);
+const selectedAgentIds = new Set(
+Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map(el => el.value)
+);
+const windowInput = document.getElementById('assignWindowMinutes');
+const windowMinutes = windowInput && windowInput.value ? Number(windowInput.value) : null;
+const customerFirstOnly = document.getElementById('assignCustomerFirstOnly')?.checked || false;
+const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
+
+if (selectedTiers.size === 0) {
+log.textContent = 'Select at least one tier.';
+return;
+}
+
+const agents = getAgentRoster().filter(a => selectedAgentIds.has(a.id));
+if (agents.length === 0) {
+log.textContent = 'Select at least one agent.';
+return;
+}
+
+const leads = collectAssignableLeads();
+const eligible = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes, customerFirstOnly, emailOnly });
+const prioritized = prioritizeLeads(eligible);
+
+if (prioritized.length === 0) {
+log.textContent = 'No unassigned leads match the selected tiers/filters/timeframe.';
+return;
+}
+
+const plan = roundRobinAssign(prioritized, agents);
+
+button.disabled = true;
+button.textContent = `Assigning 0/${plan.length}...`;
+log.innerHTML = '';
+
+const results = await runAssignmentPlan(plan, locateAssignCell, (soFar) => {
+button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
+log.innerHTML = soFar.map(r =>
+`<div style="color: ${r.ok ? '#27ae60' : '#e74c3c'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
+).join('');
+log.scrollTop = log.scrollHeight;
+});
+
+const succeeded = results.filter(r => r.ok).length;
+button.disabled = false;
+button.textContent = 'Assign Unassigned Leads';
+console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
+};
+
+window._runPendingAssignment = async function() {
+const button = document.getElementById('assignRunButton');
+const log = document.getElementById('assignResultsLog');
+if (!button || !log) return;
+
+const selectedTypes = new Set(
+Array.from(document.querySelectorAll('.assign-callback-checkbox:checked')).map(el => el.value)
+);
+const selectedAgentIds = new Set(
+Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map(el => el.value)
+);
+const cutoffInput = document.getElementById('assignCutoffTime');
+const cutoffDate = parseCutoffFromInput(cutoffInput ? cutoffInput.value : '');
+
+if (selectedTypes.size === 0) {
+log.textContent = 'Select at least one callback type.';
+return;
+}
+
+const agents = getAgentRoster().filter(a => selectedAgentIds.has(a.id));
+if (agents.length === 0) {
+log.textContent = 'Select at least one agent.';
+return;
+}
+
+const leads = collectPendingCustomers();
+const eligible = filterPendingLeads(leads, { callbackTypes: selectedTypes, cutoffDate });
+const prioritized = prioritizePendingLeads(eligible);
+
+if (prioritized.length === 0) {
+log.textContent = 'No unassigned leads match the selected callback types/timeframe.';
+return;
+}
+
+const plan = roundRobinAssign(prioritized, agents);
+
+button.disabled = true;
+button.textContent = `Assigning 0/${plan.length}...`;
+log.innerHTML = '';
+
+const results = await runAssignmentPlan(plan, locatePendingAssignCell, (soFar) => {
+button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
+log.innerHTML = soFar.map(r =>
+`<div style="color: ${r.ok ? '#27ae60' : '#e74c3c'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
+).join('');
+log.scrollTop = log.scrollHeight;
+});
+
+const succeeded = results.filter(r => r.ok).length;
+button.disabled = false;
+button.textContent = 'Assign Unassigned Leads';
+console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
+};
+
+// Detects switching between the SLA queue and Pending Customers by
+// polling detectPageType() on a timer, rather than reacting to
+// hashchange - this app's customer-detail modal (and likely other
+// in-page interactions) also fire hashchange, which was re-triggering
+// full panel rebuilds far more often than intended. Polling only
+// samples state at fixed intervals regardless of what caused any given
+// DOM/hash change in between, so brief modal-related noise is a
+// non-issue, and it skips entirely while a scrape is actively running.
+//
+// Re-running the bookmarklet re-executes this whole script as a fresh,
+// independent instance with its own closures - nothing tears down a
+// previous instance's background work. window._slaAutoDetectInterval
+// persists across re-invocations specifically so a new instance can
+// find and clear an old one's still-running interval before starting
+// its own; otherwise every past click leaves a zombie poll behind, each
+// with its own stale panelElement/currentCustomers, all fighting over
+// the same shared badge/panel DOM every 2.5s - which looks exactly like
+// "click minimize, it animates away, then reverts" the moment a zombie
+// instance's poll fires and rebuilds the panel from scratch.
+if (window._slaAutoDetectInterval) {
+clearInterval(window._slaAutoDetectInterval);
+}
+let lastKnownPageType = detectPageType();
+window._slaAutoDetectInterval = setInterval(() => {
+if (extracting) return;
+const pageType = detectPageType();
+if (pageType && pageType !== lastKnownPageType) {
+lastKnownPageType = pageType;
+runExtraction();
+} else if (pageType) {
+lastKnownPageType = pageType;
+}
+}, 2500);
+
+ensureWheelStyles();
 createBadge();
-console.info('✅ SLA Extractor ready');
+console.info('✅ SLA Manager ready');
 })();
