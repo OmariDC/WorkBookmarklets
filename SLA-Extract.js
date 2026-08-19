@@ -293,6 +293,7 @@ return new Date(Number(year), month, Number(day), Number(hour), Number(minute));
 }
 
 function getAssignCellState(cell) {
+if (!cell) return { assigned: false, agentName: null };
 const dropdown = cell.querySelector('.dropdown');
 if (dropdown) {
 return { assigned: false, agentName: null };
