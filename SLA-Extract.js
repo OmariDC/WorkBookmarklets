@@ -6,6 +6,7 @@ const PANEL_ID = '_slaPanel';
 const PANEL_BOX_ID = '_slaPanelBox';
 const PANEL_STATE_KEY = '_slaPanelState';
 const PANEL_SIZE_KEY = '_slaPanelSize';
+const ASSIGN_SETTINGS_KEY = '_slaAssignSettings';
 
 // SLA table columns: Customer, Registration, Source, Campaign, Created,
 // Received, SLA Date, Status, Assign. td-only queries mean the bare
@@ -718,6 +719,54 @@ return `
 </div>`;
 }
 
+// Filter/agent selections persist across every scan (not just within a
+// single manual "Refresh" cycle, unlike the existing outerHTML-replace
+// preservation below) so a consistent shift-long routine only has to be
+// set once. Agent/tier/callback-type exclusions are stored as opt-OUT
+// sets (which ones are unchecked) rather than opt-in - a new agent
+// coming online, or a tier/type nobody has ever excluded, defaults to
+// included without needing to already be known about.
+function loadAssignSettings() {
+try {
+return JSON.parse(localStorage.getItem(ASSIGN_SETTINGS_KEY)) || {};
+} catch (error) {
+return {};
+}
+}
+
+function saveAssignSettings(partial) {
+localStorage.setItem(ASSIGN_SETTINGS_KEY, JSON.stringify({ ...loadAssignSettings(), ...partial }));
+}
+
+// Reads the currently-mounted assign section's DOM and saves whatever
+// it finds - called from onchange handlers and wheel settle callbacks,
+// so it only needs to know how to read the page, not track state itself.
+function persistCurrentAssignSettings() {
+const excludedTiers = Array.from(document.querySelectorAll('.assign-tier-checkbox:not(:checked)')).map(el => Number(el.value));
+const excludedAgentIds = Array.from(document.querySelectorAll('.assign-agent-checkbox:not(:checked)')).map(el => el.value);
+const customerFirstOnly = document.getElementById('assignCustomerFirstOnly')?.checked || false;
+const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
+const windowMinutes = document.getElementById('assignWindowMinutes')?.value ?? null;
+const cutoffTime = document.getElementById('assignCutoffTime')?.value ?? null;
+const advancedOpen = document.getElementById('advancedCallbackTypes')?.style.display === 'flex';
+
+// Primary callback types default ON (opt-out, mirrors tiers); Advanced
+// ones default OFF (opt-in) - so unlike everything else here, "excluded"
+// and "included" aren't just each other's inverse and need separate sets.
+const allCallbackCheckboxes = Array.from(document.querySelectorAll('.assign-callback-checkbox'));
+const excludedCallbackTypes = allCallbackCheckboxes
+.filter(el => !el.checked && !el.closest('#advancedCallbackTypes'))
+.map(el => el.value);
+const includedAdvancedCallbackTypes = allCallbackCheckboxes
+.filter(el => el.checked && el.closest('#advancedCallbackTypes'))
+.map(el => el.value);
+
+saveAssignSettings({
+excludedTiers, excludedCallbackTypes, includedAdvancedCallbackTypes, excludedAgentIds,
+customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen
+});
+}
+
 function renderAssignSection() {
 const leads = collectAssignableLeads();
 const agents = getAgentRoster();
@@ -725,16 +774,20 @@ const tierCounts = [1, 2, 3, 4].map(t => leads.filter(l => l.tier === t && !l.as
 const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).length;
 const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
 
+const settings = loadAssignSettings();
+const excludedTiers = new Set(settings.excludedTiers || []);
+const excludedAgentIds = new Set(settings.excludedAgentIds || []);
+
 const tierCheckboxes = [1, 2, 3, 4].map(t => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-tier-checkbox" value="${t}" checked onchange="window._updateAssignPreview()"> Tier ${t} <span style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
+<input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()"> Tier ${t} <span style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
 </label>`).join('');
 
 const agentCheckboxes = agents.length === 0
 ? `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`
 : agents.map(a => `
 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" checked> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
+<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
 </label>`).join('');
 
 const buttonDisabled = agents.length === 0;
@@ -757,17 +810,17 @@ Leads go out in order of <strong>when they're due</strong>, not by tier — tier
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">SPECIAL FILTERS</div>
 <div style="display: flex; flex-direction: column; gap: 6px;">
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" id="assignCustomerFirstOnly" onchange="window._updateAssignPreview()"> Customer First only <span style="color:#95a5a6;">(${customerFirstCount})</span>
+<input type="checkbox" id="assignCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateAssignPreview()"> Customer First only <span style="color:#95a5a6;">(${customerFirstCount})</span>
 </label>
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" id="assignEmailOnly" onchange="window._updateAssignPreview()"> Email only (no phone) <span style="color:#95a5a6;">(${emailOnlyCount})</span>
+<input type="checkbox" id="assignEmailOnly" ${settings.emailOnly ? 'checked' : ''} onchange="window._updateAssignPreview()"> Email only (no phone) <span style="color:#95a5a6;">(${emailOnlyCount})</span>
 </label>
 </div>
 <div style="font-size: 10px; color: #95a5a6; margin-top: 4px;">Based on the last scan — click the badge first if these counts look stale.</div>
 </div>
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
-<input id="assignWindowMinutes" type="hidden" value="">
+<input id="assignWindowMinutes" type="hidden" value="${settings.windowMinutes || ''}">
 ${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
 </div>
 <div style="margin-bottom: 10px;">
@@ -935,25 +988,32 @@ const leads = collectPendingCustomers();
 const agents = getAgentRoster();
 const countFor = (type) => leads.filter(l => l.callbackType === type && !l.assigned).length;
 
+const settings = loadAssignSettings();
+const excludedCallbackTypes = new Set(settings.excludedCallbackTypes || []);
+const includedAdvancedCallbackTypes = new Set(settings.includedAdvancedCallbackTypes || []);
+const excludedAgentIds = new Set(settings.excludedAgentIds || []);
+
 const primaryCheckboxes = CALLBACK_TYPES_PRIMARY.map(type => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" checked onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${excludedCallbackTypes.has(type) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
 </label>`).join('');
 
 const advancedCheckboxes = CALLBACK_TYPES_ADVANCED.map(type => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${includedAdvancedCallbackTypes.has(type) ? 'checked' : ''} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
 </label>`).join('');
 
 const agentCheckboxes = agents.length === 0
 ? `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`
 : agents.map(a => `
 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" checked> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
+<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
 </label>`).join('');
 
 const buttonDisabled = agents.length === 0;
-const defaultCutoff = formatTimeForInput(defaultHourCutoff());
+const defaultCutoff = settings.cutoffTime || formatTimeForInput(defaultHourCutoff());
+const advancedOpenStyle = settings.advancedOpen ? 'display: flex;' : 'display: none;';
+const advancedToggleArrow = settings.advancedOpen ? '▼' : '▶';
 
 return `
 <div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #ecf0f1;">
@@ -966,9 +1026,9 @@ return `
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">CALLBACK TYPE</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
 <div onclick="window._toggleAdvancedCallbackTypes()" style="margin-top: 6px; font-size: 11px; color: #3498db; cursor: pointer;">
-<span id="advancedCallbackToggle">▶</span> Advanced (Manual Rescheduled, Post Closure)
+<span id="advancedCallbackToggle">${advancedToggleArrow}</span> Advanced (Manual Rescheduled, Post Closure)
 </div>
-<div id="advancedCallbackTypes" style="display: none; gap: 10px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
+<div id="advancedCallbackTypes" style="${advancedOpenStyle} gap: 10px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
 </div>
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE BEFORE <span style="font-weight: 400; color: #95a5a6;">(defaults to the top of the next hour)</span></div>
@@ -1524,6 +1584,7 @@ const isCurrentlyOpen = body.style.display === 'flex';
 const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !isCurrentlyOpen;
 body.style.display = shouldOpen ? 'flex' : 'none';
 toggle.textContent = shouldOpen ? '▼' : '▶';
+saveAssignSettings({ advancedOpen: shouldOpen });
 };
 
 // Recomputes and displays "N leads match" before the button is even
@@ -1535,6 +1596,7 @@ toggle.textContent = shouldOpen ? '▼' : '▶';
 window._updateAssignPreview = function() {
 const previewEl = document.getElementById('assignMatchPreview');
 if (!previewEl) return;
+persistCurrentAssignSettings();
 
 let count;
 if (currentPageType === PAGE_PENDING) {
