@@ -259,6 +259,12 @@ const display = escapeHtml(value);
 return `<span class="sla-copyable" data-value="${display}" style="cursor: pointer; padding: 4px 6px; border-radius: 4px; background: #e8f4f8; color: #2c3e50; display: inline-block; font-size: 13px;">${display}</span>`;
 }
 
+function renderAssignmentBadge(assigned, agentName) {
+return assigned
+? `<span style="background: #e8f5e9; color: #27ae60; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap; flex-shrink: 0;">✓ ${escapeHtml(agentName || 'Assigned')}</span>`
+: `<span style="background: #f8f9fa; color: #95a5a6; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; flex-shrink: 0;">Unassigned</span>`;
+}
+
 // ===================================================================
 // ASSIGNMENT ENGINE (shared between the SLA tab and Pending Customers)
 //
@@ -670,6 +676,42 @@ initWheelColumn('assignCutoffMinuteWheel', MINUTE_VALUES, currentMinute, (value)
 }
 }
 
+// Always-visible, no interaction needed - answers "how many are due
+// before X" and "how many are already assigned" at a glance, without
+// expanding the (collapsed-by-default) Assign Leads section or running
+// anything. Buckets are cumulative (30m includes the 15m count), and an
+// already-overdue/Missed lead counts toward every bucket since it's due
+// before all of them. Unassigned-only for the due buckets - this is a
+// "what's left to do" readout, not a total-in-queue count.
+const SLA_DUE_BUCKET_MINUTES = [15, 30, 60];
+
+function renderSlaDueSummary() {
+const leads = collectAssignableLeads();
+const now = Date.now();
+const minutesUntilDue = (lead) => lead.slaDate ? (lead.slaDate.getTime() - now) / 60000 : null;
+
+const dueCounts = SLA_DUE_BUCKET_MINUTES.map(mins =>
+leads.filter(l => !l.assigned && minutesUntilDue(l) !== null && minutesUntilDue(l) <= mins).length
+);
+const customerFirstDueCounts = SLA_DUE_BUCKET_MINUTES.map(mins =>
+leads.filter(l => !l.assigned && l.isCustomerFirst && minutesUntilDue(l) !== null && minutesUntilDue(l) <= mins).length
+);
+const assignedCount = leads.filter(l => l.assigned).length;
+const notAssignedCount = leads.filter(l => !l.assigned).length;
+
+const dueLine = SLA_DUE_BUCKET_MINUTES.map((m, i) =>
+`${m}m: <strong style="${m === 15 && dueCounts[i] > 0 ? 'color:#e74c3c;' : ''}">${dueCounts[i]}</strong>`
+).join(' &nbsp; ');
+const cfLine = SLA_DUE_BUCKET_MINUTES.map((m, i) => `${m}m: <strong>${customerFirstDueCounts[i]}</strong>`).join(' &nbsp; ');
+
+return `
+<div id="slaDueSummary" style="padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #ecf0f1; font-size: 12px; color: #2c3e50; line-height: 1.7;">
+<div>Due — ${dueLine}</div>
+<div style="font-size: 11px; color: #7f8c8d;">Customer First — ${cfLine}</div>
+<div style="font-size: 11px; color: #95a5a6;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount}</div>
+</div>`;
+}
+
 function renderAssignSection() {
 const leads = collectAssignableLeads();
 const agents = getAgentRoster();
@@ -853,6 +895,34 @@ function slugify(value) {
 return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
+// Same "always visible, unassigned-only" readout as the SLA tab's due
+// summary, but bucketed to match this page's actual hour-cutoff workflow
+// instead of minutes. "This hour" reuses defaultHourCutoff() (the same
+// boundary the wheel defaults to); "Next hour" is cumulative - due before
+// the hour after that.
+function renderPendingDueSummary() {
+const leads = collectPendingCustomers();
+const thisHourCutoff = defaultHourCutoff();
+const nextHourCutoff = new Date(thisHourCutoff.getTime() + 60 * 60000);
+
+const dueThisHour = leads.filter(l => !l.assigned && l.nextActionDate && l.nextActionDate.getTime() < thisHourCutoff.getTime()).length;
+const dueNextHour = leads.filter(l => !l.assigned && l.nextActionDate && l.nextActionDate.getTime() < nextHourCutoff.getTime()).length;
+
+const callbackLine = CALLBACK_TYPES_PRIMARY.map(type =>
+`${escapeHtml(type)}: <strong>${leads.filter(l => !l.assigned && l.callbackType === type).length}</strong>`
+).join(' &nbsp; ');
+
+const assignedCount = leads.filter(l => l.assigned).length;
+const notAssignedCount = leads.filter(l => !l.assigned).length;
+
+return `
+<div id="pendingDueSummary" style="padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #ecf0f1; font-size: 12px; color: #2c3e50; line-height: 1.7;">
+<div>Due — This hour: <strong style="${dueThisHour > 0 ? 'color:#e74c3c;' : ''}">${dueThisHour}</strong> &nbsp; Next hour: <strong>${dueNextHour}</strong></div>
+<div style="font-size: 11px; color: #7f8c8d;">${callbackLine}</div>
+<div style="font-size: 11px; color: #95a5a6;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount}</div>
+</div>`;
+}
+
 function renderPendingAssignSection() {
 const leads = collectPendingCustomers();
 const agents = getAgentRoster();
@@ -941,8 +1011,9 @@ border-bottom: 2px solid #ecf0f1;">
 </div>
 <div id="${sectionId}" style="display: grid; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
 ${customers.map(c => `<div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
-<div style="font-weight: 700; color: #2c3e50; margin-bottom: 10px; font-size: 14px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50;">${escapeHtml(c.name)}</span>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50; font-weight: 700; font-size: 14px;">${escapeHtml(c.name)}</span>
+${renderAssignmentBadge(c.assigned, c.agentName)}
 </div>
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
 <div>
@@ -999,7 +1070,7 @@ console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
 
 // Shared panel chrome (positioning, header, footer) for both pages - only
 // the title/counts, the assign section, and the body content differ.
-function renderPanelShell({ title, count, newCount, removedCount, assignSectionHtml, bodyHtml }) {
+function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml }) {
 const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 const isFull = panelSize === 'full';
 const positionStyle = isFull
@@ -1034,6 +1105,7 @@ title="Minimize">−</button>
 </div>
 </div>
 
+${summaryHtml || ''}
 ${assignSectionHtml}
 
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
@@ -1100,6 +1172,7 @@ mountPanel(renderPanelShell({
 title: 'SLA Report',
 count: customers.length,
 newCount, removedCount,
+summaryHtml: renderSlaDueSummary(),
 assignSectionHtml: renderAssignSection(),
 bodyHtml
 }));
@@ -1127,6 +1200,7 @@ mountPanel(renderPanelShell({
 title: 'Pending Customers',
 count: customers.length,
 newCount, removedCount,
+summaryHtml: renderPendingDueSummary(),
 assignSectionHtml: renderPendingAssignSection(),
 bodyHtml
 }));
@@ -1153,8 +1227,9 @@ border-bottom: 2px solid #ecf0f1;">
 </div>
 <div id="${tierId}" style="display: grid; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
 ${customers.map(c => `<div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
-<div style="font-weight: 700; color: #2c3e50; margin-bottom: 10px; font-size: 14px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50;">${escapeHtml(c.name)}</span>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50; font-weight: 700; font-size: 14px;">${escapeHtml(c.name)}</span>
+${renderAssignmentBadge(c.assigned, c.agentName)}
 </div>
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
 <div>
@@ -1206,7 +1281,10 @@ if (!name || !campaign) continue;
 // leads from the same source/campaign don't collide with each other.
 const key = `${name}||${registration}||${source}||${campaign}`;
 seenKeys.add(key);
-rowDescriptors.push({ cells, name, source, campaign, key });
+// Assign state is read fresh every scan, even for cached leads below -
+// unlike phone/email, it changes constantly and must never be stale.
+const assignState = getAssignCellState(cells[COL_ASSIGN]);
+rowDescriptors.push({ cells, name, source, campaign, key, assigned: assignState.assigned, agentName: assignState.agentName });
 }
 
 const pendingCount = rowDescriptors.filter(d => !previousByKey.has(d.key)).length;
@@ -1216,7 +1294,9 @@ setBadgeProgress(remaining);
 for (const d of rowDescriptors) {
 const existing = previousByKey.get(d.key);
 if (existing) {
-customers.push(existing);
+// Keep cached phone/email, but never the cached assigned/agentName -
+// that's re-read fresh above on every scan regardless of cache hit.
+customers.push({ ...existing, assigned: d.assigned, agentName: d.agentName });
 continue;
 }
 
@@ -1232,7 +1312,9 @@ source: d.source,
 tier: tierInfo.tier,
 reason: tierInfo.reason,
 phone: details.phone,
-email: details.email
+email: details.email,
+assigned: d.assigned,
+agentName: d.agentName
 });
 addedCount++;
 } catch (error) {
