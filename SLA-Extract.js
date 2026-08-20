@@ -493,9 +493,25 @@ return null;
 }
 }
 
+// Observing `cell` directly misses the case where Angular replaces the
+// whole <td> node (rather than mutating its children) once the row
+// re-renders as assigned - that swap is a childList mutation on the
+// row, one level above `cell`, so an observer scoped to `cell` never
+// fires for its own replacement and would time out even on success.
+// Observing the row instead, and re-querying its Assign cell (always
+// the last <td>, confirmed for both the SLA and Pending table layouts)
+// on every mutation, stays correct whether the cell is mutated in place
+// or swapped out entirely.
 function waitForAssignConfirmed(cell, timeout = 3000) {
 return new Promise((resolve) => {
-if (!cell.querySelector('.dropdown')) {
+const row = cell.closest('tr') || cell.parentElement;
+const stillPending = () => {
+if (!row.isConnected) return false;
+const cells = row.querySelectorAll('td');
+const currentCell = cells[cells.length - 1] || cell;
+return !!currentCell.querySelector('.dropdown');
+};
+if (!stillPending()) {
 resolve(true);
 return;
 }
@@ -504,13 +520,13 @@ observer.disconnect();
 resolve(false);
 }, timeout);
 const observer = new MutationObserver(() => {
-if (!cell.querySelector('.dropdown')) {
+if (!stillPending()) {
 clearTimeout(timer);
 observer.disconnect();
 resolve(true);
 }
 });
-observer.observe(cell, { childList: true, subtree: true });
+observer.observe(row, { childList: true, subtree: true });
 });
 }
 
