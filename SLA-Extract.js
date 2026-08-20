@@ -530,31 +530,62 @@ observer.observe(row, { childList: true, subtree: true });
 });
 }
 
+function sleep(ms) {
+return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Waiting for each lead's confirmation before clicking the next one made
+// the whole run strictly sequential - slower than doing it by hand, since
+// a person just fires off click after click without watching each row
+// finish updating first. This fires each click with a small stagger (just
+// enough for Angular's digest cycle to settle before the next row's fresh
+// table scan) and lets confirmations resolve in the background,
+// concurrently, closer to how someone would actually click through a
+// queue. Results settle out of click order depending on how fast each
+// row's own confirmation comes back, so onProgress just reports whatever
+// has resolved so far rather than a fixed sequence.
+const ASSIGN_CLICK_STAGGER_MS = 200;
+
 async function runAssignmentPlan(plan, locateCellFn, onProgress) {
-const results = [];
-for (const { lead, agent } of plan) {
-let ok = false;
-let reason = null;
+const results = new Array(plan.length);
+const settled = [];
+const pending = [];
+
+const reportProgress = () => onProgress(settled.slice());
+
+for (let i = 0; i < plan.length; i++) {
+const { lead, agent } = plan[i];
+if (i > 0) await sleep(ASSIGN_CLICK_STAGGER_MS);
 try {
 const cell = locateCellFn(lead);
 if (!cell) {
-reason = 'Row no longer found on page';
-} else {
+results[i] = { lead, agent, ok: false, reason: 'Row no longer found on page' };
+settled.push(results[i]);
+reportProgress();
+continue;
+}
 const menuItem = findAgentMenuItem(cell, agent);
 if (!menuItem) {
-reason = 'Agent option not found in menu';
-} else {
+results[i] = { lead, agent, ok: false, reason: 'Agent option not found in menu' };
+settled.push(results[i]);
+reportProgress();
+continue;
+}
+const confirmPromise = waitForAssignConfirmed(cell);
 menuItem.click();
-ok = await waitForAssignConfirmed(cell);
-if (!ok) reason = 'Timed out waiting for confirmation';
-}
-}
+pending.push(confirmPromise.then((ok) => {
+results[i] = { lead, agent, ok, reason: ok ? null : 'Timed out waiting for confirmation' };
+settled.push(results[i]);
+reportProgress();
+}));
 } catch (error) {
-reason = String(error);
+results[i] = { lead, agent, ok: false, reason: String(error) };
+settled.push(results[i]);
+reportProgress();
 }
-results.push({ lead, agent, ok, reason });
-onProgress(results.slice());
 }
+
+await Promise.all(pending);
 return results;
 }
 
