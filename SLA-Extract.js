@@ -773,6 +773,30 @@ if (window._updateAssignPreview) window._updateAssignPreview();
 // "what's left to do" readout, not a total-in-queue count.
 const SLA_DUE_BUCKET_MINUTES = [15, 30, 60];
 
+// Best-effort keyword heuristic, not an exhaustive status enumeration -
+// only "Live Chat" and "Shift Start" are confirmed real values so far.
+// Falls back to neutral gray for anything unrecognized rather than
+// guessing wrong in either direction.
+function statusDotColor(status) {
+const s = (status || '').toLowerCase();
+if (!s) return '#bdc3c7';
+if (s.includes('chat') || s.includes('call') || s.includes('busy') || s.includes('break') || s.includes('away') || s.includes('wrap')) return '#f39c12';
+if (s.includes('start') || s.includes('available') || s.includes('idle') || s.includes('ready')) return '#27ae60';
+return '#95a5a6';
+}
+
+function renderAgentCheckboxes(agents, excludedAgentIds) {
+if (agents.length === 0) {
+return `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`;
+}
+return agents.map(a => `
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;" ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
+<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()">
+<span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${statusDotColor(a.status)}; flex-shrink: 0;"></span>
+${escapeHtml(a.name)}
+</label>`).join('');
+}
+
 function renderStatTile(label, value, urgent) {
 return `<div style="flex: 1; text-align: center; background: white; border-radius: 6px; padding: 6px 2px; border: 1px solid ${urgent ? '#e74c3c' : '#ecf0f1'};">
 <div style="font-size: 16px; font-weight: 700; color: ${urgent ? '#e74c3c' : '#2c3e50'};">${value}</div>
@@ -876,12 +900,7 @@ const tierCheckboxes = [1, 2, 3, 4].map(t => `
 <input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()"> Tier ${t} <span style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
 </label>`).join('');
 
-const agentCheckboxes = agents.length === 0
-? `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`
-: agents.map(a => `
-<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
-</label>`).join('');
+const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
 
 const buttonDisabled = agents.length === 0;
 
@@ -919,7 +938,11 @@ ${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
 <div style="margin-bottom: 10px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
 <span style="font-size: 11px; font-weight: 700; color: #7f8c8d;">AGENTS ONLINE</span>
+<span style="display: flex; gap: 8px;">
+<span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #3498db; cursor: pointer;">All</span>
+<span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #3498db; cursor: pointer;">None</span>
 <span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
+</span>
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
 </div>
@@ -1104,12 +1127,7 @@ const advancedCheckboxes = CALLBACK_TYPES_ADVANCED.map(type => `
 <input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${includedAdvancedCallbackTypes.has(type) ? 'checked' : ''} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
 </label>`).join('');
 
-const agentCheckboxes = agents.length === 0
-? `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`
-: agents.map(a => `
-<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
-</label>`).join('');
+const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
 
 const buttonDisabled = agents.length === 0;
 const defaultCutoff = settings.cutoffTime || formatTimeForInput(defaultHourCutoff());
@@ -1143,7 +1161,11 @@ ${renderWheelColumnHtml('assignCutoffMinuteWheel', MINUTE_VALUES, 56)}
 <div style="margin-bottom: 10px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
 <span style="font-size: 11px; font-weight: 700; color: #7f8c8d;">AGENTS ONLINE</span>
+<span style="display: flex; gap: 8px;">
+<span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #3498db; cursor: pointer;">All</span>
+<span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #3498db; cursor: pointer;">None</span>
 <span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
+</span>
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
 </div>
@@ -1698,6 +1720,11 @@ window._runPendingAssignment();
 } else {
 window._runSlaAssignment();
 }
+};
+
+window._setAllAgentCheckboxes = function(checked) {
+document.querySelectorAll('.assign-agent-checkbox').forEach((el) => { el.checked = checked; });
+if (window._updateAssignPreview) window._updateAssignPreview();
 };
 
 window._toggleAdvancedCallbackTypes = function(forceOpen) {
