@@ -542,6 +542,69 @@ return results;
 }
 
 // ===================================================================
+// RESULTS SUMMARY + ASSIGNMENT ACTIVITY LOG
+//
+// The activity log persists to localStorage (capped) so agent-assignment
+// counts survive across bookmarklet re-invocations and page reloads -
+// its whole purpose is fairness verification ("did agent X actually get
+// their fair share today"), so it needs to outlive a single run.
+// ===================================================================
+
+const ASSIGN_LOG_KEY = '_slaAssignmentLog';
+const ASSIGN_LOG_MAX = 500;
+
+function renderAssignResultsSummary(results) {
+const el = document.getElementById('assignResultsSummary');
+if (!el) return;
+if (!results || results.length === 0) { el.innerHTML = ''; return; }
+const succeeded = results.filter(r => r.ok).length;
+const failed = results.length - succeeded;
+const color = failed === 0 ? '#27ae60' : (succeeded === 0 ? '#e74c3c' : '#f39c12');
+const icon = failed === 0 ? '✓' : '⚠';
+const text = failed === 0
+? `${icon} ${succeeded} assigned`
+: `${icon} ${succeeded} assigned, ${failed} failed`;
+el.innerHTML = `<div style="margin-top: 8px; padding: 8px 10px; border-radius: 4px; background: ${color}20; color: ${color}; font-size: 12px; font-weight: 700; text-align: center;">${text}</div>`;
+}
+
+function appendAssignmentLog(results) {
+try {
+const existing = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]');
+const now = new Date().toISOString();
+const entries = results.filter(r => r.ok).map(r => ({
+time: now,
+lead: r.lead.name,
+agent: r.agent.name
+}));
+const updated = existing.concat(entries).slice(-ASSIGN_LOG_MAX);
+localStorage.setItem(ASSIGN_LOG_KEY, JSON.stringify(updated));
+} catch (error) {
+console.warn('Failed to persist assignment log', error);
+}
+}
+
+function renderAssignmentHistoryHtml() {
+let entries = [];
+try { entries = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]'); } catch (error) { /* ignore */ }
+if (entries.length === 0) return '<div style="color:#95a5a6;">No assignments recorded yet.</div>';
+const tally = {};
+entries.forEach(e => { tally[e.agent] = (tally[e.agent] || 0) + 1; });
+const rows = Object.entries(tally).sort((a, b) => b[1] - a[1])
+.map(([name, count]) => `<div style="display:flex;justify-content:space-between;"><span>${escapeHtml(name)}</span><span style="font-weight:700;">${count}</span></div>`).join('');
+const last = entries[entries.length - 1];
+return `<div style="font-size:11px;color:#7f8c8d;margin-bottom:4px;">Assigned counts (all-time, this browser):</div>${rows}
+<div style="font-size:10px;color:#bdc3c7;margin-top:6px;">Last: ${escapeHtml(last.lead)} → ${escapeHtml(last.agent)} at ${new Date(last.time).toLocaleTimeString()}</div>`;
+}
+
+window._toggleAssignHistory = function() {
+const panel = document.getElementById('assignHistoryPanel');
+if (!panel) return;
+const hidden = panel.style.display === 'none';
+if (hidden) panel.innerHTML = renderAssignmentHistoryHtml();
+panel.style.display = hidden ? 'block' : 'none';
+};
+
+// ===================================================================
 // WHEEL PICKERS (shared between both assign sections' time inputs)
 //
 // Each wheel writes its settled value into the same hidden <input> the
@@ -921,9 +984,11 @@ Leads go out in order of <strong>when they're due</strong>, not by tier — filt
 <span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #3498db; cursor: pointer;">All</span>
 <span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #3498db; cursor: pointer;">None</span>
 <span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
+<span onclick="window._toggleAssignHistory()" style="font-size: 11px; color: #3498db; cursor: pointer;">📊 History</span>
 </span>
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
+<div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 11px; color: #2c3e50;"></div>
 </div>
 <div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
 <button id="assignRunButton" onclick="window._runSlaAssignment()" ${buttonDisabled ? 'disabled' : ''}
@@ -1149,9 +1214,11 @@ return `
 <span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #3498db; cursor: pointer;">All</span>
 <span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #3498db; cursor: pointer;">None</span>
 <span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
+<span onclick="window._toggleAssignHistory()" style="font-size: 11px; color: #3498db; cursor: pointer;">📊 History</span>
 </span>
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
+<div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 11px; color: #2c3e50;"></div>
 </div>
 <div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
 <button id="assignRunButton" onclick="window._runPendingAssignment()" ${buttonDisabled ? 'disabled' : ''}
@@ -1862,6 +1929,8 @@ const plan = roundRobinAssign(prioritized, agents);
 button.disabled = true;
 button.textContent = `Assigning 0/${plan.length}...`;
 log.innerHTML = '';
+const summaryEl = document.getElementById('assignResultsSummary');
+if (summaryEl) summaryEl.innerHTML = '';
 
 const results = await runAssignmentPlan(plan, locateAssignCell, (soFar) => {
 button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
@@ -1874,6 +1943,8 @@ log.scrollTop = log.scrollHeight;
 const succeeded = results.filter(r => r.ok).length;
 button.disabled = false;
 button.textContent = 'Assign Unassigned Leads';
+renderAssignResultsSummary(results);
+appendAssignmentLog(results);
 console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
 };
 
@@ -1916,6 +1987,8 @@ const plan = roundRobinAssign(prioritized, agents);
 button.disabled = true;
 button.textContent = `Assigning 0/${plan.length}...`;
 log.innerHTML = '';
+const summaryEl = document.getElementById('assignResultsSummary');
+if (summaryEl) summaryEl.innerHTML = '';
 
 const results = await runAssignmentPlan(plan, locatePendingAssignCell, (soFar) => {
 button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
@@ -1928,6 +2001,8 @@ log.scrollTop = log.scrollHeight;
 const succeeded = results.filter(r => r.ok).length;
 button.disabled = false;
 button.textContent = 'Assign Unassigned Leads';
+renderAssignResultsSummary(results);
+appendAssignmentLog(results);
 console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
 };
 
