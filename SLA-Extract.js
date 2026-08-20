@@ -327,6 +327,37 @@ return [];
 }
 }
 
+// The live "N leads match" preview re-runs on every checkbox/wheel
+// change and was re-scanning the entire table each time, which is the
+// real cause behind assignment feeling slow - not the click-to-assign
+// step itself. Cached per render cycle instead: invalidated once when a
+// fresh extraction mounts or a manual refresh happens, then reused by
+// every filter tweak until the next invalidation. The actual assign
+// action (_runSlaAssignment/_runPendingAssignment) deliberately bypasses
+// this cache and always re-scans fresh immediately before clicking -
+// correctness matters more than speed for the action that actually
+// touches live data, unlike the preview which can tolerate being a few
+// seconds stale.
+let cachedLeadsSnapshot = null;
+
+function invalidateLeadsCache() {
+cachedLeadsSnapshot = null;
+}
+
+function getCachedAssignableLeads() {
+if (!cachedLeadsSnapshot || cachedLeadsSnapshot.pageType !== PAGE_SLA) {
+cachedLeadsSnapshot = { pageType: PAGE_SLA, leads: collectAssignableLeads() };
+}
+return cachedLeadsSnapshot.leads;
+}
+
+function getCachedPendingCustomers() {
+if (!cachedLeadsSnapshot || cachedLeadsSnapshot.pageType !== PAGE_PENDING) {
+cachedLeadsSnapshot = { pageType: PAGE_PENDING, leads: collectPendingCustomers() };
+}
+return cachedLeadsSnapshot.leads;
+}
+
 function collectAssignableLeads() {
 const table = document.querySelector('table');
 if (!table) return [];
@@ -694,7 +725,7 @@ if (window._updateAssignPreview) window._updateAssignPreview();
 const SLA_DUE_BUCKET_MINUTES = [15, 30, 60];
 
 function renderSlaDueSummary() {
-const leads = collectAssignableLeads();
+const leads = getCachedAssignableLeads();
 const now = Date.now();
 const minutesUntilDue = (lead) => lead.slaDate ? (lead.slaDate.getTime() - now) / 60000 : null;
 
@@ -769,7 +800,7 @@ customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen
 }
 
 function renderAssignSection() {
-const leads = collectAssignableLeads();
+const leads = getCachedAssignableLeads();
 const agents = getAgentRoster();
 const tierCounts = [1, 2, 3, 4].map(t => leads.filter(l => l.tier === t && !l.assigned).length);
 const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).length;
@@ -962,7 +993,7 @@ return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 // boundary the wheel defaults to); "Next hour" is cumulative - due before
 // the hour after that.
 function renderPendingDueSummary() {
-const leads = collectPendingCustomers();
+const leads = getCachedPendingCustomers();
 const thisHourCutoff = defaultHourCutoff();
 const nextHourCutoff = new Date(thisHourCutoff.getTime() + 60 * 60000);
 
@@ -985,7 +1016,7 @@ return `
 }
 
 function renderPendingAssignSection() {
-const leads = collectPendingCustomers();
+const leads = getCachedPendingCustomers();
 const agents = getAgentRoster();
 const countFor = (type) => leads.filter(l => l.callbackType === type && !l.assigned).length;
 
@@ -1217,6 +1248,7 @@ initAssignSectionWheels();
 function displayPanel(customers, newCount = 0, removedCount = 0) {
 currentCustomers = customers;
 currentPageType = PAGE_SLA;
+invalidateLeadsCache();
 const tiered = {
 tier1: customers.filter(c => c.tier === 1),
 tier2: customers.filter(c => c.tier === 2),
@@ -1250,6 +1282,7 @@ bodyHtml
 function displayPendingPanel(customers, newCount = 0, removedCount = 0) {
 currentPendingCustomers = customers;
 currentPageType = PAGE_PENDING;
+invalidateLeadsCache();
 
 const grouped = CALLBACK_TYPE_ORDER.map(type => ({
 type,
@@ -1606,7 +1639,7 @@ Array.from(document.querySelectorAll('.assign-callback-checkbox:checked')).map(e
 );
 const cutoffInput = document.getElementById('assignCutoffTime');
 const cutoffDate = parseCutoffFromInput(cutoffInput ? cutoffInput.value : '');
-const leads = collectPendingCustomers();
+const leads = getCachedPendingCustomers();
 count = filterPendingLeads(leads, { callbackTypes: selectedTypes, cutoffDate }).length;
 } else {
 const selectedTiers = new Set(
@@ -1616,7 +1649,7 @@ const windowInput = document.getElementById('assignWindowMinutes');
 const windowMinutes = windowInput && windowInput.value ? Number(windowInput.value) : null;
 const customerFirstOnly = document.getElementById('assignCustomerFirstOnly')?.checked || false;
 const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
-const leads = collectAssignableLeads();
+const leads = getCachedAssignableLeads();
 count = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes, customerFirstOnly, emailOnly }).length;
 }
 
@@ -1627,6 +1660,7 @@ previewEl.style.color = count === 0 ? '#e74c3c' : '#7f8c8d';
 window._refreshAssignSection = function() {
 const container = document.getElementById('assignSectionContainer');
 if (!container) return;
+invalidateLeadsCache();
 
 // Preserve deliberate exclusions (unchecked tiers/callback types/agents)
 // and the timeframe value across a manual refresh instead of resetting
