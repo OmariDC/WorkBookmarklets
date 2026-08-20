@@ -346,16 +346,27 @@ cachedLeadsSnapshot = null;
 
 function getCachedAssignableLeads() {
 if (!cachedLeadsSnapshot || cachedLeadsSnapshot.pageType !== PAGE_SLA) {
-cachedLeadsSnapshot = { pageType: PAGE_SLA, leads: collectAssignableLeads() };
+cachedLeadsSnapshot = { pageType: PAGE_SLA, leads: collectAssignableLeads(), scannedAt: new Date() };
 }
 return cachedLeadsSnapshot.leads;
 }
 
 function getCachedPendingCustomers() {
 if (!cachedLeadsSnapshot || cachedLeadsSnapshot.pageType !== PAGE_PENDING) {
-cachedLeadsSnapshot = { pageType: PAGE_PENDING, leads: collectPendingCustomers() };
+cachedLeadsSnapshot = { pageType: PAGE_PENDING, leads: collectPendingCustomers(), scannedAt: new Date() };
 }
 return cachedLeadsSnapshot.leads;
+}
+
+// Static "last scanned at HH:MM" rather than a live-ticking "Xm ago" -
+// deliberately not using an interval to keep this updating, given
+// tonight's zombie-interval lesson (every past bookmarklet invocation
+// would leave its own interval running forever unless very carefully
+// guarded). A static timestamp still tells you whether to hit refresh,
+// without adding another background timer to get wrong.
+function lastScannedLabel() {
+if (!cachedLeadsSnapshot || !cachedLeadsSnapshot.scannedAt) return 'not yet scanned';
+return 'scanned ' + formatTimeForInput(cachedLeadsSnapshot.scannedAt);
 }
 
 function collectAssignableLeads() {
@@ -671,6 +682,44 @@ el.scrollTop = startIndex * WHEEL_ROW_HEIGHT;
 highlightAndSettle(startIndex);
 }
 
+// Position-only sync, no listener (re)attachment - a wheel's scrollTop
+// assignment silently does nothing while an ancestor is display:none
+// (nothing laid out to scroll yet), so the position set at render time
+// never actually took effect if the Assign Leads section started
+// collapsed - this is why the wheel always looked reset to 00:00 despite
+// initWheelColumn correctly computing the right starting index. Called
+// when the section becomes visible, to catch the wheel up now that
+// there's something real to scroll. Deliberately doesn't call
+// initWheelColumn again here - that would attach a second set of
+// scroll/click/drag listeners on top of the ones already wired at
+// render time, the same "listener accumulates on every re-render/
+// re-invocation" mistake that broke the auto-detect interval earlier.
+function syncWheelPositionOnly(id, values, value) {
+const el = document.getElementById(id);
+if (!el) return;
+const index = Math.max(0, values.indexOf(value));
+el.scrollTop = index * WHEEL_ROW_HEIGHT;
+el.querySelectorAll('.wheel-item').forEach((item, i) => {
+item.style.fontWeight = i === index ? '700' : '400';
+item.style.color = i === index ? '#2c3e50' : '#95a5a6';
+});
+}
+
+function syncAllWheelPositions() {
+if (document.getElementById('assignWindowMinutesWheel')) {
+const hidden = document.getElementById('assignWindowMinutes');
+syncWheelPositionOnly('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, hidden && hidden.value ? hidden.value : 'All');
+}
+const hourWheel = document.getElementById('assignCutoffHourWheel');
+const minuteWheel = document.getElementById('assignCutoffMinuteWheel');
+if (hourWheel && minuteWheel) {
+const hidden = document.getElementById('assignCutoffTime');
+const [currentHour, currentMinute] = (hidden && hidden.value ? hidden.value : formatTimeForInput(defaultHourCutoff())).split(':');
+syncWheelPositionOnly('assignCutoffHourWheel', HOUR_VALUES, currentHour);
+syncWheelPositionOnly('assignCutoffMinuteWheel', MINUTE_VALUES, currentMinute);
+}
+}
+
 // Compact mode's panel has a fixed, fairly short total height and the
 // panel box itself clips overflow - without a cap here, an expanded
 // assign section can push content past that boundary with nothing able
@@ -724,11 +773,19 @@ if (window._updateAssignPreview) window._updateAssignPreview();
 // "what's left to do" readout, not a total-in-queue count.
 const SLA_DUE_BUCKET_MINUTES = [15, 30, 60];
 
+function renderStatTile(label, value, urgent) {
+return `<div style="flex: 1; text-align: center; background: white; border-radius: 6px; padding: 6px 2px; border: 1px solid ${urgent ? '#e74c3c' : '#ecf0f1'};">
+<div style="font-size: 16px; font-weight: 700; color: ${urgent ? '#e74c3c' : '#2c3e50'};">${value}</div>
+<div style="font-size: 9px; color: #95a5a6; text-transform: uppercase; letter-spacing: 0.3px;">${label}</div>
+</div>`;
+}
+
 function renderSlaDueSummary() {
 const leads = getCachedAssignableLeads();
 const now = Date.now();
 const minutesUntilDue = (lead) => lead.slaDate ? (lead.slaDate.getTime() - now) / 60000 : null;
 
+const missedCount = leads.filter(l => !l.assigned && l.status === 'Missed').length;
 const dueCounts = SLA_DUE_BUCKET_MINUTES.map(mins =>
 leads.filter(l => !l.assigned && minutesUntilDue(l) !== null && minutesUntilDue(l) <= mins).length
 );
@@ -738,16 +795,20 @@ leads.filter(l => !l.assigned && l.isCustomerFirst && minutesUntilDue(l) !== nul
 const assignedCount = leads.filter(l => l.assigned).length;
 const notAssignedCount = leads.filter(l => !l.assigned).length;
 
-const dueLine = SLA_DUE_BUCKET_MINUTES.map((m, i) =>
-`${m}m: <strong style="${m === 15 && dueCounts[i] > 0 ? 'color:#e74c3c;' : ''}">${dueCounts[i]}</strong>`
-).join(' &nbsp; ');
+const tiles = [
+renderStatTile('Missed', missedCount, missedCount > 0),
+...SLA_DUE_BUCKET_MINUTES.map((m, i) => renderStatTile(`${m}m`, dueCounts[i], m === 15 && dueCounts[i] > 0))
+].join('');
 const cfLine = SLA_DUE_BUCKET_MINUTES.map((m, i) => `${m}m: <strong>${customerFirstDueCounts[i]}</strong>`).join(' &nbsp; ');
 
 return `
-<div id="slaDueSummary" style="padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #ecf0f1; font-size: 12px; color: #2c3e50; line-height: 1.7;">
-<div>Due — ${dueLine}</div>
-<div style="font-size: 11px; color: #7f8c8d;">Customer First — ${cfLine}</div>
-<div style="font-size: 11px; color: #95a5a6;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount}</div>
+<div id="slaDueSummary" style="padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #ecf0f1; font-size: 12px; color: #2c3e50;">
+<div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
+<div style="font-size: 11px; color: #7f8c8d; margin-bottom: 6px;">Customer First — ${cfLine}</div>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+<span style="font-size: 11px; color: #95a5a6;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
+<button onclick="window._quickAssign()" style="background: #27ae60; color: white; border: none; border-radius: 4px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0;">⚡ Quick Assign</button>
+</div>
 </div>`;
 }
 
@@ -828,9 +889,9 @@ return `
 <div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #ecf0f1;">
 <div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
 <span style="font-weight: 700; color: #2c3e50; font-size: 14px;">⚡ Assign Leads</span>
-<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▶</span>
+<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">${settings.sectionOpen ? '▼' : '▶'}</span>
 </div>
-<div id="assignSectionBody" style="margin-top: 12px; display: none; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
+<div id="assignSectionBody" style="margin-top: 12px; display: ${settings.sectionOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="font-size: 11px; color: #7f8c8d; background: #f8f9fa; border-radius: 4px; padding: 8px 10px; margin-bottom: 12px; line-height: 1.5;">
 Leads go out in order of <strong>when they're due</strong>, not by tier — tiers below only narrow which leads are included.
 </div>
@@ -1007,11 +1068,19 @@ const callbackLine = CALLBACK_TYPES_PRIMARY.map(type =>
 const assignedCount = leads.filter(l => l.assigned).length;
 const notAssignedCount = leads.filter(l => !l.assigned).length;
 
+const tiles = [
+renderStatTile('This hour', dueThisHour, dueThisHour > 0),
+renderStatTile('Next hour', dueNextHour, false)
+].join('');
+
 return `
-<div id="pendingDueSummary" style="padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #ecf0f1; font-size: 12px; color: #2c3e50; line-height: 1.7;">
-<div>Due — This hour: <strong style="${dueThisHour > 0 ? 'color:#e74c3c;' : ''}">${dueThisHour}</strong> &nbsp; Next hour: <strong>${dueNextHour}</strong></div>
-<div style="font-size: 11px; color: #7f8c8d;">${callbackLine}</div>
-<div style="font-size: 11px; color: #95a5a6;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount}</div>
+<div id="pendingDueSummary" style="padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #ecf0f1; font-size: 12px; color: #2c3e50;">
+<div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
+<div style="font-size: 11px; color: #7f8c8d; margin-bottom: 6px;">${callbackLine}</div>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+<span style="font-size: 11px; color: #95a5a6;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
+<button onclick="window._quickAssign()" style="background: #27ae60; color: white; border: none; border-radius: 4px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0;">⚡ Quick Assign</button>
+</div>
 </div>`;
 }
 
@@ -1051,9 +1120,9 @@ return `
 <div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #ecf0f1;">
 <div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
 <span style="font-weight: 700; color: #2c3e50; font-size: 14px;">⚡ Assign Leads</span>
-<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">▶</span>
+<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">${settings.sectionOpen ? '▼' : '▶'}</span>
 </div>
-<div id="assignSectionBody" style="margin-top: 12px; display: none; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
+<div id="assignSectionBody" style="margin-top: 12px; display: ${settings.sectionOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">CALLBACK TYPE</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
@@ -1608,6 +1677,27 @@ if (!body || !toggle) return;
 const isHidden = body.style.display === 'none';
 body.style.display = isHidden ? 'block' : 'none';
 toggle.textContent = isHidden ? '▼' : '▶';
+saveAssignSettings({ sectionOpen: isHidden });
+if (isHidden) syncAllWheelPositions();
+};
+
+// Runs assignment immediately using whatever's currently persisted
+// (tiers/callback-types/window/agents), without requiring the section
+// to be manually expanded and reviewed first - for the routine case
+// where nothing needs adjusting. Expands the section first so progress/
+// results are actually visible, then defers to the exact same logic a
+// manual click would run - this is a shortcut to that action, not a
+// separate one.
+window._quickAssign = function() {
+const body = document.getElementById('assignSectionBody');
+if (body && body.style.display === 'none') {
+window._toggleAssignSection();
+}
+if (currentPageType === PAGE_PENDING) {
+window._runPendingAssignment();
+} else {
+window._runSlaAssignment();
+}
 };
 
 window._toggleAdvancedCallbackTypes = function(forceOpen) {
