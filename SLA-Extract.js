@@ -912,9 +912,27 @@ return `
 </div>
 <div id="assignSectionBody" style="margin-top: 12px; display: ${settings.sectionOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="font-size: 11px; color: #7f8c8d; background: #f8f9fa; border-radius: 4px; padding: 8px 10px; margin-bottom: 12px; line-height: 1.5;">
-Leads go out in order of <strong>when they're due</strong>, not by tier — tiers below only narrow which leads are included.
+Leads go out in order of <strong>when they're due</strong>, not by tier — filters below only narrow which leads are included.
 </div>
 <div style="margin-bottom: 10px;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+<span style="font-size: 11px; font-weight: 700; color: #7f8c8d;">AGENTS ONLINE</span>
+<span style="display: flex; gap: 8px;">
+<span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #3498db; cursor: pointer;">All</span>
+<span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #3498db; cursor: pointer;">None</span>
+<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
+</span>
+</div>
+<div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
+</div>
+<div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
+<button id="assignRunButton" onclick="window._runSlaAssignment()" ${buttonDisabled ? 'disabled' : ''}
+style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
+${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
+</button>
+<div id="assignResultsSummary"></div>
+<div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: #7f8c8d; max-height: 100px; overflow-y: auto;"></div>
+<div style="margin: 16px 0 10px; border-top: 1px solid #ecf0f1; padding-top: 12px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">TIERS</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${tierCheckboxes}</div>
 </div>
@@ -935,23 +953,6 @@ Leads go out in order of <strong>when they're due</strong>, not by tier — tier
 <input id="assignWindowMinutes" type="hidden" value="${settings.windowMinutes || ''}">
 ${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
 </div>
-<div style="margin-bottom: 10px;">
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-<span style="font-size: 11px; font-weight: 700; color: #7f8c8d;">AGENTS ONLINE</span>
-<span style="display: flex; gap: 8px;">
-<span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #3498db; cursor: pointer;">All</span>
-<span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #3498db; cursor: pointer;">None</span>
-<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
-</span>
-</div>
-<div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
-</div>
-<div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
-<button id="assignRunButton" onclick="window._runSlaAssignment()" ${buttonDisabled ? 'disabled' : ''}
-style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
-${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
-</button>
-<div id="assignResultsLog" style="margin-top: 10px; font-size: 11px; color: #7f8c8d; max-height: 100px; overflow-y: auto;"></div>
 </div>
 </div>`;
 }
@@ -1142,6 +1143,24 @@ return `
 </div>
 <div id="assignSectionBody" style="margin-top: 12px; display: ${settings.sectionOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="margin-bottom: 10px;">
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+<span style="font-size: 11px; font-weight: 700; color: #7f8c8d;">AGENTS ONLINE</span>
+<span style="display: flex; gap: 8px;">
+<span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #3498db; cursor: pointer;">All</span>
+<span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #3498db; cursor: pointer;">None</span>
+<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
+</span>
+</div>
+<div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
+</div>
+<div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
+<button id="assignRunButton" onclick="window._runPendingAssignment()" ${buttonDisabled ? 'disabled' : ''}
+style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
+${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
+</button>
+<div id="assignResultsSummary"></div>
+<div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: #7f8c8d; max-height: 100px; overflow-y: auto;"></div>
+<div style="margin: 16px 0 10px; border-top: 1px solid #ecf0f1; padding-top: 12px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">CALLBACK TYPE</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
 <div onclick="window._toggleAdvancedCallbackTypes()" style="margin-top: 6px; font-size: 11px; color: #3498db; cursor: pointer;">
@@ -1158,23 +1177,6 @@ ${renderWheelColumnHtml('assignCutoffHourWheel', HOUR_VALUES, 56)}
 ${renderWheelColumnHtml('assignCutoffMinuteWheel', MINUTE_VALUES, 56)}
 </div>
 </div>
-<div style="margin-bottom: 10px;">
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-<span style="font-size: 11px; font-weight: 700; color: #7f8c8d;">AGENTS ONLINE</span>
-<span style="display: flex; gap: 8px;">
-<span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #3498db; cursor: pointer;">All</span>
-<span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #3498db; cursor: pointer;">None</span>
-<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
-</span>
-</div>
-<div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
-</div>
-<div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
-<button id="assignRunButton" onclick="window._runPendingAssignment()" ${buttonDisabled ? 'disabled' : ''}
-style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
-${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
-</button>
-<div id="assignResultsLog" style="margin-top: 10px; font-size: 11px; color: #7f8c8d; max-height: 100px; overflow-y: auto;"></div>
 </div>
 </div>`;
 }
