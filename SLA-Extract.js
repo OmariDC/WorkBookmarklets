@@ -73,6 +73,7 @@ return null;
 let badge = null;
 let panelElement = null;
 let extracting = false;
+let assigning = false;
 let currentPageType = null;
 let currentCustomers = [];
 let currentPendingCustomers = [];
@@ -1513,7 +1514,7 @@ ${renderCopyableField(c.email)}
 }
 
 async function extractAndExportSla() {
-if (extracting) return;
+if (extracting || assigning) return;
 extracting = true;
 
 try {
@@ -1606,7 +1607,7 @@ extracting = false;
 // No modal click-and-wait needed here - Email/Mobile/Landline are plain
 // text columns, so this is a single synchronous pass over the table.
 async function extractAndExportPending() {
-if (extracting) return;
+if (extracting || assigning) return;
 extracting = true;
 
 try {
@@ -1932,13 +1933,19 @@ log.innerHTML = '';
 const summaryEl = document.getElementById('assignResultsSummary');
 if (summaryEl) summaryEl.innerHTML = '';
 
-const results = await runAssignmentPlan(plan, locateAssignCell, (soFar) => {
+assigning = true;
+let results;
+try {
+results = await runAssignmentPlan(plan, locateAssignCell, (soFar) => {
 button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
 log.innerHTML = soFar.map(r =>
 `<div style="color: ${r.ok ? '#27ae60' : '#e74c3c'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
 ).join('');
 log.scrollTop = log.scrollHeight;
 });
+} finally {
+assigning = false;
+}
 
 const succeeded = results.filter(r => r.ok).length;
 button.disabled = false;
@@ -1990,13 +1997,19 @@ log.innerHTML = '';
 const summaryEl = document.getElementById('assignResultsSummary');
 if (summaryEl) summaryEl.innerHTML = '';
 
-const results = await runAssignmentPlan(plan, locatePendingAssignCell, (soFar) => {
+assigning = true;
+let results;
+try {
+results = await runAssignmentPlan(plan, locatePendingAssignCell, (soFar) => {
 button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
 log.innerHTML = soFar.map(r =>
 `<div style="color: ${r.ok ? '#27ae60' : '#e74c3c'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
 ).join('');
 log.scrollTop = log.scrollHeight;
 });
+} finally {
+assigning = false;
+}
 
 const succeeded = results.filter(r => r.ok).length;
 button.disabled = false;
@@ -2030,7 +2043,7 @@ clearInterval(window._slaAutoDetectInterval);
 }
 let lastKnownPageType = detectPageType();
 window._slaAutoDetectInterval = setInterval(() => {
-if (extracting) return;
+if (extracting || assigning) return;
 const pageType = detectPageType();
 if (pageType && pageType !== lastKnownPageType) {
 lastKnownPageType = pageType;
