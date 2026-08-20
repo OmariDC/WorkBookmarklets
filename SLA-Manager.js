@@ -6,6 +6,7 @@ const PANEL_ID = '_slaPanel';
 const PANEL_BOX_ID = '_slaPanelBox';
 const PANEL_STATE_KEY = '_slaPanelState';
 const PANEL_SIZE_KEY = '_slaPanelSize';
+const ASSIGN_SETTINGS_KEY = '_slaAssignSettings';
 
 // SLA table columns: Customer, Registration, Source, Campaign, Created,
 // Received, SLA Date, Status, Assign. td-only queries mean the bare
@@ -259,6 +260,12 @@ const display = escapeHtml(value);
 return `<span class="sla-copyable" data-value="${display}" style="cursor: pointer; padding: 4px 6px; border-radius: 4px; background: #e8f4f8; color: #2c3e50; display: inline-block; font-size: 13px;">${display}</span>`;
 }
 
+function renderAssignmentBadge(assigned, agentName) {
+return assigned
+? `<span style="background: #e8f5e9; color: #27ae60; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap; flex-shrink: 0;">✓ ${escapeHtml(agentName || 'Assigned')}</span>`
+: `<span style="background: #f8f9fa; color: #95a5a6; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; flex-shrink: 0;">Unassigned</span>`;
+}
+
 // ===================================================================
 // ASSIGNMENT ENGINE (shared between the SLA tab and Pending Customers)
 //
@@ -286,6 +293,7 @@ return new Date(Number(year), month, Number(day), Number(hour), Number(minute));
 }
 
 function getAssignCellState(cell) {
+if (!cell) return { assigned: false, agentName: null };
 const dropdown = cell.querySelector('.dropdown');
 if (dropdown) {
 return { assigned: false, agentName: null };
@@ -653,6 +661,7 @@ const hidden = document.getElementById('assignWindowMinutes');
 const current = hidden && hidden.value ? hidden.value : 'All';
 initWheelColumn('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, current, (value) => {
 if (hidden) hidden.value = value === 'All' ? '' : value;
+if (window._updateAssignPreview) window._updateAssignPreview();
 });
 }
 
@@ -663,11 +672,100 @@ const hidden = document.getElementById('assignCutoffTime');
 const [currentHour, currentMinute] = (hidden && hidden.value ? hidden.value : formatTimeForInput(defaultHourCutoff())).split(':');
 let selectedHour = currentHour;
 let selectedMinute = currentMinute;
-const sync = () => { if (hidden) hidden.value = `${selectedHour}:${selectedMinute}`; };
+const sync = () => {
+if (hidden) hidden.value = `${selectedHour}:${selectedMinute}`;
+if (window._updateAssignPreview) window._updateAssignPreview();
+};
 
 initWheelColumn('assignCutoffHourWheel', HOUR_VALUES, currentHour, (value) => { selectedHour = value; sync(); });
 initWheelColumn('assignCutoffMinuteWheel', MINUTE_VALUES, currentMinute, (value) => { selectedMinute = value; sync(); });
 }
+
+if (window._updateAssignPreview) window._updateAssignPreview();
+}
+
+// Always-visible, no interaction needed - answers "how many are due
+// before X" and "how many are already assigned" at a glance, without
+// expanding the (collapsed-by-default) Assign Leads section or running
+// anything. Buckets are cumulative (30m includes the 15m count), and an
+// already-overdue/Missed lead counts toward every bucket since it's due
+// before all of them. Unassigned-only for the due buckets - this is a
+// "what's left to do" readout, not a total-in-queue count.
+const SLA_DUE_BUCKET_MINUTES = [15, 30, 60];
+
+function renderSlaDueSummary() {
+const leads = collectAssignableLeads();
+const now = Date.now();
+const minutesUntilDue = (lead) => lead.slaDate ? (lead.slaDate.getTime() - now) / 60000 : null;
+
+const dueCounts = SLA_DUE_BUCKET_MINUTES.map(mins =>
+leads.filter(l => !l.assigned && minutesUntilDue(l) !== null && minutesUntilDue(l) <= mins).length
+);
+const customerFirstDueCounts = SLA_DUE_BUCKET_MINUTES.map(mins =>
+leads.filter(l => !l.assigned && l.isCustomerFirst && minutesUntilDue(l) !== null && minutesUntilDue(l) <= mins).length
+);
+const assignedCount = leads.filter(l => l.assigned).length;
+const notAssignedCount = leads.filter(l => !l.assigned).length;
+
+const dueLine = SLA_DUE_BUCKET_MINUTES.map((m, i) =>
+`${m}m: <strong style="${m === 15 && dueCounts[i] > 0 ? 'color:#e74c3c;' : ''}">${dueCounts[i]}</strong>`
+).join(' &nbsp; ');
+const cfLine = SLA_DUE_BUCKET_MINUTES.map((m, i) => `${m}m: <strong>${customerFirstDueCounts[i]}</strong>`).join(' &nbsp; ');
+
+return `
+<div id="slaDueSummary" style="padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #ecf0f1; font-size: 12px; color: #2c3e50; line-height: 1.7;">
+<div>Due — ${dueLine}</div>
+<div style="font-size: 11px; color: #7f8c8d;">Customer First — ${cfLine}</div>
+<div style="font-size: 11px; color: #95a5a6;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount}</div>
+</div>`;
+}
+
+// Filter/agent selections persist across every scan (not just within a
+// single manual "Refresh" cycle, unlike the existing outerHTML-replace
+// preservation below) so a consistent shift-long routine only has to be
+// set once. Agent/tier/callback-type exclusions are stored as opt-OUT
+// sets (which ones are unchecked) rather than opt-in - a new agent
+// coming online, or a tier/type nobody has ever excluded, defaults to
+// included without needing to already be known about.
+function loadAssignSettings() {
+try {
+return JSON.parse(localStorage.getItem(ASSIGN_SETTINGS_KEY)) || {};
+} catch (error) {
+return {};
+}
+}
+
+function saveAssignSettings(partial) {
+localStorage.setItem(ASSIGN_SETTINGS_KEY, JSON.stringify({ ...loadAssignSettings(), ...partial }));
+}
+
+// Reads the currently-mounted assign section's DOM and saves whatever
+// it finds - called from onchange handlers and wheel settle callbacks,
+// so it only needs to know how to read the page, not track state itself.
+function persistCurrentAssignSettings() {
+const excludedTiers = Array.from(document.querySelectorAll('.assign-tier-checkbox:not(:checked)')).map(el => Number(el.value));
+const excludedAgentIds = Array.from(document.querySelectorAll('.assign-agent-checkbox:not(:checked)')).map(el => el.value);
+const customerFirstOnly = document.getElementById('assignCustomerFirstOnly')?.checked || false;
+const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
+const windowMinutes = document.getElementById('assignWindowMinutes')?.value ?? null;
+const cutoffTime = document.getElementById('assignCutoffTime')?.value ?? null;
+const advancedOpen = document.getElementById('advancedCallbackTypes')?.style.display === 'flex';
+
+// Primary callback types default ON (opt-out, mirrors tiers); Advanced
+// ones default OFF (opt-in) - so unlike everything else here, "excluded"
+// and "included" aren't just each other's inverse and need separate sets.
+const allCallbackCheckboxes = Array.from(document.querySelectorAll('.assign-callback-checkbox'));
+const excludedCallbackTypes = allCallbackCheckboxes
+.filter(el => !el.checked && !el.closest('#advancedCallbackTypes'))
+.map(el => el.value);
+const includedAdvancedCallbackTypes = allCallbackCheckboxes
+.filter(el => el.checked && el.closest('#advancedCallbackTypes'))
+.map(el => el.value);
+
+saveAssignSettings({
+excludedTiers, excludedCallbackTypes, includedAdvancedCallbackTypes, excludedAgentIds,
+customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen
+});
 }
 
 function renderAssignSection() {
@@ -677,16 +775,20 @@ const tierCounts = [1, 2, 3, 4].map(t => leads.filter(l => l.tier === t && !l.as
 const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).length;
 const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
 
+const settings = loadAssignSettings();
+const excludedTiers = new Set(settings.excludedTiers || []);
+const excludedAgentIds = new Set(settings.excludedAgentIds || []);
+
 const tierCheckboxes = [1, 2, 3, 4].map(t => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-tier-checkbox" value="${t}" checked> Tier ${t} <span style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
+<input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()"> Tier ${t} <span style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
 </label>`).join('');
 
 const agentCheckboxes = agents.length === 0
 ? `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`
 : agents.map(a => `
 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" checked> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
+<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
 </label>`).join('');
 
 const buttonDisabled = agents.length === 0;
@@ -709,17 +811,17 @@ Leads go out in order of <strong>when they're due</strong>, not by tier — tier
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">SPECIAL FILTERS</div>
 <div style="display: flex; flex-direction: column; gap: 6px;">
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" id="assignCustomerFirstOnly"> Customer First only <span style="color:#95a5a6;">(${customerFirstCount})</span>
+<input type="checkbox" id="assignCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateAssignPreview()"> Customer First only <span style="color:#95a5a6;">(${customerFirstCount})</span>
 </label>
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" id="assignEmailOnly"> Email only (no phone) <span style="color:#95a5a6;">(${emailOnlyCount})</span>
+<input type="checkbox" id="assignEmailOnly" ${settings.emailOnly ? 'checked' : ''} onchange="window._updateAssignPreview()"> Email only (no phone) <span style="color:#95a5a6;">(${emailOnlyCount})</span>
 </label>
 </div>
 <div style="font-size: 10px; color: #95a5a6; margin-top: 4px;">Based on the last scan — click the badge first if these counts look stale.</div>
 </div>
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
-<input id="assignWindowMinutes" type="hidden" value="">
+<input id="assignWindowMinutes" type="hidden" value="${settings.windowMinutes || ''}">
 ${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
 </div>
 <div style="margin-bottom: 10px;">
@@ -729,6 +831,7 @@ ${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
 </div>
+<div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
 <button id="assignRunButton" onclick="window._runSlaAssignment()" ${buttonDisabled ? 'disabled' : ''}
 style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
 ${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
@@ -853,30 +956,65 @@ function slugify(value) {
 return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
+// Same "always visible, unassigned-only" readout as the SLA tab's due
+// summary, but bucketed to match this page's actual hour-cutoff workflow
+// instead of minutes. "This hour" reuses defaultHourCutoff() (the same
+// boundary the wheel defaults to); "Next hour" is cumulative - due before
+// the hour after that.
+function renderPendingDueSummary() {
+const leads = collectPendingCustomers();
+const thisHourCutoff = defaultHourCutoff();
+const nextHourCutoff = new Date(thisHourCutoff.getTime() + 60 * 60000);
+
+const dueThisHour = leads.filter(l => !l.assigned && l.nextActionDate && l.nextActionDate.getTime() < thisHourCutoff.getTime()).length;
+const dueNextHour = leads.filter(l => !l.assigned && l.nextActionDate && l.nextActionDate.getTime() < nextHourCutoff.getTime()).length;
+
+const callbackLine = CALLBACK_TYPES_PRIMARY.map(type =>
+`${escapeHtml(type)}: <strong>${leads.filter(l => !l.assigned && l.callbackType === type).length}</strong>`
+).join(' &nbsp; ');
+
+const assignedCount = leads.filter(l => l.assigned).length;
+const notAssignedCount = leads.filter(l => !l.assigned).length;
+
+return `
+<div id="pendingDueSummary" style="padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #ecf0f1; font-size: 12px; color: #2c3e50; line-height: 1.7;">
+<div>Due — This hour: <strong style="${dueThisHour > 0 ? 'color:#e74c3c;' : ''}">${dueThisHour}</strong> &nbsp; Next hour: <strong>${dueNextHour}</strong></div>
+<div style="font-size: 11px; color: #7f8c8d;">${callbackLine}</div>
+<div style="font-size: 11px; color: #95a5a6;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount}</div>
+</div>`;
+}
+
 function renderPendingAssignSection() {
 const leads = collectPendingCustomers();
 const agents = getAgentRoster();
 const countFor = (type) => leads.filter(l => l.callbackType === type && !l.assigned).length;
 
+const settings = loadAssignSettings();
+const excludedCallbackTypes = new Set(settings.excludedCallbackTypes || []);
+const includedAdvancedCallbackTypes = new Set(settings.includedAdvancedCallbackTypes || []);
+const excludedAgentIds = new Set(settings.excludedAgentIds || []);
+
 const primaryCheckboxes = CALLBACK_TYPES_PRIMARY.map(type => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" checked> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${excludedCallbackTypes.has(type) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
 </label>`).join('');
 
 const advancedCheckboxes = CALLBACK_TYPES_ADVANCED.map(type => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${includedAdvancedCallbackTypes.has(type) ? 'checked' : ''} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
 </label>`).join('');
 
 const agentCheckboxes = agents.length === 0
 ? `<div style="font-size: 12px; color: #95a5a6;">No agents online</div>`
 : agents.map(a => `
 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" checked> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
+<input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(a.name)}${a.status ? ` <span style="color:#95a5a6; font-size:11px;">(${escapeHtml(a.status)})</span>` : ''}
 </label>`).join('');
 
 const buttonDisabled = agents.length === 0;
-const defaultCutoff = formatTimeForInput(defaultHourCutoff());
+const defaultCutoff = settings.cutoffTime || formatTimeForInput(defaultHourCutoff());
+const advancedOpenStyle = settings.advancedOpen ? 'display: flex;' : 'display: none;';
+const advancedToggleArrow = settings.advancedOpen ? '▼' : '▶';
 
 return `
 <div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #ecf0f1;">
@@ -889,9 +1027,9 @@ return `
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">CALLBACK TYPE</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
 <div onclick="window._toggleAdvancedCallbackTypes()" style="margin-top: 6px; font-size: 11px; color: #3498db; cursor: pointer;">
-<span id="advancedCallbackToggle">▶</span> Advanced (Manual Rescheduled, Post Closure)
+<span id="advancedCallbackToggle">${advancedToggleArrow}</span> Advanced (Manual Rescheduled, Post Closure)
 </div>
-<div id="advancedCallbackTypes" style="display: none; gap: 10px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
+<div id="advancedCallbackTypes" style="${advancedOpenStyle} gap: 10px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
 </div>
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE BEFORE <span style="font-weight: 400; color: #95a5a6;">(defaults to the top of the next hour)</span></div>
@@ -909,6 +1047,7 @@ ${renderWheelColumnHtml('assignCutoffMinuteWheel', MINUTE_VALUES, 56)}
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
 </div>
+<div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
 <button id="assignRunButton" onclick="window._runPendingAssignment()" ${buttonDisabled ? 'disabled' : ''}
 style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
 ${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
@@ -941,8 +1080,9 @@ border-bottom: 2px solid #ecf0f1;">
 </div>
 <div id="${sectionId}" style="display: grid; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
 ${customers.map(c => `<div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
-<div style="font-weight: 700; color: #2c3e50; margin-bottom: 10px; font-size: 14px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50;">${escapeHtml(c.name)}</span>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50; font-weight: 700; font-size: 14px;">${escapeHtml(c.name)}</span>
+${renderAssignmentBadge(c.assigned, c.agentName)}
 </div>
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
 <div>
@@ -999,7 +1139,7 @@ console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
 
 // Shared panel chrome (positioning, header, footer) for both pages - only
 // the title/counts, the assign section, and the body content differ.
-function renderPanelShell({ title, count, newCount, removedCount, assignSectionHtml, bodyHtml }) {
+function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml }) {
 const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 const isFull = panelSize === 'full';
 const positionStyle = isFull
@@ -1034,6 +1174,7 @@ title="Minimize">−</button>
 </div>
 </div>
 
+${summaryHtml || ''}
 ${assignSectionHtml}
 
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
@@ -1100,6 +1241,7 @@ mountPanel(renderPanelShell({
 title: 'SLA Report',
 count: customers.length,
 newCount, removedCount,
+summaryHtml: renderSlaDueSummary(),
 assignSectionHtml: renderAssignSection(),
 bodyHtml
 }));
@@ -1127,6 +1269,7 @@ mountPanel(renderPanelShell({
 title: 'Pending Customers',
 count: customers.length,
 newCount, removedCount,
+summaryHtml: renderPendingDueSummary(),
 assignSectionHtml: renderPendingAssignSection(),
 bodyHtml
 }));
@@ -1153,8 +1296,9 @@ border-bottom: 2px solid #ecf0f1;">
 </div>
 <div id="${tierId}" style="display: grid; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
 ${customers.map(c => `<div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
-<div style="font-weight: 700; color: #2c3e50; margin-bottom: 10px; font-size: 14px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50;">${escapeHtml(c.name)}</span>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50; font-weight: 700; font-size: 14px;">${escapeHtml(c.name)}</span>
+${renderAssignmentBadge(c.assigned, c.agentName)}
 </div>
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
 <div>
@@ -1206,7 +1350,10 @@ if (!name || !campaign) continue;
 // leads from the same source/campaign don't collide with each other.
 const key = `${name}||${registration}||${source}||${campaign}`;
 seenKeys.add(key);
-rowDescriptors.push({ cells, name, source, campaign, key });
+// Assign state is read fresh every scan, even for cached leads below -
+// unlike phone/email, it changes constantly and must never be stale.
+const assignState = getAssignCellState(cells[COL_ASSIGN]);
+rowDescriptors.push({ cells, name, source, campaign, key, assigned: assignState.assigned, agentName: assignState.agentName });
 }
 
 const pendingCount = rowDescriptors.filter(d => !previousByKey.has(d.key)).length;
@@ -1216,7 +1363,9 @@ setBadgeProgress(remaining);
 for (const d of rowDescriptors) {
 const existing = previousByKey.get(d.key);
 if (existing) {
-customers.push(existing);
+// Keep cached phone/email, but never the cached assigned/agentName -
+// that's re-read fresh above on every scan regardless of cache hit.
+customers.push({ ...existing, assigned: d.assigned, agentName: d.agentName });
 continue;
 }
 
@@ -1232,7 +1381,9 @@ source: d.source,
 tier: tierInfo.tier,
 reason: tierInfo.reason,
 phone: details.phone,
-email: details.email
+email: details.email,
+assigned: d.assigned,
+agentName: d.agentName
 });
 addedCount++;
 } catch (error) {
@@ -1434,6 +1585,43 @@ const isCurrentlyOpen = body.style.display === 'flex';
 const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !isCurrentlyOpen;
 body.style.display = shouldOpen ? 'flex' : 'none';
 toggle.textContent = shouldOpen ? '▼' : '▶';
+saveAssignSettings({ advancedOpen: shouldOpen });
+};
+
+// Recomputes and displays "N leads match" before the button is even
+// clicked, so a filter combination that matches nothing (or an
+// unexpectedly large batch) is visible immediately rather than found out
+// via an empty/surprising results log after the fact. Deliberately
+// excludes agent selection - that decides who gets the leads, not how
+// many qualify.
+window._updateAssignPreview = function() {
+const previewEl = document.getElementById('assignMatchPreview');
+if (!previewEl) return;
+persistCurrentAssignSettings();
+
+let count;
+if (currentPageType === PAGE_PENDING) {
+const selectedTypes = new Set(
+Array.from(document.querySelectorAll('.assign-callback-checkbox:checked')).map(el => el.value)
+);
+const cutoffInput = document.getElementById('assignCutoffTime');
+const cutoffDate = parseCutoffFromInput(cutoffInput ? cutoffInput.value : '');
+const leads = collectPendingCustomers();
+count = filterPendingLeads(leads, { callbackTypes: selectedTypes, cutoffDate }).length;
+} else {
+const selectedTiers = new Set(
+Array.from(document.querySelectorAll('.assign-tier-checkbox:checked')).map(el => Number(el.value))
+);
+const windowInput = document.getElementById('assignWindowMinutes');
+const windowMinutes = windowInput && windowInput.value ? Number(windowInput.value) : null;
+const customerFirstOnly = document.getElementById('assignCustomerFirstOnly')?.checked || false;
+const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
+const leads = collectAssignableLeads();
+count = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes, customerFirstOnly, emailOnly }).length;
+}
+
+previewEl.textContent = `${count} lead${count === 1 ? '' : 's'} match${count === 1 ? 'es' : ''} the current filters`;
+previewEl.style.color = count === 0 ? '#e74c3c' : '#7f8c8d';
 };
 
 window._refreshAssignSection = function() {
