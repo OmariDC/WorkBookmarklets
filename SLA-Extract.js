@@ -74,6 +74,8 @@ let badge = null;
 let panelElement = null;
 let extracting = false;
 let assigning = false;
+let lastFailedAssignmentPlan = null;
+let lastFailedLocateCellFn = null;
 let currentPageType = null;
 let currentCustomers = [];
 let currentPendingCustomers = [];
@@ -504,7 +506,16 @@ return null;
 // this re-locates the cell fresh via locateCellFn on every table
 // mutation instead of tracking a node - correct regardless of what
 // level Angular decides to replace.
-function waitForAssignConfirmed(lead, locateCellFn, timeout = 3000) {
+// Clicks are pipelined (fired ~200ms apart) rather than one-at-a-time,
+// so an individual confirmation's wait no longer blocks the rest of the
+// batch - it resolves in the background regardless of how long it takes.
+// That means a longer timeout costs nothing for overall run speed, only
+// how long a genuinely slow response gets before being called a failure,
+// so it's set generously to absorb real backend tail latency (the actual
+// remaining source of "reports failed but it worked" - see the Retry
+// Failed button, which exists precisely because a rare slow response can
+// still occasionally outrun even this).
+function waitForAssignConfirmed(lead, locateCellFn, timeout = 6000) {
 return new Promise((resolve) => {
 const table = document.querySelector('table');
 if (!table) {
@@ -617,8 +628,27 @@ const icon = failed === 0 ? '✓' : '⚠';
 const text = failed === 0
 ? `${icon} ${succeeded} assigned`
 : `${icon} ${succeeded} assigned, ${failed} failed`;
-el.innerHTML = `<div style="margin-top: 8px; padding: 8px 10px; border-radius: 4px; background: ${color}20; color: ${color}; font-size: 12px; font-weight: 700; text-align: center;">${text}</div>`;
+const retryLink = failed > 0
+? ` <span onclick="window._retryFailedAssignments()" style="text-decoration: underline; cursor: pointer;">Retry Failed</span>`
+: '';
+el.innerHTML = `<div style="margin-top: 8px; padding: 8px 10px; border-radius: 4px; background: ${color}20; color: ${color}; font-size: 12px; font-weight: 700; text-align: center;">${text}${retryLink}</div>`;
 }
+
+// Retrying re-runs only the leads that actually failed, keeping each one
+// paired with the same agent it was already assigned to (preserving the
+// original round-robin distribution) - since most runs succeed ~90% of
+// the time and the odd failure is usually a slow backend response outrun
+// by even the generous confirmation timeout, not a real problem with the
+// lead/agent pairing itself, there's no reason to re-scan/re-filter/
+// re-shuffle the whole batch to fix a couple of stragglers.
+window._retryFailedAssignments = async function() {
+if (!lastFailedAssignmentPlan || lastFailedAssignmentPlan.length === 0) return;
+const plan = lastFailedAssignmentPlan;
+const locateCellFn = lastFailedLocateCellFn;
+lastFailedAssignmentPlan = null;
+lastFailedLocateCellFn = null;
+await executeAssignmentRun(plan, locateCellFn);
+};
 
 function appendAssignmentLog(results) {
 try {
@@ -2016,6 +2046,8 @@ initAssignSectionWheels();
 // Shared by the manual Assign button (whatever filters are checked) and
 // Quick Assign (its own fixed opinionated criteria) - both just need to
 // build a plan and hand it off the same way.
+const ASSIGN_CONFIRM_THRESHOLD = 10;
+
 async function executeAssignmentRun(plan, locateCellFn) {
 const button = document.getElementById('assignRunButton');
 const log = document.getElementById('assignResultsLog');
@@ -2024,6 +2056,12 @@ if (!button || !log) return null;
 if (plan.length === 0) {
 log.textContent = 'No unassigned leads match.';
 return null;
+}
+
+if (plan.length >= ASSIGN_CONFIRM_THRESHOLD) {
+const agentCount = new Set(plan.map(p => p.agent.id)).size;
+const proceed = window.confirm(`About to assign ${plan.length} leads to ${agentCount} agent${agentCount === 1 ? '' : 's'}. Proceed?`);
+if (!proceed) return null;
 }
 
 button.disabled = true;
@@ -2049,6 +2087,9 @@ assigning = false;
 const succeeded = results.filter(r => r.ok).length;
 button.disabled = false;
 button.textContent = 'Assign Unassigned Leads';
+const failedEntries = results.filter(r => !r.ok).map(r => ({ lead: r.lead, agent: r.agent }));
+lastFailedAssignmentPlan = failedEntries.length > 0 ? failedEntries : null;
+lastFailedLocateCellFn = failedEntries.length > 0 ? locateCellFn : null;
 renderAssignResultsSummary(results);
 appendAssignmentLog(results);
 console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
