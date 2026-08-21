@@ -562,22 +562,52 @@ return new Promise((resolve) => setTimeout(resolve, ms));
 // has resolved so far rather than a fixed sequence.
 const ASSIGN_CLICK_STAGGER_MS = 200;
 
+// Uncapped concurrency meant a big sweep (30-40 leads) could briefly put
+// that many simultaneous assign requests on Konnect's backend at once -
+// plausibly why the occasional straggler outran even the 6s confirmation
+// timeout (contention under load, not a real pairing problem). This caps
+// how many leads can be simultaneously "in flight" awaiting confirmation
+// at once via a simple semaphore: the loop still fires clicks on its
+// normal stagger, but pauses before starting a new one once the cap is
+// reached, resuming as soon as an earlier one settles. Small batches
+// never hit the cap, so this costs nothing for the common case.
+const ASSIGN_MAX_CONCURRENT = 6;
+
 async function runAssignmentPlan(plan, locateCellFn, onProgress) {
 const results = new Array(plan.length);
 const settled = [];
 const pending = [];
+
+let inFlight = 0;
+const waiters = [];
+const acquireSlot = () => {
+if (inFlight < ASSIGN_MAX_CONCURRENT) {
+inFlight++;
+return Promise.resolve();
+}
+return new Promise((resolve) => waiters.push(resolve));
+};
+const releaseSlot = () => {
+if (waiters.length > 0) {
+waiters.shift()();
+} else {
+inFlight--;
+}
+};
 
 const reportProgress = () => onProgress(settled.slice());
 
 for (let i = 0; i < plan.length; i++) {
 const { lead, agent } = plan[i];
 if (i > 0) await sleep(ASSIGN_CLICK_STAGGER_MS);
+await acquireSlot();
 try {
 const cell = locateCellFn(lead);
 if (!cell) {
 results[i] = { lead, agent, ok: false, reason: 'Row no longer found on page' };
 settled.push(results[i]);
 reportProgress();
+releaseSlot();
 continue;
 }
 const menuItem = findAgentMenuItem(cell, agent);
@@ -585,6 +615,7 @@ if (!menuItem) {
 results[i] = { lead, agent, ok: false, reason: 'Agent option not found in menu' };
 settled.push(results[i]);
 reportProgress();
+releaseSlot();
 continue;
 }
 const confirmPromise = waitForAssignConfirmed(lead, locateCellFn);
@@ -593,11 +624,13 @@ pending.push(confirmPromise.then((ok) => {
 results[i] = { lead, agent, ok, reason: ok ? null : 'Timed out waiting for confirmation' };
 settled.push(results[i]);
 reportProgress();
+releaseSlot();
 }));
 } catch (error) {
 results[i] = { lead, agent, ok: false, reason: String(error) };
 settled.push(results[i]);
 reportProgress();
+releaseSlot();
 }
 }
 
