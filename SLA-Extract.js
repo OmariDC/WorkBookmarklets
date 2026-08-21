@@ -493,22 +493,27 @@ return null;
 }
 }
 
-// Observing `cell` directly misses the case where Angular replaces the
-// whole <td> node (rather than mutating its children) once the row
-// re-renders as assigned - that swap is a childList mutation on the
-// row, one level above `cell`, so an observer scoped to `cell` never
-// fires for its own replacement and would time out even on success.
-// Observing the row instead, and re-querying its Assign cell (always
-// the last <td>, confirmed for both the SLA and Pending table layouts)
-// on every mutation, stays correct whether the cell is mutated in place
-// or swapped out entirely.
-function waitForAssignConfirmed(cell, timeout = 3000) {
+// Holding onto any specific node (the cell, or even its row) is fragile
+// against Angular's ng-repeat, which is free to replace nodes at any
+// level when it re-renders - a <td> swap, a whole <tr> swap, either is
+// a mutation on that node's PARENT, so an observer scoped to the node
+// itself never sees its own replacement and times out even on success
+// (this bit us once already at the cell level - the row-level fix just
+// moved the same blind spot up one level). The only reference that
+// stays valid across any re-render is the lead's stable content key, so
+// this re-locates the cell fresh via locateCellFn on every table
+// mutation instead of tracking a node - correct regardless of what
+// level Angular decides to replace.
+function waitForAssignConfirmed(lead, locateCellFn, timeout = 3000) {
 return new Promise((resolve) => {
-const row = cell.closest('tr') || cell.parentElement;
+const table = document.querySelector('table');
+if (!table) {
+resolve(false);
+return;
+}
 const stillPending = () => {
-if (!row.isConnected) return false;
-const cells = row.querySelectorAll('td');
-const currentCell = cells[cells.length - 1] || cell;
+const currentCell = locateCellFn(lead);
+if (!currentCell) return false;
 return !!currentCell.querySelector('.dropdown');
 };
 if (!stillPending()) {
@@ -526,7 +531,7 @@ observer.disconnect();
 resolve(true);
 }
 });
-observer.observe(row, { childList: true, subtree: true });
+observer.observe(table, { childList: true, subtree: true, characterData: true });
 });
 }
 
@@ -571,7 +576,7 @@ settled.push(results[i]);
 reportProgress();
 continue;
 }
-const confirmPromise = waitForAssignConfirmed(cell);
+const confirmPromise = waitForAssignConfirmed(lead, locateCellFn);
 menuItem.click();
 pending.push(confirmPromise.then((ok) => {
 results[i] = { lead, agent, ok, reason: ok ? null : 'Timed out waiting for confirmation' };
@@ -672,7 +677,7 @@ function ensureWheelStyles() {
 if (document.getElementById('_slaWheelStyles')) return;
 const style = document.createElement('style');
 style.id = '_slaWheelStyles';
-style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; }';
+style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #3498db; outline-offset: -1px; }';
 document.head.appendChild(style);
 }
 
@@ -730,6 +735,37 @@ if (!el) return;
 
 ensureWheelDragHandlers();
 
+// Type-to-jump: click a wheel to focus it, then type digits to jump
+// straight to that value instead of scrolling/clicking through it.
+// Hour/minute (and any other zero-padded fixed-width list) match on the
+// padded string once enough digits are typed; SLA_WINDOW_PRESETS mixes
+// 'All' with un-padded numbers, so those match numerically instead. The
+// buffer resets on a short pause (or immediately once a fixed-width
+// value is fully typed) so the next keystroke starts a fresh number
+// rather than concatenating onto the last one.
+const fixedWidth = values.length > 0 && values.every(v => /^\d+$/.test(String(v)) && String(v).length === String(values[0]).length)
+? String(values[0]).length : null;
+let typeBuffer = '';
+let typeTimer = null;
+function resetTypeBuffer() {
+typeBuffer = '';
+clearTimeout(typeTimer);
+typeTimer = null;
+}
+function findTypedIndex(buffer) {
+if (fixedWidth) {
+const padded = buffer.padStart(fixedWidth, '0');
+const exact = values.findIndex(v => String(v) === padded);
+if (exact !== -1) return exact;
+return values.findIndex(v => String(v) === buffer);
+}
+const num = Number(buffer);
+if (Number.isNaN(num)) return -1;
+const exact = values.findIndex(v => Number(v) === num);
+if (exact !== -1) return exact;
+return values.findIndex(v => String(v).startsWith(buffer));
+}
+
 function highlightAndSettle(index) {
 index = Math.max(0, Math.min(values.length - 1, index));
 const value = values[index];
@@ -749,6 +785,33 @@ highlightAndSettle(index);
 function handleSettle() {
 highlightAndSettle(Math.round(el.scrollTop / WHEEL_ROW_HEIGHT));
 }
+
+el.setAttribute('tabindex', '0');
+el.addEventListener('keydown', (event) => {
+if (event.key === 'Escape') {
+resetTypeBuffer();
+return;
+}
+if (event.key === 'Backspace') {
+event.preventDefault();
+typeBuffer = typeBuffer.slice(0, -1);
+clearTimeout(typeTimer);
+typeTimer = null;
+if (!typeBuffer) return;
+const idx = findTypedIndex(typeBuffer);
+if (idx !== -1) scrollToIndex(idx, false);
+typeTimer = setTimeout(resetTypeBuffer, 700);
+return;
+}
+if (!/^[0-9]$/.test(event.key)) return;
+event.preventDefault();
+typeBuffer += event.key;
+if (fixedWidth && typeBuffer.length > fixedWidth) typeBuffer = event.key;
+const idx = findTypedIndex(typeBuffer);
+if (idx !== -1) scrollToIndex(idx, false);
+clearTimeout(typeTimer);
+typeTimer = setTimeout(resetTypeBuffer, fixedWidth && typeBuffer.length >= fixedWidth ? 300 : 700);
+});
 
 if ('onscrollend' in window) {
 el.addEventListener('scrollend', handleSettle);
@@ -1820,22 +1883,36 @@ saveAssignSettings({ sectionOpen: isHidden });
 if (isHidden) syncAllWheelPositions();
 };
 
-// Runs assignment immediately using whatever's currently persisted
-// (tiers/callback-types/window/agents), without requiring the section
-// to be manually expanded and reviewed first - for the routine case
-// where nothing needs adjusting. Expands the section first so progress/
-// results are actually visible, then defers to the exact same logic a
-// manual click would run - this is a shortcut to that action, not a
-// separate one.
-window._quickAssign = function() {
+// A fixed, opinionated "clear what's urgent right now" sweep - deliberately
+// ignores whatever tiers/callback-types/agents happen to be checked in the
+// section (that's what the manual button is for). Pending Customers: New +
+// Auto Rescheduled leads due by the top of the next hour. SLA: every tier
+// due within the next hour. Both go to every currently online agent, not
+// just whichever are checked, since the point is to not require any setup
+// at all before running it.
+window._quickAssign = async function() {
 const body = document.getElementById('assignSectionBody');
 if (body && body.style.display === 'none') {
 window._toggleAssignSection();
 }
+const agents = getAgentRoster();
+if (agents.length === 0) {
+const log = document.getElementById('assignResultsLog');
+if (log) log.textContent = 'No agents online.';
+return;
+}
 if (currentPageType === PAGE_PENDING) {
-window._runPendingAssignment();
+const leads = collectPendingCustomers();
+const eligible = filterPendingLeads(leads, { callbackTypes: new Set(CALLBACK_TYPES_PRIMARY), cutoffDate: defaultHourCutoff() });
+const prioritized = prioritizePendingLeads(eligible);
+const plan = roundRobinAssign(prioritized, agents);
+await executeAssignmentRun(plan, locatePendingAssignCell);
 } else {
-window._runSlaAssignment();
+const leads = collectAssignableLeads();
+const eligible = filterAssignableLeads(leads, { tiers: new Set([1, 2, 3, 4]), windowMinutes: 60, customerFirstOnly: false, emailOnly: false });
+const prioritized = prioritizeLeads(eligible);
+const plan = roundRobinAssign(prioritized, agents);
+await executeAssignmentRun(plan, locateAssignCell);
 }
 };
 
@@ -1936,10 +2013,51 @@ if (newEmailOnly && emailOnlyChecked) newEmailOnly.checked = true;
 initAssignSectionWheels();
 };
 
-window._runSlaAssignment = async function() {
+// Shared by the manual Assign button (whatever filters are checked) and
+// Quick Assign (its own fixed opinionated criteria) - both just need to
+// build a plan and hand it off the same way.
+async function executeAssignmentRun(plan, locateCellFn) {
 const button = document.getElementById('assignRunButton');
 const log = document.getElementById('assignResultsLog');
-if (!button || !log) return;
+if (!button || !log) return null;
+
+if (plan.length === 0) {
+log.textContent = 'No unassigned leads match.';
+return null;
+}
+
+button.disabled = true;
+button.textContent = `Assigning 0/${plan.length}...`;
+log.innerHTML = '';
+const summaryEl = document.getElementById('assignResultsSummary');
+if (summaryEl) summaryEl.innerHTML = '';
+
+assigning = true;
+let results;
+try {
+results = await runAssignmentPlan(plan, locateCellFn, (soFar) => {
+button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
+log.innerHTML = soFar.map(r =>
+`<div style="color: ${r.ok ? '#27ae60' : '#e74c3c'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
+).join('');
+log.scrollTop = log.scrollHeight;
+});
+} finally {
+assigning = false;
+}
+
+const succeeded = results.filter(r => r.ok).length;
+button.disabled = false;
+button.textContent = 'Assign Unassigned Leads';
+renderAssignResultsSummary(results);
+appendAssignmentLog(results);
+console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
+return results;
+}
+
+window._runSlaAssignment = async function() {
+const log = document.getElementById('assignResultsLog');
+if (!log) return;
 
 const selectedTiers = new Set(
 Array.from(document.querySelectorAll('.assign-tier-checkbox:checked')).map(el => Number(el.value))
@@ -1973,39 +2091,12 @@ return;
 }
 
 const plan = roundRobinAssign(prioritized, agents);
-
-button.disabled = true;
-button.textContent = `Assigning 0/${plan.length}...`;
-log.innerHTML = '';
-const summaryEl = document.getElementById('assignResultsSummary');
-if (summaryEl) summaryEl.innerHTML = '';
-
-assigning = true;
-let results;
-try {
-results = await runAssignmentPlan(plan, locateAssignCell, (soFar) => {
-button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
-log.innerHTML = soFar.map(r =>
-`<div style="color: ${r.ok ? '#27ae60' : '#e74c3c'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
-).join('');
-log.scrollTop = log.scrollHeight;
-});
-} finally {
-assigning = false;
-}
-
-const succeeded = results.filter(r => r.ok).length;
-button.disabled = false;
-button.textContent = 'Assign Unassigned Leads';
-renderAssignResultsSummary(results);
-appendAssignmentLog(results);
-console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
+await executeAssignmentRun(plan, locateAssignCell);
 };
 
 window._runPendingAssignment = async function() {
-const button = document.getElementById('assignRunButton');
 const log = document.getElementById('assignResultsLog');
-if (!button || !log) return;
+if (!log) return;
 
 const selectedTypes = new Set(
 Array.from(document.querySelectorAll('.assign-callback-checkbox:checked')).map(el => el.value)
@@ -2037,33 +2128,7 @@ return;
 }
 
 const plan = roundRobinAssign(prioritized, agents);
-
-button.disabled = true;
-button.textContent = `Assigning 0/${plan.length}...`;
-log.innerHTML = '';
-const summaryEl = document.getElementById('assignResultsSummary');
-if (summaryEl) summaryEl.innerHTML = '';
-
-assigning = true;
-let results;
-try {
-results = await runAssignmentPlan(plan, locatePendingAssignCell, (soFar) => {
-button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
-log.innerHTML = soFar.map(r =>
-`<div style="color: ${r.ok ? '#27ae60' : '#e74c3c'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
-).join('');
-log.scrollTop = log.scrollHeight;
-});
-} finally {
-assigning = false;
-}
-
-const succeeded = results.filter(r => r.ok).length;
-button.disabled = false;
-button.textContent = 'Assign Unassigned Leads';
-renderAssignResultsSummary(results);
-appendAssignmentLog(results);
-console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
+await executeAssignmentRun(plan, locatePendingAssignCell);
 };
 
 // Detects switching between the SLA queue and Pending Customers by
