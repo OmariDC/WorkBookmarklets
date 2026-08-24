@@ -1946,22 +1946,26 @@ saveAssignSettings({ sectionOpen: isHidden });
 if (isHidden) syncAllWheelPositions();
 };
 
-// A fixed, opinionated "clear what's urgent right now" sweep - deliberately
-// ignores whatever tiers/callback-types/agents happen to be checked in the
-// section (that's what the manual button is for). Pending Customers: New +
-// Auto Rescheduled leads due by the top of the next hour. SLA: every tier
-// due within the next hour. Both go to every currently online agent, not
-// just whichever are checked, since the point is to not require any setup
-// at all before running it.
+// A fixed, opinionated "clear what's urgent right now" sweep for the LEAD
+// side of the equation - deliberately ignores whatever tiers/callback-types
+// happen to be checked (that's what the manual button is for). Pending
+// Customers: New + Auto Rescheduled leads due by the top of the next hour.
+// SLA: every tier due within the next hour. The AGENT selection is still
+// respected, though - only currently-checked agents get leads, same as the
+// manual button, since which agents are online/available is real state the
+// user is deliberately curating, not something to override.
 window._quickAssign = async function() {
 const body = document.getElementById('assignSectionBody');
 if (body && body.style.display === 'none') {
 window._toggleAssignSection();
 }
-const agents = getAgentRoster();
+const selectedAgentIds = new Set(
+Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map(el => el.value)
+);
+const agents = getAgentRoster().filter(a => selectedAgentIds.has(a.id));
 if (agents.length === 0) {
 const log = document.getElementById('assignResultsLog');
-if (log) log.textContent = 'No agents online.';
+if (log) log.textContent = 'Select at least one agent.';
 return;
 }
 if (currentPageType === PAGE_PENDING) {
