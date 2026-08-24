@@ -428,13 +428,14 @@ function prioritizeLeads(leads) {
 return [...leads].sort((a, b) => computeSortKey(a) - computeSortKey(b));
 }
 
-function filterAssignableLeads(leads, { tiers, windowMinutes, customerFirstOnly, emailOnly }) {
+function filterAssignableLeads(leads, { tiers, windowMinutes, customerFirstOnly, emailOnly, missedOnly }) {
 const now = Date.now();
 return leads.filter((lead) => {
 if (lead.assigned) return false;
 if (!tiers.has(lead.tier)) return false;
 if (customerFirstOnly && !lead.isCustomerFirst) return false;
 if (emailOnly && !lead.isEmailOnly) return false;
+if (missedOnly && lead.status !== 'Missed') return false;
 if (windowMinutes != null && lead.slaDate) {
 const minutesUntilDue = (lead.slaDate.getTime() - now) / 60000;
 if (minutesUntilDue > windowMinutes) return false;
@@ -785,7 +786,7 @@ function ensureWheelStyles() {
 if (document.getElementById('_slaWheelStyles')) return;
 const style = document.createElement('style');
 style.id = '_slaWheelStyles';
-style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #3498db; outline-offset: -1px; }';
+style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #3498db; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef6fb !important; }';
 document.head.appendChild(style);
 }
 
@@ -1091,9 +1092,15 @@ ${escapeHtml(a.name)}
 // for tile groups that need their own visual identity distinct from
 // "urgent" (e.g. Customer First - important, but a customer attribute,
 // not a lateness signal, so it shouldn't borrow red's urgency meaning).
-function renderStatTile(label, value, accent) {
+// `onclick`, when given, makes the tile itself a quick-assign shortcut -
+// the number displayed becomes the assign criteria, so clicking "23"
+// under "15m" assigns exactly those 23 leads. title gives a hover hint
+// since there's no other visible affordance marking a tile as clickable
+// beyond the pointer cursor.
+function renderStatTile(label, value, accent, onclick) {
 const color = accent === true ? '#e74c3c' : (typeof accent === 'string' ? accent : null);
-return `<div style="flex: 1; text-align: center; background: white; border-radius: 6px; padding: 6px 2px; border: 1px solid ${color || '#ecf0f1'};">
+const clickable = typeof onclick === 'string' && onclick.length > 0;
+return `<div ${clickable ? `class="stat-tile-clickable" onclick="${onclick}" title="Click to assign these"` : ''} style="flex: 1; text-align: center; background: white; border-radius: 6px; padding: 6px 2px; border: 1px solid ${color || '#ecf0f1'}; ${clickable ? 'cursor: pointer;' : ''}">
 <div style="font-size: 16px; font-weight: 700; color: ${color || '#2c3e50'};">${value}</div>
 <div style="font-size: 9px; color: #95a5a6; text-transform: uppercase; letter-spacing: 0.3px;">${label}</div>
 </div>`;
@@ -1115,8 +1122,8 @@ const assignedCount = leads.filter(l => l.assigned).length;
 const notAssignedCount = leads.filter(l => !l.assigned).length;
 
 const tiles = [
-renderStatTile('Missed', missedCount, missedCount > 0),
-...SLA_DUE_BUCKET_MINUTES.map((m, i) => renderStatTile(`${m}m`, dueCounts[i], m === 15 && dueCounts[i] > 0))
+renderStatTile('Missed', missedCount, missedCount > 0, `window._quickAssignSlaTile(null, false, true)`),
+...SLA_DUE_BUCKET_MINUTES.map((m, i) => renderStatTile(`${m}m`, dueCounts[i], m === 15 && dueCounts[i] > 0, `window._quickAssignSlaTile(${m}, false, false)`))
 ].join('');
 // Customer First gets its own tile row, not a plain text line - the
 // priority engine treats it as a distinct, important category (see
@@ -1126,7 +1133,7 @@ renderStatTile('Missed', missedCount, missedCount > 0),
 // this is a customer attribute, not a lateness signal.
 const CUSTOMER_FIRST_ACCENT = '#8e44ad';
 const cfTiles = SLA_DUE_BUCKET_MINUTES.map((m, i) =>
-renderStatTile(`${m}m`, customerFirstDueCounts[i], customerFirstDueCounts[i] > 0 ? CUSTOMER_FIRST_ACCENT : null)
+renderStatTile(`${m}m`, customerFirstDueCounts[i], customerFirstDueCounts[i] > 0 ? CUSTOMER_FIRST_ACCENT : null, `window._quickAssignSlaTile(${m}, true, false)`)
 ).join('');
 
 return `
@@ -1400,8 +1407,8 @@ const assignedCount = leads.filter(l => l.assigned).length;
 const notAssignedCount = leads.filter(l => !l.assigned).length;
 
 const tiles = [
-renderStatTile('This hour', dueThisHour, dueThisHour > 0),
-renderStatTile('Next hour', dueNextHour, false)
+renderStatTile('This hour', dueThisHour, dueThisHour > 0, `window._quickAssignPendingTile(0)`),
+renderStatTile('Next hour', dueNextHour, false, `window._quickAssignPendingTile(1)`)
 ].join('');
 
 return `
@@ -2012,19 +2019,14 @@ saveAssignSettings({ sectionOpen: isHidden });
 if (isHidden) syncAllWheelPositions();
 };
 
-// A fixed, opinionated "clear what's urgent right now" sweep for the LEAD
-// side of the equation - deliberately ignores whatever tiers/callback-types
-// happen to be checked (that's what the manual button is for). Pending
-// Customers: New + Auto Rescheduled leads due by the top of the next hour.
-// SLA: every tier due within the next hour. The AGENT selection is still
-// respected, though - only currently-checked agents get leads, same as the
-// manual button, since which agents are online/available is real state the
-// user is deliberately curating, not something to override.
-window._quickAssign = async function() {
-if (assigning) {
-cancelRequested = true;
-return;
-}
+// Shared by every quick-criteria entry point (the general Quick Assign
+// button and each clickable due-summary tile): expand the section if
+// it's collapsed so progress is visible, then resolve which agents are
+// actually checked - agent selection is real state the user is
+// deliberately curating and always gets respected, no matter which
+// fixed lead-criteria shortcut triggered the run. Returns null (and
+// leaves a message in the log) if nothing's selected.
+function beginQuickAssign() {
 const body = document.getElementById('assignSectionBody');
 if (body && body.style.display === 'none') {
 window._toggleAssignSection();
@@ -2036,8 +2038,23 @@ const agents = getAgentRoster().filter(a => selectedAgentIds.has(a.id));
 if (agents.length === 0) {
 const log = document.getElementById('assignResultsLog');
 if (log) log.textContent = 'Select at least one agent.';
+return null;
+}
+return agents;
+}
+
+// A fixed, opinionated "clear what's urgent right now" sweep for the LEAD
+// side of the equation - deliberately ignores whatever tiers/callback-types
+// happen to be checked (that's what the manual button is for). Pending
+// Customers: New + Auto Rescheduled leads due by the top of the next hour.
+// SLA: every tier due within the next hour.
+window._quickAssign = async function() {
+if (assigning) {
+cancelRequested = true;
 return;
 }
+const agents = beginQuickAssign();
+if (!agents) return;
 if (currentPageType === PAGE_PENDING) {
 const leads = collectPendingCustomers();
 const eligible = filterPendingLeads(leads, { callbackTypes: new Set(CALLBACK_TYPES_PRIMARY), cutoffDate: defaultHourCutoff() });
@@ -2051,6 +2068,53 @@ const prioritized = prioritizeLeads(eligible);
 const plan = roundRobinAssign(prioritized, agents);
 await executeAssignmentRun(plan, locateAssignCell);
 }
+};
+
+// Each due-summary tile (Missed/15m/30m/1h, and the Customer First row)
+// is itself a quick-assign shortcut - clicking one runs assignment using
+// exactly that tile's criteria, so the number you clicked is the number
+// that gets touched. Deliberately uses every tier (never just whatever
+// tiers happen to be checked), matching the tile's own count, which is
+// computed the same way in renderSlaDueSummary.
+window._quickAssignSlaTile = async function(windowMinutes, customerFirstOnly, missedOnly) {
+if (assigning) {
+cancelRequested = true;
+return;
+}
+const agents = beginQuickAssign();
+if (!agents) return;
+const leads = collectAssignableLeads();
+const eligible = filterAssignableLeads(leads, {
+tiers: new Set([1, 2, 3, 4]),
+windowMinutes: windowMinutes != null ? windowMinutes : null,
+customerFirstOnly: !!customerFirstOnly,
+emailOnly: false,
+missedOnly: !!missedOnly
+});
+const prioritized = prioritizeLeads(eligible);
+const plan = roundRobinAssign(prioritized, agents);
+await executeAssignmentRun(plan, locateAssignCell);
+};
+
+// Mirrors _quickAssignSlaTile for the Pending Customers due-summary tiles
+// (This hour / Next hour). Uses every callback type - not just New/Auto
+// Rescheduled - since that's what the tile itself counts (see
+// renderPendingDueSummary), so the assigned total matches what was
+// clicked. hoursAhead 0 = "this hour" (top of next hour), 1 = "next
+// hour" (top of the hour after that).
+window._quickAssignPendingTile = async function(hoursAhead) {
+if (assigning) {
+cancelRequested = true;
+return;
+}
+const agents = beginQuickAssign();
+if (!agents) return;
+const cutoffDate = new Date(defaultHourCutoff().getTime() + hoursAhead * 60 * 60000);
+const leads = collectPendingCustomers();
+const eligible = filterPendingLeads(leads, { callbackTypes: new Set(CALLBACK_TYPE_ORDER), cutoffDate });
+const prioritized = prioritizePendingLeads(eligible);
+const plan = roundRobinAssign(prioritized, agents);
+await executeAssignmentRun(plan, locatePendingAssignCell);
 };
 
 window._setAllAgentCheckboxes = function(checked) {
