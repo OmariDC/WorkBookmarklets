@@ -1070,9 +1070,15 @@ ${escapeHtml(a.name)}
 </label>`).join('');
 }
 
-function renderStatTile(label, value, urgent) {
-return `<div style="flex: 1; text-align: center; background: white; border-radius: 6px; padding: 6px 2px; border: 1px solid ${urgent ? '#e74c3c' : '#ecf0f1'};">
-<div style="font-size: 16px; font-weight: 700; color: ${urgent ? '#e74c3c' : '#2c3e50'};">${value}</div>
+// `accent` can be a boolean (true -> the standard red urgency accent, for
+// backward compatibility with existing call sites) or a hex color string,
+// for tile groups that need their own visual identity distinct from
+// "urgent" (e.g. Customer First - important, but a customer attribute,
+// not a lateness signal, so it shouldn't borrow red's urgency meaning).
+function renderStatTile(label, value, accent) {
+const color = accent === true ? '#e74c3c' : (typeof accent === 'string' ? accent : null);
+return `<div style="flex: 1; text-align: center; background: white; border-radius: 6px; padding: 6px 2px; border: 1px solid ${color || '#ecf0f1'};">
+<div style="font-size: 16px; font-weight: 700; color: ${color || '#2c3e50'};">${value}</div>
 <div style="font-size: 9px; color: #95a5a6; text-transform: uppercase; letter-spacing: 0.3px;">${label}</div>
 </div>`;
 }
@@ -1096,12 +1102,22 @@ const tiles = [
 renderStatTile('Missed', missedCount, missedCount > 0),
 ...SLA_DUE_BUCKET_MINUTES.map((m, i) => renderStatTile(`${m}m`, dueCounts[i], m === 15 && dueCounts[i] > 0))
 ].join('');
-const cfLine = SLA_DUE_BUCKET_MINUTES.map((m, i) => `${m}m: <strong>${customerFirstDueCounts[i]}</strong>`).join(' &nbsp; ');
+// Customer First gets its own tile row, not a plain text line - the
+// priority engine treats it as a distinct, important category (see
+// prioritizeLeads), so it should read as important at the same glance
+// speed as the Missed/due tiles above it, not as an afterthought caption.
+// Purple rather than red so it doesn't borrow "urgent/late" meaning -
+// this is a customer attribute, not a lateness signal.
+const CUSTOMER_FIRST_ACCENT = '#8e44ad';
+const cfTiles = SLA_DUE_BUCKET_MINUTES.map((m, i) =>
+renderStatTile(`${m}m`, customerFirstDueCounts[i], customerFirstDueCounts[i] > 0 ? CUSTOMER_FIRST_ACCENT : null)
+).join('');
 
 return `
 <div id="slaDueSummary" style="padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #ecf0f1; font-size: 12px; color: #2c3e50;">
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
-<div style="font-size: 11px; color: #7f8c8d; margin-bottom: 6px;">Customer First — ${cfLine}</div>
+<div style="font-size: 10px; font-weight: 700; color: ${CUSTOMER_FIRST_ACCENT}; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Customer First</div>
+<div style="display: flex; gap: 6px; margin-bottom: 8px;">${cfTiles}</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span style="font-size: 11px; color: #95a5a6;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
 <button onclick="window._quickAssign()" style="background: #27ae60; color: white; border: none; border-radius: 4px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0;">⚡ Quick Assign</button>
@@ -1582,11 +1598,9 @@ ${assignSectionHtml}
 ${bodyHtml}
 </div>
 
-<div style="border-top: 1px solid #ddd; padding: 14px; background: white; flex-shrink: 0; display: flex; gap: 10px; box-shadow: 0 -2px 8px rgba(0,0,0,0.05);">
+<div style="border-top: 1px solid #ddd; padding: 8px 14px; background: white; flex-shrink: 0; display: flex; justify-content: flex-end; box-shadow: 0 -2px 8px rgba(0,0,0,0.05);">
 <button onclick="(function() { if (confirm('Clear all data and stop?')) { window._slaResetBookmarklet(); } })();"
-style="flex: 1; padding: 10px; background: #e74c3c; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Clear & Stop</button>
-<button onclick="(function() { const panel = document.getElementById('${PANEL_ID}'); if (!panel) return; const content = panel.querySelector('.panelContent'); content.scrollTop = 0; })();"
-style="flex: 1; padding: 10px; background: #3498db; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Top</button>
+style="padding: 6px 12px; background: transparent; color: #e74c3c; border: 1px solid #e74c3c; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
 </div>
 </div>
 `;
