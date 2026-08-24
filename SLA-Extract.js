@@ -442,11 +442,47 @@ return true;
 });
 }
 
+// Always starting the cycle at agents[0] meant whoever happened to be
+// first in the roster quietly got an extra lead on every single run - a
+// shift with many small runs (manual clicks, repeated Quick Assigns)
+// would compound that into a real skew that's easy to miss since nobody
+// watches the tally after every run. Persisting which agent got the
+// LAST lead of the previous run, and resuming the cycle from the next
+// one after them, makes the fairness promise hold across a whole shift
+// instead of resetting every time. If that agent isn't in the current
+// roster (they've gone offline since), it just falls back to starting
+// at 0 for this run - a reasonable one-off, not a lasting skew.
+const ROUND_ROBIN_CURSOR_KEY = '_slaRoundRobinCursor';
+
+function loadRoundRobinCursor() {
+try {
+return localStorage.getItem(ROUND_ROBIN_CURSOR_KEY) || null;
+} catch (error) {
+return null;
+}
+}
+
+function saveRoundRobinCursor(agentId) {
+try {
+localStorage.setItem(ROUND_ROBIN_CURSOR_KEY, agentId);
+} catch (error) {
+// ignore
+}
+}
+
 function roundRobinAssign(leads, agents) {
+if (leads.length === 0 || agents.length === 0) return [];
+const lastAgentId = loadRoundRobinCursor();
+let startIndex = 0;
+if (lastAgentId) {
+const lastIndex = agents.findIndex(a => a.id === lastAgentId);
+if (lastIndex !== -1) startIndex = (lastIndex + 1) % agents.length;
+}
 const plan = [];
 for (let i = 0; i < leads.length; i++) {
-plan.push({ lead: leads[i], agent: agents[i % agents.length] });
+plan.push({ lead: leads[i], agent: agents[(startIndex + i) % agents.length] });
 }
+saveRoundRobinCursor(plan[plan.length - 1].agent.id);
 return plan;
 }
 
