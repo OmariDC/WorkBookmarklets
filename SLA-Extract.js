@@ -74,6 +74,7 @@ let badge = null;
 let panelElement = null;
 let extracting = false;
 let assigning = false;
+let cancelRequested = false;
 let lastFailedAssignmentPlan = null;
 let lastFailedLocateCellFn = null;
 let currentPageType = null;
@@ -634,6 +635,14 @@ inFlight--;
 const reportProgress = () => onProgress(settled.slice());
 
 for (let i = 0; i < plan.length; i++) {
+if (cancelRequested) {
+for (let j = i; j < plan.length; j++) {
+results[j] = { lead: plan[j].lead, agent: plan[j].agent, ok: false, reason: 'Cancelled' };
+settled.push(results[j]);
+}
+reportProgress();
+break;
+}
 const { lead, agent } = plan[i];
 if (i > 0) await sleep(ASSIGN_CLICK_STAGGER_MS);
 await acquireSlot();
@@ -947,7 +956,14 @@ suppressNextClick = true;
 scrollToIndex(Math.round(el.scrollTop / WHEEL_ROW_HEIGHT), true);
 }
 };
+// preventDefault (needed to stop text selection while dragging) also
+// suppresses the browser's default focus-on-click behavior - and since
+// every click starts with a mousedown, that silently broke type-to-jump
+// entirely: the wheel could never actually receive focus, so the
+// keydown listener below never fired. Focus explicitly instead of
+// relying on the default.
 event.preventDefault();
+el.focus();
 });
 
 const startIndex = Math.max(0, values.indexOf(initialValue));
@@ -2005,6 +2021,10 @@ if (isHidden) syncAllWheelPositions();
 // manual button, since which agents are online/available is real state the
 // user is deliberately curating, not something to override.
 window._quickAssign = async function() {
+if (assigning) {
+cancelRequested = true;
+return;
+}
 const body = document.getElementById('assignSectionBody');
 if (body && body.style.display === 'none') {
 window._toggleAssignSection();
@@ -2049,12 +2069,17 @@ toggle.textContent = shouldOpen ? '▼' : '▶';
 saveAssignSettings({ advancedOpen: shouldOpen });
 };
 
-// Recomputes and displays "N leads match" before the button is even
-// clicked, so a filter combination that matches nothing (or an
-// unexpectedly large batch) is visible immediately rather than found out
-// via an empty/surprising results log after the fact. Deliberately
-// excludes agent selection - that decides who gets the leads, not how
-// many qualify.
+// Recomputes and displays what clicking "Assign" would actually do before
+// the button is even clicked, so a filter combination that matches
+// nothing, an unexpectedly large batch, or (previously) a forgotten agent
+// selection is visible immediately rather than found out via an empty/
+// surprising results log - or worse, via the button's own "Select at
+// least one agent" rejection after the preview had already implied
+// everything was ready. Agent count now factors directly into what's
+// shown, both for that reason and because seeing the actual per-agent
+// split ("23 -> 4 agents, ~6 each") is the real pre-click control this is
+// meant to give: not just "will something happen" but "is this a
+// reasonable way to divide it up."
 window._updateAssignPreview = function() {
 const previewEl = document.getElementById('assignMatchPreview');
 if (!previewEl) return;
@@ -2081,8 +2106,27 @@ const leads = getCachedAssignableLeads();
 count = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes, customerFirstOnly, emailOnly }).length;
 }
 
-previewEl.textContent = `${count} lead${count === 1 ? '' : 's'} match${count === 1 ? 'es' : ''} the current filters`;
-previewEl.style.color = count === 0 ? '#e74c3c' : '#7f8c8d';
+const agentCount = document.querySelectorAll('.assign-agent-checkbox:checked').length;
+
+if (agentCount === 0) {
+previewEl.textContent = count > 0
+? `${count} lead${count === 1 ? '' : 's'} match, but no agents are selected`
+: 'Select at least one agent';
+previewEl.style.color = '#e74c3c';
+return;
+}
+
+if (count === 0) {
+previewEl.textContent = 'No leads match the current filters';
+previewEl.style.color = '#e74c3c';
+return;
+}
+
+const perAgent = Math.floor(count / agentCount);
+const remainder = count % agentCount;
+const splitLabel = remainder === 0 ? `${perAgent} each` : `~${perAgent} each`;
+previewEl.textContent = `${count} lead${count === 1 ? '' : 's'} → ${agentCount} agent${agentCount === 1 ? '' : 's'} (${splitLabel})`;
+previewEl.style.color = '#7f8c8d';
 };
 
 window._refreshAssignSection = function() {
@@ -2151,17 +2195,27 @@ const proceed = window.confirm(`About to assign ${plan.length} leads to ${agentC
 if (!proceed) return null;
 }
 
-button.disabled = true;
-button.textContent = `Assigning 0/${plan.length}...`;
+// Stays enabled (not disabled) during the run and changes color/label
+// instead - clicking it again while a run is active is how you cancel,
+// via the cancelRequested check each run-starting handler makes at its
+// own top. That reuses the exact same onclick wiring already on this
+// button rather than needing to swap handlers, and means "click to
+// cancel" holds true regardless of whether this run was started by the
+// manual button or Quick Assign.
+button.disabled = false;
+button.style.background = '#f39c12';
+button.style.cursor = 'pointer';
+button.textContent = `Assigning 0/${plan.length}... (click to cancel)`;
 log.innerHTML = '';
 const summaryEl = document.getElementById('assignResultsSummary');
 if (summaryEl) summaryEl.innerHTML = '';
 
+cancelRequested = false;
 assigning = true;
 let results;
 try {
 results = await runAssignmentPlan(plan, locateCellFn, (soFar) => {
-button.textContent = `Assigning ${soFar.length}/${plan.length}...`;
+button.textContent = `Assigning ${soFar.length}/${plan.length}... (click to cancel)`;
 log.innerHTML = soFar.map(r =>
 `<div style="color: ${r.ok ? '#27ae60' : '#e74c3c'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
 ).join('');
@@ -2169,10 +2223,13 @@ log.scrollTop = log.scrollHeight;
 });
 } finally {
 assigning = false;
+cancelRequested = false;
 }
 
 const succeeded = results.filter(r => r.ok).length;
 button.disabled = false;
+button.style.background = '#27ae60';
+button.style.cursor = 'pointer';
 button.textContent = 'Assign Unassigned Leads';
 const failedEntries = results.filter(r => !r.ok).map(r => ({ lead: r.lead, agent: r.agent }));
 lastFailedAssignmentPlan = failedEntries.length > 0 ? failedEntries : null;
@@ -2184,6 +2241,10 @@ return results;
 }
 
 window._runSlaAssignment = async function() {
+if (assigning) {
+cancelRequested = true;
+return;
+}
 const log = document.getElementById('assignResultsLog');
 if (!log) return;
 
@@ -2223,6 +2284,10 @@ await executeAssignmentRun(plan, locateAssignCell);
 };
 
 window._runPendingAssignment = async function() {
+if (assigning) {
+cancelRequested = true;
+return;
+}
 const log = document.getElementById('assignResultsLog');
 if (!log) return;
 
