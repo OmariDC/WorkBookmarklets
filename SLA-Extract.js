@@ -1116,6 +1116,19 @@ ${escapeHtml(a.name)}
 </label>`).join('');
 }
 
+// Shared by both assign sections - a plain number input capping how many
+// leads a run actually touches, applied via applyAssignLimit() right
+// before roundRobinAssign() in every entry point. Blank means no cap.
+function renderAssignLimitControl(settings) {
+return `
+<div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px; color: #2c3e50;">
+<label for="assignLimitInput" style="color: #7f8c8d; font-weight: 700; font-size: 11px;">LIMIT</label>
+<input type="number" id="assignLimitInput" min="1" placeholder="all" value="${settings.assignLimit || ''}" oninput="window._updateAssignPreview()"
+style="width: 56px; padding: 3px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">
+<span style="color: #95a5a6; font-size: 11px;">leads, most urgent first — blank = all</span>
+</div>`;
+}
+
 // `accent` can be a boolean (true -> the standard red urgency accent, for
 // backward compatibility with existing call sites) or a hex color string,
 // for tile groups that need their own visual identity distinct from
@@ -1207,6 +1220,7 @@ const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
 const windowMinutes = document.getElementById('assignWindowMinutes')?.value ?? null;
 const cutoffTime = document.getElementById('assignCutoffTime')?.value ?? null;
 const advancedOpen = document.getElementById('advancedCallbackTypes')?.style.display === 'flex';
+const assignLimit = document.getElementById('assignLimitInput')?.value || null;
 
 // Primary callback types default ON (opt-out, mirrors tiers); Advanced
 // ones default OFF (opt-in) - so unlike everything else here, "excluded"
@@ -1221,8 +1235,21 @@ const includedAdvancedCallbackTypes = allCallbackCheckboxes
 
 saveAssignSettings({
 excludedTiers, excludedCallbackTypes, includedAdvancedCallbackTypes, excludedAgentIds,
-customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen
+customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen, assignLimit
 });
+}
+
+// Reads the persisted cap and, if set, keeps only the first N of an
+// already-priority-sorted list - since prioritizeLeads/prioritizePendingLeads
+// always sort most-urgent-first, capping takes the N most urgent leads
+// and drops the rest for this run, rather than an arbitrary subset. Used
+// by every run-building entry point (manual button, Quick Assign, tile
+// clicks) so "just do 10 of these" works no matter which one is used.
+function applyAssignLimit(prioritized) {
+const raw = loadAssignSettings().assignLimit;
+const limit = raw ? Number(raw) : null;
+if (!limit || limit <= 0) return prioritized;
+return prioritized.slice(0, limit);
 }
 
 function renderAssignSection() {
@@ -1269,6 +1296,7 @@ Leads go out in order of <strong>when they're due</strong>, not by tier — filt
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
 <div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 11px; color: #2c3e50;"></div>
 </div>
+${renderAssignLimitControl(settings)}
 <div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
 <button id="assignRunButton" onclick="window._runSlaAssignment()" ${buttonDisabled ? 'disabled' : ''}
 style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
@@ -1501,6 +1529,7 @@ return `
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
 <div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 11px; color: #2c3e50;"></div>
 </div>
+${renderAssignLimitControl(settings)}
 <div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
 <button id="assignRunButton" onclick="window._runPendingAssignment()" ${buttonDisabled ? 'disabled' : ''}
 style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
@@ -2091,13 +2120,15 @@ if (currentPageType === PAGE_PENDING) {
 const leads = collectPendingCustomers();
 const eligible = filterPendingLeads(leads, { callbackTypes: new Set(CALLBACK_TYPES_PRIMARY), cutoffDate: defaultHourCutoff() });
 const prioritized = prioritizePendingLeads(eligible);
-const plan = roundRobinAssign(prioritized, agents);
+const limited = applyAssignLimit(prioritized);
+const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locatePendingAssignCell);
 } else {
 const leads = collectAssignableLeads();
 const eligible = filterAssignableLeads(leads, { tiers: new Set([1, 2, 3, 4]), windowMinutes: 60, customerFirstOnly: false, emailOnly: false });
 const prioritized = prioritizeLeads(eligible);
-const plan = roundRobinAssign(prioritized, agents);
+const limited = applyAssignLimit(prioritized);
+const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locateAssignCell);
 }
 };
@@ -2124,7 +2155,8 @@ emailOnly: false,
 missedOnly: !!missedOnly
 });
 const prioritized = prioritizeLeads(eligible);
-const plan = roundRobinAssign(prioritized, agents);
+const limited = applyAssignLimit(prioritized);
+const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locateAssignCell);
 };
 
@@ -2145,7 +2177,8 @@ const cutoffDate = new Date(defaultHourCutoff().getTime() + hoursAhead * 60 * 60
 const leads = collectPendingCustomers();
 const eligible = filterPendingLeads(leads, { callbackTypes: new Set(CALLBACK_TYPE_ORDER), cutoffDate });
 const prioritized = prioritizePendingLeads(eligible);
-const plan = roundRobinAssign(prioritized, agents);
+const limited = applyAssignLimit(prioritized);
+const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locatePendingAssignCell);
 };
 
@@ -2219,10 +2252,15 @@ if (el) el.textContent = `(${tierCounts[t - 1]})`;
 }
 
 const agentCount = document.querySelectorAll('.assign-agent-checkbox:checked').length;
+const rawCount = count;
+const limitRaw = document.getElementById('assignLimitInput')?.value;
+const limit = limitRaw ? Number(limitRaw) : null;
+if (limit && limit > 0) count = Math.min(count, limit);
+const cappedSuffix = count < rawCount ? ` (capped from ${rawCount})` : '';
 
 if (agentCount === 0) {
 previewEl.textContent = count > 0
-? `${count} lead${count === 1 ? '' : 's'} match, but no agents are selected`
+? `${count} lead${count === 1 ? '' : 's'} match${cappedSuffix}, but no agents are selected`
 : 'Select at least one agent';
 previewEl.style.color = '#e74c3c';
 return;
@@ -2237,7 +2275,7 @@ return;
 const perAgent = Math.floor(count / agentCount);
 const remainder = count % agentCount;
 const splitLabel = remainder === 0 ? `${perAgent} each` : `~${perAgent} each`;
-previewEl.textContent = `${count} lead${count === 1 ? '' : 's'} → ${agentCount} agent${agentCount === 1 ? '' : 's'} (${splitLabel})`;
+previewEl.textContent = `${count} lead${count === 1 ? '' : 's'}${cappedSuffix} → ${agentCount} agent${agentCount === 1 ? '' : 's'} (${splitLabel})`;
 previewEl.style.color = '#7f8c8d';
 };
 
@@ -2391,7 +2429,8 @@ log.textContent = 'No unassigned leads match the selected tiers/filters/timefram
 return;
 }
 
-const plan = roundRobinAssign(prioritized, agents);
+const limited = applyAssignLimit(prioritized);
+const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locateAssignCell);
 };
 
@@ -2432,7 +2471,8 @@ log.textContent = 'No unassigned leads match the selected callback types/timefra
 return;
 }
 
-const plan = roundRobinAssign(prioritized, agents);
+const limited = applyAssignLimit(prioritized);
+const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locatePendingAssignCell);
 };
 
