@@ -444,6 +444,35 @@ return true;
 });
 }
 
+// Per-tier/per-callback-type counts next to each checkbox used to be
+// unscoped totals ("Tier 2 (14)" meant 14 unassigned Tier 2 leads
+// anywhere, not 14 due within whatever window is currently selected) -
+// misleading once a shorter window is dialed in, since the checkbox
+// count wouldn't shrink to match. windowMinutes null (the 'All' preset)
+// intentionally falls back to the unscoped total, matching what 'All'
+// already means everywhere else in this file.
+function computeSlaTierCounts(leads, windowMinutes) {
+const now = Date.now();
+return [1, 2, 3, 4].map(t => leads.filter((l) => {
+if (l.assigned || l.tier !== t) return false;
+if (windowMinutes == null || !l.slaDate) return true;
+return (l.slaDate.getTime() - now) / 60000 <= windowMinutes;
+}).length);
+}
+
+function computePendingCallbackCounts(leads, cutoffDate) {
+const counts = {};
+CALLBACK_TYPE_ORDER.forEach((type) => {
+counts[type] = leads.filter((l) => {
+if (l.assigned || l.callbackType !== type) return false;
+if (!l.nextActionDate) return false;
+if (cutoffDate && l.nextActionDate.getTime() >= cutoffDate.getTime()) return false;
+return true;
+}).length;
+});
+return counts;
+}
+
 // Always starting the cycle at agents[0] meant whoever happened to be
 // first in the roster quietly got an extra lead on every single run - a
 // shift with many small runs (manual clicks, repeated Quick Assigns)
@@ -1199,17 +1228,18 @@ customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen
 function renderAssignSection() {
 const leads = getCachedAssignableLeads();
 const agents = getAgentRoster();
-const tierCounts = [1, 2, 3, 4].map(t => leads.filter(l => l.tier === t && !l.assigned).length);
-const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).length;
-const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
 
 const settings = loadAssignSettings();
 const excludedTiers = new Set(settings.excludedTiers || []);
 const excludedAgentIds = new Set(settings.excludedAgentIds || []);
+const initialWindowMinutes = settings.windowMinutes ? Number(settings.windowMinutes) : null;
+const tierCounts = computeSlaTierCounts(leads, initialWindowMinutes);
+const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).length;
+const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
 
 const tierCheckboxes = [1, 2, 3, 4].map(t => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()"> Tier ${t} <span style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
+<input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()"> Tier ${t} <span id="tier-count-${t}" style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
 </label>`).join('');
 
 const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
@@ -1425,21 +1455,23 @@ return `
 function renderPendingAssignSection() {
 const leads = getCachedPendingCustomers();
 const agents = getAgentRoster();
-const countFor = (type) => leads.filter(l => l.callbackType === type && !l.assigned).length;
 
 const settings = loadAssignSettings();
 const excludedCallbackTypes = new Set(settings.excludedCallbackTypes || []);
 const includedAdvancedCallbackTypes = new Set(settings.includedAdvancedCallbackTypes || []);
 const excludedAgentIds = new Set(settings.excludedAgentIds || []);
+const initialCutoffDate = parseCutoffFromInput(settings.cutoffTime);
+const callbackCounts = computePendingCallbackCounts(leads, initialCutoffDate);
+const countFor = (type) => callbackCounts[type] || 0;
 
 const primaryCheckboxes = CALLBACK_TYPES_PRIMARY.map(type => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${excludedCallbackTypes.has(type) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${excludedCallbackTypes.has(type) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="color:#95a5a6;">(${countFor(type)})</span>
 </label>`).join('');
 
 const advancedCheckboxes = CALLBACK_TYPES_ADVANCED.map(type => `
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${includedAdvancedCallbackTypes.has(type) ? 'checked' : ''} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span style="color:#95a5a6;">(${countFor(type)})</span>
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${includedAdvancedCallbackTypes.has(type) ? 'checked' : ''} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="color:#95a5a6;">(${countFor(type)})</span>
 </label>`).join('');
 
 const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
@@ -2158,6 +2190,15 @@ const cutoffInput = document.getElementById('assignCutoffTime');
 const cutoffDate = parseCutoffFromInput(cutoffInput ? cutoffInput.value : '');
 const leads = getCachedPendingCustomers();
 count = filterPendingLeads(leads, { callbackTypes: selectedTypes, cutoffDate }).length;
+
+// Per-type counts next to each checkbox are baked in at render time -
+// keep them in sync with the cutoff wheel as it moves, same as the
+// preview line below.
+const callbackCounts = computePendingCallbackCounts(leads, cutoffDate);
+CALLBACK_TYPE_ORDER.forEach((type) => {
+const el = document.getElementById(`cb-count-${slugify(type)}`);
+if (el) el.textContent = `(${callbackCounts[type] || 0})`;
+});
 } else {
 const selectedTiers = new Set(
 Array.from(document.querySelectorAll('.assign-tier-checkbox:checked')).map(el => Number(el.value))
@@ -2168,6 +2209,13 @@ const customerFirstOnly = document.getElementById('assignCustomerFirstOnly')?.ch
 const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
 const leads = getCachedAssignableLeads();
 count = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes, customerFirstOnly, emailOnly }).length;
+
+// Same live-sync as the callback-type counts above, for the tier counts.
+const tierCounts = computeSlaTierCounts(leads, windowMinutes);
+[1, 2, 3, 4].forEach((t) => {
+const el = document.getElementById(`tier-count-${t}`);
+if (el) el.textContent = `(${tierCounts[t - 1]})`;
+});
 }
 
 const agentCount = document.querySelectorAll('.assign-agent-checkbox:checked').length;
