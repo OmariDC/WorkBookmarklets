@@ -270,6 +270,38 @@ return assigned
 : `<span style="background: #f8f9fa; color: #95a5a6; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; flex-shrink: 0;">Unassigned</span>`;
 }
 
+// A per-lead agent picker, for the case of assigning one specific lead
+// right now rather than waiting for the next batch/tile/Quick Assign
+// sweep to reach it. Selecting an option fires immediately (no separate
+// confirm step, matching the speed-first pattern everywhere else in this
+// panel) via a change listener delegated on the panel root (see
+// mountPanel) rather than an inline onchange with the key interpolated
+// into a string - lead keys are built from raw customer name/campaign/
+// etc. text, which can contain quotes or other characters that would
+// break out of an inline JS string. data-lead-key keeps it as a plain
+// (escaped) HTML attribute instead, read back via .dataset - the same
+// pattern already used for the .sla-copyable click-to-copy fields.
+function renderManualAssignPicker(leadKey, pageType) {
+const agents = getAgentRoster();
+if (agents.length === 0) return renderAssignmentBadge(false, null);
+const options = agents.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}</option>`).join('');
+return `<select class="manual-assign-select" data-lead-key="${escapeHtml(leadKey)}" data-page-type="${pageType}"
+style="font-size: 11px; padding: 3px 6px; border: 1px solid #ddd; border-radius: 4px; background: white; color: #2c3e50; max-width: 140px; flex-shrink: 0;">
+<option value="" selected disabled>Assign to…</option>
+${options}
+</select>`;
+}
+
+// Wrapped in its own span (not just the bare badge/select) so
+// _manualAssignLead has a stable, narrowly-scoped element to swap the
+// content of - the card's outer flex row also holds the customer name
+// as a sibling, so replacing that row's innerHTML directly would wipe
+// the name out along with the badge/picker.
+function renderAssignmentCell(assigned, agentName, leadKey, pageType) {
+const inner = assigned ? renderAssignmentBadge(true, agentName) : renderManualAssignPicker(leadKey, pageType);
+return `<span class="assignment-cell">${inner}</span>`;
+}
+
 // ===================================================================
 // ASSIGNMENT ENGINE (shared between the SLA tab and Pending Customers)
 //
@@ -1583,7 +1615,7 @@ border-bottom: 2px solid #ecf0f1;">
 ${customers.map(c => `<div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50; font-weight: 700; font-size: 14px;">${escapeHtml(c.name)}</span>
-${renderAssignmentBadge(c.assigned, c.agentName)}
+${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
 </div>
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
 <div>
@@ -1710,6 +1742,16 @@ copyToClipboard(this.dataset.value, this);
 });
 });
 
+// Delegated on the panel root rather than bound per-<select>, so a
+// picker that gets swapped back in after a failed manual assign (see
+// _manualAssignLead) is still handled without needing to re-attach a
+// listener to the freshly-injected element.
+panelElement.addEventListener('change', (event) => {
+const el = event.target.closest('.manual-assign-select');
+if (!el) return;
+window._manualAssignLead(el.dataset.pageType, el.dataset.leadKey, el.value, el);
+});
+
 initAssignSectionWheels();
 }
 
@@ -1799,7 +1841,7 @@ border-bottom: 2px solid #ecf0f1;">
 ${customers.map(c => `<div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50; font-weight: 700; font-size: 14px;">${escapeHtml(c.name)}</span>
-${renderAssignmentBadge(c.assigned, c.agentName)}
+${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
 </div>
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
 <div>
@@ -2180,6 +2222,64 @@ const prioritized = prioritizePendingLeads(eligible);
 const limited = applyAssignLimit(prioritized);
 const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locatePendingAssignCell);
+};
+
+// Assigns exactly one specific lead to exactly one chosen agent, for the
+// case of handling a particular customer right now rather than waiting
+// for it to come up in a batch/tile/Quick Assign sweep. Reuses
+// runAssignmentPlan (same click/confirm engine, same result shape) with
+// a one-item plan, but deliberately never goes through roundRobinAssign
+// - a manual pick is an intentional override, not part of the fairness
+// rotation, so it shouldn't perturb the round-robin cursor. Sets
+// `assigning` for its duration same as a batch run, so the background
+// auto-detect poll doesn't collide with it mid-confirmation (the same
+// class of bug fixed for batch runs) - the tradeoff is that clicking the
+// batch button during the ~1s this usually takes would itself be
+// (mis)read as a cancel request, since that's also gated on `assigning`;
+// accepted as a rare, low-cost collision (a harmless no-op click) against
+// a real, more consequential collision it prevents.
+window._manualAssignLead = async function(pageType, leadKey, agentId, selectEl) {
+if (!agentId || !selectEl) return;
+const agent = getAgentRoster().find(a => a.id === agentId);
+const wrapper = selectEl.parentElement;
+if (!agent || !wrapper) return;
+
+if (assigning) {
+selectEl.value = '';
+return;
+}
+
+wrapper.innerHTML = `<span style="font-size: 11px; color: #95a5a6;">Assigning…</span>`;
+
+const locateCellFn = pageType === PAGE_PENDING ? locatePendingAssignCell : locateAssignCell;
+const leads = pageType === PAGE_PENDING ? collectPendingCustomers() : collectAssignableLeads();
+const lead = leads.find(l => l.key === leadKey);
+
+if (!lead || lead.assigned) {
+wrapper.innerHTML = `<span style="font-size: 11px; color: #e74c3c;">Already assigned or no longer listed</span>`;
+return;
+}
+
+assigning = true;
+let results;
+try {
+results = await runAssignmentPlan([{ lead, agent }], locateCellFn, () => {});
+} finally {
+assigning = false;
+}
+
+invalidateLeadsCache();
+appendAssignmentLog(results);
+
+const result = results[0];
+if (result.ok) {
+wrapper.innerHTML = renderAssignmentBadge(true, agent.name);
+} else {
+wrapper.innerHTML = `<div style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px;">
+<span style="font-size: 10px; color: #e74c3c;">${escapeHtml(result.reason || 'Failed')}</span>
+${renderManualAssignPicker(leadKey, pageType)}
+</div>`;
+}
 };
 
 window._setAllAgentCheckboxes = function(checked) {
