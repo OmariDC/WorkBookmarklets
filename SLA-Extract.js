@@ -285,13 +285,15 @@ function renderManualAssignPicker(leadKey, pageType) {
 const agents = getAgentRoster();
 if (agents.length === 0) return renderAssignmentBadge(false, null);
 const options = agents.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}</option>`).join('');
-// Blue rather than the green used everywhere else for batch actions
-// (the main button, Quick Assign, tile clicks) - a one-lead manual
-// override is a deliberately different kind of action from a batch
-// sweep, and should look different at a glance, not just behave
-// differently.
+// Same shape/size as renderAssignmentBadge (4px radius, 11px text,
+// matching padding) since this and the badge are really the same
+// element in two states - only the color changes, to blue rather than
+// the green used everywhere else for batch actions (the main button,
+// Quick Assign, tile clicks). A one-lead manual override is a
+// deliberately different kind of action from a batch sweep and should
+// read that way at a glance, without the shape itself changing.
 return `<select class="manual-assign-select" data-lead-key="${escapeHtml(leadKey)}" data-page-type="${pageType}"
-style="font-size: 11px; font-weight: 600; padding: 3px 8px; border: 1px solid #a9d3ef; border-radius: 12px; background: #eaf4fc; color: #2874a6; max-width: 140px; flex-shrink: 0; cursor: pointer;">
+style="font-size: 11px; font-weight: 600; padding: 2px 8px; border: 1px solid #a9d3ef; border-radius: 4px; background: #e8f4f8; color: #2874a6; max-width: 140px; flex-shrink: 0; cursor: pointer;">
 <option value="" selected disabled>Assign to…</option>
 ${options}
 </select>`;
@@ -852,7 +854,7 @@ function ensureWheelStyles() {
 if (document.getElementById('_slaWheelStyles')) return;
 const style = document.createElement('style');
 style.id = '_slaWheelStyles';
-style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #3498db; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef6fb !important; }';
+style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #3498db; outline-offset: -1px; } .stat-tile-clickable:hover { background: #e8f4f8 !important; }';
 document.head.appendChild(style);
 }
 
@@ -1216,7 +1218,7 @@ renderStatTile(`${m}m`, customerFirstDueCounts[i], customerFirstDueCounts[i] > 0
 return `
 <div id="slaDueSummary" style="padding: 10px 20px; background: #f8f9fa; border-bottom: 1px solid #ecf0f1; font-size: 12px; color: #2c3e50;">
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
-<div style="font-size: 10px; font-weight: 700; color: ${CUSTOMER_FIRST_ACCENT}; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Customer First</div>
+<div style="font-size: 11px; font-weight: 700; color: ${CUSTOMER_FIRST_ACCENT}; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Customer First</div>
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${cfTiles}</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span style="font-size: 11px; color: #95a5a6;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
@@ -1317,27 +1319,15 @@ if (!limit || limit <= 0) return prioritized;
 return prioritized.slice(0, limit);
 }
 
-function renderAssignSection() {
-const leads = getCachedAssignableLeads();
-const agents = getAgentRoster();
-
-const settings = loadAssignSettings();
-const excludedTiers = new Set(settings.excludedTiers || []);
-const excludedAgentIds = new Set(settings.excludedAgentIds || []);
-const initialWindowMinutes = settings.windowMinutes ? Number(settings.windowMinutes) : null;
-const tierCounts = computeSlaTierCounts(leads, initialWindowMinutes);
-const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).length;
-const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
-
-const tierCheckboxes = [1, 2, 3, 4].map(t => `
-<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
-<input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()"> Tier ${t} <span id="tier-count-${t}" style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
-</label>`).join('');
-
-const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
-
-const buttonDisabled = agents.length === 0;
-
+// Shared by renderAssignSection/renderPendingAssignSection - the two
+// pages' assign sections are identical from the header through the
+// results log (agents/limit/preview/button/results), only diverging in
+// the filters zone below it (tiers/special filters vs callback types)
+// and which run handler the button calls. Was duplicated near-verbatim
+// in both functions; factored out once both were stable rather than
+// during initial development, since the shared shape only became
+// obvious after both existed.
+function renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, runHandlerName, filtersZoneHtml) {
 return `
 <div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #ecf0f1;">
 <div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
@@ -1362,13 +1352,40 @@ return `
 ${renderAssignLimitControl(settings)}
 <span id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; text-align: right;"></span>
 </div>
-<button id="assignRunButton" onclick="window._runSlaAssignment()" ${buttonDisabled ? 'disabled' : ''}
+<button id="assignRunButton" onclick="window.${runHandlerName}()" ${buttonDisabled ? 'disabled' : ''}
 style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
 ${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
 </button>
 <div id="assignResultsSummary"></div>
 <div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: #7f8c8d; max-height: 100px; overflow-y: auto;"></div>
 <div style="background: #fafbfc; border-radius: 6px; padding: 12px; margin-top: 16px;">
+${filtersZoneHtml}
+</div>
+</div>
+</div>`;
+}
+
+function renderAssignSection() {
+const leads = getCachedAssignableLeads();
+const agents = getAgentRoster();
+
+const settings = loadAssignSettings();
+const excludedTiers = new Set(settings.excludedTiers || []);
+const excludedAgentIds = new Set(settings.excludedAgentIds || []);
+const initialWindowMinutes = settings.windowMinutes ? Number(settings.windowMinutes) : null;
+const tierCounts = computeSlaTierCounts(leads, initialWindowMinutes);
+const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).length;
+const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
+
+const tierCheckboxes = [1, 2, 3, 4].map(t => `
+<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
+<input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()"> Tier ${t} <span id="tier-count-${t}" style="color:#95a5a6;">(${tierCounts[t - 1]})</span>
+</label>`).join('');
+
+const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
+const buttonDisabled = agents.length === 0;
+
+const filtersZoneHtml = `
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; letter-spacing: 0.3px; margin-bottom: 6px;">TIERS</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${tierCheckboxes}</div>
@@ -1388,10 +1405,9 @@ ${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; letter-spacing: 0.3px; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
 <input id="assignWindowMinutes" type="hidden" value="${settings.windowMinutes || ''}">
 ${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
-</div>
-</div>
-</div>
 </div>`;
+
+return renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, '_runSlaAssignment', filtersZoneHtml);
 }
 
 // ===================================================================
@@ -1568,43 +1584,12 @@ const advancedCheckboxes = CALLBACK_TYPES_ADVANCED.map(type => `
 </label>`).join('');
 
 const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
-
 const buttonDisabled = agents.length === 0;
 const defaultCutoff = settings.cutoffTime || formatTimeForInput(defaultHourCutoff());
 const advancedOpenStyle = settings.advancedOpen ? 'display: flex;' : 'display: none;';
 const advancedToggleArrow = settings.advancedOpen ? '▼' : '▶';
 
-return `
-<div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #ecf0f1;">
-<div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
-<span style="font-weight: 700; color: #2c3e50; font-size: 14px;">⚡ Assign Leads</span>
-<span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">${settings.sectionOpen ? '▼' : '▶'}</span>
-</div>
-<div id="assignSectionBody" style="margin-top: 12px; display: ${settings.sectionOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
-<div style="margin-bottom: 10px;">
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-<span style="font-size: 11px; font-weight: 700; color: #7f8c8d; letter-spacing: 0.3px;">AGENTS ONLINE</span>
-<span style="display: flex; gap: 8px;">
-<span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #3498db; cursor: pointer;">All</span>
-<span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #3498db; cursor: pointer;">None</span>
-<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #3498db; cursor: pointer;">↻ Refresh</span>
-<span onclick="window._toggleAssignHistory()" style="font-size: 11px; color: #3498db; cursor: pointer;">📊 History</span>
-</span>
-</div>
-<div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
-<div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 11px; color: #2c3e50;"></div>
-</div>
-<div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px;">
-${renderAssignLimitControl(settings)}
-<span id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; text-align: right;"></span>
-</div>
-<button id="assignRunButton" onclick="window._runPendingAssignment()" ${buttonDisabled ? 'disabled' : ''}
-style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
-${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
-</button>
-<div id="assignResultsSummary"></div>
-<div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: #7f8c8d; max-height: 100px; overflow-y: auto;"></div>
-<div style="background: #fafbfc; border-radius: 6px; padding: 12px; margin-top: 16px;">
+const filtersZoneHtml = `
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #7f8c8d; letter-spacing: 0.3px; margin-bottom: 6px;">CALLBACK TYPE</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
@@ -1621,10 +1606,9 @@ ${renderWheelColumnHtml('assignCutoffHourWheel', HOUR_VALUES, 56)}
 <span style="font-weight: 700; color: #2c3e50;">:</span>
 ${renderWheelColumnHtml('assignCutoffMinuteWheel', MINUTE_VALUES, 56)}
 </div>
-</div>
-</div>
-</div>
 </div>`;
+
+return renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, '_runPendingAssignment', filtersZoneHtml);
 }
 
 function renderCallbackTypeSection(typeName, customers, color) {
@@ -2321,7 +2305,7 @@ if (result.ok) {
 wrapper.innerHTML = renderAssignmentBadge(true, agent.name);
 } else {
 wrapper.innerHTML = `<div style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px;">
-<span style="font-size: 10px; color: #e74c3c;">${escapeHtml(result.reason || 'Failed')}</span>
+<span style="font-size: 11px; color: #e74c3c;">${escapeHtml(result.reason || 'Failed')}</span>
 ${renderManualAssignPicker(leadKey, pageType)}
 </div>`;
 }
