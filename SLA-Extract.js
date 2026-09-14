@@ -285,8 +285,13 @@ function renderManualAssignPicker(leadKey, pageType) {
 const agents = getAgentRoster();
 if (agents.length === 0) return renderAssignmentBadge(false, null);
 const options = agents.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}</option>`).join('');
+// Blue rather than the green used everywhere else for batch actions
+// (the main button, Quick Assign, tile clicks) - a one-lead manual
+// override is a deliberately different kind of action from a batch
+// sweep, and should look different at a glance, not just behave
+// differently.
 return `<select class="manual-assign-select" data-lead-key="${escapeHtml(leadKey)}" data-page-type="${pageType}"
-style="font-size: 11px; padding: 3px 6px; border: 1px solid #ddd; border-radius: 4px; background: white; color: #2c3e50; max-width: 140px; flex-shrink: 0;">
+style="font-size: 11px; font-weight: 600; padding: 3px 8px; border: 1px solid #a9d3ef; border-radius: 12px; background: #eaf4fc; color: #2874a6; max-width: 140px; flex-shrink: 0; cursor: pointer;">
 <option value="" selected disabled>Assign to…</option>
 ${options}
 </select>`;
@@ -1152,13 +1157,11 @@ ${escapeHtml(a.name)}
 // leads a run actually touches, applied via applyAssignLimit() right
 // before roundRobinAssign() in every entry point. Blank means no cap.
 function renderAssignLimitControl(settings) {
-return `
-<div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px; color: #2c3e50;">
-<label for="assignLimitInput" style="color: #7f8c8d; font-weight: 700; font-size: 11px;">LIMIT</label>
+return `<label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #7f8c8d; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;">
+LIMIT
 <input type="number" id="assignLimitInput" min="1" placeholder="all" value="${settings.assignLimit || ''}" oninput="window._updateAssignPreview()"
-style="width: 56px; padding: 3px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px;">
-<span style="color: #95a5a6; font-size: 11px;">leads, most urgent first — blank = all</span>
-</div>`;
+style="width: 48px; padding: 3px 6px; border: 1px solid #ddd; border-radius: 4px; font-size: 12px; font-weight: 400; color: #2c3e50;">
+</label>`;
 }
 
 // `accent` can be a boolean (true -> the standard red urgency accent, for
@@ -1312,12 +1315,9 @@ return `
 <span id="assignSectionToggle" style="font-size: 14px; color: #2c3e50;">${settings.sectionOpen ? '▼' : '▶'}</span>
 </div>
 <div id="assignSectionBody" style="margin-top: 12px; display: ${settings.sectionOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
-<div style="font-size: 11px; color: #7f8c8d; background: #f8f9fa; border-radius: 4px; padding: 8px 10px; margin-bottom: 12px; line-height: 1.5;">
-Leads go out in order of <strong>when they're due</strong>, not by tier — filters below only narrow which leads are included.
-</div>
 <div style="margin-bottom: 10px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-<span style="font-size: 11px; font-weight: 700; color: #7f8c8d;">AGENTS ONLINE</span>
+<span style="font-size: 11px; font-weight: 700; color: #7f8c8d; letter-spacing: 0.3px;">AGENTS ONLINE</span>
 <span style="display: flex; gap: 8px;">
 <span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #3498db; cursor: pointer;">All</span>
 <span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #3498db; cursor: pointer;">None</span>
@@ -1328,20 +1328,23 @@ Leads go out in order of <strong>when they're due</strong>, not by tier — filt
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
 <div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 11px; color: #2c3e50;"></div>
 </div>
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px;">
 ${renderAssignLimitControl(settings)}
-<div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
+<span id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; text-align: right;"></span>
+</div>
 <button id="assignRunButton" onclick="window._runSlaAssignment()" ${buttonDisabled ? 'disabled' : ''}
 style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
 ${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
 </button>
 <div id="assignResultsSummary"></div>
 <div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: #7f8c8d; max-height: 100px; overflow-y: auto;"></div>
-<div style="margin: 16px 0 10px; border-top: 1px solid #ecf0f1; padding-top: 12px;">
-<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">TIERS</div>
+<div style="background: #fafbfc; border-radius: 6px; padding: 12px; margin-top: 16px;">
+<div style="margin-bottom: 10px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; letter-spacing: 0.3px; margin-bottom: 6px;">TIERS</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${tierCheckboxes}</div>
 </div>
 <div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">SPECIAL FILTERS</div>
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; letter-spacing: 0.3px; margin-bottom: 6px;">SPECIAL FILTERS</div>
 <div style="display: flex; flex-direction: column; gap: 6px;">
 <label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #2c3e50;">
 <input type="checkbox" id="assignCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateAssignPreview()"> Customer First only <span style="color:#95a5a6;">(${customerFirstCount})</span>
@@ -1350,12 +1353,12 @@ ${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
 <input type="checkbox" id="assignEmailOnly" ${settings.emailOnly ? 'checked' : ''} onchange="window._updateAssignPreview()"> Email only (no phone) <span style="color:#95a5a6;">(${emailOnlyCount})</span>
 </label>
 </div>
-<div style="font-size: 10px; color: #95a5a6; margin-top: 4px;">Based on the last scan — click the badge first if these counts look stale.</div>
 </div>
-<div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
+<div>
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; letter-spacing: 0.3px; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
 <input id="assignWindowMinutes" type="hidden" value="${settings.windowMinutes || ''}">
 ${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
+</div>
 </div>
 </div>
 </div>`;
@@ -1550,7 +1553,7 @@ return `
 <div id="assignSectionBody" style="margin-top: 12px; display: ${settings.sectionOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="margin-bottom: 10px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-<span style="font-size: 11px; font-weight: 700; color: #7f8c8d;">AGENTS ONLINE</span>
+<span style="font-size: 11px; font-weight: 700; color: #7f8c8d; letter-spacing: 0.3px;">AGENTS ONLINE</span>
 <span style="display: flex; gap: 8px;">
 <span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #3498db; cursor: pointer;">All</span>
 <span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #3498db; cursor: pointer;">None</span>
@@ -1561,29 +1564,33 @@ return `
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
 <div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 11px; color: #2c3e50;"></div>
 </div>
+<div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px;">
 ${renderAssignLimitControl(settings)}
-<div id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; margin-bottom: 8px;"></div>
+<span id="assignMatchPreview" style="font-size: 11px; color: #7f8c8d; text-align: right;"></span>
+</div>
 <button id="assignRunButton" onclick="window._runPendingAssignment()" ${buttonDisabled ? 'disabled' : ''}
 style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#bdc3c7' : '#27ae60'}; color: white; border: none; border-radius: 6px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
 ${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
 </button>
 <div id="assignResultsSummary"></div>
 <div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: #7f8c8d; max-height: 100px; overflow-y: auto;"></div>
-<div style="margin: 16px 0 10px; border-top: 1px solid #ecf0f1; padding-top: 12px;">
-<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">CALLBACK TYPE</div>
+<div style="background: #fafbfc; border-radius: 6px; padding: 12px; margin-top: 16px;">
+<div style="margin-bottom: 10px;">
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; letter-spacing: 0.3px; margin-bottom: 6px;">CALLBACK TYPE</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
 <div onclick="window._toggleAdvancedCallbackTypes()" style="margin-top: 6px; font-size: 11px; color: #3498db; cursor: pointer;">
 <span id="advancedCallbackToggle">${advancedToggleArrow}</span> Advanced (Manual Rescheduled, Post Closure)
 </div>
 <div id="advancedCallbackTypes" style="${advancedOpenStyle} gap: 10px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
 </div>
-<div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; margin-bottom: 6px;">DUE BEFORE <span style="font-weight: 400; color: #95a5a6;">(defaults to the top of the next hour)</span></div>
+<div>
+<div style="font-size: 11px; font-weight: 700; color: #7f8c8d; letter-spacing: 0.3px; margin-bottom: 6px;">DUE BEFORE</div>
 <input id="assignCutoffTime" type="hidden" value="${defaultCutoff}">
 <div style="display: flex; align-items: center; gap: 6px;">
 ${renderWheelColumnHtml('assignCutoffHourWheel', HOUR_VALUES, 56)}
 <span style="font-weight: 700; color: #2c3e50;">:</span>
 ${renderWheelColumnHtml('assignCutoffMinuteWheel', MINUTE_VALUES, 56)}
+</div>
 </div>
 </div>
 </div>
