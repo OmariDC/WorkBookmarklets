@@ -1749,6 +1749,10 @@ ${summaryHtml || ''}
 ${assignSectionHtml}
 
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
+<div style="position: sticky; top: 0; z-index: 2; background: #f8f9fa; padding-bottom: 10px; margin-bottom: 10px;">
+<input type="text" id="customerSearchInput" placeholder="Search by name…" oninput="window._filterCustomerSearch(this.value)"
+style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 13px; color: #2c3e50; background: white;">
+</div>
 ${bodyHtml}
 </div>
 
@@ -2321,6 +2325,31 @@ wrapper.innerHTML = `<div style="display: flex; flex-direction: column; align-it
 ${renderManualAssignPicker(leadKey, pageType)}
 </div>`;
 }
+};
+
+// Filters the visible customer cards by name and auto-expands whichever
+// sections contain a match, without touching the persisted collapse
+// state (setSectionCollapsed) - this is a temporary view, and clearing
+// the search reverts every section to exactly whatever you'd manually
+// left it as, not to "open."
+window._filterCustomerSearch = function(query) {
+const q = query.trim().toLowerCase();
+document.querySelectorAll('.customer-card').forEach((card) => {
+const match = !q || (card.dataset.customerName || '').includes(q);
+card.style.display = match ? '' : 'none';
+});
+document.querySelectorAll('.collapsible-section').forEach((section) => {
+const toggle = document.getElementById('toggle-' + section.id);
+if (!q) {
+const collapsed = isSectionCollapsed(section.id);
+section.style.display = collapsed ? 'none' : 'grid';
+if (toggle) toggle.textContent = collapsed ? '▶' : '▼';
+return;
+}
+const hasMatch = Array.from(section.querySelectorAll('.customer-card')).some(c => c.style.display !== 'none');
+section.style.display = hasMatch ? 'grid' : 'none';
+if (toggle) toggle.textContent = hasMatch ? '▼' : '▶';
+});
 };
 
 window._setAllAgentCheckboxes = function(checked) {
