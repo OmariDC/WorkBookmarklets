@@ -1244,6 +1244,36 @@ function saveAssignSettings(partial) {
 localStorage.setItem(ASSIGN_SETTINGS_KEY, JSON.stringify({ ...loadAssignSettings(), ...partial }));
 }
 
+// Tier/callback-type section open-closed state used to live only in the
+// DOM (a plain style.display toggle), which meant it reset to fully-open
+// on every panel rebuild - collapsing sections you don't care about, to
+// cut how far you have to scroll to reach the ones you do, had to be
+// redone after every single scan/refresh. Persisted the same way as the
+// rest of the assign settings so it survives.
+const COLLAPSED_SECTIONS_KEY = '_slaCollapsedSections';
+
+function loadCollapsedSections() {
+try {
+return new Set(JSON.parse(localStorage.getItem(COLLAPSED_SECTIONS_KEY)) || []);
+} catch (error) {
+return new Set();
+}
+}
+
+function isSectionCollapsed(sectionId) {
+return loadCollapsedSections().has(sectionId);
+}
+
+function setSectionCollapsed(sectionId, collapsed) {
+const set = loadCollapsedSections();
+if (collapsed) set.add(sectionId); else set.delete(sectionId);
+try {
+localStorage.setItem(COLLAPSED_SECTIONS_KEY, JSON.stringify(Array.from(set)));
+} catch (error) {
+// ignore
+}
+}
+
 // Reads the currently-mounted assign section's DOM and saves whatever
 // it finds - called from onchange handlers and wheel settle callbacks,
 // so it only needs to know how to read the page, not track state itself.
@@ -1608,6 +1638,7 @@ border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
 </div>`;
 }
 
+const collapsed = isSectionCollapsed(sectionId);
 return `<div style="margin-bottom: 20px;">
 <div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 14px; background: white; border-radius: 8px 8px 0 0;
 display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
@@ -1616,10 +1647,10 @@ border-bottom: 2px solid #ecf0f1;">
 <span style="font-weight: 700; color: #2c3e50; font-size: 14px;">${escapeHtml(typeName)}</span>
 <span style="font-size: 12px; color: #95a5a6; margin-left: 10px;">${customers.length}</span>
 </div>
-<span id="toggle-${sectionId}" style="font-size: 14px; color: ${color};">▼</span>
+<span id="toggle-${sectionId}" style="font-size: 14px; color: ${color};">${collapsed ? '▶' : '▼'}</span>
 </div>
-<div id="${sectionId}" style="display: grid; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
-${customers.map(c => `<div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
+<div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
+${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50; font-weight: 700; font-size: 14px;">${escapeHtml(c.name)}</span>
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
@@ -1834,6 +1865,7 @@ border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
 </div>`;
 }
 
+const collapsed = isSectionCollapsed(tierId);
 return `<div style="margin-bottom: 20px;">
 <div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 14px; background: white; border-radius: 8px 8px 0 0;
 display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
@@ -1842,10 +1874,10 @@ border-bottom: 2px solid #ecf0f1;">
 <span style="font-weight: 700; color: #2c3e50; font-size: 14px;">${tierName}</span>
 <span style="font-size: 12px; color: #95a5a6; margin-left: 10px;">${customers.length}</span>
 </div>
-<span id="toggle-${tierId}" style="font-size: 14px; color: ${color};">▼</span>
+<span id="toggle-${tierId}" style="font-size: 14px; color: ${color};">${collapsed ? '▶' : '▼'}</span>
 </div>
-<div id="${tierId}" style="display: grid; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
-${customers.map(c => `<div style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
+<div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
+${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e0e0e0; border-radius: 6px; padding: 12px; background: #fafbfc;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #ecf0f1; color: #2c3e50; font-weight: 700; font-size: 14px;">${escapeHtml(c.name)}</span>
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
@@ -2105,6 +2137,7 @@ if (tierContent && toggle) {
 const isHidden = tierContent.style.display === 'none';
 tierContent.style.display = isHidden ? 'grid' : 'none';
 toggle.textContent = isHidden ? '▼' : '▶';
+setSectionCollapsed(tierId, !isHidden);
 }
 };
 
@@ -2115,6 +2148,7 @@ if (content && toggle) {
 const isHidden = content.style.display === 'none';
 content.style.display = isHidden ? 'grid' : 'none';
 toggle.textContent = isHidden ? '▼' : '▶';
+setSectionCollapsed(sectionId, !isHidden);
 }
 };
 
