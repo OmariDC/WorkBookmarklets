@@ -804,7 +804,7 @@ const text = failed === 0
 const retryLink = failed > 0
 ? ` <span onclick="window._retryFailedAssignments()" style="text-decoration: underline; cursor: pointer;">Retry Failed</span>`
 : '';
-el.innerHTML = `<div style="margin-top: 8px; padding: 8px 10px; border-radius: 4px; background: ${color}20; color: ${color}; font-size: 12px; font-weight: 700; text-align: center;">${text}${retryLink}</div>`;
+el.innerHTML = `<div style="margin-top: 8px; padding: 8px 10px; border-radius: 4px; background: ${color}20; color: ${color}; font-size: 13px; font-weight: 700; text-align: center;">${text}${retryLink}</div>`;
 }
 
 // Retrying re-runs only the leads that actually failed, keeping each one
@@ -1171,10 +1171,10 @@ return '#94a3b8';
 
 function renderAgentCheckboxes(agents, excludedAgentIds) {
 if (agents.length === 0) {
-return `<div style="font-size: 12px; color: #94a3b8;">No agents online</div>`;
+return `<div style="font-size: 13px; color: #94a3b8;">No agents online</div>`;
 }
 return agents.map(a => `
-<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;" ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
+<label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #1e293b;" ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
 <input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()">
 <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${statusDotColor(a.status)}; flex-shrink: 0;"></span>
 ${escapeHtml(a.name)}
@@ -1188,7 +1188,7 @@ function renderAssignLimitControl(settings) {
 return `<label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;">
 LIMIT
 <input type="number" id="assignLimitInput" min="1" placeholder="all" value="${settings.assignLimit || ''}" oninput="window._updateAssignPreview()"
-style="width: 48px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px; font-weight: 400; color: #1e293b;">
+style="width: 48px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; font-weight: 400; color: #1e293b;">
 </label>`;
 }
 
@@ -1242,7 +1242,7 @@ renderStatTile(`${m}m`, customerFirstDueCounts[i], customerFirstDueCounts[i] > 0
 ).join('');
 
 return `
-<div id="slaDueSummary" style="padding: 10px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-size: 12px; color: #1e293b;">
+<div id="slaDueSummary" style="padding: 10px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-size: 13px; color: #1e293b;">
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
 <div style="font-size: 11px; font-weight: 700; color: ${CUSTOMER_FIRST_ACCENT}; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Customer First</div>
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${cfTiles}</div>
@@ -1357,8 +1357,8 @@ function renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, run
 return `
 <div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #e2e8f0;">
 <div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
-<span style="font-weight: 700; color: #1e293b; font-size: 14px;">⚡ Assign Leads</span>
-<span id="assignSectionToggle" style="font-size: 14px; color: #1e293b;">${settings.sectionOpen ? '▼' : '▶'}</span>
+<span style="font-weight: 700; color: #1e293b; font-size: 15px;">⚡ Assign Leads</span>
+<span id="assignSectionToggle" style="font-size: 15px; color: #1e293b;">${settings.sectionOpen ? '▼' : '▶'}</span>
 </div>
 <div id="assignSectionBody" style="margin-top: 12px; display: ${settings.sectionOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="margin-bottom: 10px;">
@@ -1404,7 +1404,7 @@ const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).l
 const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
 
 const tierCheckboxes = [1, 2, 3, 4].map(t => `
-<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #1e293b;">
+<label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: #1e293b;">
 <input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()"> Tier ${t} <span id="tier-count-${t}" style="color:#94a3b8;">(${tierCounts[t - 1]})</span>
 </label>`).join('');
 
@@ -1419,10 +1419,10 @@ const filtersZoneHtml = `
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">SPECIAL FILTERS</div>
 <div style="display: flex; flex-direction: column; gap: 6px;">
-<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #1e293b;">
+<label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: #1e293b;">
 <input type="checkbox" id="assignCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateAssignPreview()"> Customer First only <span style="color:#94a3b8;">(${customerFirstCount})</span>
 </label>
-<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #1e293b;">
+<label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: #1e293b;">
 <input type="checkbox" id="assignEmailOnly" ${settings.emailOnly ? 'checked' : ''} onchange="window._updateAssignPreview()"> Email only (no phone) <span style="color:#94a3b8;">(${emailOnlyCount})</span>
 </label>
 </div>
@@ -1577,7 +1577,7 @@ renderStatTile('Next hour', dueNextHour, false, `window._quickAssignPendingTile(
 ].join('');
 
 return `
-<div id="pendingDueSummary" style="padding: 10px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-size: 12px; color: #1e293b;">
+<div id="pendingDueSummary" style="padding: 10px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-size: 13px; color: #1e293b;">
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
 <div style="font-size: 11px; color: #64748b; margin-bottom: 6px;">${callbackLine}</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
@@ -1600,12 +1600,12 @@ const callbackCounts = computePendingCallbackCounts(leads, initialCutoffDate);
 const countFor = (type) => callbackCounts[type] || 0;
 
 const primaryCheckboxes = CALLBACK_TYPES_PRIMARY.map(type => `
-<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #1e293b;">
+<label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: #1e293b;">
 <input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${excludedCallbackTypes.has(type) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="color:#94a3b8;">(${countFor(type)})</span>
 </label>`).join('');
 
 const advancedCheckboxes = CALLBACK_TYPES_ADVANCED.map(type => `
-<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #1e293b;">
+<label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: #1e293b;">
 <input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${includedAdvancedCallbackTypes.has(type) ? 'checked' : ''} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="color:#94a3b8;">(${countFor(type)})</span>
 </label>`).join('');
 
@@ -1643,7 +1643,7 @@ const sectionId = 'cb-' + slugify(typeName);
 if (customers.length === 0) {
 return `<div style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 8px;
 border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
-<h3 style="margin: 0; color: ${color}; font-size: 14px; font-weight: 600;">${escapeHtml(typeName)}</h3>
+<h3 style="margin: 0; color: ${color}; font-size: 15px; font-weight: 600;">${escapeHtml(typeName)}</h3>
 <p style="margin: 8px 0 0 0; color: #94a3b8; font-size: 13px;">No customers</p>
 </div>`;
 }
@@ -1654,15 +1654,15 @@ return `<div style="margin-bottom: 20px;">
 display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
 border-bottom: 2px solid #e2e8f0;">
 <div>
-<span style="font-weight: 700; color: #1e293b; font-size: 14px;">${escapeHtml(typeName)}</span>
-<span style="font-size: 12px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
+<span style="font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(typeName)}</span>
+<span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
 </div>
-<span id="toggle-${sectionId}" style="font-size: 14px; color: ${color};">${collapsed ? '▶' : '▼'}</span>
+<span id="toggle-${sectionId}" style="font-size: 15px; color: ${color};">${collapsed ? '▶' : '▼'}</span>
 </div>
 <div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
 ${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f1f5f9;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #1e293b; font-weight: 700; font-size: 14px;">${escapeHtml(c.name)}</span>
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #1e293b; font-weight: 700; font-size: 15px;">${escapeHtml(c.name)}</span>
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
 </div>
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
@@ -1685,7 +1685,7 @@ ${renderCopyableField(c.landline)}
 <span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
 </div>
 </div>
-<div style="padding-top: 10px; border-top: 1px solid #e2e8f0; display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
+<div style="padding-top: 10px; border-top: 1px solid #e2e8f0; display: flex; gap: 6px; flex-wrap: wrap; font-size: 13px;">
 <span style="background: #e2e8f0; color: #1e293b; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.brand || '')}</span>
 <span style="background: #d1fae5; color: #059669; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.campaign || '')}</span>
 </div>
@@ -1737,10 +1737,10 @@ display: flex; flex-direction: column; transition: transform 0.3s ease;">
 display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #059669;
 flex-shrink: 0;">
 <div style="display: flex; align-items: center; gap: 12px;">
-<h2 style="margin: 0; font-size: 18px; font-weight: 700;">${title}</h2>
+<h2 style="margin: 0; font-size: 20px; font-weight: 700;">${title}</h2>
 <span style="background: #059669; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">${count}</span>
-${newCount > 0 ? `<span style="background: #d97706; color: white; padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;">+${newCount}</span>` : ''}
-${removedCount > 0 ? `<span style="background: #64748b; color: white; padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;">−${removedCount}</span>` : ''}
+${newCount > 0 ? `<span style="background: #d97706; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">+${newCount}</span>` : ''}
+${removedCount > 0 ? `<span style="background: #64748b; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
 </div>
 <div style="display: flex; gap: 8px;">
 <button onclick="window._togglePanelSize();"
@@ -1822,7 +1822,7 @@ const bodyHtml = customers.length === 0 ? `
 <div style="padding: 40px 20px; text-align: center;">
 <div style="font-size: 56px; margin-bottom: 16px;">📭</div>
 <h3 style="color: #1e293b; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Leads in Queue</h3>
-<p style="color: #64748b; margin: 0; font-size: 14px; line-height: 1.6;">The SLA queue is empty. Check back when new leads arrive.</p>
+<p style="color: #64748b; margin: 0; font-size: 15px; line-height: 1.6;">The SLA queue is empty. Check back when new leads arrive.</p>
 </div>
 ` : `
 ${renderTierSection('Tier 1 - Priority', tiered.tier1, '#dc2626', 'tier1')}
@@ -1856,7 +1856,7 @@ const bodyHtml = customers.length === 0 ? `
 <div style="padding: 40px 20px; text-align: center;">
 <div style="font-size: 56px; margin-bottom: 16px;">📭</div>
 <h3 style="color: #1e293b; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Pending Customers</h3>
-<p style="color: #64748b; margin: 0; font-size: 14px; line-height: 1.6;">Nothing in the queue right now.</p>
+<p style="color: #64748b; margin: 0; font-size: 15px; line-height: 1.6;">Nothing in the queue right now.</p>
 </div>
 ` : grouped.map(g => renderCallbackTypeSection(g.type, g.customers, g.color)).join('');
 
@@ -1874,7 +1874,7 @@ function renderTierSection(tierName, customers, color, tierId) {
 if (customers.length === 0) {
 return `<div style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 8px;
 border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
-<h3 style="margin: 0; color: ${color}; font-size: 14px; font-weight: 600;">${tierName}</h3>
+<h3 style="margin: 0; color: ${color}; font-size: 15px; font-weight: 600;">${tierName}</h3>
 <p style="margin: 8px 0 0 0; color: #94a3b8; font-size: 13px;">No customers</p>
 </div>`;
 }
@@ -1885,15 +1885,15 @@ return `<div style="margin-bottom: 20px;">
 display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
 border-bottom: 2px solid #e2e8f0;">
 <div>
-<span style="font-weight: 700; color: #1e293b; font-size: 14px;">${tierName}</span>
-<span style="font-size: 12px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
+<span style="font-weight: 700; color: #1e293b; font-size: 15px;">${tierName}</span>
+<span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
 </div>
-<span id="toggle-${tierId}" style="font-size: 14px; color: ${color};">${collapsed ? '▶' : '▼'}</span>
+<span id="toggle-${tierId}" style="font-size: 15px; color: ${color};">${collapsed ? '▶' : '▼'}</span>
 </div>
 <div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
 ${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f1f5f9;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #1e293b; font-weight: 700; font-size: 14px;">${escapeHtml(c.name)}</span>
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #1e293b; font-weight: 700; font-size: 15px;">${escapeHtml(c.name)}</span>
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
 </div>
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
@@ -1906,7 +1906,7 @@ ${renderCopyableField(c.phone)}
 ${renderCopyableField(c.email)}
 </div>
 </div>
-<div style="padding-top: 10px; border-top: 1px solid #e2e8f0; display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
+<div style="padding-top: 10px; border-top: 1px solid #e2e8f0; display: flex; gap: 6px; flex-wrap: wrap; font-size: 13px;">
 <span style="background: #e2e8f0; color: #1e293b; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.source)}</span>
 <span style="background: #d1fae5; color: #059669; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.campaign)}</span>
 </div>
