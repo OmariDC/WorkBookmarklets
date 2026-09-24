@@ -512,47 +512,51 @@ return true;
 return counts;
 }
 
-// Always starting the cycle at agents[0] meant whoever happened to be
-// first in the roster quietly got an extra lead on every single run - a
-// shift with many small runs (manual clicks, repeated Quick Assigns)
-// would compound that into a real skew that's easy to miss since nobody
-// watches the tally after every run. Persisting which agent got the
-// LAST lead of the previous run, and resuming the cycle from the next
-// one after them, makes the fairness promise hold across a whole shift
-// instead of resetting every time. If that agent isn't in the current
-// roster (they've gone offline since), it just falls back to starting
-// at 0 for this run - a reasonable one-off, not a lasting skew.
-const ROUND_ROBIN_CURSOR_KEY = '_slaRoundRobinCursor';
-
-function loadRoundRobinCursor() {
-try {
-return localStorage.getItem(ROUND_ROBIN_CURSOR_KEY) || null;
-} catch (error) {
-return null;
+// Assignment is randomized but still even: leads are dealt in rounds of
+// one lead per agent, with the agent order reshuffled every round, so
+// nobody is systematically first in line (a fixed roster order - or a
+// cursor that just continues it - meant whoever sorts first, e.g. Adam,
+// kept getting the extra lead and the most urgent one, while agents at
+// the end of the list consistently ended up with less over time). Any
+// leftover leads that don't fill a whole round go to the agents with the
+// FEWEST assignments today (from the activity log), ties broken at
+// random, so extras even out across a shift instead of by luck alone.
+function shuffle(items) {
+const a = items.slice();
+for (let i = a.length - 1; i > 0; i--) {
+const j = Math.floor(Math.random() * (i + 1));
+[a[i], a[j]] = [a[j], a[i]];
 }
+return a;
 }
 
-function saveRoundRobinCursor(agentId) {
+function todaysAssignmentCounts() {
+const counts = {};
 try {
-localStorage.setItem(ROUND_ROBIN_CURSOR_KEY, agentId);
+const today = new Date().toDateString();
+JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]').forEach((e) => {
+if (new Date(e.time).toDateString() === today) counts[e.agent] = (counts[e.agent] || 0) + 1;
+});
 } catch (error) {
-// ignore
+// no history -> everyone counts as zero, i.e. pure random extras
 }
+return counts;
 }
 
 function roundRobinAssign(leads, agents) {
 if (leads.length === 0 || agents.length === 0) return [];
-const lastAgentId = loadRoundRobinCursor();
-let startIndex = 0;
-if (lastAgentId) {
-const lastIndex = agents.findIndex(a => a.id === lastAgentId);
-if (lastIndex !== -1) startIndex = (lastIndex + 1) % agents.length;
-}
 const plan = [];
-for (let i = 0; i < leads.length; i++) {
-plan.push({ lead: leads[i], agent: agents[(startIndex + i) % agents.length] });
+let i = 0;
+while (leads.length - i >= agents.length) {
+shuffle(agents).forEach((agent) => plan.push({ lead: leads[i++], agent }));
 }
-saveRoundRobinCursor(plan[plan.length - 1].agent.id);
+if (i < leads.length) {
+const counts = todaysAssignmentCounts();
+const extras = shuffle(agents)
+.sort((a, b) => (counts[a.name] || 0) - (counts[b.name] || 0))
+.slice(0, leads.length - i);
+shuffle(extras).forEach((agent) => plan.push({ lead: leads[i++], agent }));
+}
 return plan;
 }
 
