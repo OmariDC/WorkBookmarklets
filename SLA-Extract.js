@@ -8,6 +8,47 @@ const PANEL_STATE_KEY = '_slaPanelState';
 const PANEL_SIZE_KEY = '_slaPanelSize';
 const ASSIGN_SETTINGS_KEY = '_slaAssignSettings';
 
+// ===================================================================
+// ICONS
+//
+// Small inline-SVG line icons (Lucide/Feather-style: 24x24 viewBox,
+// stroke-based, currentColor) replacing the emoji this panel used
+// everywhere - emoji render inconsistently across OS/browser and read
+// as dated next to the rest of the redesign. currentColor means each
+// icon just inherits whatever color/text the element around it already
+// has, no separate color plumbing needed per call site. A couple
+// (bolt, the History bar chart) are filled shapes instead of strokes,
+// set via their own fill/stroke attributes which override the parent
+// SVG's defaults.
+// ===================================================================
+
+const ICONS = {
+refresh: '<path d="M21 12a9 9 0 1 1-3.2-6.9"/><path d="M21 3v6h-6"/>',
+history: '<path d="M3 3v18h18" fill="none"/><rect x="7" y="13" width="3" height="5" fill="currentColor" stroke="none"/><rect x="12" y="9" width="3" height="9" fill="currentColor" stroke="none"/><rect x="17" y="5" width="3" height="13" fill="currentColor" stroke="none"/>',
+bolt: '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" fill="currentColor" stroke="none"/>',
+inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+clipboard: '<rect x="5" y="3" width="14" height="18" rx="2"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="12" y2="16"/>',
+warning: '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>',
+expand: '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>',
+shrink: '<path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/>',
+minimize: '<line x1="5" y1="12" x2="19" y2="12"/>',
+restore: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
+arrowUp: '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',
+chevron: '<polyline points="6 9 12 15 18 9"/>'
+};
+
+function svgIcon(name, size, extraStyle) {
+return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;${extraStyle || ''}">${ICONS[name]}</svg>`;
+}
+
+// Rotates rather than swaps between two glyphs (the old ▼/▶ text-content
+// toggle) - one icon, animated, is the more modern pattern, and the
+// toggle handlers only need to flip a transform instead of picking
+// between two strings.
+function chevronIcon(collapsed, id) {
+return `<svg id="${id}" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; transition: transform 0.15s ease; transform: rotate(${collapsed ? -90 : 0}deg);">${ICONS.chevron}</svg>`;
+}
+
 // SLA table columns: Customer, Registration, Source, Campaign, Created,
 // Received, SLA Date, Status, Assign. td-only queries mean the bare
 // <tr><th>...</th></tr> header row (no real <thead> on this page) is
@@ -1248,7 +1289,7 @@ return `
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${cfTiles}</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span style="font-size: 11px; color: #94a3b8;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
-<button onclick="window._quickAssign()" style="background: #059669; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0;">⚡ Quick Assign</button>
+<button onclick="window._quickAssign()" style="background: #059669; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('bolt', 11)} Quick Assign</button>
 </div>
 </div>`;
 }
@@ -1357,8 +1398,8 @@ function renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, run
 return `
 <div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #e2e8f0;">
 <div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
-<span style="font-weight: 700; color: #1e293b; font-size: 15px;">⚡ Assign Leads</span>
-<span id="assignSectionToggle" style="font-size: 15px; color: #1e293b;">${settings.sectionOpen ? '▼' : '▶'}</span>
+<span style="font-weight: 700; color: #1e293b; font-size: 15px; display: inline-flex; align-items: center; gap: 6px;">${svgIcon('bolt', 14)} Assign Leads</span>
+<span style="color: #1e293b;">${chevronIcon(!settings.sectionOpen, 'assignSectionToggle')}</span>
 </div>
 <div id="assignSectionBody" style="margin-top: 12px; display: ${settings.sectionOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="margin-bottom: 10px;">
@@ -1367,8 +1408,8 @@ return `
 <span style="display: flex; gap: 8px;">
 <span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #4f46e5; cursor: pointer;">All</span>
 <span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #4f46e5; cursor: pointer;">None</span>
-<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #4f46e5; cursor: pointer;">↻ Refresh</span>
-<span onclick="window._toggleAssignHistory()" style="font-size: 11px; color: #4f46e5; cursor: pointer;">📊 History</span>
+<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('refresh', 11)} Refresh</span>
+<span onclick="window._toggleAssignHistory()" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('history', 11)} History</span>
 </span>
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
@@ -1582,7 +1623,7 @@ return `
 <div style="font-size: 11px; color: #64748b; margin-bottom: 6px;">${callbackLine}</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span style="font-size: 11px; color: #94a3b8;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
-<button onclick="window._quickAssign()" style="background: #059669; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0;">⚡ Quick Assign</button>
+<button onclick="window._quickAssign()" style="background: #059669; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('bolt', 11)} Quick Assign</button>
 </div>
 </div>`;
 }
@@ -1613,14 +1654,13 @@ const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
 const buttonDisabled = agents.length === 0;
 const defaultCutoff = settings.cutoffTime || formatTimeForInput(defaultHourCutoff());
 const advancedOpenStyle = settings.advancedOpen ? 'display: flex;' : 'display: none;';
-const advancedToggleArrow = settings.advancedOpen ? '▼' : '▶';
 
 const filtersZoneHtml = `
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">CALLBACK TYPE</div>
 <div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
 <div onclick="window._toggleAdvancedCallbackTypes()" style="margin-top: 6px; font-size: 11px; color: #4f46e5; cursor: pointer;">
-<span id="advancedCallbackToggle">${advancedToggleArrow}</span> Advanced (Manual Rescheduled, Post Closure)
+${chevronIcon(!settings.advancedOpen, 'advancedCallbackToggle')} Advanced (Manual Rescheduled, Post Closure)
 </div>
 <div id="advancedCallbackTypes" style="${advancedOpenStyle} gap: 10px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
 </div>
@@ -1657,7 +1697,7 @@ border-bottom: 2px solid #e2e8f0;">
 <span style="font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(typeName)}</span>
 <span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
 </div>
-<span id="toggle-${sectionId}" style="font-size: 15px; color: ${color};">${collapsed ? '▶' : '▼'}</span>
+<span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + sectionId)}</span>
 </div>
 <div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(15,23,42,0.08);">
 ${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f1f5f9;">
@@ -1744,14 +1784,14 @@ ${removedCount > 0 ? `<span style="background: #64748b; color: white; padding: 4
 </div>
 <div style="display: flex; gap: 8px;">
 <button onclick="window._togglePanelSize();"
-style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
-title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${isFull ? '⤡' : '⤢'}</button>
+style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; border-radius: 4px; transition: all 0.2s; display: flex; align-items: center;"
+title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${svgIcon(isFull ? 'shrink' : 'expand', 14)}</button>
 <button onclick="document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0;"
-style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
-title="Top">↑</button>
-<button onclick="(function() { const panel = document.getElementById('${PANEL_BOX_ID}'); if (!panel) return; const btn = event.target; const isHidden = panel.style.transform === 'translateX(150%)'; panel.style.transform = isHidden ? '' : 'translateX(150%)'; btn.textContent = isHidden ? '−' : '□'; localStorage.setItem('${PANEL_STATE_KEY}', isHidden ? 'visible' : 'hidden'); })();"
-style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
-title="Minimize">−</button>
+style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; border-radius: 4px; transition: all 0.2s; display: flex; align-items: center;"
+title="Top">${svgIcon('arrowUp', 14)}</button>
+<button id="_slaMinimizeBtn" onclick="window._toggleMinimizePanel();"
+style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; border-radius: 4px; transition: all 0.2s; display: flex; align-items: center;"
+title="Minimize">${svgIcon('minimize', 14)}</button>
 </div>
 </div>
 
@@ -1820,7 +1860,7 @@ tier4: customers.filter(c => c.tier === 4)
 
 const bodyHtml = customers.length === 0 ? `
 <div style="padding: 40px 20px; text-align: center;">
-<div style="font-size: 56px; margin-bottom: 16px;">📭</div>
+<div style="color: #cbd5e1; margin-bottom: 16px;">${svgIcon('inbox', 48, ' stroke-width: 1.5;')}</div>
 <h3 style="color: #1e293b; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Leads in Queue</h3>
 <p style="color: #64748b; margin: 0; font-size: 15px; line-height: 1.6;">The SLA queue is empty. Check back when new leads arrive.</p>
 </div>
@@ -1854,7 +1894,7 @@ customers: customers.filter(c => c.callbackType === type)
 
 const bodyHtml = customers.length === 0 ? `
 <div style="padding: 40px 20px; text-align: center;">
-<div style="font-size: 56px; margin-bottom: 16px;">📭</div>
+<div style="color: #cbd5e1; margin-bottom: 16px;">${svgIcon('inbox', 48, ' stroke-width: 1.5;')}</div>
 <h3 style="color: #1e293b; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Pending Customers</h3>
 <p style="color: #64748b; margin: 0; font-size: 15px; line-height: 1.6;">Nothing in the queue right now.</p>
 </div>
@@ -1888,7 +1928,7 @@ border-bottom: 2px solid #e2e8f0;">
 <span style="font-weight: 700; color: #1e293b; font-size: 15px;">${tierName}</span>
 <span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
 </div>
-<span id="toggle-${tierId}" style="font-size: 15px; color: ${color};">${collapsed ? '▶' : '▼'}</span>
+<span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + tierId)}</span>
 </div>
 <div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(15,23,42,0.08);">
 ${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f1f5f9;">
@@ -2048,9 +2088,9 @@ extractAndExportPending();
 } else {
 console.error('SLA Manager: unrecognized page - expected the SLA queue or Pending Customers queue.');
 if (badge) {
-const original = badge.textContent;
-badge.textContent = '❓';
-setTimeout(() => { badge.textContent = original; }, 1500);
+const original = badge.innerHTML;
+badge.innerHTML = svgIcon('warning', 22);
+setTimeout(() => { badge.innerHTML = original; }, 1500);
 }
 }
 }
@@ -2061,7 +2101,7 @@ if (remaining > 0) {
 badge.textContent = String(remaining);
 badge.style.fontSize = '18px';
 } else {
-badge.textContent = '📋';
+badge.innerHTML = svgIcon('clipboard', 22);
 badge.style.fontSize = '22px';
 }
 }
@@ -2102,7 +2142,7 @@ boxShadow: '0 4px 12px rgba(39, 174, 96, 0.3)', zIndex: 99999, cursor: 'pointer'
 display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px',
 fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
-badge.textContent = '📋';
+badge.innerHTML = svgIcon('clipboard', 22);
 badge.title = 'Extract leads (SLA queue or Pending Customers)';
 attachBadgeHoverEffects();
 return;
@@ -2125,7 +2165,7 @@ boxShadow: '0 4px 12px rgba(39, 174, 96, 0.3)', cursor: 'pointer',
 display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px',
 fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
-badge.textContent = '📋';
+badge.innerHTML = svgIcon('clipboard', 22);
 badge.title = 'Extract leads (SLA queue or Pending Customers)';
 badge.onclick = runExtraction;
 attachBadgeHoverEffects();
@@ -2144,13 +2184,23 @@ displayPendingPanel(currentPendingCustomers);
 displayPanel(currentCustomers);
 }
 };
+
+window._toggleMinimizePanel = function() {
+const panel = document.getElementById(PANEL_BOX_ID);
+const btn = document.getElementById('_slaMinimizeBtn');
+if (!panel) return;
+const isHidden = panel.style.transform === 'translateX(150%)';
+panel.style.transform = isHidden ? '' : 'translateX(150%)';
+if (btn) btn.innerHTML = svgIcon(isHidden ? 'minimize' : 'restore', 14);
+localStorage.setItem(PANEL_STATE_KEY, isHidden ? 'visible' : 'hidden');
+};
 window._toggleTier = function(tierId) {
 const tierContent = document.getElementById(tierId);
 const toggle = document.getElementById('toggle-' + tierId);
 if (tierContent && toggle) {
 const isHidden = tierContent.style.display === 'none';
 tierContent.style.display = isHidden ? 'grid' : 'none';
-toggle.textContent = isHidden ? '▼' : '▶';
+toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
 setSectionCollapsed(tierId, !isHidden);
 }
 };
@@ -2161,7 +2211,7 @@ const toggle = document.getElementById('toggle-' + sectionId);
 if (content && toggle) {
 const isHidden = content.style.display === 'none';
 content.style.display = isHidden ? 'grid' : 'none';
-toggle.textContent = isHidden ? '▼' : '▶';
+toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
 setSectionCollapsed(sectionId, !isHidden);
 }
 };
@@ -2172,7 +2222,7 @@ const toggle = document.getElementById('assignSectionToggle');
 if (!body || !toggle) return;
 const isHidden = body.style.display === 'none';
 body.style.display = isHidden ? 'block' : 'none';
-toggle.textContent = isHidden ? '▼' : '▶';
+toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
 saveAssignSettings({ sectionOpen: isHidden });
 if (isHidden) syncAllWheelPositions();
 };
@@ -2353,12 +2403,12 @@ const toggle = document.getElementById('toggle-' + section.id);
 if (!q) {
 const collapsed = isSectionCollapsed(section.id);
 section.style.display = collapsed ? 'none' : 'grid';
-if (toggle) toggle.textContent = collapsed ? '▶' : '▼';
+if (toggle) toggle.style.transform = collapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
 return;
 }
 const hasMatch = Array.from(section.querySelectorAll('.customer-card')).some(c => c.style.display !== 'none');
 section.style.display = hasMatch ? 'grid' : 'none';
-if (toggle) toggle.textContent = hasMatch ? '▼' : '▶';
+if (toggle) toggle.style.transform = hasMatch ? 'rotate(0deg)' : 'rotate(-90deg)';
 });
 };
 
@@ -2374,7 +2424,7 @@ if (!body || !toggle) return;
 const isCurrentlyOpen = body.style.display === 'flex';
 const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !isCurrentlyOpen;
 body.style.display = shouldOpen ? 'flex' : 'none';
-toggle.textContent = shouldOpen ? '▼' : '▶';
+toggle.style.transform = shouldOpen ? 'rotate(0deg)' : 'rotate(-90deg)';
 saveAssignSettings({ advancedOpen: shouldOpen });
 };
 
