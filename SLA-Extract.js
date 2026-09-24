@@ -1188,7 +1188,7 @@ function renderAssignLimitControl(settings) {
 return `<label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;">
 LIMIT
 <input type="number" id="assignLimitInput" min="1" placeholder="all" value="${settings.assignLimit || ''}" oninput="window._updateAssignPreview()"
-style="width: 48px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; font-weight: 400; color: #1e293b;">
+style="width: 48px; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; font-weight: 400; color: #1e293b;">
 </label>`;
 }
 
@@ -1650,7 +1650,7 @@ border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
 
 const collapsed = isSectionCollapsed(sectionId);
 return `<div style="margin-bottom: 20px;">
-<div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 14px; background: white; border-radius: 8px 8px 0 0;
+<div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 16px; background: white; border-radius: 8px 8px 0 0;
 display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
 border-bottom: 2px solid #e2e8f0;">
 <div>
@@ -1881,7 +1881,7 @@ border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
 
 const collapsed = isSectionCollapsed(tierId);
 return `<div style="margin-bottom: 20px;">
-<div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 14px; background: white; border-radius: 8px 8px 0 0;
+<div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 16px; background: white; border-radius: 8px 8px 0 0;
 display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
 border-bottom: 2px solid #e2e8f0;">
 <div>
