@@ -864,9 +864,19 @@ lastFailedLocateCellFn = null;
 await executeAssignmentRun(plan, locateCellFn);
 };
 
+// Only ever holds today's entries - a stale entry from a previous day
+// sitting in this log (surviving a bookmarklet re-invocation, since
+// localStorage isn't cleared by that) made the History panel
+// impossible to trust: there was no way to tell whether a count
+// included today's shift only or leftover days too. Pruning anything
+// not from today on every write, rather than just filtering at display
+// time, also keeps the whole ASSIGN_LOG_MAX cap spent on today's data
+// instead of old days quietly eating into it on a busy week.
 function appendAssignmentLog(results) {
 try {
-const existing = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]');
+const today = new Date().toDateString();
+const existing = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]')
+.filter(e => new Date(e.time).toDateString() === today);
 const now = new Date().toISOString();
 const entries = results.filter(r => r.ok).map(r => ({
 time: now,
@@ -880,16 +890,21 @@ console.warn('Failed to persist assignment log', error);
 }
 }
 
+// Filters to today defensively (appendAssignmentLog already prunes on
+// write) so this never shows a stale count even if the day rolled over
+// mid-session without a new assignment triggering that prune.
 function renderAssignmentHistoryHtml() {
 let entries = [];
 try { entries = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]'); } catch (error) { /* ignore */ }
-if (entries.length === 0) return '<div style="color:#94a3b8;">No assignments recorded yet.</div>';
+const today = new Date().toDateString();
+entries = entries.filter(e => new Date(e.time).toDateString() === today);
+if (entries.length === 0) return '<div style="color:#94a3b8;">No assignments recorded today yet.</div>';
 const tally = {};
 entries.forEach(e => { tally[e.agent] = (tally[e.agent] || 0) + 1; });
 const rows = Object.entries(tally).sort((a, b) => b[1] - a[1])
 .map(([name, count]) => `<div style="display:flex;justify-content:space-between;"><span>${escapeHtml(name)}</span><span style="font-weight:700;">${count}</span></div>`).join('');
 const last = entries[entries.length - 1];
-return `<div style="font-size:11px;color:#64748b;margin-bottom:4px;">Assigned counts (all-time, this browser):</div>${rows}
+return `<div style="font-size:11px;color:#64748b;margin-bottom:4px;">Assigned counts (today's shift):</div>${rows}
 <div style="font-size:10px;color:#cbd5e1;margin-top:6px;">Last: ${escapeHtml(last.lead)} → ${escapeHtml(last.agent)} at ${new Date(last.time).toLocaleTimeString()}</div>`;
 }
 
