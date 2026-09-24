@@ -1749,32 +1749,51 @@ ${renderCopyableField(c.landline)}
 </div>`;
 }
 
-function resetBookmarklet() {
-currentCustomers = [];
-currentPendingCustomers = [];
-currentPageType = null;
-extracting = false;
-
-if (panelElement) {
-panelElement.remove();
-panelElement = null;
+function renderTierSection(tierName, customers, color, tierId) {
+if (customers.length === 0) {
+return `<div style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 8px;
+border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(15,23,42,0.08);">
+<h3 style="margin: 0; color: ${color}; font-size: 15px; font-weight: 600;">${tierName}</h3>
+<p style="margin: 8px 0 0 0; color: #94a3b8; font-size: 13px;">No customers</p>
+</div>`;
 }
 
-if (badge) {
-// Badge now lives inside a wrapping <li> in the host navbar (see
-// createBadge) - remove that wrapper too, or the fallback fixed-position
-// case's plain badge.remove(), so nothing gets left behind either way.
-const navItem = document.getElementById('_slaBadgeNavItem');
-if (navItem) navItem.remove();
-else badge.remove();
-badge = null;
+const collapsed = isSectionCollapsed(tierId);
+return `<div style="margin-bottom: 20px;">
+<div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 16px; background: white; border-radius: 8px 8px 0 0;
+display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
+border-bottom: 2px solid #e2e8f0;">
+<div>
+<span style="font-weight: 700; color: #1e293b; font-size: 15px;">${tierName}</span>
+<span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
+</div>
+<span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + tierId)}</span>
+</div>
+<div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(15,23,42,0.08);">
+${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f1f5f9;">
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #1e293b; font-weight: 700; font-size: 15px;">${escapeHtml(c.name)}</span>
+${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
+</div>
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
+<div>
+<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
+${renderCopyableField(c.phone)}
+</div>
+<div>
+<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
+${renderCopyableField(c.email)}
+</div>
+</div>
+<div style="padding-top: 10px; border-top: 1px solid #e2e8f0; display: flex; gap: 6px; flex-wrap: wrap; font-size: 13px;">
+<span style="background: #e2e8f0; color: #1e293b; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.source)}</span>
+<span style="background: #d1fae5; color: #059669; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.campaign)}</span>
+</div>
+</div>`).join('')}
+</div>
+</div>`;
 }
 
-console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
-}
-
-// Shared panel chrome (positioning, header, footer) for both pages - only
-// the title/counts, the assign section, and the body content differ.
 function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml }) {
 const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 const isFull = panelSize === 'full';
@@ -1932,51 +1951,6 @@ summaryHtml: renderPendingDueSummary(),
 assignSectionHtml: renderPendingAssignSection(),
 bodyHtml
 }));
-}
-
-function renderTierSection(tierName, customers, color, tierId) {
-if (customers.length === 0) {
-return `<div style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 8px;
-border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(15,23,42,0.08);">
-<h3 style="margin: 0; color: ${color}; font-size: 15px; font-weight: 600;">${tierName}</h3>
-<p style="margin: 8px 0 0 0; color: #94a3b8; font-size: 13px;">No customers</p>
-</div>`;
-}
-
-const collapsed = isSectionCollapsed(tierId);
-return `<div style="margin-bottom: 20px;">
-<div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 16px; background: white; border-radius: 8px 8px 0 0;
-display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
-border-bottom: 2px solid #e2e8f0;">
-<div>
-<span style="font-weight: 700; color: #1e293b; font-size: 15px;">${tierName}</span>
-<span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
-</div>
-<span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + tierId)}</span>
-</div>
-<div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(15,23,42,0.08);">
-${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f1f5f9;">
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #1e293b; font-weight: 700; font-size: 15px;">${escapeHtml(c.name)}</span>
-${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
-</div>
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
-<div>
-<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
-${renderCopyableField(c.phone)}
-</div>
-<div>
-<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
-${renderCopyableField(c.email)}
-</div>
-</div>
-<div style="padding-top: 10px; border-top: 1px solid #e2e8f0; display: flex; gap: 6px; flex-wrap: wrap; font-size: 13px;">
-<span style="background: #e2e8f0; color: #1e293b; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.source)}</span>
-<span style="background: #d1fae5; color: #059669; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.campaign)}</span>
-</div>
-</div>`).join('')}
-</div>
-</div>`;
 }
 
 async function extractAndExportSla() {
@@ -2198,6 +2172,32 @@ navItem.appendChild(badge);
 targetUl.appendChild(navItem); // last item in the left nav = immediately after "Client Config"
 }
 
+function resetBookmarklet() {
+currentCustomers = [];
+currentPendingCustomers = [];
+currentPageType = null;
+extracting = false;
+
+if (panelElement) {
+panelElement.remove();
+panelElement = null;
+}
+
+if (badge) {
+// Badge now lives inside a wrapping <li> in the host navbar (see
+// createBadge) - remove that wrapper too, or the fallback fixed-position
+// case's plain badge.remove(), so nothing gets left behind either way.
+const navItem = document.getElementById('_slaBadgeNavItem');
+if (navItem) navItem.remove();
+else badge.remove();
+badge = null;
+}
+
+console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
+}
+
+// Shared panel chrome (positioning, header, footer) for both pages - only
+// the title/counts, the assign section, and the body content differ.
 window._slaResetBookmarklet = resetBookmarklet;
 window._togglePanelSize = function() {
 const current = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
@@ -2251,6 +2251,28 @@ saveAssignSettings({ sectionOpen: isHidden });
 if (isHidden) syncAllWheelPositions();
 };
 
+window._toggleAdvancedCallbackTypes = function(forceOpen) {
+const body = document.getElementById('advancedCallbackTypes');
+const toggle = document.getElementById('advancedCallbackToggle');
+if (!body || !toggle) return;
+const isCurrentlyOpen = body.style.display === 'flex';
+const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !isCurrentlyOpen;
+body.style.display = shouldOpen ? 'flex' : 'none';
+toggle.style.transform = shouldOpen ? 'rotate(0deg)' : 'rotate(-90deg)';
+saveAssignSettings({ advancedOpen: shouldOpen });
+};
+
+// Recomputes and displays what clicking "Assign" would actually do before
+// the button is even clicked, so a filter combination that matches
+// nothing, an unexpectedly large batch, or (previously) a forgotten agent
+// selection is visible immediately rather than found out via an empty/
+// surprising results log - or worse, via the button's own "Select at
+// least one agent" rejection after the preview had already implied
+// everything was ready. Agent count now factors directly into what's
+// shown, both for that reason and because seeing the actual per-agent
+// split ("23 -> 4 agents, ~6 each") is the real pre-click control this is
+// meant to give: not just "will something happen" but "is this a
+// reasonable way to divide it up."
 // Shared by every quick-criteria entry point (the general Quick Assign
 // button and each clickable due-summary tile): expand the section if
 // it's collapsed so progress is visible, then resolve which agents are
@@ -2352,232 +2374,6 @@ const limited = applyAssignLimit(prioritized);
 const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locatePendingAssignCell);
 };
-
-// Assigns exactly one specific lead to exactly one chosen agent, for the
-// case of handling a particular customer right now rather than waiting
-// for it to come up in a batch/tile/Quick Assign sweep. Reuses
-// runAssignmentPlan (same click/confirm engine, same result shape) with
-// a one-item plan, but deliberately never goes through roundRobinAssign
-// - a manual pick is an intentional override, not part of the fairness
-// rotation, so it shouldn't perturb the round-robin cursor. Sets
-// `assigning` for its duration same as a batch run, so the background
-// auto-detect poll doesn't collide with it mid-confirmation (the same
-// class of bug fixed for batch runs) - the tradeoff is that clicking the
-// batch button during the ~1s this usually takes would itself be
-// (mis)read as a cancel request, since that's also gated on `assigning`;
-// accepted as a rare, low-cost collision (a harmless no-op click) against
-// a real, more consequential collision it prevents.
-window._manualAssignLead = async function(pageType, leadKey, agentId, selectEl) {
-if (!agentId || !selectEl) return;
-const agent = getAgentRoster().find(a => a.id === agentId);
-const wrapper = selectEl.parentElement;
-if (!agent || !wrapper) return;
-
-if (assigning) {
-selectEl.value = '';
-return;
-}
-
-wrapper.innerHTML = `<span style="font-size: 11px; color: #94a3b8;">Assigning…</span>`;
-
-const locateCellFn = pageType === PAGE_PENDING ? locatePendingAssignCell : locateAssignCell;
-const leads = pageType === PAGE_PENDING ? collectPendingCustomers() : collectAssignableLeads();
-const lead = leads.find(l => l.key === leadKey);
-
-if (!lead || lead.assigned) {
-wrapper.innerHTML = `<span style="font-size: 11px; color: #dc2626;">Already assigned or no longer listed</span>`;
-return;
-}
-
-assigning = true;
-let results;
-try {
-results = await runAssignmentPlan([{ lead, agent }], locateCellFn, () => {});
-} finally {
-assigning = false;
-}
-
-invalidateLeadsCache();
-appendAssignmentLog(results);
-
-const result = results[0];
-if (result.ok) {
-wrapper.innerHTML = renderAssignmentBadge(true, agent.name);
-} else {
-wrapper.innerHTML = `<div style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px;">
-<span style="font-size: 11px; color: #dc2626;">${escapeHtml(result.reason || 'Failed')}</span>
-${renderManualAssignPicker(leadKey, pageType)}
-</div>`;
-}
-};
-
-// Filters the visible customer cards by name and auto-expands whichever
-// sections contain a match, without touching the persisted collapse
-// state (setSectionCollapsed) - this is a temporary view, and clearing
-// the search reverts every section to exactly whatever you'd manually
-// left it as, not to "open."
-window._filterCustomerSearch = function(query) {
-const q = query.trim().toLowerCase();
-document.querySelectorAll('.customer-card').forEach((card) => {
-const match = !q || (card.dataset.customerName || '').includes(q);
-card.style.display = match ? '' : 'none';
-});
-document.querySelectorAll('.collapsible-section').forEach((section) => {
-const toggle = document.getElementById('toggle-' + section.id);
-if (!q) {
-const collapsed = isSectionCollapsed(section.id);
-section.style.display = collapsed ? 'none' : 'grid';
-if (toggle) toggle.style.transform = collapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
-return;
-}
-const hasMatch = Array.from(section.querySelectorAll('.customer-card')).some(c => c.style.display !== 'none');
-section.style.display = hasMatch ? 'grid' : 'none';
-if (toggle) toggle.style.transform = hasMatch ? 'rotate(0deg)' : 'rotate(-90deg)';
-});
-};
-
-window._setAllAgentCheckboxes = function(checked) {
-document.querySelectorAll('.assign-agent-checkbox').forEach((el) => { el.checked = checked; });
-if (window._updateAssignPreview) window._updateAssignPreview();
-};
-
-window._toggleAdvancedCallbackTypes = function(forceOpen) {
-const body = document.getElementById('advancedCallbackTypes');
-const toggle = document.getElementById('advancedCallbackToggle');
-if (!body || !toggle) return;
-const isCurrentlyOpen = body.style.display === 'flex';
-const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !isCurrentlyOpen;
-body.style.display = shouldOpen ? 'flex' : 'none';
-toggle.style.transform = shouldOpen ? 'rotate(0deg)' : 'rotate(-90deg)';
-saveAssignSettings({ advancedOpen: shouldOpen });
-};
-
-// Recomputes and displays what clicking "Assign" would actually do before
-// the button is even clicked, so a filter combination that matches
-// nothing, an unexpectedly large batch, or (previously) a forgotten agent
-// selection is visible immediately rather than found out via an empty/
-// surprising results log - or worse, via the button's own "Select at
-// least one agent" rejection after the preview had already implied
-// everything was ready. Agent count now factors directly into what's
-// shown, both for that reason and because seeing the actual per-agent
-// split ("23 -> 4 agents, ~6 each") is the real pre-click control this is
-// meant to give: not just "will something happen" but "is this a
-// reasonable way to divide it up."
-window._updateAssignPreview = function() {
-const previewEl = document.getElementById('assignMatchPreview');
-if (!previewEl) return;
-persistCurrentAssignSettings();
-
-let count;
-if (currentPageType === PAGE_PENDING) {
-const selectedTypes = new Set(
-Array.from(document.querySelectorAll('.assign-callback-checkbox:checked')).map(el => el.value)
-);
-const cutoffInput = document.getElementById('assignCutoffTime');
-const cutoffDate = parseCutoffFromInput(cutoffInput ? cutoffInput.value : '');
-const leads = getCachedPendingCustomers();
-count = filterPendingLeads(leads, { callbackTypes: selectedTypes, cutoffDate }).length;
-
-// Per-type counts next to each checkbox are baked in at render time -
-// keep them in sync with the cutoff wheel as it moves, same as the
-// preview line below.
-const callbackCounts = computePendingCallbackCounts(leads, cutoffDate);
-CALLBACK_TYPE_ORDER.forEach((type) => {
-const el = document.getElementById(`cb-count-${slugify(type)}`);
-if (el) el.textContent = `(${callbackCounts[type] || 0})`;
-});
-} else {
-const selectedTiers = new Set(
-Array.from(document.querySelectorAll('.assign-tier-checkbox:checked')).map(el => Number(el.value))
-);
-const windowInput = document.getElementById('assignWindowMinutes');
-const windowMinutes = windowInput && windowInput.value ? Number(windowInput.value) : null;
-const customerFirstOnly = document.getElementById('assignCustomerFirstOnly')?.checked || false;
-const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
-const leads = getCachedAssignableLeads();
-count = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes, customerFirstOnly, emailOnly }).length;
-
-// Same live-sync as the callback-type counts above, for the tier counts.
-const tierCounts = computeSlaTierCounts(leads, windowMinutes);
-[1, 2, 3, 4].forEach((t) => {
-const el = document.getElementById(`tier-count-${t}`);
-if (el) el.textContent = `(${tierCounts[t - 1]})`;
-});
-}
-
-const agentCount = document.querySelectorAll('.assign-agent-checkbox:checked').length;
-const rawCount = count;
-const limitRaw = document.getElementById('assignLimitInput')?.value;
-const limit = limitRaw ? Number(limitRaw) : null;
-if (limit && limit > 0) count = Math.min(count, limit);
-const cappedSuffix = count < rawCount ? ` (capped from ${rawCount})` : '';
-
-if (agentCount === 0) {
-previewEl.textContent = count > 0
-? `${count} lead${count === 1 ? '' : 's'} match${cappedSuffix}, but no agents are selected`
-: 'Select at least one agent';
-previewEl.style.color = '#dc2626';
-return;
-}
-
-if (count === 0) {
-previewEl.textContent = 'No leads match the current filters';
-previewEl.style.color = '#dc2626';
-return;
-}
-
-const perAgent = Math.floor(count / agentCount);
-const remainder = count % agentCount;
-const splitLabel = remainder === 0 ? `${perAgent} each` : `~${perAgent} each`;
-previewEl.textContent = `${count} lead${count === 1 ? '' : 's'}${cappedSuffix} → ${agentCount} agent${agentCount === 1 ? '' : 's'} (${splitLabel})`;
-previewEl.style.color = '#64748b';
-};
-
-window._refreshAssignSection = function() {
-const container = document.getElementById('assignSectionContainer');
-if (!container) return;
-invalidateLeadsCache();
-
-// Preserve deliberate exclusions (unchecked tiers/callback types/agents)
-// and the timeframe value across a manual refresh instead of resetting
-// them.
-const uncheckedAgentIds = new Set(
-Array.from(document.querySelectorAll('.assign-agent-checkbox:not(:checked)')).map(el => el.value)
-);
-const uncheckedFilters = new Set(
-Array.from(document.querySelectorAll('.assign-tier-checkbox:not(:checked), .assign-callback-checkbox:not(:checked)')).map(el => el.value)
-);
-const windowInput = document.getElementById('assignWindowMinutes');
-const windowValue = windowInput ? windowInput.value : '';
-const cutoffInput = document.getElementById('assignCutoffTime');
-const cutoffValue = cutoffInput ? cutoffInput.value : '';
-const advancedWasOpen = document.getElementById('advancedCallbackTypes')?.style.display === 'flex';
-const customerFirstChecked = document.getElementById('assignCustomerFirstOnly')?.checked;
-const emailOnlyChecked = document.getElementById('assignEmailOnly')?.checked;
-
-container.outerHTML = currentPageType === PAGE_PENDING ? renderPendingAssignSection() : renderAssignSection();
-
-uncheckedAgentIds.forEach((id) => {
-const el = document.querySelector(`.assign-agent-checkbox[value="${CSS.escape(id)}"]`);
-if (el) el.checked = false;
-});
-uncheckedFilters.forEach((v) => {
-const el = document.querySelector(`.assign-tier-checkbox[value="${CSS.escape(v)}"], .assign-callback-checkbox[value="${CSS.escape(v)}"]`);
-if (el) el.checked = false;
-});
-const newWindowInput = document.getElementById('assignWindowMinutes');
-if (newWindowInput && windowValue) newWindowInput.value = windowValue;
-const newCutoffInput = document.getElementById('assignCutoffTime');
-if (newCutoffInput && cutoffValue) newCutoffInput.value = cutoffValue;
-if (advancedWasOpen) window._toggleAdvancedCallbackTypes(true);
-const newCustomerFirst = document.getElementById('assignCustomerFirstOnly');
-if (newCustomerFirst && customerFirstChecked) newCustomerFirst.checked = true;
-const newEmailOnly = document.getElementById('assignEmailOnly');
-if (newEmailOnly && emailOnlyChecked) newEmailOnly.checked = true;
-
-initAssignSectionWheels();
-};
-
 // Shared by the manual Assign button (whatever filters are checked) and
 // Quick Assign (its own fixed opinionated criteria) - both just need to
 // build a plan and hand it off the same way.
@@ -2728,6 +2524,210 @@ return;
 const limited = applyAssignLimit(prioritized);
 const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locatePendingAssignCell);
+};
+
+
+// Assigns exactly one specific lead to exactly one chosen agent, for the
+// case of handling a particular customer right now rather than waiting
+// for it to come up in a batch/tile/Quick Assign sweep. Reuses
+// runAssignmentPlan (same click/confirm engine, same result shape) with
+// a one-item plan, but deliberately never goes through roundRobinAssign
+// - a manual pick is an intentional override, not part of the fairness
+// rotation, so it shouldn't perturb the round-robin cursor. Sets
+// `assigning` for its duration same as a batch run, so the background
+// auto-detect poll doesn't collide with it mid-confirmation (the same
+// class of bug fixed for batch runs) - the tradeoff is that clicking the
+// batch button during the ~1s this usually takes would itself be
+// (mis)read as a cancel request, since that's also gated on `assigning`;
+// accepted as a rare, low-cost collision (a harmless no-op click) against
+// a real, more consequential collision it prevents.
+window._manualAssignLead = async function(pageType, leadKey, agentId, selectEl) {
+if (!agentId || !selectEl) return;
+const agent = getAgentRoster().find(a => a.id === agentId);
+const wrapper = selectEl.parentElement;
+if (!agent || !wrapper) return;
+
+if (assigning) {
+selectEl.value = '';
+return;
+}
+
+wrapper.innerHTML = `<span style="font-size: 11px; color: #94a3b8;">Assigning…</span>`;
+
+const locateCellFn = pageType === PAGE_PENDING ? locatePendingAssignCell : locateAssignCell;
+const leads = pageType === PAGE_PENDING ? collectPendingCustomers() : collectAssignableLeads();
+const lead = leads.find(l => l.key === leadKey);
+
+if (!lead || lead.assigned) {
+wrapper.innerHTML = `<span style="font-size: 11px; color: #dc2626;">Already assigned or no longer listed</span>`;
+return;
+}
+
+assigning = true;
+let results;
+try {
+results = await runAssignmentPlan([{ lead, agent }], locateCellFn, () => {});
+} finally {
+assigning = false;
+}
+
+invalidateLeadsCache();
+appendAssignmentLog(results);
+
+const result = results[0];
+if (result.ok) {
+wrapper.innerHTML = renderAssignmentBadge(true, agent.name);
+} else {
+wrapper.innerHTML = `<div style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px;">
+<span style="font-size: 11px; color: #dc2626;">${escapeHtml(result.reason || 'Failed')}</span>
+${renderManualAssignPicker(leadKey, pageType)}
+</div>`;
+}
+};
+
+// Filters the visible customer cards by name and auto-expands whichever
+// sections contain a match, without touching the persisted collapse
+// state (setSectionCollapsed) - this is a temporary view, and clearing
+// the search reverts every section to exactly whatever you'd manually
+// left it as, not to "open."
+window._filterCustomerSearch = function(query) {
+const q = query.trim().toLowerCase();
+document.querySelectorAll('.customer-card').forEach((card) => {
+const match = !q || (card.dataset.customerName || '').includes(q);
+card.style.display = match ? '' : 'none';
+});
+document.querySelectorAll('.collapsible-section').forEach((section) => {
+const toggle = document.getElementById('toggle-' + section.id);
+if (!q) {
+const collapsed = isSectionCollapsed(section.id);
+section.style.display = collapsed ? 'none' : 'grid';
+if (toggle) toggle.style.transform = collapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
+return;
+}
+const hasMatch = Array.from(section.querySelectorAll('.customer-card')).some(c => c.style.display !== 'none');
+section.style.display = hasMatch ? 'grid' : 'none';
+if (toggle) toggle.style.transform = hasMatch ? 'rotate(0deg)' : 'rotate(-90deg)';
+});
+};
+
+window._setAllAgentCheckboxes = function(checked) {
+document.querySelectorAll('.assign-agent-checkbox').forEach((el) => { el.checked = checked; });
+if (window._updateAssignPreview) window._updateAssignPreview();
+};
+
+window._updateAssignPreview = function() {
+const previewEl = document.getElementById('assignMatchPreview');
+if (!previewEl) return;
+persistCurrentAssignSettings();
+
+let count;
+if (currentPageType === PAGE_PENDING) {
+const selectedTypes = new Set(
+Array.from(document.querySelectorAll('.assign-callback-checkbox:checked')).map(el => el.value)
+);
+const cutoffInput = document.getElementById('assignCutoffTime');
+const cutoffDate = parseCutoffFromInput(cutoffInput ? cutoffInput.value : '');
+const leads = getCachedPendingCustomers();
+count = filterPendingLeads(leads, { callbackTypes: selectedTypes, cutoffDate }).length;
+
+// Per-type counts next to each checkbox are baked in at render time -
+// keep them in sync with the cutoff wheel as it moves, same as the
+// preview line below.
+const callbackCounts = computePendingCallbackCounts(leads, cutoffDate);
+CALLBACK_TYPE_ORDER.forEach((type) => {
+const el = document.getElementById(`cb-count-${slugify(type)}`);
+if (el) el.textContent = `(${callbackCounts[type] || 0})`;
+});
+} else {
+const selectedTiers = new Set(
+Array.from(document.querySelectorAll('.assign-tier-checkbox:checked')).map(el => Number(el.value))
+);
+const windowInput = document.getElementById('assignWindowMinutes');
+const windowMinutes = windowInput && windowInput.value ? Number(windowInput.value) : null;
+const customerFirstOnly = document.getElementById('assignCustomerFirstOnly')?.checked || false;
+const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
+const leads = getCachedAssignableLeads();
+count = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes, customerFirstOnly, emailOnly }).length;
+
+// Same live-sync as the callback-type counts above, for the tier counts.
+const tierCounts = computeSlaTierCounts(leads, windowMinutes);
+[1, 2, 3, 4].forEach((t) => {
+const el = document.getElementById(`tier-count-${t}`);
+if (el) el.textContent = `(${tierCounts[t - 1]})`;
+});
+}
+
+const agentCount = document.querySelectorAll('.assign-agent-checkbox:checked').length;
+const rawCount = count;
+const limitRaw = document.getElementById('assignLimitInput')?.value;
+const limit = limitRaw ? Number(limitRaw) : null;
+if (limit && limit > 0) count = Math.min(count, limit);
+const cappedSuffix = count < rawCount ? ` (capped from ${rawCount})` : '';
+
+if (agentCount === 0) {
+previewEl.textContent = count > 0
+? `${count} lead${count === 1 ? '' : 's'} match${cappedSuffix}, but no agents are selected`
+: 'Select at least one agent';
+previewEl.style.color = '#dc2626';
+return;
+}
+
+if (count === 0) {
+previewEl.textContent = 'No leads match the current filters';
+previewEl.style.color = '#dc2626';
+return;
+}
+
+const perAgent = Math.floor(count / agentCount);
+const remainder = count % agentCount;
+const splitLabel = remainder === 0 ? `${perAgent} each` : `~${perAgent} each`;
+previewEl.textContent = `${count} lead${count === 1 ? '' : 's'}${cappedSuffix} → ${agentCount} agent${agentCount === 1 ? '' : 's'} (${splitLabel})`;
+previewEl.style.color = '#64748b';
+};
+
+window._refreshAssignSection = function() {
+const container = document.getElementById('assignSectionContainer');
+if (!container) return;
+invalidateLeadsCache();
+
+// Preserve deliberate exclusions (unchecked tiers/callback types/agents)
+// and the timeframe value across a manual refresh instead of resetting
+// them.
+const uncheckedAgentIds = new Set(
+Array.from(document.querySelectorAll('.assign-agent-checkbox:not(:checked)')).map(el => el.value)
+);
+const uncheckedFilters = new Set(
+Array.from(document.querySelectorAll('.assign-tier-checkbox:not(:checked), .assign-callback-checkbox:not(:checked)')).map(el => el.value)
+);
+const windowInput = document.getElementById('assignWindowMinutes');
+const windowValue = windowInput ? windowInput.value : '';
+const cutoffInput = document.getElementById('assignCutoffTime');
+const cutoffValue = cutoffInput ? cutoffInput.value : '';
+const advancedWasOpen = document.getElementById('advancedCallbackTypes')?.style.display === 'flex';
+const customerFirstChecked = document.getElementById('assignCustomerFirstOnly')?.checked;
+const emailOnlyChecked = document.getElementById('assignEmailOnly')?.checked;
+
+container.outerHTML = currentPageType === PAGE_PENDING ? renderPendingAssignSection() : renderAssignSection();
+
+uncheckedAgentIds.forEach((id) => {
+const el = document.querySelector(`.assign-agent-checkbox[value="${CSS.escape(id)}"]`);
+if (el) el.checked = false;
+});
+uncheckedFilters.forEach((v) => {
+const el = document.querySelector(`.assign-tier-checkbox[value="${CSS.escape(v)}"], .assign-callback-checkbox[value="${CSS.escape(v)}"]`);
+if (el) el.checked = false;
+});
+const newWindowInput = document.getElementById('assignWindowMinutes');
+if (newWindowInput && windowValue) newWindowInput.value = windowValue;
+const newCutoffInput = document.getElementById('assignCutoffTime');
+if (newCutoffInput && cutoffValue) newCutoffInput.value = cutoffValue;
+if (advancedWasOpen) window._toggleAdvancedCallbackTypes(true);
+const newCustomerFirst = document.getElementById('assignCustomerFirstOnly');
+if (newCustomerFirst && customerFirstChecked) newCustomerFirst.checked = true;
+const newEmailOnly = document.getElementById('assignEmailOnly');
+if (newEmailOnly && emailOnlyChecked) newEmailOnly.checked = true;
+
+initAssignSectionWheels();
 };
 
 // Detects switching between the SLA queue and Pending Customers by
