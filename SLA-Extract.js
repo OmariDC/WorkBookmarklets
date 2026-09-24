@@ -519,8 +519,9 @@ return counts;
 // kept getting the extra lead and the most urgent one, while agents at
 // the end of the list consistently ended up with less over time). Any
 // leftover leads that don't fill a whole round go to the agents with the
-// FEWEST assignments today (from the activity log), ties broken at
-// random, so extras even out across a shift instead of by luck alone.
+// lightest CURRENT load, read from the queue itself (see
+// currentAgentLoads) so it reflects assignments made directly in
+// Konnect too, not just ones made through this panel.
 function shuffle(items) {
 const a = items.slice();
 for (let i = a.length - 1; i > 0; i--) {
@@ -530,17 +531,36 @@ const j = Math.floor(Math.random() * (i + 1));
 return a;
 }
 
-function todaysAssignmentCounts() {
-const counts = {};
-try {
-const today = new Date().toDateString();
-JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]').forEach((e) => {
-if (new Date(e.time).toDateString() === today) counts[e.agent] = (counts[e.agent] || 0) + 1;
-});
-} catch (error) {
-// no history -> everyone counts as zero, i.e. pure random extras
+function normalizeAgentName(name) {
+return String(name || '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
-return counts;
+
+// How many leads each agent currently holds in the queue being viewed,
+// counted from the live table's assign cells (same scan every render
+// already does), keyed by agent id. Returns null - meaning "unknown, use
+// random" - if the scan fails, or if leads are assigned but none of the
+// names can be matched to a roster agent (i.e. the cell text isn't the
+// agent's name after all), since counting nothing would silently bias
+// every leftover toward the same people. Leads held by someone not in the
+// current roster (gone offline) are simply not counted.
+function currentAgentLoads(agents) {
+try {
+const leads = currentPageType === PAGE_PENDING ? collectPendingCustomers() : collectAssignableLeads();
+const assigned = leads.filter(l => l.assigned && l.agentName);
+const byName = new Map(agents.map(a => [normalizeAgentName(a.name), a.id]));
+const loads = {};
+let matched = 0;
+assigned.forEach((l) => {
+const id = byName.get(normalizeAgentName(l.agentName));
+if (id === undefined) return;
+loads[id] = (loads[id] || 0) + 1;
+matched++;
+});
+if (assigned.length > 0 && matched === 0) return null;
+return loads;
+} catch (error) {
+return null;
+}
 }
 
 function roundRobinAssign(leads, agents) {
@@ -551,9 +571,11 @@ while (leads.length - i >= agents.length) {
 shuffle(agents).forEach((agent) => plan.push({ lead: leads[i++], agent }));
 }
 if (i < leads.length) {
-const counts = todaysAssignmentCounts();
+// shuffled first so ties (and the no-data fallback, where every load
+// counts as equal) break at random rather than by roster order
+const loads = currentAgentLoads(agents) || {};
 const extras = shuffle(agents)
-.sort((a, b) => (counts[a.name] || 0) - (counts[b.name] || 0))
+.sort((a, b) => (loads[a.id] || 0) - (loads[b.id] || 0))
 .slice(0, leads.length - i);
 shuffle(extras).forEach((agent) => plan.push({ lead: leads[i++], agent }));
 }
