@@ -1642,7 +1642,7 @@ const sectionId = 'cb-' + slugify(typeName);
 
 if (customers.length === 0) {
 return `<div style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 8px;
-border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(15,23,42,0.08);">
 <h3 style="margin: 0; color: ${color}; font-size: 15px; font-weight: 600;">${escapeHtml(typeName)}</h3>
 <p style="margin: 8px 0 0 0; color: #94a3b8; font-size: 13px;">No customers</p>
 </div>`;
@@ -1659,7 +1659,7 @@ border-bottom: 2px solid #e2e8f0;">
 </div>
 <span id="toggle-${sectionId}" style="font-size: 15px; color: ${color};">${collapsed ? '▶' : '▼'}</span>
 </div>
-<div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
+<div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(15,23,42,0.08);">
 ${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f1f5f9;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #1e293b; font-weight: 700; font-size: 15px;">${escapeHtml(c.name)}</span>
@@ -1729,7 +1729,7 @@ const positionStyle = isFull
 
 return `
 <div id="${PANEL_BOX_ID}" style="position: fixed; ${positionStyle}
-background: #f8fafc; box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+background: #f8fafc; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.25), 0 4px 12px rgba(15,23,42,0.08);
 z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 display: flex; flex-direction: column; transition: transform 0.3s ease;">
 
@@ -1766,7 +1766,7 @@ style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid
 ${bodyHtml}
 </div>
 
-<div style="border-top: 1px solid #cbd5e1; padding: 8px 14px; background: white; flex-shrink: 0; display: flex; justify-content: flex-end; box-shadow: 0 -2px 8px rgba(0,0,0,0.05);">
+<div style="border-top: 1px solid #cbd5e1; padding: 8px 14px; background: white; flex-shrink: 0; display: flex; justify-content: flex-end; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
 <button onclick="(function() { if (confirm('Clear all data and stop?')) { window._slaResetBookmarklet(); } })();"
 style="padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
 </div>
@@ -1873,7 +1873,7 @@ bodyHtml
 function renderTierSection(tierName, customers, color, tierId) {
 if (customers.length === 0) {
 return `<div style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 8px;
-border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
+border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(15,23,42,0.08);">
 <h3 style="margin: 0; color: ${color}; font-size: 15px; font-weight: 600;">${tierName}</h3>
 <p style="margin: 8px 0 0 0; color: #94a3b8; font-size: 13px;">No customers</p>
 </div>`;
@@ -1890,7 +1890,7 @@ border-bottom: 2px solid #e2e8f0;">
 </div>
 <span id="toggle-${tierId}" style="font-size: 15px; color: ${color};">${collapsed ? '▶' : '▼'}</span>
 </div>
-<div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
+<div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(15,23,42,0.08);">
 ${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f1f5f9;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #1e293b; font-weight: 700; font-size: 15px;">${escapeHtml(c.name)}</span>
