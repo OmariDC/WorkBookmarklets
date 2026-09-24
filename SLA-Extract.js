@@ -1767,11 +1767,20 @@ const positionStyle = isFull
 ? 'top: 0; right: 0; bottom: 0; height: 100vh; width: 450px; border-radius: 0;'
 : 'bottom: 20px; right: 20px; width: 400px; height: min(560px, calc(100vh - 90px)); border-radius: 16px;';
 
+// PANEL_STATE_KEY was being written on every minimize but never read
+// back - a page-switch triggers the auto-detect poll, which rebuilds
+// this whole shell from scratch (mountPanel replaces the DOM node
+// entirely), and a fresh render had no idea the panel was minimized,
+// so it always came back full size. Reading it here and applying the
+// same transform/icon a manual minimize would have set is what makes
+// "stay minimized across a rebuild" actually true.
+const isMinimized = localStorage.getItem(PANEL_STATE_KEY) === 'hidden';
+
 return `
 <div id="${PANEL_BOX_ID}" style="position: fixed; ${positionStyle}
 background: #f8fafc; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.25), 0 4px 12px rgba(15,23,42,0.08);
 z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-display: flex; flex-direction: column; transition: transform 0.3s ease;">
+display: flex; flex-direction: column; transition: transform 0.3s ease; ${isMinimized ? 'transform: translateX(150%);' : ''}">
 
 <div style="position: sticky; top: 0; background: linear-gradient(135deg, #1e293b 0%, #334155 100%); color: white; padding: 20px;
 display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #059669;
@@ -1791,7 +1800,7 @@ style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: po
 title="Top">${svgIcon('arrowUp', 14)}</button>
 <button id="_slaMinimizeBtn" onclick="window._toggleMinimizePanel();"
 style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; border-radius: 4px; transition: all 0.2s; display: flex; align-items: center;"
-title="Minimize">${svgIcon('minimize', 14)}</button>
+title="Minimize">${svgIcon(isMinimized ? 'restore' : 'minimize', 14)}</button>
 </div>
 </div>
 
