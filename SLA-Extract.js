@@ -127,6 +127,18 @@ let currentPendingCustomers = [];
 // toggle), never something the background poll decides on its own.
 let currentPanelMode = 'normal';
 let runningMorningChecks = false;
+// True for the whole window._refreshLeadsAndPanel() flow, not just its
+// final runExtraction() call - clicking the native refresh icon and
+// waiting for it to finish can take several seconds with no hash
+// change and no recognized-page-type change either, so nothing else
+// naturally excludes the background auto-detect poll from firing its
+// own independent runExtraction() mid-wait (unlike a real navigation,
+// which self-excludes the poll since detectPageType() goes null while
+// on an unrecognized route). Without this, swapping pages while a
+// refresh was still waiting on the icon let two overlapping scans run
+// against two different pages at once - the reported "SLA rescans
+// everything" / "Pending briefly shows no leads then corrects itself".
+let refreshingLeads = false;
 // Populated by window._runAllMorningChecks as each check completes -
 // {key, label, status: 'pending'|'running'|'done', ok, summary, details}.
 // Drives renderMorningChecksBody(); empty means "hasn't been run yet".
@@ -357,7 +369,8 @@ observer.observe(icon, { attributes: true, attributeFilter: ['class'] });
 // newly-arrived leads get properly ingested (tiered, detail-scraped),
 // not just a stale re-render of what was already cached.
 window._refreshLeadsAndPanel = async function() {
-if (extracting || assigning || runningMorningChecks) return;
+if (extracting || assigning || runningMorningChecks || refreshingLeads) return;
+refreshingLeads = true;
 showPageFlashOverlay('Refreshing leads…');
 try {
 const icon = findNativeLeadsRefreshIcon();
@@ -368,6 +381,7 @@ await waitForRefreshIconSpinState(icon, false, 15000);
 }
 await runExtraction();
 } finally {
+refreshingLeads = false;
 hidePageFlashOverlay();
 }
 };
@@ -3916,7 +3930,7 @@ clearInterval(window._slaAutoDetectInterval);
 }
 let lastKnownPageType = detectPageType();
 window._slaAutoDetectInterval = setInterval(() => {
-if (extracting || assigning || runningMorningChecks || currentPanelMode === 'morningChecks') return;
+if (extracting || assigning || runningMorningChecks || refreshingLeads || currentPanelMode === 'morningChecks') return;
 const pageType = detectPageType();
 if (pageType && pageType !== lastKnownPageType) {
 lastKnownPageType = pageType;
