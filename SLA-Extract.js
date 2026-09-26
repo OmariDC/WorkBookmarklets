@@ -1442,18 +1442,25 @@ return prioritized.slice(0, limit);
 // in both functions; factored out once both were stable rather than
 // during initial development, since the shared shape only became
 // obvious after both existed.
-// No longer a collapsible "Assign Leads" section wrapping everything -
-// agents/limit/preview/button/results are the actual look-and-act
-// content, so they're always visible directly beneath the due-summary
-// tiles above (same background, no border between them - reads as one
-// continuous zone rather than two stacked panels). Only the filter
-// controls (tiers/callback-type/time window), which are setup you set
-// once and rarely revisit, are tucked behind their own small "Filters"
-// disclosure.
+// Two independent collapse levels, not one: ASSIGN (agents/limit/
+// preview/button/results) is the bulk of this zone's height, and an
+// earlier pass made it permanently visible on the assumption that
+// "always visible" was strictly better - it isn't, especially at the
+// compact/mini panel size, where that alone can push the actual lead
+// list out of view. Collapsible again, defaulting open so nothing
+// changes for anyone who hasn't touched it yet. FILTERS nests inside
+// it (collapsed independently, and only reachable at all while ASSIGN
+// is open) since tier/callback-type/time-window filters only matter
+// when you're about to run a manual assign.
 function renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, runHandlerName, filtersZoneHtml) {
 const filtersOpen = !!settings.filtersOpen;
+const assignOpen = settings.assignOpen !== false;
 return `
 <div id="assignSectionContainer" style="padding: 0 20px 16px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+<div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; align-items: center; gap: 6px; padding: 6px 0; font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px;">
+${chevronIcon(!assignOpen, 'assignSectionToggle')} ASSIGN
+</div>
+<div id="assignSectionBody" style="display: ${assignOpen ? 'block' : 'none'};">
 <div style="margin-bottom: 10px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
 <span style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px;">AGENTS ONLINE</span>
@@ -1482,6 +1489,7 @@ ${chevronIcon(!filtersOpen, 'filtersZoneToggle')} FILTERS
 </div>
 <div id="filtersZoneBody" style="display: ${filtersOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; margin-top: 10px; padding-right: 6px;">
 ${filtersZoneHtml}
+</div>
 </div>
 </div>`;
 }
@@ -2329,6 +2337,24 @@ saveAssignSettings({ filtersOpen: isHidden });
 if (isHidden) syncAllWheelPositions();
 };
 
+// Collapses the whole ASSIGN block (agents/limit/preview/button/
+// results), not just filters. If FILTERS is currently open when this
+// re-opens, its wheel needs the same re-sync as _toggleFiltersZone
+// does - its own display style already says "open" from before, so
+// nothing re-triggers that sync on its own now that the wheel's actual
+// container (this one) has just become visible again.
+window._toggleAssignSection = function() {
+const body = document.getElementById('assignSectionBody');
+const toggle = document.getElementById('assignSectionToggle');
+if (!body || !toggle) return;
+const isHidden = body.style.display === 'none';
+body.style.display = isHidden ? 'block' : 'none';
+toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
+saveAssignSettings({ assignOpen: isHidden });
+const filtersBody = document.getElementById('filtersZoneBody');
+if (isHidden && filtersBody && filtersBody.style.display !== 'none') syncAllWheelPositions();
+};
+
 window._toggleAdvancedCallbackTypes = function(forceOpen) {
 const body = document.getElementById('advancedCallbackTypes');
 const toggle = document.getElementById('advancedCallbackToggle');
@@ -2352,14 +2378,17 @@ saveAssignSettings({ advancedOpen: shouldOpen });
 // meant to give: not just "will something happen" but "is this a
 // reasonable way to divide it up."
 // Shared by every quick-criteria entry point (the general Quick Assign
-// button and each clickable due-summary tile): resolves which agents
-// are actually checked - agent selection is real state the user is
-// deliberately curating and always gets respected, no matter which
-// fixed lead-criteria shortcut triggered the run. Returns null (and
-// leaves a message in the log) if nothing's selected. Progress/results
-// are always visible now (nothing to expand first), since agents/
-// button/results are no longer behind a collapsible section.
+// button and each clickable due-summary tile): expands the ASSIGN
+// section if it's collapsed so progress/results are visible, then
+// resolves which agents are actually checked - agent selection is real
+// state the user is deliberately curating and always gets respected,
+// no matter which fixed lead-criteria shortcut triggered the run.
+// Returns null (and leaves a message in the log) if nothing's selected.
 function beginQuickAssign() {
+const body = document.getElementById('assignSectionBody');
+if (body && body.style.display === 'none') {
+window._toggleAssignSection();
+}
 const selectedAgentIds = new Set(
 Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map(el => el.value)
 );
