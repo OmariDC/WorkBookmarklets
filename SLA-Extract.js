@@ -138,6 +138,7 @@ const MORNING_CHECKS_ORDER = [
 { key: 'routedTo', label: 'All Leads Are Routed To' },
 { key: 'voicemail', label: 'Voicemail' },
 ];
+const MORNING_CHECKS_OVERLAY_ID = '_slaMorningChecksOverlay';
 
 function categorizeTier(campaign, source) {
 const camp = campaign.toLowerCase();
@@ -456,7 +457,11 @@ breakdown.sort((a, b) => b.inProgress - a.inProgress);
 return { total, sum, breakdown };
 }
 
-window._checkInProgress = async function() {
+// skipRestore lets window._runAllMorningChecks chain straight into the
+// next check's own navigation instead of bouncing back through the
+// page morning checks started from and back out again - standalone use
+// (the console/a future single-check button) always restores as before.
+window._checkInProgress = async function(skipRestore) {
 const originalHash = window.location.hash;
 try {
 window.location.hash = '#/onGoingCampaigns/module/-6/deferred/false/showSLA/true';
@@ -478,7 +483,7 @@ summary: `MISMATCH - top total ${total}, rows sum to ${sum} (off by ${diff})`,
 details: breakdown.length > 0 ? breakdown.map(b => `${b.name}: ${b.inProgress}`) : ['(no rows have any In Progress)']
 };
 } finally {
-window.location.hash = originalHash;
+if (!skipRestore) window.location.hash = originalHash;
 }
 };
 
@@ -575,7 +580,7 @@ return [`Today (${total} total):`, ...(lines.length > 0 ? lines : ['(no rows)'])
 // rather than a standalone action.
 const EXPECTED_DAILY_SOURCES = ['Robins & Day Website', 'Customer First', 'Autotrader - Deal Builder', 'Cargurus'];
 
-window._checkLeadTypes = async function() {
+window._checkLeadTypes = async function(skipRestore) {
 const originalHash = window.location.hash;
 try {
 window.location.hash = '#/Queue/InboundAPI';
@@ -615,7 +620,7 @@ return { ok: false, summary: `MISSING - ${stillMissing.join(', ')}`, details };
 // controller calls getTodaysData() in its constructor, so the next
 // fresh visit to this page loads Today automatically regardless of
 // whatever this check left it on.
-window.location.hash = originalHash;
+if (!skipRestore) window.location.hash = originalHash;
 }
 };
 
@@ -636,7 +641,14 @@ if (t === '') return true;
 return UNROUTED_PLACEHOLDER_WORDS.includes(t.toLowerCase());
 }
 
-window._checkRoutedTo = async function() {
+// Run before Lead Type Check when both are chained back-to-back in
+// window._runAllMorningChecks (execution order there differs from the
+// fixed display order): this always does its own fresh hash navigation,
+// which is what guarantees the page is showing Today rather than
+// whatever Yesterday state a *previous* check might have left it on -
+// Lead Type Check reusing this same already-loaded page afterwards is
+// only safe because this one runs first and only ever reads Today.
+window._checkRoutedTo = async function(skipRestore) {
 const originalHash = window.location.hash;
 try {
 window.location.hash = '#/Queue/InboundAPI';
@@ -670,7 +682,7 @@ summary: `${problems.length} NOT ROUTED`,
 details: problems.map(p => `Api Ref: ${p.apiReference} | Source: ${p.source} | Enquiry: ${p.enquiryType}`)
 };
 } finally {
-window.location.hash = originalHash;
+if (!skipRestore) window.location.hash = originalHash;
 }
 };
 
@@ -711,7 +723,7 @@ observer.observe(document.body, { childList: true, subtree: true, characterData:
 });
 }
 
-window._checkVoicemails = async function() {
+window._checkVoicemails = async function(skipRestore) {
 const originalHash = window.location.hash;
 try {
 window.location.hash = '#/Queue/Voicemails';
@@ -723,7 +735,7 @@ return { ok: null, summary: 'Could not read the voicemail queue count - aborted.
 // it's often legitimately 0.
 return { ok: null, summary: `${count}` };
 } finally {
-window.location.hash = originalHash;
+if (!skipRestore) window.location.hash = originalHash;
 }
 };
 
@@ -2648,48 +2660,93 @@ morningChecksResults = [];
 displayMorningChecks();
 };
 
-// Runs the five checks in the fixed order the user asked for, updating
+// Fastest order to actually RUN the checks in - independent of
+// MORNING_CHECKS_ORDER, which is only the fixed order they're DISPLAYED
+// in (renderMorningChecksBody always renders by that order regardless
+// of what order results actually arrive in). sla costs nothing (no
+// navigation, it's already sitting on the page it needs). routedTo and
+// leadType both live on the Inbound API page, so running them back to
+// back means leadType's own navigation to that page is a same-hash
+// no-op and its waitForElement resolves instantly - one page load
+// instead of two. routedTo has to go first in that pair: it always
+// does a fresh navigation (guaranteeing Today's data), whereas leadType
+// can end on Yesterday if it needed the overnight fallback, and reusing
+// the page without a fresh navigation only stays correct because
+// nothing after leadType depends on it being back on Today (see the
+// comment on window._checkRoutedTo).
+const MORNING_CHECKS_EXECUTION_ORDER = ['sla', 'routedTo', 'leadType', 'inProgress', 'voicemail'];
+
+function showMorningChecksOverlay() {
+if (document.getElementById(MORNING_CHECKS_OVERLAY_ID)) return;
+if (!document.getElementById('_slaSpinKeyframes')) {
+const style = document.createElement('style');
+style.id = '_slaSpinKeyframes';
+style.textContent = '@keyframes _slaSpin { to { transform: rotate(360deg); } }';
+document.head.appendChild(style);
+}
+const overlay = document.createElement('div');
+overlay.id = MORNING_CHECKS_OVERLAY_ID;
+overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(15,23,42,0.94); z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: white; font-size: 14px; font-weight: 600;';
+overlay.innerHTML = `
+<div style="width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.25); border-top-color: white; border-radius: 50%; animation: _slaSpin 0.8s linear infinite;"></div>
+<div>Running morning checks…</div>
+`;
+document.documentElement.appendChild(overlay);
+}
+
+function hideMorningChecksOverlay() {
+document.getElementById(MORNING_CHECKS_OVERLAY_ID)?.remove();
+}
+
+// Runs the five checks (see MORNING_CHECKS_EXECUTION_ORDER for why that
+// order, not the display order, is used to actually run them), updating
 // the page after each one completes so results appear progressively
-// rather than all at once at the end. Each check function already
-// saves/restores its own hash internally (see each window._checkXxx
-// above), so this only needs to capture the hash once up front - to
-// pass to the SLA count check as "where to go back to check" if it
-// isn't already sitting on the SLA page - and restore it at the very
-// end as a final safety net.
+// rather than all at once at the end. Each check function saves/
+// restores its own hash internally, but skipRestore=true is passed here
+// so a check leaves the browser wherever it landed instead of bouncing
+// back through the page morning checks started from between every
+// single step - originalHash is only restored once, at the very end.
+// Konnect's own pages re-rendering mid-navigation (a big table's rows
+// all populating at once, etc.) is what the user described as making
+// the screen look like it's glitching - showMorningChecksOverlay dims
+// the real page for the whole run so none of that is visible, without
+// slowing anything down (it's purely cosmetic, nothing waits on it).
 window._runAllMorningChecks = async function() {
 if (runningMorningChecks) return;
 runningMorningChecks = true;
 const originalHash = window.location.hash;
+showMorningChecksOverlay();
 
 const checkFns = {
 sla: () => window._checkSlaCount(originalHash),
-inProgress: () => window._checkInProgress(),
-leadType: () => window._checkLeadTypes(),
-routedTo: () => window._checkRoutedTo(),
-voicemail: () => window._checkVoicemails()
+inProgress: () => window._checkInProgress(true),
+leadType: () => window._checkLeadTypes(true),
+routedTo: () => window._checkRoutedTo(true),
+voicemail: () => window._checkVoicemails(true)
 };
 
 morningChecksResults = MORNING_CHECKS_ORDER.map(step => ({ ...step, status: 'pending' }));
 displayMorningChecks();
 
 try {
-for (const step of MORNING_CHECKS_ORDER) {
-morningChecksResults = morningChecksResults.map(r => r.key === step.key ? { ...r, status: 'running' } : r);
+for (const key of MORNING_CHECKS_EXECUTION_ORDER) {
+morningChecksResults = morningChecksResults.map(r => r.key === key ? { ...r, status: 'running' } : r);
 displayMorningChecks();
 
 let result;
 try {
-result = await checkFns[step.key]();
+result = await checkFns[key]();
 } catch (err) {
 result = { ok: null, summary: `Error - ${err && err.message ? err.message : err}` };
 }
 
-morningChecksResults = morningChecksResults.map(r => r.key === step.key ? { ...r, status: 'done', ...result } : r);
+morningChecksResults = morningChecksResults.map(r => r.key === key ? { ...r, status: 'done', ...result } : r);
 displayMorningChecks();
 }
 } finally {
 runningMorningChecks = false;
 window.location.hash = originalHash;
+hideMorningChecksOverlay();
 }
 };
 
