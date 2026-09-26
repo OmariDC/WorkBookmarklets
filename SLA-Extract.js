@@ -690,6 +690,58 @@ window.location.hash = originalHash;
 }
 };
 
+// Voicemail count - a plain number, no OK/report judgment (same nature
+// as the SLA count). The queue-count element itself is always present
+// on page load (no ng-if wraps it), but its value is filled in
+// asynchronously after a separate stats API call resolves - waiting
+// for the element to merely exist would risk reading it before
+// Angular has actually populated a number, so this waits for a digit
+// to appear in its text specifically.
+function readVoicemailQueueCount() {
+const el = document.querySelector('span[title="Number in Queue waiting to be processed"]');
+if (!el) return null;
+const match = el.textContent.trim().match(/(\d+)/);
+return match ? Number(match[1]) : null;
+}
+
+function waitForVoicemailCount(timeout = 15000) {
+return new Promise((resolve) => {
+const existing = readVoicemailQueueCount();
+if (existing !== null) {
+resolve(existing);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(null);
+}, timeout);
+const observer = new MutationObserver(() => {
+const val = readVoicemailQueueCount();
+if (val !== null) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(val);
+}
+});
+observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+});
+}
+
+window._checkVoicemails = async function() {
+const originalHash = window.location.hash;
+try {
+window.location.hash = '#/Queue/Voicemails';
+const count = await waitForVoicemailCount();
+if (count === null) {
+alert('Could not read the voicemail queue count - aborted, nothing was checked.');
+return;
+}
+alert(`Voicemails in queue: ${count}`);
+} finally {
+window.location.hash = originalHash;
+}
+};
+
 async function extractCustomerDetails(customerElement) {
 const nameLink = customerElement.querySelector('a');
 if (!nameLink) {
@@ -2397,6 +2449,7 @@ ${bodyHtml}
 <span onclick="window._scanSources()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Scan Sources</span>
 <span onclick="window._checkLeadTypes()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Lead Types</span>
 <span onclick="window._checkRoutedTo()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Routed To</span>
+<span onclick="window._checkVoicemails()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Voicemails</span>
 </span>
 <button onclick="(function() { if (confirm('Clear all data and stop?')) { window._slaResetBookmarklet(); } })();"
 style="padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
