@@ -731,6 +731,170 @@ window.KonnectBookingCheck.extractLeadPanelFields = extractLeadPanelFields;
 window.KonnectBookingCheck.extractInitialNotes = extractInitialNotes;
 window.KonnectBookingCheck.validateLeadCandidate = validateLeadCandidate;
 
+// A stable key for "have I already examined this entry" tracking across
+// scroll attempts (per instruction: never rescan every historical row
+// after every scroll) - timestamp + heading + Lead ID together, since
+// none alone is guaranteed unique (two different leads could share a
+// displayed minute).
+function timelineEntryKey(row) {
+const timestamp = extractTimelineTimestamp(row) || '';
+const heading = row.querySelector('.connected-customer-title-pink')?.textContent.replace(/\s+/g, ' ').trim() || '';
+const leadId = extractVisibleLeadId(row) || '';
+return `${timestamp}||${heading}||${leadId}`;
+}
+
+// Confirmed: press Escape once, wait for .modal[role="dialog"].in to
+// be absent/no-longer-visible - a condition wait, not a fixed sleep -
+// bounded to ~750ms since modals close fast once dismissed.
+function isAnyLeadModalVisible() {
+return Array.from(document.querySelectorAll('.modal[role="dialog"].in')).some(isVisible);
+}
+
+function waitForLeadModalGone(timeout = 750) {
+return new Promise((resolve) => {
+if (!isAnyLeadModalVisible()) { resolve(true); return; }
+const timer = setTimeout(() => { observer.disconnect(); resolve(!isAnyLeadModalVisible()); }, timeout);
+const observer = new MutationObserver(() => {
+if (!isAnyLeadModalVisible()) { clearTimeout(timer); observer.disconnect(); resolve(true); }
+});
+observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+});
+}
+
+async function closeLeadModal(timeout = 750) {
+if (!isAnyLeadModalVisible()) return true;
+const escEvent = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true });
+document.dispatchEvent(escEvent);
+return waitForLeadModalGone(timeout);
+}
+
+// The real scroll container (browser window vs. some internal timeline
+// element) was explicitly NOT confirmed in any live DOM capture this
+// tool is built against - the spec itself says to keep this as its own
+// small, replaceable helper rather than guess, so it can be swapped for
+// a real implementation the moment that's confirmed, without touching
+// anything that calls it. Until then, this safely reports the
+// container as unknown instead of scrolling something that might be
+// wrong.
+async function loadOlderTimelineEntries() {
+return { status: 'TIMELINE_SCROLL_CONTAINER_UNKNOWN', loadedNewEntries: false };
+}
+
+// Email: trim + lowercase. Phone: digits only, UK +44 and leading 0
+// treated as equivalent by canonicalizing to the leading-0 form - e.g.
+// "+44 7393 966086" and "07393966086" both normalize to
+// "07393966086". No normalizeRegistration - Registration was
+// deliberately dropped from the SLA-Extract.js export (see that
+// repo's own history: "not something we need to copy, nor can search
+// reliably by anyways"), so it's never part of this tool's input at
+// all, not just optional.
+function normalizeEmail(value) {
+return String(value || '').trim().toLowerCase();
+}
+
+function normalizePhone(value) {
+const digits = String(value || '').replace(/\D+/g, '');
+if (digits.startsWith('44')) return '0' + digits.slice(2);
+return digits;
+}
+
+// Matches the CURRENT SLA-Extract.js "Copy for Booking Check" export
+// exactly - six columns, no Registration (an earlier draft of this
+// tool's spec still assumed a 7-column Registration-included schema;
+// the export itself changed after that spec was written). Each row is
+// validated per instruction: an email or phone is required for
+// customer search, and a complete parseable Created value is required
+// for lead matching - rows failing either are flagged INVALID_INPUT
+// with the specific reason, not silently dropped.
+const EXPECTED_BATCH_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'];
+
+function parseBatchInput(rawText) {
+const lines = String(rawText || '').split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0);
+if (lines.length === 0) return { rows: [], headerOk: false, error: 'No input.' };
+
+const header = lines[0].split('\t').map((h) => h.trim());
+const headerOk = header.length === EXPECTED_BATCH_HEADER.length && header.every((h, i) => h === EXPECTED_BATCH_HEADER[i]);
+if (!headerOk) {
+return { rows: [], headerOk: false, error: `Header does not match expected columns: ${EXPECTED_BATCH_HEADER.join('\t')}` };
+}
+
+const rows = lines.slice(1).map((line, index) => {
+const cells = line.split('\t');
+const name = (cells[0] || '').trim();
+const phone = (cells[1] || '').trim();
+const email = (cells[2] || '').trim();
+const source = (cells[3] || '').trim();
+const campaign = (cells[4] || '').trim();
+const created = (cells[5] || '').trim();
+
+const normalizedEmail = normalizeEmail(email);
+const normalizedPhone = normalizePhone(phone);
+const hasIdentifier = normalizedEmail.length > 0 || normalizedPhone.length > 0;
+const parsedCreated = created ? parseSlaCreated(created) : null;
+
+let status = 'QUEUED';
+let exception = null;
+if (!hasIdentifier) { status = 'INVALID_INPUT'; exception = 'NO_SEARCH_IDENTIFIER'; }
+else if (!parsedCreated) { status = 'INVALID_INPUT'; exception = 'INVALID_CREATED_DATETIME'; }
+
+return {
+inputIndex: index,
+name, phone, email, source, campaign, created,
+normalizedEmail, normalizedPhone, parsedCreated,
+groupKey: normalizedEmail || normalizedPhone,
+status, exception
+};
+});
+
+return { rows, headerOk: true, error: null };
+}
+
+window.KonnectBookingCheck.timelineEntryKey = timelineEntryKey;
+window.KonnectBookingCheck.closeLeadModal = closeLeadModal;
+window.KonnectBookingCheck.loadOlderTimelineEntries = loadOlderTimelineEntries;
+window.KonnectBookingCheck.normalizeEmail = normalizeEmail;
+window.KonnectBookingCheck.normalizePhone = normalizePhone;
+window.KonnectBookingCheck.parseBatchInput = parseBatchInput;
+
+// ===================================================================
+// Self-test for batch-input parsing and normalization - no DOM
+// dependency.
+// ===================================================================
+(function batchInputSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+
+check('normalizeEmail trims+lowercases', normalizeEmail(' Foo@Bar.COM '), 'foo@bar.com');
+check('normalizePhone +44 form', normalizePhone('+44 7393 966086'), '07393966086');
+check('normalizePhone leading-0 form matches +44 form', normalizePhone('07393966086'), normalizePhone('+44 7393 966086'));
+
+const goodBatch = [
+'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
+'Stephen Dracup\t07917074816\tstephen@dracup.me.uk\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 18:05',
+'No Identifier\t\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 18:05',
+'Bad Date\t07000000000\tbad@date.com\tCustomer First\tCitroen - Enquiry - New\tnot a date'
+].join('\n');
+const parsed = parseBatchInput(goodBatch);
+check('parseBatchInput header ok', parsed.headerOk, true);
+check('parseBatchInput row count', parsed.rows.length, 3);
+check('parseBatchInput row 0 queued', parsed.rows[0].status, 'QUEUED');
+check('parseBatchInput row 1 missing identifier', parsed.rows[1].exception, 'NO_SEARCH_IDENTIFIER');
+check('parseBatchInput row 2 bad created', parsed.rows[2].exception, 'INVALID_CREATED_DATETIME');
+
+const badHeaderBatch = 'Name\tPhone\tEmail\tRegistration\tSource\tCampaign\tCreated\nx\ty\tz\ta\tb\tc\td';
+check('parseBatchInput rejects the old 7-column Registration header', parseBatchInput(badHeaderBatch).headerOk, false);
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck batch-input self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck batch-input self-test passed (6/6)');
+}
+})();
+
 // ===================================================================
 // Self-test for the pure parsing/matching logic above - no DOM
 // dependency, so it can run the same way the classifier's self-test
