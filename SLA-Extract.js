@@ -1328,6 +1328,29 @@ displayMorningChecks();
 // picker markup used in both tier and callback-type sections.
 // ===================================================================
 
+// Confirmed live: the modal's Customer tab (open by default) holds its
+// own labeled table - <tr><td>Email</td><td>value</td></tr>, likewise
+// Mobiles/Landlines (both plural - a customer can have more than one on
+// file, comma-separated, matching the confirmed "07932064637," shape).
+// Reading by the field's own label is more reliable than the old
+// approach of pattern-matching a phone/email shape out of the modal's
+// whole text, which could in principle misfire on some other number or
+// address incidentally present in the modal. Scoped to .tab-pane.active
+// so the Vehicles Owned tab's own <table class="table"> (uib-tab keeps
+// every tab's markup in the DOM at once, just toggling which one is
+// "active" - confirmed both tabs share the exact same table class)
+// could never get matched by accident.
+function readModalTabField(modal, label) {
+const rows = Array.from(modal.querySelectorAll('.tab-pane.active table.table tr'));
+const row = rows.find(r => r.querySelector('td')?.textContent?.trim() === label);
+if (!row) return '';
+return row.querySelectorAll('td')[1]?.textContent?.trim() || '';
+}
+
+function firstFromCommaList(raw) {
+return (raw || '').split(',').map(s => s.trim()).find(s => s.length > 0) || '';
+}
+
 async function extractCustomerDetails(customerElement) {
 const nameLink = customerElement.querySelector('a');
 if (!nameLink) {
@@ -1345,13 +1368,25 @@ return { phone: '', email: '' };
 await new Promise(resolve => setTimeout(resolve, 150));
 
 try {
+let phone = (firstFromCommaList(readModalTabField(modal, 'Mobiles')) || firstFromCommaList(readModalTabField(modal, 'Landlines'))).replace(/\s+/g, '');
+let email = readModalTabField(modal, 'Email');
+
+// Falls back to the old whole-modal regex scrape only if the labeled
+// lookup came back completely empty - in case some other customer's
+// modal ever renders with a different table shape than the one
+// confirmed here, rather than silently losing data the old approach
+// would have caught.
+if (!phone || !email) {
 const modalText = modal.innerText || modal.textContent;
-
+if (!phone) {
 const phoneMatch = modalText.match(/\b(07\d{9}|0\d{3}\s?\d{3}\s?\d{3,4}|0\d{10})\b/);
-const phone = phoneMatch ? phoneMatch[1].replace(/\s/g, '') : '';
-
+phone = phoneMatch ? phoneMatch[1].replace(/\s/g, '') : '';
+}
+if (!email) {
 const emailMatch = modalText.match(/([\w\.-]+@[\w\.-]+\.\w+)/);
-const email = emailMatch ? emailMatch[1] : '';
+email = emailMatch ? emailMatch[1] : '';
+}
+}
 
 const closeBtn = modal.querySelector('.close, [aria-label*="close"], [aria-label*="Close"]')
 || modal.querySelector('button:last-child');
