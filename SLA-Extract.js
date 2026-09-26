@@ -1201,6 +1201,21 @@ const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 return panelSize === 'full' ? '55vh' : '280px';
 }
 
+// Same reasoning as assignSectionBodyMaxHeight, one level up: that cap
+// only applied to FILTERS, but ASSIGN (agents/limit/preview/button/
+// results, with FILTERS nested inside it) can independently grow tall
+// enough on its own - a long agent list plus a full results log plus
+// FILTERS expanded - to push the footer (Clear & Stop, etc.) out past
+// the panel box's own overflow:hidden boundary, making it disappear
+// entirely rather than just becoming unreachable via scroll. Capped
+// looser than the inner FILTERS cap since it has to fit everything
+// FILTERS already accounts for, plus the agents list/button/results
+// around it.
+function assignFullSectionMaxHeight() {
+const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
+return panelSize === 'full' ? '65vh' : '320px';
+}
+
 // Reads whichever wheels are actually present in the currently-mounted
 // assign section (SLA's single minutes wheel, or Pending Customers' hour
 // + minute pair) and wires them up, seeding each from its hidden input's
@@ -1460,7 +1475,7 @@ return `
 <div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; align-items: center; gap: 6px; padding: 6px 0; font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px;">
 ${chevronIcon(!assignOpen, 'assignSectionToggle')} ASSIGN
 </div>
-<div id="assignSectionBody" style="display: ${assignOpen ? 'block' : 'none'};">
+<div id="assignSectionBody" style="display: ${assignOpen ? 'block' : 'none'}; max-height: ${assignFullSectionMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="margin-bottom: 10px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
 <span style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px;">AGENTS ONLINE</span>
