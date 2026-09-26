@@ -1623,6 +1623,47 @@ function escapeHtmlForUi(value) {
 return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// The async Clipboard API alone gave no visible feedback either way
+// (a success and a silent failure looked identical) and had no
+// fallback if it's blocked/restricted in this page's context - a real
+// possibility for a bookmarklet injected into a third-party SPA.
+// Falls back to a hidden textarea + execCommand('copy'), which works
+// in more restricted contexts the async API can refuse.
+function copyTextToClipboard(text) {
+const viaClipboardApi = navigator.clipboard && navigator.clipboard.writeText
+? navigator.clipboard.writeText(text)
+: Promise.reject(new Error('Clipboard API unavailable'));
+
+return viaClipboardApi.catch(() => new Promise((resolve, reject) => {
+try {
+const textarea = document.createElement('textarea');
+textarea.value = text;
+textarea.style.position = 'fixed';
+textarea.style.opacity = '0';
+document.body.appendChild(textarea);
+textarea.focus();
+textarea.select();
+const ok = document.execCommand('copy');
+textarea.remove();
+if (ok) resolve(); else reject(new Error('execCommand copy failed'));
+} catch (error) {
+reject(error);
+}
+}));
+}
+
+function showButtonFeedback(button, text, isError) {
+if (!button) return;
+const original = button.textContent;
+const originalColor = button.style.color;
+button.textContent = text;
+button.style.color = isError ? '#dc2626' : '#059669';
+setTimeout(() => {
+button.textContent = original;
+button.style.color = originalColor;
+}, 1500);
+}
+
 function initKonnectBookingCheckUI() {
 const { host, root } = buildPanelMarkup();
 
@@ -1737,25 +1778,36 @@ window.__konnectBookingCheck = null;
 console.info('Konnect Booking Check stopped - click the bookmarklet again to run');
 });
 
-root.getElementById('btnCopy').addEventListener('click', () => {
-if (!session) return;
-navigator.clipboard.writeText(buildDefaultCopyText(session)).catch(() => {});
+root.getElementById('btnCopy').addEventListener('click', (event) => {
+const s = ensureSessionFromPasteBox();
+const count = orderedResults(s).length;
+copyTextToClipboard(buildDefaultCopyText(s))
+.then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count}`, false))
+.catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
 });
 
-root.getElementById('btnCopyPrioritised').addEventListener('click', () => {
-if (!session) return;
-navigator.clipboard.writeText(buildPrioritisedCopyText(session)).catch(() => {});
+root.getElementById('btnCopyPrioritised').addEventListener('click', (event) => {
+const s = ensureSessionFromPasteBox();
+const count = orderedResults(s).length;
+copyTextToClipboard(buildPrioritisedCopyText(s))
+.then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count}`, false))
+.catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
 });
 
-root.getElementById('btnDownload').addEventListener('click', () => {
-if (!session) return;
-const blob = new Blob([buildFullAuditTsv(session)], { type: 'text/tab-separated-values' });
+root.getElementById('btnDownload').addEventListener('click', (event) => {
+const s = ensureSessionFromPasteBox();
+try {
+const blob = new Blob([buildFullAuditTsv(s)], { type: 'text/tab-separated-values' });
 const url = URL.createObjectURL(blob);
 const a = document.createElement('a');
 a.href = url;
 a.download = 'konnect-booking-check-results.tsv';
 a.click();
 setTimeout(() => URL.revokeObjectURL(url), 5000);
+showButtonFeedback(event.currentTarget, '✓ Downloaded', false);
+} catch (error) {
+showButtonFeedback(event.currentTarget, '✗ Download failed', true);
+}
 });
 
 minBtn.addEventListener('click', () => { bodyEl.classList.toggle('hidden'); });
