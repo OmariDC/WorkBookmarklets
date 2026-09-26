@@ -3230,7 +3230,12 @@ if (currentPanelMode === 'morningChecks') {
 displayMorningChecks();
 return;
 }
-runExtraction();
+// Also forces Konnect's own native refresh rather than just re-reading
+// whatever's currently sitting in the DOM (same flow as clicking the
+// panel title - see window._refreshLeadsAndPanel) - "show me the
+// panel" and "make sure it's actually current" are the same ask when
+// you're the one pressing the button to bring it up.
+window._refreshLeadsAndPanel();
 }
 
 function attachBadgeHoverEffects() {
