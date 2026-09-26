@@ -2143,6 +2143,20 @@ badge.style.fontSize = '22px';
 }
 }
 
+// Clicking the badge is a deliberate "show me the panel" request, unlike
+// the background auto-detect poll's silent rebuilds on a page switch -
+// those are meant to preserve whatever minimized state already exists
+// (see renderPanelShell), but a real click should always win over a
+// leftover minimized state from earlier in the session, or the panel
+// has no way back: it carries its own restore button, so once it's
+// off-screen, that button is off-screen with it, and only an explicit
+// "show it" action - not a rebuild that merely preserves state - can
+// recover from that.
+function handleBadgeClick() {
+localStorage.setItem(PANEL_STATE_KEY, 'visible');
+runExtraction();
+}
+
 function attachBadgeHoverEffects() {
 badge.addEventListener('mouseenter', () => {
 badge.style.transform = 'scale(1.15)';
@@ -2170,7 +2184,7 @@ if (!targetUl) {
 console.warn('SLA Manager: navbar structure not found, falling back to fixed position');
 badge = document.createElement('div');
 badge.id = BADGE_ID;
-badge.onclick = runExtraction;
+badge.onclick = handleBadgeClick;
 document.documentElement.appendChild(badge);
 Object.assign(badge.style, {
 position: 'fixed', right: '12px', top: '12px', width: '48px', height: '48px',
@@ -2204,7 +2218,7 @@ fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
 badge.innerHTML = svgIcon('clipboard', 22);
 badge.title = 'Extract leads (SLA queue or Pending Customers)';
-badge.onclick = runExtraction;
+badge.onclick = handleBadgeClick;
 attachBadgeHoverEffects();
 
 navItem.appendChild(badge);
