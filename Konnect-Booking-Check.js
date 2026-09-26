@@ -20,9 +20,22 @@
 // Motability, Leapmotor, Offer Request, PX Valuation, Enquiry-Used,
 // Cargurus, etc.) exists but is explicitly held back until this
 // narrower scope is proven working end to end.
+//
+// Everything through search, timeline scan/matching, lead modal read/
+// validate/close, and Initial Notes classification is confirmed
+// against live Konnect Live DOM. loadOlderTimelineEntries' scroll
+// container is a best-effort guess (see its own comment) pending live
+// testing, not a confirmed selector like everything else here.
 // ===================================================================
 
 (function () {
+// Re-running the bookmarklet should focus the existing panel, not
+// inject a second copy of everything - same pattern as Halo-Tool.js's
+// window.__haloAssistant guard.
+if (window.__konnectBookingCheck && window.__konnectBookingCheck.focus) {
+window.__konnectBookingCheck.focus();
+return;
+}
 
 // Confirmed Initial Notes structure for this lead type:
 //   Lead ID: [ID]
@@ -912,16 +925,55 @@ document.dispatchEvent(escEvent);
 return waitForLeadModalGone(timeout);
 }
 
-// The real scroll container (browser window vs. some internal timeline
-// element) was explicitly NOT confirmed in any live DOM capture this
-// tool is built against - the spec itself says to keep this as its own
-// small, replaceable helper rather than guess, so it can be swapped for
-// a real implementation the moment that's confirmed, without touching
-// anything that calls it. Until then, this safely reports the
-// container as unknown instead of scrolling something that might be
-// wrong.
-async function loadOlderTimelineEntries() {
-return { status: 'TIMELINE_SCROLL_CONTAINER_UNKNOWN', loadedNewEntries: false };
+// BEST-EFFORT, NOT CONFIRMED - unlike everything else in this file, the
+// real scroll container was never verified live (the spec itself flags
+// this and says to keep it replaceable rather than guess at a fixed
+// selector). Reasoning for this specific attempt: the confirmed
+// timeline root (div[style="margin-top:80px;"]) showed no overflow-y
+// styling and its height simply grows with row count (0 -> 3001px for
+// 20 rows), which is what a plain document-flow element does, not an
+// internally-scrolling one - so this first looks for a genuinely
+// scrollable ancestor between the timeline root and <body>, and only
+// falls back to scrolling the window itself if none is found. Detects
+// progress by diffing timelineEntryKey() sets before/after, not by
+// trusting the scroll call itself to mean anything happened.
+function findScrollableAncestor(element) {
+let node = element ? element.parentElement : null;
+while (node && node !== document.body) {
+const style = getComputedStyle(node);
+const canScrollY = (style.overflowY === 'auto' || style.overflowY === 'scroll') && node.scrollHeight > node.clientHeight;
+if (canScrollY) return node;
+node = node.parentElement;
+}
+return null;
+}
+
+async function loadOlderTimelineEntries(maxAttempts = 3, settleMs = 400) {
+const timelineRoot = findTimelineRoot();
+if (!timelineRoot) return { status: 'TIMELINE_SCROLL_CONTAINER_UNKNOWN', loadedNewEntries: false };
+
+const scrollTarget = findScrollableAncestor(timelineRoot);
+const beforeKeys = new Set(getLoadedLeadEntries().map(timelineEntryKey));
+
+for (let attempt = 0; attempt < maxAttempts; attempt++) {
+if (scrollTarget) {
+const before = scrollTarget.scrollTop;
+scrollTarget.scrollTop = Math.max(0, before - scrollTarget.clientHeight);
+if (scrollTarget.scrollTop === before) break; // already at the top - nothing more to load
+} else {
+const before = window.scrollY;
+window.scrollTo(window.scrollX, Math.max(0, before - window.innerHeight));
+if (window.scrollY === before) break;
+}
+
+await sleep(settleMs);
+const afterKeys = getLoadedLeadEntries().map(timelineEntryKey);
+if (afterKeys.some((key) => !beforeKeys.has(key))) {
+return { status: 'OK', loadedNewEntries: true, scrollContainer: scrollTarget ? 'internal' : 'window' };
+}
+}
+
+return { status: 'OK', loadedNewEntries: false, scrollContainer: scrollTarget ? 'internal' : 'window' };
 }
 
 // Email: trim + lowercase. Phone: digits only, UK +44 and leading 0
@@ -1125,5 +1177,597 @@ console.error('KonnectBookingCheck classifyInitialNotes self-test FAILED:\n' + f
 console.info(`KonnectBookingCheck classifyInitialNotes self-test passed (${cases.length}/${cases.length})`);
 }
 })();
+
+// ===================================================================
+// ORCHESTRATION (the outer per-row/per-customer state machine loop)
+// and UI PANEL - the two pieces this file was still missing. Everything
+// this section calls (search, timeline, modal, classify) is already
+// built and confirmed above; this just wires it together in order.
+//
+// Cancellation/pause are cooperative, checked between steps, not true
+// abort-in-flight - none of the built wait functions accept an abort
+// signal, so a Cancel press stops the loop from starting its NEXT step
+// rather than interrupting a wait already underway. Acceptable given
+// waits are bounded (a few seconds at most).
+// ===================================================================
+
+const SESSION_STORAGE_KEY = 'konnectBookingCheck:session:v1';
+
+function saveSession(session) {
+try { localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session)); } catch (error) { /* ignore */ }
+}
+function loadStoredSession() {
+try {
+const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+return raw ? JSON.parse(raw) : null;
+} catch (error) { return null; }
+}
+function clearStoredSession() {
+try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (error) { /* ignore */ }
+}
+
+// Groups preserve first-occurrence order of each groupKey - processing
+// walks grouped-by-customer (search once, do every lead for that
+// customer), while output ordering (see orderedResults) always follows
+// original input order regardless of processing order, per instruction.
+function buildProcessingGroups(rows) {
+const groups = [];
+const byKey = new Map();
+rows.forEach((row) => {
+if (row.status === 'INVALID_INPUT') return;
+let group = byKey.get(row.groupKey);
+if (!group) {
+group = { groupKey: row.groupKey, rows: [], customerMatchMethod: null };
+byKey.set(row.groupKey, group);
+groups.push(group);
+}
+group.rows.push(row);
+});
+return groups;
+}
+
+function makeResultBase(row) {
+return {
+inputIndex: row.inputIndex,
+name: row.name, phone: row.phone, email: row.email,
+source: row.source, campaign: row.campaign, created: row.created,
+customerMatchMethod: null, timelineTimestamp: null, visibleLeadId: null,
+modalDate: null, sourceValidation: null, campaignValidation: null,
+initialNotes: null, category: null, reason: null, confidence: null,
+warnings: [], status: 'PROCESSING', exception: null,
+processingTimestamp: null
+};
+}
+
+function finalizeResult(result, patch) {
+return Object.assign({}, result, patch, { processingTimestamp: new Date().toISOString() });
+}
+
+function newSession(rawInput) {
+const parsed = parseBatchInput(rawInput);
+const rows = parsed.rows;
+const results = {};
+rows.forEach((row) => {
+if (row.status === 'INVALID_INPUT') {
+results[row.inputIndex] = finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception: row.exception });
+}
+});
+const groups = buildProcessingGroups(rows);
+return {
+rawInput, headerOk: parsed.headerOk, headerError: parsed.error,
+rows, groups, groupIndex: 0, rowInGroupIndex: 0,
+results, paused: false, cancelled: false,
+done: !parsed.headerOk || groups.length === 0
+};
+}
+
+// Email preferred; phone tried only if there's no email, or as a
+// single fallback after email returns zero records - never repeatedly
+// alternates. A non-empty result set that fails to resolve to a safe,
+// unique customer (CUSTOMER_NOT_LINKED/CUSTOMER_AMBIGUOUS) is terminal
+// for that attempt, not a trigger to try the other identifier.
+async function searchAndOpenCustomer(group) {
+const sample = group.rows[0];
+const attempts = [];
+if (sample.normalizedEmail) attempts.push({ type: 'email', value: sample.email });
+if (sample.normalizedPhone) attempts.push({ type: 'phone', value: sample.phone });
+if (attempts.length === 0) return { status: 'FAILED', exception: 'NO_SEARCH_IDENTIFIER' };
+
+let lastException = 'NO_SEARCH_IDENTIFIER';
+for (const attempt of attempts) {
+const opened = await openSearchPage();
+if (!opened) { lastException = 'SEARCH_TIMEOUT'; continue; }
+
+const typeSelected = await selectSearchType(attempt.type);
+if (!typeSelected) { lastException = 'SEARCH_TIMEOUT'; continue; }
+
+const entered = await enterSearchIdentifier(attempt.value);
+if (!entered) { lastException = 'SEARCH_TIMEOUT'; continue; }
+
+const count = await submitSearchAndWaitForResults();
+if (count === null) { lastException = 'SEARCH_TIMEOUT'; continue; }
+if (count === 0) { lastException = 'SEARCH_NO_RESULTS'; continue; }
+
+const rows = readSearchResultRows();
+const choice = chooseCustomerResult(rows, sample.name);
+if (choice.status !== 'OK') {
+return { status: 'FAILED', exception: choice.status };
+}
+
+const timelineState = await openCustomerAndWaitForTimeline(choice.result);
+if (timelineState.state === 'FAILED') return { status: 'FAILED', exception: 'TIMELINE_TIMEOUT' };
+if (timelineState.state === 'READY_WITH_ZERO_ELIGIBLE_SALES_LEADS') {
+return { status: 'OK', matchMethod: attempt.type, noEligibleEvents: true };
+}
+return { status: 'OK', matchMethod: attempt.type, noEligibleEvents: false };
+}
+
+return { status: 'FAILED', exception: lastException };
+}
+
+// Processes exactly one SLA row against the ALREADY-open timeline for
+// its customer - opens each exact-minute candidate one at a time,
+// closes it whether or not it validates, and only classifies once
+// exactly one candidate survives validation.
+async function processLeadRow(row) {
+const result = makeResultBase(row);
+const referenceNow = new Date();
+
+const { target, candidates } = findMatchingLeadCandidates(row.created, referenceNow);
+if (!target) {
+return finalizeResult(result, { status: 'EXCEPTION', exception: 'INVALID_CREATED_DATETIME' });
+}
+
+let workingCandidates = candidates;
+if (workingCandidates.length === 0) {
+for (let attempt = 0; attempt < 5; attempt++) {
+const scrollResult = await loadOlderTimelineEntries();
+if (scrollResult.status === 'TIMELINE_SCROLL_CONTAINER_UNKNOWN') break;
+const rescan = findMatchingLeadCandidates(row.created, referenceNow);
+if (rescan.candidates.length > 0) { workingCandidates = rescan.candidates; break; }
+if (!scrollResult.loadedNewEntries) break;
+}
+}
+
+if (workingCandidates.length === 0) {
+return finalizeResult(result, { status: 'EXCEPTION', exception: 'TARGET_CREATED_DATETIME_NOT_FOUND' });
+}
+
+const validated = [];
+for (const candidate of workingCandidates) {
+const modalState = await openLeadModal(candidate.row);
+if (!modalState) {
+continue; // LEAD_CLICK_TARGET_NOT_FOUND / LEAD_MODAL_TIMEOUT for this one candidate - try the next
+}
+const panelFields = extractLeadPanelFields(modalState.panel);
+const validation = validateLeadCandidate(panelFields, row);
+if (validation.ok) {
+const initialNotes = extractInitialNotes(modalState.panel);
+validated.push({ candidate, panelFields, initialNotes });
+}
+await closeLeadModal();
+}
+
+if (validated.length === 0) {
+return finalizeResult(result, { status: 'EXCEPTION', exception: 'LEAD_VALIDATION_FAILED' });
+}
+if (validated.length > 1) {
+return finalizeResult(result, { status: 'EXCEPTION', exception: 'AMBIGUOUS_LEAD' });
+}
+
+const { candidate, panelFields, initialNotes } = validated[0];
+const auditPatch = {
+timelineTimestamp: candidate.rawTimestamp,
+visibleLeadId: candidate.leadId,
+modalDate: panelFields.date,
+sourceValidation: panelFields.source,
+campaignValidation: panelFields.campaign
+};
+
+if (initialNotes === null) {
+return finalizeResult(result, { status: 'EXCEPTION', exception: 'INITIAL_NOTES_FIELD_NOT_FOUND', ...auditPatch });
+}
+if (initialNotes === '') {
+return finalizeResult(result, { status: 'EXCEPTION', exception: 'INITIAL_NOTES_EMPTY', ...auditPatch });
+}
+
+const classification = classifyInitialNotes(initialNotes, { campaign: row.campaign, source: row.source });
+if (classification.confidence === 'low') {
+return finalizeResult(result, { status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', initialNotes, ...auditPatch });
+}
+
+return finalizeResult(result, {
+status: 'CLASSIFIED',
+category: classification.category,
+reason: classification.reason,
+confidence: classification.confidence,
+initialNotes,
+...auditPatch
+});
+}
+
+function advanceToNextGroup(session) {
+session.groupIndex++;
+session.rowInGroupIndex = 0;
+if (session.groupIndex >= session.groups.length) session.done = true;
+}
+
+// Advances exactly one input row (per instruction: "Process next must
+// process exactly one row") - opening/searching for a new customer
+// when needed counts as part of reaching that one row, not a separate
+// step of its own.
+async function stepOnce(session, uiHandle) {
+if (session.done || session.cancelled) return false;
+if (session.groupIndex >= session.groups.length) { session.done = true; return false; }
+
+const group = session.groups[session.groupIndex];
+
+if (session.rowInGroupIndex === 0) {
+uiHandle.setState(`Searching for ${group.rows[0].name}...`, group.rows[0].name, null);
+const openResult = await searchAndOpenCustomer(group);
+if (openResult.status !== 'OK') {
+group.rows.forEach((row) => {
+session.results[row.inputIndex] = finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception: openResult.exception });
+});
+advanceToNextGroup(session);
+saveSession(session);
+return true;
+}
+if (openResult.noEligibleEvents) {
+group.rows.forEach((row) => {
+session.results[row.inputIndex] = finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception: 'NO_ELIGIBLE_LEAD_EVENTS' });
+});
+advanceToNextGroup(session);
+saveSession(session);
+return true;
+}
+group.customerMatchMethod = openResult.matchMethod;
+}
+
+const row = group.rows[session.rowInGroupIndex];
+uiHandle.setState(`Reading lead at ${row.created}...`, group.rows[0].name, row.created);
+const result = await processLeadRow(row);
+result.customerMatchMethod = group.customerMatchMethod;
+session.results[row.inputIndex] = result;
+
+session.rowInGroupIndex++;
+if (session.rowInGroupIndex >= group.rows.length) advanceToNextGroup(session);
+saveSession(session);
+return true;
+}
+
+let isRunning = false;
+
+async function runLoop(session, uiHandle) {
+if (isRunning) return;
+isRunning = true;
+session.cancelled = false;
+try {
+while (!session.done && !session.cancelled) {
+if (session.paused) { await sleep(200); continue; }
+const advanced = await stepOnce(session, uiHandle);
+uiHandle.render();
+if (!advanced) break;
+}
+} finally {
+isRunning = false;
+uiHandle.setState(session.cancelled ? 'Cancelled' : (session.done ? 'Done' : 'Paused'));
+}
+}
+
+function orderedResults(session) {
+return session.rows.map((row) => session.results[row.inputIndex]).filter(Boolean);
+}
+
+function buildDefaultCopyText(session) {
+const header = ['Name', 'Phone', 'Email', 'Booking classification'].join('\t');
+const lines = orderedResults(session).map((r) => [r.name, r.phone, r.email, r.category || r.exception || 'PENDING'].join('\t'));
+return [header, ...lines].join('\n');
+}
+
+// Confirmed categories first, in the required order; anything without
+// one of those three exact categories (still pending, or an exception)
+// is appended after, preserving original input order within each
+// group - exceptions are never mixed into NON-BOOKING.
+function buildPrioritisedCopyText(session) {
+const order = ['CONFIRMED DATE & TIME', 'DATE ONLY', 'NON-BOOKING'];
+const rows = orderedResults(session);
+const buckets = order.map(() => []);
+const rest = [];
+rows.forEach((r) => {
+const idx = order.indexOf(r.category);
+if (idx === -1) rest.push(r); else buckets[idx].push(r);
+});
+const ordered = [...buckets[0], ...buckets[1], ...buckets[2], ...rest];
+const header = ['Name', 'Phone', 'Email', 'Booking classification'].join('\t');
+const lines = ordered.map((r) => [r.name, r.phone, r.email, r.category || r.exception || 'PENDING'].join('\t'));
+return [header, ...lines].join('\n');
+}
+
+function buildFullAuditTsv(session) {
+const header = ['InputIndex', 'Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'MatchMethod', 'TimelineTimestamp', 'VisibleLeadId', 'ModalDate', 'SourceValidation', 'CampaignValidation', 'InitialNotes', 'Category', 'Reason', 'Confidence', 'Status', 'Exception', 'ProcessingTimestamp'];
+const lines = orderedResults(session).map((r) => [
+r.inputIndex, r.name, r.phone, r.email, r.source, r.campaign, r.created,
+r.customerMatchMethod || '', r.timelineTimestamp || '', r.visibleLeadId || '',
+r.modalDate || '', r.sourceValidation || '', JSON.stringify(r.campaignValidation || ''),
+(r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
+r.category || '', r.reason || '', r.confidence || '', r.status, r.exception || '', r.processingTimestamp || ''
+].join('\t'));
+return [header.join('\t'), ...lines].join('\n');
+}
+
+window.KonnectBookingCheck.buildProcessingGroups = buildProcessingGroups;
+window.KonnectBookingCheck.newSession = newSession;
+window.KonnectBookingCheck.stepOnce = stepOnce;
+window.KonnectBookingCheck.runLoop = runLoop;
+window.KonnectBookingCheck.orderedResults = orderedResults;
+window.KonnectBookingCheck.buildDefaultCopyText = buildDefaultCopyText;
+window.KonnectBookingCheck.buildPrioritisedCopyText = buildPrioritisedCopyText;
+window.KonnectBookingCheck.buildFullAuditTsv = buildFullAuditTsv;
+
+(function orchestrationSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+
+const batch = [
+'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
+'Alice\t\talice@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 18:05',
+'Alice Again\t\talice@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 19:05',
+'Bob\t07000000000\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 20:05'
+].join('\n');
+const parsed = parseBatchInput(batch);
+const groups = buildProcessingGroups(parsed.rows);
+check('groups by normalized email/phone', groups.map((g) => g.rows.length), [2, 1]);
+check('same customer keeps a separate result per row', groups[0].rows.map((r) => r.created), ['Sat, 26 Sep 2026 18:05', 'Sat, 26 Sep 2026 19:05']);
+
+const fakeSession = {
+rows: parsed.rows,
+results: {
+0: { name: 'Alice', phone: '', email: 'alice@example.com', category: 'DATE ONLY' },
+1: { name: 'Alice Again', phone: '', email: 'alice@example.com', category: 'CONFIRMED DATE & TIME' },
+2: { name: 'Bob', phone: '07000000000', email: '', category: 'NON-BOOKING' }
+}
+};
+const prioritised = buildPrioritisedCopyText(fakeSession).split('\n').slice(1);
+check('prioritised order: confirmed, date-only, non-booking', prioritised.map((line) => line.split('\t')[0]), ['Alice Again', 'Alice', 'Bob']);
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck orchestration self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck orchestration self-test passed (3/3)');
+}
+})();
+
+// ===================================================================
+// UI PANEL - Shadow DOM, draggable, per the spec's interface list.
+// Only initializes in a real browser (guarded below) so the self-tests
+// above still run cleanly under a plain Node harness.
+// ===================================================================
+
+function buildPanelMarkup() {
+const host = document.createElement('div');
+host.id = '_kbcPanelHost';
+Object.assign(host.style, { all: 'initial', position: 'fixed', top: '16px', right: '16px', zIndex: 2147483000 });
+document.documentElement.appendChild(host);
+const root = host.attachShadow({ mode: 'open' });
+root.innerHTML = `
+<style>
+.panel { width: 380px; max-height: 90vh; overflow-y: auto; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.35); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #1e293b; }
+.header { background: #1e293b; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; border-radius: 10px 10px 0 0; cursor: move; user-select: none; }
+.header button { background: transparent; border: none; color: #94a3b8; cursor: pointer; font-size: 14px; }
+.bodyEl { padding: 10px 12px; }
+textarea { width: 100%; height: 90px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px; }
+.row-count { color: #64748b; margin: 4px 0 8px; }
+.buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+button.action { padding: 5px 8px; border: 1px solid #cbd5e1; background: white; border-radius: 6px; cursor: pointer; font-size: 11px; }
+button.action:hover { background: #eef2ff; }
+button.primary { background: #1e293b; color: white; border-color: #1e293b; }
+.status { background: white; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
+.status div { margin-bottom: 2px; }
+table { width: 100%; border-collapse: collapse; font-size: 11px; }
+th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid #e2e8f0; }
+.exception { color: #dc2626; }
+.confirmed { color: #059669; font-weight: 600; }
+.dateonly { color: #d97706; }
+.nonbooking { color: #64748b; }
+.copy-buttons { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+.hidden { display: none; }
+</style>
+<div class="panel">
+<div class="header" id="headerEl">
+<span>Konnect Booking Check</span>
+<button id="minBtn" title="Minimize">_</button>
+</div>
+<div class="bodyEl" id="bodyEl">
+<textarea id="pasteBox" placeholder="Paste TSV: Name  Phone  Email  Source  Campaign  Created"></textarea>
+<div class="row-count" id="rowCount">0 rows parsed</div>
+<div class="buttons">
+<button class="action primary" id="btnProcessNext">Process next</button>
+<button class="action primary" id="btnStart">Start</button>
+<button class="action" id="btnPause">Pause</button>
+<button class="action" id="btnResume">Resume</button>
+<button class="action" id="btnCancel">Cancel</button>
+<button class="action" id="btnClear">Clear session</button>
+</div>
+<div class="status">
+<div>Customer: <span id="curCustomer">-</span></div>
+<div>Target Created: <span id="curTarget">-</span></div>
+<div>State: <span id="curState">Idle</span></div>
+<div>Completed: <span id="completedCount">0</span> &middot; Exceptions: <span id="exceptionCount">0</span> &middot; Total: <span id="totalCount">0</span></div>
+</div>
+<table>
+<thead><tr><th>Name</th><th>Result</th></tr></thead>
+<tbody id="resultsBody"></tbody>
+</table>
+<div class="copy-buttons">
+<button class="action" id="btnCopy">Copy results</button>
+<button class="action" id="btnCopyPrioritised">Copy prioritised</button>
+<button class="action" id="btnDownload">Download TSV</button>
+</div>
+</div>
+</div>
+`;
+return { host, root };
+}
+
+function escapeHtmlForUi(value) {
+return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function initKonnectBookingCheckUI() {
+const { host, root } = buildPanelMarkup();
+
+const pasteBox = root.getElementById('pasteBox');
+const rowCountEl = root.getElementById('rowCount');
+const curCustomerEl = root.getElementById('curCustomer');
+const curTargetEl = root.getElementById('curTarget');
+const curStateEl = root.getElementById('curState');
+const completedCountEl = root.getElementById('completedCount');
+const exceptionCountEl = root.getElementById('exceptionCount');
+const totalCountEl = root.getElementById('totalCount');
+const resultsBody = root.getElementById('resultsBody');
+const bodyEl = root.getElementById('bodyEl');
+const minBtn = root.getElementById('minBtn');
+const headerEl = root.getElementById('headerEl');
+
+let session = loadStoredSession();
+if (session) pasteBox.value = session.rawInput || '';
+
+function categoryClass(r) {
+if (!r) return '';
+if (r.exception) return 'exception';
+if (r.category === 'CONFIRMED DATE & TIME') return 'confirmed';
+if (r.category === 'DATE ONLY') return 'dateonly';
+if (r.category === 'NON-BOOKING') return 'nonbooking';
+return '';
+}
+
+function render() {
+if (!session) {
+rowCountEl.textContent = '0 rows parsed';
+resultsBody.innerHTML = '';
+completedCountEl.textContent = '0';
+exceptionCountEl.textContent = '0';
+totalCountEl.textContent = '0';
+return;
+}
+rowCountEl.textContent = `${session.rows.length} rows parsed` + (session.headerOk ? '' : ` - ${session.headerError}`);
+const ordered = orderedResults(session);
+resultsBody.innerHTML = ordered.map((r) => `<tr class="${categoryClass(r)}"><td>${escapeHtmlForUi(r.name)}</td><td>${escapeHtmlForUi(r.category || r.exception || 'Pending')}</td></tr>`).join('');
+completedCountEl.textContent = String(ordered.filter((r) => r.status === 'CLASSIFIED').length);
+exceptionCountEl.textContent = String(ordered.filter((r) => r.status === 'EXCEPTION').length);
+totalCountEl.textContent = String(session.rows.length);
+}
+
+const uiHandle = {
+setState(state, customer, target) {
+curStateEl.textContent = state;
+if (customer !== undefined) curCustomerEl.textContent = customer || '-';
+if (target !== undefined) curTargetEl.textContent = target || '-';
+render();
+},
+render
+};
+
+function ensureSessionFromPasteBox() {
+if (session && session.rawInput === pasteBox.value) return session;
+session = newSession(pasteBox.value);
+saveSession(session);
+return session;
+}
+
+root.getElementById('btnProcessNext').addEventListener('click', async () => {
+const s = ensureSessionFromPasteBox();
+if (!s.headerOk) { uiHandle.setState(`Header error: ${s.headerError}`); return; }
+s.cancelled = false;
+await stepOnce(s, uiHandle);
+uiHandle.setState(s.done ? 'Done' : 'Paused after one row');
+});
+
+root.getElementById('btnStart').addEventListener('click', () => {
+const s = ensureSessionFromPasteBox();
+if (!s.headerOk) { uiHandle.setState(`Header error: ${s.headerError}`); return; }
+s.paused = false;
+s.cancelled = false;
+runLoop(s, uiHandle);
+});
+
+root.getElementById('btnPause').addEventListener('click', () => {
+if (session) { session.paused = true; uiHandle.setState('Paused'); }
+});
+
+root.getElementById('btnResume').addEventListener('click', () => {
+if (session) { session.paused = false; uiHandle.setState('Resuming...'); runLoop(session, uiHandle); }
+});
+
+root.getElementById('btnCancel').addEventListener('click', () => {
+if (session) { session.cancelled = true; uiHandle.setState('Cancelling...'); }
+});
+
+root.getElementById('btnClear').addEventListener('click', () => {
+clearStoredSession();
+session = null;
+pasteBox.value = '';
+uiHandle.setState('Idle', '-', '-');
+});
+
+root.getElementById('btnCopy').addEventListener('click', () => {
+if (!session) return;
+navigator.clipboard.writeText(buildDefaultCopyText(session)).catch(() => {});
+});
+
+root.getElementById('btnCopyPrioritised').addEventListener('click', () => {
+if (!session) return;
+navigator.clipboard.writeText(buildPrioritisedCopyText(session)).catch(() => {});
+});
+
+root.getElementById('btnDownload').addEventListener('click', () => {
+if (!session) return;
+const blob = new Blob([buildFullAuditTsv(session)], { type: 'text/tab-separated-values' });
+const url = URL.createObjectURL(blob);
+const a = document.createElement('a');
+a.href = url;
+a.download = 'konnect-booking-check-results.tsv';
+a.click();
+setTimeout(() => URL.revokeObjectURL(url), 5000);
+});
+
+minBtn.addEventListener('click', () => { bodyEl.classList.toggle('hidden'); });
+
+let dragState = null;
+headerEl.addEventListener('mousedown', (event) => {
+const rect = host.getBoundingClientRect();
+dragState = { startX: event.clientX, startY: event.clientY, startTop: rect.top, startRight: window.innerWidth - rect.right };
+event.preventDefault();
+});
+window.addEventListener('mousemove', (event) => {
+if (!dragState) return;
+const dx = event.clientX - dragState.startX;
+const dy = event.clientY - dragState.startY;
+host.style.top = `${Math.max(0, dragState.startTop + dy)}px`;
+host.style.right = `${Math.max(0, dragState.startRight - dx)}px`;
+});
+window.addEventListener('mouseup', () => { dragState = null; });
+
+render();
+
+window.__konnectBookingCheck = {
+focus() {
+host.style.display = 'block';
+bodyEl.classList.remove('hidden');
+},
+getSession: () => session
+};
+}
+
+try {
+initKonnectBookingCheckUI();
+} catch (error) {
+console.warn('KonnectBookingCheck UI did not initialize (expected outside a real browser):', error && error.message);
+}
 
 })();
