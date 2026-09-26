@@ -264,6 +264,21 @@ observer.observe(document.body, { childList: true, subtree: true });
 // SLA leads) - masks the underlying page's own flashing/repopulating
 // so it doesn't read as the screen glitching, without slowing down
 // whatever's actually running underneath it (purely cosmetic).
+//
+// Opening/closing each new lead's detail modal during SLA ingestion
+// toggles whether the underlying page itself has a scrollbar (the
+// modal sets its own overflow while open) - a fixed, inset:0 overlay
+// still tracks the viewport's actual available width, which most
+// browsers shrink/grow by the scrollbar's own width as it appears and
+// disappears, so the overlay was visibly jumping left-right in step
+// with every single modal open/close - the exact same "looks like a
+// glitch" complaint this overlay exists to prevent, just moved onto
+// the overlay itself. Locking documentElement's overflow to hidden for
+// the overlay's whole duration freezes the scrollbar in one state
+// (fine either way, since the page underneath is fully obscured
+// anyway) so nothing behind it can make it move.
+let pageFlashOverlayPrevOverflow = null;
+
 function showPageFlashOverlay(message) {
 const existing = document.getElementById(PAGE_FLASH_OVERLAY_ID);
 if (existing) {
@@ -284,11 +299,15 @@ overlay.innerHTML = `
 <div style="width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.25); border-top-color: white; border-radius: 50%; animation: _slaSpin 0.8s linear infinite;"></div>
 <div data-overlay-label>${message}</div>
 `;
+pageFlashOverlayPrevOverflow = document.documentElement.style.overflow;
+document.documentElement.style.overflow = 'hidden';
 document.documentElement.appendChild(overlay);
 }
 
 function hidePageFlashOverlay() {
 document.getElementById(PAGE_FLASH_OVERLAY_ID)?.remove();
+document.documentElement.style.overflow = pageFlashOverlayPrevOverflow || '';
+pageFlashOverlayPrevOverflow = null;
 }
 
 // The Customer Hub / Service Booking module selector on the Queue by
@@ -1042,11 +1061,31 @@ if (chevron) chevron.style.transform = `rotate(${opening ? 0 : -90}deg)`;
 // the panel itself happens to stay mounted. They're only ever replaced
 // by an actual re-run (window._runAllMorningChecks resets the array
 // itself right before it starts).
+//
+// Switching back used to go through runExtraction(), which depends on
+// detectPageType() recognizing whatever page is CURRENTLY loaded - but
+// Morning Checks routinely leaves the visible tab on Live Campaigns/
+// Inbound API/Voicemails/Queue by Agent, none of which detectPageType()
+// recognizes, so that press did nothing at all until the user happened
+// to be back on the SLA or Pending page (needing a second, sometimes a
+// third, press to actually take effect). currentCustomers/
+// currentPendingCustomers already hold the last real scan from before
+// Morning Checks was entered - showing that straight back is both
+// instant (no fresh re-scrape, including any slow per-lead detail
+// scraping) and independent of whatever page is currently on screen.
+// Falls back to a live scan only if there's genuinely no prior normal
+// view yet this session.
 window._toggleMorningChecks = function() {
 if (runningMorningChecks) return;
 if (currentPanelMode === 'morningChecks') {
 currentPanelMode = 'normal';
+if (currentPageType === PAGE_PENDING) {
+displayPendingPanel(currentPendingCustomers);
+} else if (currentPageType === PAGE_SLA) {
+displayPanel(currentCustomers);
+} else {
 runExtraction();
+}
 return;
 }
 currentPanelMode = 'morningChecks';
