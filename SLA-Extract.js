@@ -2226,7 +2226,11 @@ style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid
 ${bodyHtml}
 </div>
 
-<div style="border-top: 1px solid #cbd5e1; padding: 8px 14px; background: white; flex-shrink: 0; display: flex; justify-content: flex-end; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
+<div style="border-top: 1px solid #cbd5e1; padding: 8px 14px; background: white; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
+<span style="display: flex; gap: 10px;">
+<span onclick="window._checkInProgress()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">In Progress</span>
+<span onclick="window._scanSources()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Scan Sources</span>
+</span>
 <button onclick="(function() { if (confirm('Clear all data and stop?')) { window._slaResetBookmarklet(); } })();"
 style="padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
 </div>
