@@ -396,19 +396,41 @@ raw: agent
 };
 }
 
+// The only way to read the agent list is scraping it out of a live
+// unassigned-lead's dropdown - there's no other element on the page
+// that exposes the same Angular scope data. So the moment every lead in
+// the current table is already assigned, there's no dropdown left to
+// read from at all, and this comes back empty - not because agents are
+// actually offline, but because there's nothing left to check against.
+// Caching the last successful read means that gap only shows up on a
+// session's very first scan if it happens to land on an all-assigned
+// table; any read that DOES succeed keeps the roster usable afterward,
+// same tradeoff the rest of this panel already accepts for agent status
+// (a snapshot, not a live feed).
+let cachedAgentRoster = null;
+
 function getAgentRoster() {
 // Scoped to the SLA table first so an unrelated page dropdown sharing
 // the same classes can't get picked up by accident.
 const scopeHost = document.querySelector('table .dropdown.ng-scope') || document.querySelector('.dropdown.ng-scope');
-if (!scopeHost || typeof angular === 'undefined') return [];
+if (!scopeHost || typeof angular === 'undefined') return cachedAgentRoster || [];
 try {
 const scope = angular.element(scopeHost).scope();
-const agents = (scope && scope.agents) || [];
-return agents.map(normalizeAgent);
+const agents = ((scope && scope.agents) || []).map(normalizeAgent);
+if (agents.length > 0) cachedAgentRoster = agents;
+return agents.length > 0 ? agents : (cachedAgentRoster || []);
 } catch (error) {
 console.warn('Could not read agent roster:', error);
-return [];
+return cachedAgentRoster || [];
 }
+}
+
+// Whether there's currently anything on the page to read the agent
+// roster from at all - lets callers tell "genuinely no agents online"
+// apart from "can't check right now" when deciding what to say, rather
+// than reporting the same confident "No agents online" for both.
+function canCheckAgentRoster() {
+return !!(document.querySelector('table .dropdown.ng-scope') || document.querySelector('.dropdown.ng-scope'));
 }
 
 // The live "N leads match" preview re-runs on every checkbox/wheel
@@ -1227,7 +1249,10 @@ return '#94a3b8';
 
 function renderAgentCheckboxes(agents, excludedAgentIds) {
 if (agents.length === 0) {
-return `<div style="font-size: 13px; color: #94a3b8;">No agents online</div>`;
+const label = canCheckAgentRoster()
+? 'No agents online'
+: "Can't check agents right now (no unassigned lead to read from)";
+return `<div style="font-size: 13px; color: #94a3b8;">${label}</div>`;
 }
 return agents.map(a => `
 <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #1e293b;" ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
@@ -1436,7 +1461,7 @@ ${renderAssignLimitControl(settings)}
 </div>
 <button id="assignRunButton" onclick="window.${runHandlerName}()" ${buttonDisabled ? 'disabled' : ''}
 style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#cbd5e1' : '#059669'}; color: white; border: none; border-radius: 8px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
-${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
+${buttonDisabled ? (canCheckAgentRoster() ? 'No agents online' : "Can't check agents right now") : 'Assign Unassigned Leads'}
 </button>
 <div id="assignResultsSummary"></div>
 <div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: #64748b; max-height: 100px; overflow-y: auto;"></div>
@@ -1826,7 +1851,7 @@ ${newCount > 0 ? `<span style="background: #d97706; color: white; padding: 4px 1
 ${removedCount > 0 ? `<span style="background: #64748b; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
 </div>
 <div style="display: flex; gap: 8px;">
-<button onclick="window._togglePanelSize();"
+<button id="_slaSizeBtn" onclick="window._togglePanelSize();"
 style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; border-radius: 4px; transition: all 0.2s; display: flex; align-items: center;"
 title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${svgIcon(isFull ? 'shrink' : 'expand', 14)}</button>
 <button onclick="document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0;"
@@ -2037,8 +2062,6 @@ console.info(`✅ SLA Report generated in ${totalTime}s (${customers.length} cus
 } catch (error) {
 console.error('SLA Export Error:', error);
 } finally {
-const panelBox = document.getElementById(PANEL_BOX_ID);
-if (panelBox) panelBox.style.transform = '';
 setBadgeProgress(0);
 extracting = false;
 }
@@ -2068,8 +2091,6 @@ console.info(`✅ Pending Customers report generated (${leads.length} customers,
 } catch (error) {
 console.error('Pending Customers Export Error:', error);
 } finally {
-const panelBox = document.getElementById(PANEL_BOX_ID);
-if (panelBox) panelBox.style.transform = '';
 setBadgeProgress(0);
 extracting = false;
 }
@@ -2199,13 +2220,34 @@ console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
 // Shared panel chrome (positioning, header, footer) for both pages - only
 // the title/counts, the assign section, and the body content differ.
 window._slaResetBookmarklet = resetBookmarklet;
+// Patches the existing panel box's position/size directly instead of
+// tearing it down and rebuilding it through displayPanel/
+// displayPendingPanel - a full rebuild re-derives everything (including
+// the minimized-state transform) from scratch, and this is purely a
+// dimension change that has no reason to touch any of that. Sets every
+// relevant property for both states explicitly (clearing the ones the
+// other state doesn't use, e.g. `top`) rather than only setting what
+// changes, since compact and full use different property sets to
+// position the box.
 window._togglePanelSize = function() {
+const panel = document.getElementById(PANEL_BOX_ID);
+const btn = document.getElementById('_slaSizeBtn');
+if (!panel) return;
 const current = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
-localStorage.setItem(PANEL_SIZE_KEY, current === 'full' ? 'compact' : 'full');
-if (currentPageType === PAGE_PENDING) {
-displayPendingPanel(currentPendingCustomers);
-} else {
-displayPanel(currentCustomers);
+const next = current === 'full' ? 'compact' : 'full';
+localStorage.setItem(PANEL_SIZE_KEY, next);
+const isFull = next === 'full';
+Object.assign(panel.style, {
+top: isFull ? '0' : '',
+bottom: isFull ? '0' : '20px',
+right: isFull ? '0' : '20px',
+width: isFull ? '450px' : '400px',
+height: isFull ? '100vh' : 'min(560px, calc(100vh - 90px))',
+borderRadius: isFull ? '0' : '16px'
+});
+if (btn) {
+btn.innerHTML = svgIcon(isFull ? 'shrink' : 'expand', 14);
+btn.title = isFull ? 'Shrink to box' : 'Expand to full height';
 }
 };
 
