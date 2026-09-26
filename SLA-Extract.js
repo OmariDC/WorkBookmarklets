@@ -565,43 +565,53 @@ observer.observe(target, { childList: true, subtree: true, characterData: true }
 });
 }
 
-// table.table-striped existing doesn't mean it's actually populated yet -
-// on a route visited for the first time in a session (same warm-up cost
-// documented on the Live Campaigns month selector), the empty table
-// shell can render before ng-repeat has actually inserted any data rows,
-// and a fixed sleep(300) wasn't always long enough to outlast it - this
-// was confirmed live: Lead Type Check reported every expected source as
-// missing on the very first run of a session, then passed immediately on
-// an unchanged re-run a moment later. Waits for an actual data row (not
-// just the table container) before either check trusts what it reads.
-// Requires the STRICTER of the two checks' own column requirements
-// (Routed To reads index 11, so needs 12+ cells) rather than just "any
-// td at all" - a row can exist in the DOM with only its first couple of
-// cells attached mid-render, which used to pass an "any td" check while
-// still being short of the 9 cells extractSourceCounts requires, so it
-// silently got skipped entirely - a table caught in that state reads
-// back as completely empty rather than failing loudly, which is what
-// produced the false "every lead type is missing" report.
+// This table doesn't render in one atomic batch the way Live Campaigns'
+// ng-repeat does - confirmed live: a check read back 28 rows and reported
+// (wrongly) that every expected source was missing, then the rest of the
+// day's leads kept arriving and rendering into the SAME table for a
+// while AFTER the check had already finished and moved on. So neither
+// "does the table element exist" nor "does at least one full row exist"
+// (both tried previously) can ever be a reliable signal here - a
+// perfectly well-formed 12-cell row is no guarantee at all that loading
+// is actually finished, since more of them keep arriving behind it.
+// The only signal that's actually true regardless of however this loads
+// under the hood (one paginated fetch, several sequential ones,
+// whatever) is that the DOM stops changing - this resolves once no new
+// rows have appeared for a full quiet window, not the instant any
+// appear, with a hard cap so a page that's genuinely stuck doesn't hang
+// a check forever. Returns the settled row count (12+ cells each, same
+// column requirement as before) rather than a bare boolean, so callers
+// can tell "definitely still zero after the whole wait" apart from
+// "read something, hopefully everything."
 const INBOUND_MIN_CELLS = 12;
-function waitForInboundRows(timeout = 15000) {
+function countInboundRows() {
+return Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length >= INBOUND_MIN_CELLS).length;
+}
+
+function waitForInboundRowsSettled(timeout = 20000, quietMs = 1500) {
 return new Promise((resolve) => {
-const hasRows = () => Array.from(document.querySelectorAll('table.table-striped tr')).some(r => r.querySelectorAll('td').length >= INBOUND_MIN_CELLS);
-if (hasRows()) {
-resolve(true);
-return;
-}
-const timer = setTimeout(() => {
+let settleTimer = null;
+let hardTimer = null;
+
+function finish() {
+clearTimeout(settleTimer);
+clearTimeout(hardTimer);
 observer.disconnect();
-resolve(false);
-}, timeout);
-const observer = new MutationObserver(() => {
-if (hasRows()) {
-clearTimeout(timer);
-observer.disconnect();
-resolve(true);
+resolve(countInboundRows());
 }
-});
+
+function armSettleTimer() {
+clearTimeout(settleTimer);
+settleTimer = setTimeout(finish, quietMs);
+}
+
+const observer = new MutationObserver(armSettleTimer);
 observer.observe(document.body, { childList: true, subtree: true });
+
+// Armed immediately too, in case the data was already fully loaded
+// before this even started watching (no further mutations coming).
+armSettleTimer();
+hardTimer = setTimeout(finish, timeout);
 });
 }
 
@@ -635,8 +645,8 @@ const table = await waitForElement('table.table-striped', 15000);
 if (!table) {
 return { ok: null, summary: 'Could not load the Inbound API table - aborted.' };
 }
-const rowsLoaded = await waitForInboundRows();
-if (!rowsLoaded) {
+const settledCount = await waitForInboundRowsSettled();
+if (settledCount === 0) {
 return { ok: null, summary: 'Inbound API table loaded but no rows appeared - aborted.' };
 }
 const todayLabel = currentInboundDateLabel();
@@ -644,12 +654,10 @@ const todayCounts = extractSourceCounts();
 const details = sourceCountLines(todayCounts);
 
 // Zero of ANY source (not just the expected ones) is a load problem,
-// not a real result - waitForInboundRows confirming full-width rows
-// exist doesn't rule out every other explanation (wrong table matched,
-// a stale/mid-transition read, etc.), and reporting every expected
-// source as missing on the back of an empty read is exactly the false
-// alarm this is meant to catch, rather than confidently declaring a
-// real problem off a read that likely just didn't work.
+// not a real result - reporting every expected source as missing on
+// the back of an empty read is exactly the false alarm this is meant
+// to catch, rather than confidently declaring a real problem off a
+// read that likely just didn't work.
 if (Object.keys(todayCounts).length === 0) {
 return { ok: null, summary: 'Inbound API table read back with zero rows for Today - likely not fully loaded, re-run to confirm.', details };
 }
@@ -668,7 +676,7 @@ const changed = await waitForInboundDateChange(todayLabel, 15000);
 if (!changed) {
 return { ok: false, summary: `MISSING - ${missingToday.join(', ')} (could not confirm yesterday's data loaded)`, details };
 }
-await waitForInboundRows();
+await waitForInboundRowsSettled();
 const yesterdayCounts = extractSourceCounts(isInOvernightWindow);
 const stillMissing = missingToday.filter(s => !yesterdayCounts[s]);
 
@@ -717,15 +725,12 @@ const table = await waitForElement('table.table-striped', 15000);
 if (!table) {
 return { ok: null, summary: 'Could not load the Inbound API table - aborted.' };
 }
-const rowsLoaded = await waitForInboundRows();
-if (!rowsLoaded) {
-return { ok: null, summary: 'Inbound API table loaded but no rows appeared - aborted.' };
-}
-
-const rows = Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length >= 12);
-if (rows.length === 0) {
+const settledCount = await waitForInboundRowsSettled();
+if (settledCount === 0) {
 return { ok: null, summary: 'Inbound API table read back with zero usable rows for Today - likely not fully loaded, re-run to confirm.' };
 }
+
+const rows = Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length >= INBOUND_MIN_CELLS);
 const problems = [];
 rows.forEach((row) => {
 const cells = row.querySelectorAll('td');
