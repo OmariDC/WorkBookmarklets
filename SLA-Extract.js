@@ -478,16 +478,37 @@ window.location.hash = originalHash;
 // the API and replaces $scope.leads - it's not a client-side filter on
 // already-rendered rows), so this waits for the date label itself to
 // change rather than assuming the click took effect instantly.
-function extractSourceCounts() {
+// Lead Created (column index 5, confirmed as "Sat, 26 Sep 2026 15:55" -
+// the same weekday-prefixed format parseKonnectDate already handles
+// elsewhere in this file) lets rows be filtered by time of day, used
+// for the 7pm-8am overnight-window rule on the Routed-to check's
+// yesterday fallback. filterDate is optional - _scanSources' raw
+// report passes none, since that's meant to show the whole day.
+function extractSourceCounts(filterDate) {
 const rows = Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length > 0);
 const counts = {};
 rows.forEach((row) => {
 const cells = row.querySelectorAll('td');
 if (cells.length < 9) return;
+if (filterDate) {
+const leadCreated = parseKonnectDate(cells[5]?.textContent?.trim() || '');
+if (!filterDate(leadCreated)) return;
+}
 const source = cells[8]?.textContent?.trim() || '(blank)';
 counts[source] = (counts[source] || 0) + 1;
 });
 return counts;
+}
+
+// The 7pm-8am rule only actually narrows the YESTERDAY fallback, not
+// today: midnight-8am is already inside "today", which the check scans
+// with no time restriction at all, so a source arriving at 2am today
+// already counts as found without needing this filter. This is applied
+// only to yesterday's data, keeping just the 7pm-to-midnight slice of
+// that calendar day.
+function isInOvernightWindow(date) {
+if (!date) return false;
+return date.getHours() >= 19;
 }
 
 function currentInboundDateLabel() {
@@ -603,11 +624,11 @@ alert(`Could not confirm yesterday's data loaded.\nMissing today: ${missingToday
 return;
 }
 await sleep(300);
-const yesterdayCounts = extractSourceCounts();
+const yesterdayCounts = extractSourceCounts(isInOvernightWindow);
 const stillMissing = missingToday.filter(s => !yesterdayCounts[s]);
 
 if (stillMissing.length === 0) {
-alert(`All leads are Routed to: OK (found in yesterday instead: ${missingToday.join(', ')})`);
+alert(`All leads are Routed to: OK (found overnight yesterday: ${missingToday.join(', ')})`);
 } else {
 alert(`All leads are Routed to: MISSING\n${stillMissing.join('\n')}`);
 }
