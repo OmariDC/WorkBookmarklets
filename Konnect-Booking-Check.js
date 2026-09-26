@@ -404,6 +404,373 @@ window.KonnectBookingCheck.chooseCustomerResult = chooseCustomerResult;
 window.KonnectBookingCheck.isSafeCustomerLink = isSafeCustomerLink;
 
 // ===================================================================
+// TIMELINE (state machine steps: WAIT_FOR_TIMELINE -> SCAN_LOADED_ENTRIES
+// -> MATCH_CREATED_DATETIME -> OPEN_LEAD_MODAL -> WAIT_FOR_REQUIRED_FIELDS
+// -> VALIDATE_LEAD -> EXTRACT_INITIAL_NOTES)
+//
+// Every selector/structure below is confirmed live against a real
+// Konnect Live customer timeline and lead modal - none of it is
+// guessed. LOAD_OLDER_ENTRIES (scrolling for entries not yet loaded),
+// CLOSE_MODAL, and the outer per-customer/per-row orchestration loop
+// are not built yet - still pending further confirmation.
+// ===================================================================
+
+// Confirmed live: icon-to-row traversal, not :has(), visual scanning,
+// coordinates or inspecting every timeline element. A pink icon alone
+// isn't sufficient - confirmed live that 4 pink-styled entries matched
+// this selector on one real timeline but only 3 had a heading starting
+// "Manually Created Sales Lead from" (the 4th was some other pink-
+// styled event type) - both conditions are required.
+function getLoadedLeadEntries() {
+const icons = [...document.querySelectorAll('a.connected-customer-timeline-centre-pink')];
+const rows = icons
+.map((icon) => icon.closest('div.row.ng-scope[ng-repeat*="customerTimeLine"]'))
+.filter(Boolean);
+return [...new Set(rows)].filter((row) => {
+const heading = row.querySelector('.connected-customer-title-pink');
+return heading?.textContent.replace(/\s+/g, ' ').trim().startsWith('Manually Created Sales Lead from');
+});
+}
+
+// The timestamp container also holds the Lead ID span (title="This is
+// the Konnect Lead ID") - confirmed live - so this can't just read the
+// container's unfiltered textContent, that would contaminate the
+// timestamp with the Lead ID digits. Direct text nodes first (the
+// common case, since the Lead ID lives in its own child <span>, not as
+// a text-node sibling); a sanitized-clone fallback only if that comes
+// back empty.
+function extractTimelineTimestamp(row) {
+const heading = row.querySelector('.connected-customer-timeline-heading-left-pink, .connected-customer-timeline-heading-right-pink');
+if (!heading) return null;
+
+const directText = [...heading.childNodes]
+.filter((node) => node.nodeType === Node.TEXT_NODE)
+.map((node) => node.textContent)
+.join(' ')
+.replace(/\s+/g, ' ')
+.trim();
+if (directText) return directText;
+
+const clone = heading.cloneNode(true);
+clone.querySelectorAll('[title="This is the Konnect Lead ID"]').forEach((el) => el.remove());
+return clone.textContent.replace(/\s+/g, ' ').trim();
+}
+
+// For audit/logging only - confirmed live that a real Konnect Lead ID
+// is visible in the timeline, but it's never used as a match key since
+// the SLA export (SLA-Extract.js) doesn't supply one.
+function extractVisibleLeadId(row) {
+const el = row.querySelector('[title="This is the Konnect Lead ID"]');
+const match = el?.textContent.match(/\d+/);
+return match ? match[0] : null;
+}
+
+const MONTH_NAMES = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+function parseNamedMonth(text) {
+const key = String(text || '').slice(0, 3).toLowerCase();
+return Object.prototype.hasOwnProperty.call(MONTH_NAMES, key) ? MONTH_NAMES[key] : null;
+}
+
+// Two confirmed live timeline shapes: "D MMM YYYY HH:mm" (older
+// entries, e.g. "5 May 2023 07:02") and "D MMM HH:mm" (current
+// calendar year, no year shown, e.g. "26 Sep 22:10"). Never falls back
+// to Date.parse() for these UK-ordered, ambiguous-if-misparsed
+// strings. When the year is implicit, it's taken from referenceDate
+// (the year "now" actually is at match time, not assumed) - comparing
+// that against the target SLA year is what naturally enforces "only
+// accept a missing-year timestamp as this year", with no separate
+// special case needed (see datetimesMatchAtMinute).
+function parseTimelineTimestamp(text, referenceDate) {
+const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
+
+const withYear = cleaned.match(/^(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})\s+(\d{1,2}):(\d{2})$/);
+if (withYear) {
+const month = parseNamedMonth(withYear[2]);
+if (month === null) return null;
+return { year: Number(withYear[3]), month, day: Number(withYear[1]), hour: Number(withYear[4]), minute: Number(withYear[5]), yearWasImplicit: false };
+}
+
+const withoutYear = cleaned.match(/^(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{1,2}):(\d{2})$/);
+if (withoutYear) {
+const month = parseNamedMonth(withoutYear[2]);
+if (month === null) return null;
+const ref = referenceDate || new Date();
+return { year: ref.getFullYear(), month, day: Number(withoutYear[1]), hour: Number(withoutYear[3]), minute: Number(withoutYear[4]), yearWasImplicit: true };
+}
+
+return null;
+}
+
+// SLA-Extract.js's own Created column format, confirmed live:
+// "Sat, 26 Sep 2026 17:48" - weekday+comma prefix, ignored (not
+// anchored, so the regex just skips past it).
+function parseSlaCreated(text) {
+const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
+const match = cleaned.match(/(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})\s+(\d{1,2}):(\d{2})/);
+if (!match) return null;
+const month = parseNamedMonth(match[2]);
+if (month === null) return null;
+return { year: Number(match[3]), month, day: Number(match[1]), hour: Number(match[4]), minute: Number(match[5]) };
+}
+
+// Confirmed modal Date shape: "Fri 5th May 2023 07:02" - weekday plus
+// an ordinal-suffixed day. Stripped down to the same "D MMM YYYY
+// HH:mm" shape parseTimelineTimestamp's with-year branch already
+// handles, rather than a separate parser to maintain.
+function parseModalDate(text) {
+const cleaned = String(text || '')
+.replace(/^[A-Za-z]{3,}\s+/, '')
+.replace(/(\d{1,2})(st|nd|rd|th)\b/i, '$1')
+.replace(/\s+/g, ' ')
+.trim();
+return parseTimelineTimestamp(cleaned);
+}
+
+function datetimesMatchAtMinute(a, b) {
+if (!a || !b) return false;
+return a.year === b.year && a.month === b.month && a.day === b.day && a.hour === b.hour && a.minute === b.minute;
+}
+
+// Never chooses "nearest" or "same day, different time" - only an
+// exact minute match is ever a candidate at all. Multiple candidates
+// sharing the same displayed minute are all retained here and left for
+// the caller to validate individually through their modals (see
+// VALIDATE_LEAD) rather than picked between at this stage.
+function findMatchingLeadCandidates(targetCreatedText, referenceDate) {
+const target = parseSlaCreated(targetCreatedText);
+if (!target) return { target: null, candidates: [] };
+const referenceNow = referenceDate || new Date();
+const entries = getLoadedLeadEntries();
+const candidates = entries
+.map((row) => {
+const rawTimestamp = extractTimelineTimestamp(row);
+const parsed = rawTimestamp ? parseTimelineTimestamp(rawTimestamp, referenceNow) : null;
+return { row, rawTimestamp, parsed, leadId: extractVisibleLeadId(row) };
+})
+.filter((c) => datetimesMatchAtMinute(c.parsed, target));
+return { target, candidates };
+}
+
+// Confirmed live: the functional click handler (ng-click="showDetails(...)")
+// is on the inner <i> icon, not the wrapping <a> (whose href is empty) -
+// clicking the anchor alone would never fire it, since the event's
+// path never passes through the icon when dispatched at a different
+// element.
+function findLeadClickTarget(row) {
+return row.querySelector('a.connected-customer-timeline-centre-pink > i[ng-click^="showDetails("]');
+}
+
+function isVisible(element) {
+if (!(element instanceof Element)) return false;
+const rect = element.getBoundingClientRect();
+const style = getComputedStyle(element);
+return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+}
+
+// Confirmed live readiness condition: a visible .modal[role="dialog"].in
+// exists, its active tab exists, and #txtInitialNotes exists inside
+// that active tab. Deliberately does NOT wait for the modal's complete
+// DOM to stop expanding - confirmed live that required fields were
+// populated at ~1.06s while irrelevant hidden-tab/dropdown markup kept
+// expanding until ~1.18s; waiting for that extra expansion would be
+// pure wasted time.
+function findActiveLeadModalState() {
+const modal = Array.from(document.querySelectorAll('.modal[role="dialog"].in')).find(isVisible);
+if (!modal) return null;
+const panel = modal.querySelector('.tab-pane.active') || modal;
+const notes = panel.querySelector('#txtInitialNotes');
+if (!notes) return null;
+return { modal, panel, notes };
+}
+
+function waitForActiveLeadModal(timeout = 3000) {
+return new Promise((resolve) => {
+const existing = findActiveLeadModalState();
+if (existing) { resolve(existing); return; }
+const timer = setTimeout(() => { observer.disconnect(); resolve(null); }, timeout);
+const observer = new MutationObserver(() => {
+const state = findActiveLeadModalState();
+if (state) { clearTimeout(timer); observer.disconnect(); resolve(state); }
+});
+observer.observe(document.body, { childList: true, subtree: true });
+});
+}
+
+// Click the actual DOM control, never showDetails() directly (per
+// instruction). If the fast-path click alone doesn't produce a ready
+// modal, re-queries the target fresh (never trusts a possibly-stale
+// reference), scrolls it into view once, and dispatches one bubbled
+// mouse click - never repeatedly clicks beyond that single retry.
+async function openLeadModal(row, timeout = 3000) {
+const target = findLeadClickTarget(row);
+if (!target || !target.isConnected) return null;
+target.click();
+let state = await waitForActiveLeadModal(timeout);
+if (state) return state;
+
+const retryTarget = findLeadClickTarget(row);
+if (!retryTarget || !retryTarget.isConnected) return null;
+retryTarget.scrollIntoView({ block: 'center' });
+retryTarget.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+state = await waitForActiveLeadModal(timeout);
+return state;
+}
+
+function directText(el) {
+return Array.from(el.childNodes)
+.filter((n) => n.nodeType === Node.TEXT_NODE)
+.map((n) => n.textContent)
+.join(' ')
+.replace(/\s+/g, ' ')
+.trim();
+}
+
+// Date and Source share the same confirmed shape: a label-only child
+// <div> (no element children) sitting inside a container whose sibling
+// <footer><strong> holds the value - matched by the label's own text,
+// not column position.
+function extractLabeledFooterField(panel, labelText) {
+const labelDivs = Array.from(panel.querySelectorAll('div')).filter((el) => el.children.length === 0 && el.textContent.replace(/\s+/g, ' ').trim() === labelText);
+for (const labelDiv of labelDivs) {
+const container = labelDiv.parentElement;
+const strong = container ? container.querySelector('footer strong.ng-binding') : null;
+if (strong) return strong.textContent.replace(/\s+/g, ' ').trim();
+}
+return null;
+}
+
+// Campaign's label is a direct text node of the SAME container that
+// also holds the value spans (a different shape from Date/Source,
+// confirmed live) - primary and parenthetical values extracted
+// separately, per instruction never required to match combined text.
+function extractCampaignField(panel) {
+const container = Array.from(panel.querySelectorAll('div')).find((el) => directText(el) === 'Campaign');
+if (!container) return { primary: null, parenthetical: null };
+const spans = Array.from(container.querySelectorAll(':scope > span'));
+const primary = spans[0] ? spans[0].textContent.replace(/\s+/g, ' ').trim() : null;
+const parenthetical = spans[1] ? spans[1].textContent.replace(/\s+/g, ' ').trim().replace(/^\(|\)$/g, '') : null;
+return { primary, parenthetical };
+}
+
+// Name/phone used only as confirmation - never clicked (per
+// instruction, this would navigate away from the lead being read).
+function extractCustomerField(panel) {
+const link = panel.querySelector('a[ng-click="navToConnectedCustomer()"]');
+if (!link) return { name: null, phone: null };
+const strongs = Array.from(link.querySelectorAll('strong.ng-binding'));
+const name = strongs[0] ? strongs[0].textContent.replace(/\s+/g, ' ').trim() : null;
+const phoneRaw = strongs[1] ? strongs[1].textContent.replace(/\s+/g, ' ').trim() : null;
+return { name, phone: phoneRaw ? phoneRaw.replace(/^\(|\)$/g, '') : null };
+}
+
+function extractLeadPanelFields(panel) {
+return {
+date: extractLabeledFooterField(panel, 'Date'),
+source: extractLabeledFooterField(panel, 'Source'),
+campaign: extractCampaignField(panel),
+customer: extractCustomerField(panel)
+};
+}
+
+// Confirmed live: Initial Notes is a read-only <div id="txtInitialNotes">,
+// not a textarea/input - .textContent, not .value. Internal line breaks
+// are preserved (only outer whitespace trimmed), since trim() alone
+// doesn't collapse internal whitespace the way the label extractors
+// above deliberately do.
+function extractInitialNotes(panel) {
+const el = panel.querySelector('#txtInitialNotes');
+return el ? el.textContent.trim() : null;
+}
+
+function normalizeForCompare(value) {
+return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+// Created date/time remains the decisive key (already matched before
+// a modal was ever opened, via findMatchingLeadCandidates) - this
+// re-confirms it against the modal's own Date, then treats Source and
+// Campaign as confirmation fields that can REJECT a clearly
+// contradictory candidate but never redirect to a different lead.
+// Registration is deliberately not checked here - confirmed absent
+// from the inspected Initial Call panel, so it stays optional per
+// instruction rather than required.
+function validateLeadCandidate(panelFields, slaRow) {
+const modalDateParsed = panelFields.date ? parseModalDate(panelFields.date) : null;
+const targetParsed = parseSlaCreated(slaRow.created);
+if (!datetimesMatchAtMinute(modalDateParsed, targetParsed)) {
+return { ok: false, reason: 'Modal Date does not match the target Created minute.' };
+}
+
+if (slaRow.source && panelFields.source && normalizeForCompare(slaRow.source) !== normalizeForCompare(panelFields.source)) {
+return { ok: false, reason: `Source contradicts: SLA="${slaRow.source}" modal="${panelFields.source}"` };
+}
+
+if (slaRow.campaign && panelFields.campaign && (panelFields.campaign.primary || panelFields.campaign.parenthetical)) {
+const target = normalizeForCompare(slaRow.campaign);
+const primaryMatch = panelFields.campaign.primary && normalizeForCompare(panelFields.campaign.primary) === target;
+const parentheticalMatch = panelFields.campaign.parenthetical && normalizeForCompare(panelFields.campaign.parenthetical) === target;
+if (!primaryMatch && !parentheticalMatch) {
+return { ok: false, reason: `Campaign contradicts both modal representations: SLA="${slaRow.campaign}"` };
+}
+}
+
+return { ok: true };
+}
+
+window.KonnectBookingCheck.getLoadedLeadEntries = getLoadedLeadEntries;
+window.KonnectBookingCheck.extractTimelineTimestamp = extractTimelineTimestamp;
+window.KonnectBookingCheck.extractVisibleLeadId = extractVisibleLeadId;
+window.KonnectBookingCheck.parseTimelineTimestamp = parseTimelineTimestamp;
+window.KonnectBookingCheck.parseSlaCreated = parseSlaCreated;
+window.KonnectBookingCheck.parseModalDate = parseModalDate;
+window.KonnectBookingCheck.datetimesMatchAtMinute = datetimesMatchAtMinute;
+window.KonnectBookingCheck.findMatchingLeadCandidates = findMatchingLeadCandidates;
+window.KonnectBookingCheck.openLeadModal = openLeadModal;
+window.KonnectBookingCheck.extractLeadPanelFields = extractLeadPanelFields;
+window.KonnectBookingCheck.extractInitialNotes = extractInitialNotes;
+window.KonnectBookingCheck.validateLeadCandidate = validateLeadCandidate;
+
+// ===================================================================
+// Self-test for the pure parsing/matching logic above - no DOM
+// dependency, so it can run the same way the classifier's self-test
+// does. Uses the exact example strings confirmed live.
+// ===================================================================
+(function timelineSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+
+const now2026 = new Date(2026, 8, 27); // 27 Sep 2026, matches "today" at time of writing
+
+check('parseTimelineTimestamp with year', parseTimelineTimestamp('5 May 2023 07:02'), { year: 2023, month: 4, day: 5, hour: 7, minute: 2, yearWasImplicit: false });
+check('parseTimelineTimestamp without year', parseTimelineTimestamp('26 Sep 22:10', now2026), { year: 2026, month: 8, day: 26, hour: 22, minute: 10, yearWasImplicit: true });
+check('parseSlaCreated', parseSlaCreated('Sat, 26 Sep 2026 17:48'), { year: 2026, month: 8, day: 26, hour: 17, minute: 48 });
+check('parseModalDate', parseModalDate('Fri 5th May 2023 07:02'), { year: 2023, month: 4, day: 5, hour: 7, minute: 2, yearWasImplicit: false });
+
+check('datetimesMatchAtMinute true', datetimesMatchAtMinute(parseModalDate('Fri 5th May 2023 07:02'), parseTimelineTimestamp('5 May 2023 07:02')), true);
+check('datetimesMatchAtMinute false (different minute)', datetimesMatchAtMinute(parseTimelineTimestamp('5 May 2023 07:02'), parseTimelineTimestamp('5 May 2023 07:03')), false);
+
+// A current-year (no displayed year) timeline entry must only match a
+// target from that SAME year - not an arbitrary different year sharing
+// the same day/month/time.
+const impliedThisYear = parseTimelineTimestamp('26 Sep 22:10', now2026);
+const targetSameYear = parseSlaCreated('Sat, 26 Sep 2026 22:10');
+const targetDifferentYear = parseSlaCreated('Thu, 26 Sep 2024 22:10');
+check('implicit-year entry matches same-year target', datetimesMatchAtMinute(impliedThisYear, targetSameYear), true);
+check('implicit-year entry does not match a different-year target', datetimesMatchAtMinute(impliedThisYear, targetDifferentYear), false);
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck timeline self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck timeline self-test passed (8/8)');
+}
+})();
+
+// ===================================================================
 // Self-test against every numbered example from the confirmed rules -
 // run automatically on load so a regression here is loud immediately,
 // not discovered later against real customer data. Only covers Tier 2
