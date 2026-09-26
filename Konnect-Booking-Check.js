@@ -145,16 +145,17 @@ confidence: 'high'
 
 // Date present, comments non-blank, no override keywords, no time-
 // preference words, no exact time - genuine free-text content
-// (vehicle/model, "test drive", location, etc). Medium confidence, not
-// high: the source examples disagree with themselves on this exact
-// boundary (near-identical "would like to see/test drive X" wording
-// was categorized both ways across two examples) - going with the
-// Tier 2 section's own stated rule over the one outlier example, but
-// flagged for easy review once real output is checked.
+// (vehicle/model, "test drive", location, etc), matching the Tier 2
+// section's own stated rule directly. A LEAD 88 vs LEAD 123 pair that
+// looked like this bucket disagreeing with itself turned out to be bad
+// example data (LEAD 88's real Customer Comments is blank, not the
+// vehicle-mention text it was first given as - already correctly
+// caught above by isBlankComments before reaching here), not an actual
+// rule conflict, so this stays high confidence.
 return {
 category: 'CONFIRMED DATE & TIME',
 reason: 'Date field present and comments contain genuine context beyond a blank or time-preference-only response.',
-confidence: 'medium'
+confidence: 'high'
 };
 }
 
@@ -181,11 +182,11 @@ date ? `First Appointment Date Desired: ${date}` : null,
 const cases = [
 { name: 'LEAD 76', date: '04/08/2026', comments: 'I am interested in purchasing C5 Aircross...trading in FG73DFZ', expect: 'CONFIRMED DATE & TIME' },
 { name: 'LEAD 81', date: '06/08/2026', comments: 'Test drive 1.2 manual C3 early appointment please', expect: 'DATE ONLY' },
-{ name: 'LEAD 88', date: '10/08/2026', comments: 'Would like to see ec3 and the ec3 aircross', expect: 'CONFIRMED DATE & TIME' },
+{ name: 'LEAD 88', date: '10/08/2026', comments: '-', expect: 'DATE ONLY' },
 { name: 'LEAD 94', date: '09/08/2026', comments: 'Sunday morning please earliest slot', expect: 'DATE ONLY' },
 { name: 'LEAD 80', date: null, comments: '-', expect: 'NON-BOOKING' },
 { name: 'LEAD 119', date: null, comments: '-', expect: 'NON-BOOKING' },
-{ name: 'LEAD 123', date: '08/08/2026', comments: 'Would like to see / test drive one of these somewhere local', expect: 'CONFIRMED DATE & TIME' }, // known outlier - see comment above
+{ name: 'LEAD 123', date: '08/08/2026', comments: 'Would like to see / test drive one of these somewhere local to Hampshire', expect: 'CONFIRMED DATE & TIME' },
 { name: 'LEAD 54', date: null, comments: '-', expect: 'NON-BOOKING' },
 { name: 'LEAD 59', date: null, comments: '-', expect: 'NON-BOOKING' },
 { name: 'LEAD 67', date: null, comments: '-', expect: 'NON-BOOKING' },
