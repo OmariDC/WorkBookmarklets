@@ -34,7 +34,8 @@ shrink: '<path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path
 minimize: '<line x1="5" y1="12" x2="19" y2="12"/>',
 restore: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
 arrowUp: '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',
-chevron: '<polyline points="6 9 12 15 18 9"/>'
+chevron: '<polyline points="6 9 12 15 18 9"/>',
+checklist: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'
 };
 
 function svgIcon(name, size, extraStyle) {
@@ -121,6 +122,22 @@ let lastFailedLocateCellFn = null;
 let currentPageType = null;
 let currentCustomers = [];
 let currentPendingCustomers = [];
+// 'normal' (SLA/Pending assign view) or 'morningChecks' (the separate
+// page below) - entering/leaving is only ever explicit (the header
+// toggle), never something the background poll decides on its own.
+let currentPanelMode = 'normal';
+let runningMorningChecks = false;
+// Populated by window._runAllMorningChecks as each check completes -
+// {key, label, status: 'pending'|'running'|'done', ok, summary, details}.
+// Drives renderMorningChecksBody(); empty means "hasn't been run yet".
+let morningChecksResults = [];
+const MORNING_CHECKS_ORDER = [
+{ key: 'sla', label: 'SLA Count' },
+{ key: 'inProgress', label: 'In Progress' },
+{ key: 'leadType', label: 'Lead Type Check' },
+{ key: 'routedTo', label: 'All Leads Are Routed To' },
+{ key: 'voicemail', label: 'Voicemail' },
+];
 
 function categorizeTier(campaign, source) {
 const camp = campaign.toLowerCase();
@@ -332,13 +349,12 @@ runExtraction();
 //
 // A separate daily routine from lead assignment, done once at the
 // start of a shift against Konnect pages this tool otherwise never
-// touches. Built one check at a time, each confirmed against real DOM
-// before being added - same approach as everything else in this file.
-// Reporting is a plain alert() for now and each check is only reachable
-// via the console (window._checkInProgress()) rather than a button -
-// deliberately, until all the checks in this routine are defined, so
-// the UI gets designed once as a proper page instead of accreting a
-// throwaway button per check that then needs reworking.
+// touches. Each check below (window._checkXxx) was built and confirmed
+// one at a time against real DOM, then converted to return a plain
+// {ok, summary, details} result instead of alert()-ing it directly, so
+// window._runAllMorningChecks can run all five in sequence and render
+// them progressively on the Morning Checks page (see
+// renderMorningChecksBody / displayMorningChecks further down).
 // ===================================================================
 
 // The month selector has no id/title/distinguishing attribute - just a
@@ -446,33 +462,29 @@ try {
 window.location.hash = '#/onGoingCampaigns/module/-6/deferred/false/showSLA/true';
 const loaded = await reloadCurrentMonthCampaigns();
 if (!loaded) {
-alert('Could not load the current month\'s campaigns - aborted, nothing was checked.');
-return;
+return { ok: null, summary: 'Could not load the current month\'s campaigns - aborted.' };
 }
 const { total, sum, breakdown } = extractInProgressData();
 if (total === null) {
-alert('Could not find the In Progress total - aborted, nothing was checked.');
-return;
+return { ok: null, summary: 'Could not find the In Progress total - aborted.' };
 }
 if (sum === total) {
-alert(`In Progress: OK (${total})`);
-} else {
-const diff = total - sum;
-const lines = breakdown.map(b => `${b.name}: ${b.inProgress}`).join('\n');
-alert(`In Progress: MISMATCH\nTop total: ${total}\nRows sum to: ${sum}\nOff by: ${diff}\n\nBreakdown (non-zero rows):\n${lines || '(none)'}`);
+return { ok: true, summary: `OK (${total})` };
 }
+const diff = total - sum;
+return {
+ok: false,
+summary: `MISMATCH - top total ${total}, rows sum to ${sum} (off by ${diff})`,
+details: breakdown.length > 0 ? breakdown.map(b => `${b.name}: ${b.inProgress}`) : ['(no rows have any In Progress)']
+};
 } finally {
 window.location.hash = originalHash;
 }
 };
 
-// Stage 1 of the Lead Type Check: a pure scanner, no
-// judgment - there's no expected-sources list to check against yet, so
-// this just reports what it actually found (today and yesterday, both
-// via the same page's own Today/Yesterday controls) for manual review.
-// Once that list exists, stage 2 becomes: does every expected source
-// appear today; for any that don't, check yesterday before calling it
-// actually missing.
+// Counts today's (or, with filterDate, a filtered subset of) rows by
+// Source column, feeding both the Lead Type Check's OK/MISSING verdict
+// and its secondary "what sources there are" detail listing.
 //
 // "Yesterday" makes a real network request (getYesterdaysData() calls
 // the API and replaces $scope.leads - it's not a client-side filter on
@@ -481,9 +493,9 @@ window.location.hash = originalHash;
 // Lead Created (column index 5, confirmed as "Sat, 26 Sep 2026 15:55" -
 // the same weekday-prefixed format parseKonnectDate already handles
 // elsewhere in this file) lets rows be filtered by time of day, used
-// for the 7pm-8am overnight-window rule on the Routed-to check's
-// yesterday fallback. filterDate is optional - _scanSources' raw
-// report passes none, since that's meant to show the whole day.
+// for the 7pm-8am overnight-window rule on the Lead Type Check's
+// yesterday fallback. filterDate is optional - the Lead Type Check's
+// today scan passes none, since that's meant to show the whole day.
 function extractSourceCounts(filterDate) {
 const rows = Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length > 0);
 const counts = {};
@@ -541,55 +553,26 @@ observer.observe(target, { childList: true, subtree: true, characterData: true }
 });
 }
 
-function formatSourceReport(label, counts) {
+// Today's source counts, formatted as "Source: count" lines sorted by
+// count - the secondary "what sources there are" display the user
+// wants shown alongside the OK/MISSING verdict without dominating it,
+// so this is returned as the check's `details` (collapsed by default),
+// not merged into the summary itself.
+function sourceCountLines(counts) {
 const total = Object.values(counts).reduce((a, b) => a + b, 0);
 const lines = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([source, count]) => `${source}: ${count}`);
-return `${label} (${total} total):\n${lines.join('\n') || '(no rows)'}`;
+return [`Today (${total} total):`, ...(lines.length > 0 ? lines : ['(no rows)'])];
 }
 
-window._scanSources = async function() {
-const originalHash = window.location.hash;
-try {
-window.location.hash = '#/Queue/InboundAPI';
-const table = await waitForElement('table.table-striped', 15000);
-if (!table) {
-alert('Could not load the Inbound API table - aborted, nothing was scanned.');
-return;
-}
-await sleep(300);
-const todayLabel = currentInboundDateLabel();
-const todayCounts = extractSourceCounts();
-
-const yesterdayLink = document.querySelector('li[ng-click="getYesterdaysData()"]');
-if (!yesterdayLink) {
-alert('Could not find the Yesterday control - only got today.\n\n' + formatSourceReport('Today', todayCounts));
-return;
-}
-yesterdayLink.click();
-const changed = await waitForInboundDateChange(todayLabel);
-if (!changed) {
-alert('Could not confirm Yesterday\'s data loaded - only got today.\n\n' + formatSourceReport('Today', todayCounts));
-return;
-}
-await sleep(300);
-const yesterdayCounts = extractSourceCounts();
-
-alert(formatSourceReport('Today', todayCounts) + '\n\n' + formatSourceReport('Yesterday', yesterdayCounts));
-} finally {
-// No need to explicitly restore Today here - the page's own
-// controller calls getTodaysData() in its constructor, so the next
-// fresh visit to this page loads Today automatically regardless of
-// whatever this scan left it on.
-window.location.hash = originalHash;
-}
-};
-
-// Stage 2: the real Lead Type Check, now that a scan has confirmed
-// which sources actually need to show up daily (a few others appear
-// too, but only case-by-case, not required). Originally mislabeled as
-// "All leads are Routed to" - that name belongs to a different, later
-// check (a per-row check of the Routed To column, see
-// window._checkRoutedTo), not this one.
+// The real Lead Type Check: does every expected daily source actually
+// appear today; for any that don't, check yesterday (7pm-8am overnight
+// window only) before calling it actually missing. Originally
+// mislabeled as "All leads are Routed to" - that name belongs to a
+// different, later check (a per-row check of the Routed To column, see
+// window._checkRoutedTo), not this one. This also folds in what used
+// to be a separate "scan sources" step - the user only wants one check
+// here, with the raw source counts available as a secondary detail
+// rather than a standalone action.
 const EXPECTED_DAILY_SOURCES = ['Robins & Day Website', 'Customer First', 'Autotrader - Deal Builder', 'Cargurus'];
 
 window._checkLeadTypes = async function() {
@@ -598,40 +581,40 @@ try {
 window.location.hash = '#/Queue/InboundAPI';
 const table = await waitForElement('table.table-striped', 15000);
 if (!table) {
-alert('Could not load the Inbound API table - aborted, nothing was checked.');
-return;
+return { ok: null, summary: 'Could not load the Inbound API table - aborted.' };
 }
 await sleep(300);
 const todayLabel = currentInboundDateLabel();
 const todayCounts = extractSourceCounts();
+const details = sourceCountLines(todayCounts);
 
 const missingToday = EXPECTED_DAILY_SOURCES.filter(s => !todayCounts[s]);
 if (missingToday.length === 0) {
-alert('Lead Type Check: OK');
-return;
+return { ok: true, summary: 'OK', details };
 }
 
 const yesterdayLink = document.querySelector('li[ng-click="getYesterdaysData()"]');
 if (!yesterdayLink) {
-alert(`Could not check yesterday (control not found).\nMissing today: ${missingToday.join(', ')}`);
-return;
+return { ok: false, summary: `MISSING - ${missingToday.join(', ')} (could not check yesterday - control not found)`, details };
 }
 yesterdayLink.click();
 const changed = await waitForInboundDateChange(todayLabel, 15000);
 if (!changed) {
-alert(`Could not confirm yesterday's data loaded.\nMissing today: ${missingToday.join(', ')}`);
-return;
+return { ok: false, summary: `MISSING - ${missingToday.join(', ')} (could not confirm yesterday's data loaded)`, details };
 }
 await sleep(300);
 const yesterdayCounts = extractSourceCounts(isInOvernightWindow);
 const stillMissing = missingToday.filter(s => !yesterdayCounts[s]);
 
 if (stillMissing.length === 0) {
-alert(`Lead Type Check: OK (found overnight yesterday: ${missingToday.join(', ')})`);
-} else {
-alert(`Lead Type Check: MISSING\n${stillMissing.join('\n')}`);
+return { ok: true, summary: `OK (found overnight yesterday: ${missingToday.join(', ')})`, details };
 }
+return { ok: false, summary: `MISSING - ${stillMissing.join(', ')}`, details };
 } finally {
+// No need to explicitly restore Today here - the page's own
+// controller calls getTodaysData() in its constructor, so the next
+// fresh visit to this page loads Today automatically regardless of
+// whatever this check left it on.
 window.location.hash = originalHash;
 }
 };
@@ -659,8 +642,7 @@ try {
 window.location.hash = '#/Queue/InboundAPI';
 const table = await waitForElement('table.table-striped', 15000);
 if (!table) {
-alert('Could not load the Inbound API table - aborted, nothing was checked.');
-return;
+return { ok: null, summary: 'Could not load the Inbound API table - aborted.' };
 }
 await sleep(300);
 
@@ -680,11 +662,13 @@ enquiryType: cells[9]?.textContent?.trim() || '(blank)'
 });
 
 if (problems.length === 0) {
-alert('All leads are Routed to: OK');
-} else {
-const lines = problems.map(p => `Api Ref: ${p.apiReference} | Source: ${p.source} | Enquiry: ${p.enquiryType}`).join('\n');
-alert(`All leads are Routed to: ${problems.length} NOT ROUTED\n${lines}`);
+return { ok: true, summary: 'OK' };
 }
+return {
+ok: false,
+summary: `${problems.length} NOT ROUTED`,
+details: problems.map(p => `Api Ref: ${p.apiReference} | Source: ${p.source} | Enquiry: ${p.enquiryType}`)
+};
 } finally {
 window.location.hash = originalHash;
 }
@@ -733,13 +717,32 @@ try {
 window.location.hash = '#/Queue/Voicemails';
 const count = await waitForVoicemailCount();
 if (count === null) {
-alert('Could not read the voicemail queue count - aborted, nothing was checked.');
-return;
+return { ok: null, summary: 'Could not read the voicemail queue count - aborted.' };
 }
-alert(`Voicemails in queue: ${count}`);
+// Plain count, same nature as the SLA count - no OK/problem judgment,
+// it's often legitimately 0.
+return { ok: null, summary: `${count}` };
 } finally {
 window.location.hash = originalHash;
 }
+};
+
+// SLA count - the total leads in the SLA queue, exactly what the panel
+// already shows when opened from that page (per the user: "this isn't
+// a separate page nor details other than what we already have"). Since
+// Morning Checks can be entered from whatever page the user happened to
+// be on, this only navigates if the SLA table isn't already showing -
+// normally it will be, since that's the page the panel is opened from.
+window._checkSlaCount = async function(returnHash) {
+if (detectPageType() !== PAGE_SLA) {
+window.location.hash = returnHash;
+await waitForElement('table', 15000);
+await sleep(300);
+}
+if (detectPageType() !== PAGE_SLA) {
+return { ok: null, summary: 'Could not find the SLA queue table - aborted.' };
+}
+return { ok: null, summary: `${collectAssignableLeads().length}` };
 };
 
 async function extractCustomerDetails(customerElement) {
@@ -2385,7 +2388,7 @@ ${renderCopyableField(c.email)}
 </div>`;
 }
 
-function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml }) {
+function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml, hideSearch }) {
 const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 const isFull = panelSize === 'full';
 const positionStyle = isFull
@@ -2417,6 +2420,10 @@ ${newCount > 0 ? `<span style="color: #d97706; font-size: 13px; font-weight: 600
 ${removedCount > 0 ? `<span style="color: #94a3b8; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
 </div>
 <div style="display: flex; gap: 2px;">
+<button onclick="window._toggleMorningChecks();"
+style="background: ${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='#94a3b8';"
+title="${currentPanelMode === 'morningChecks' ? 'Back to queue view' : 'Morning Checks'}">${svgIcon('checklist', 14)}</button>
 <button id="_slaSizeBtn" onclick="window._togglePanelSize();"
 style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
@@ -2436,21 +2443,15 @@ ${summaryHtml || ''}
 ${assignSectionHtml}
 
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
+${hideSearch ? '' : `
 <div style="position: sticky; top: 0; z-index: 2; background: #f8fafc; padding-bottom: 10px; margin-bottom: 10px;">
 <input type="text" id="customerSearchInput" placeholder="Search by name…" oninput="window._filterCustomerSearch(this.value)"
 style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; color: #1e293b; background: white;">
-</div>
+</div>`}
 ${bodyHtml}
 </div>
 
-<div style="border-top: 1px solid #cbd5e1; padding: 8px 14px; background: white; flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
-<span style="display: flex; gap: 10px;">
-<span onclick="window._checkInProgress()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">In Progress</span>
-<span onclick="window._scanSources()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Scan Sources</span>
-<span onclick="window._checkLeadTypes()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Lead Types</span>
-<span onclick="window._checkRoutedTo()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Routed To</span>
-<span onclick="window._checkVoicemails()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Voicemails</span>
-</span>
+<div style="border-top: 1px solid #cbd5e1; padding: 8px 14px; background: white; flex-shrink: 0; display: flex; justify-content: flex-end; align-items: center; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
 <button onclick="(function() { if (confirm('Clear all data and stop?')) { window._slaResetBookmarklet(); } })();"
 style="padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
 </div>
@@ -2494,6 +2495,7 @@ initAssignSectionWheels();
 function displayPanel(customers, newCount = 0, removedCount = 0) {
 currentCustomers = customers;
 currentPageType = PAGE_SLA;
+currentPanelMode = 'normal';
 invalidateLeadsCache();
 const tiered = {
 tier1: customers.filter(c => c.tier === 1),
@@ -2528,6 +2530,7 @@ bodyHtml
 function displayPendingPanel(customers, newCount = 0, removedCount = 0) {
 currentPendingCustomers = customers;
 currentPageType = PAGE_PENDING;
+currentPanelMode = 'normal';
 invalidateLeadsCache();
 
 const grouped = CALLBACK_TYPE_ORDER.map(type => ({
@@ -2554,8 +2557,144 @@ bodyHtml
 }));
 }
 
+function morningCheckStatusColor(row) {
+if (row.status === 'pending') return '#cbd5e1';
+if (row.status === 'running') return '#d97706';
+if (row.ok === true) return '#16a34a';
+if (row.ok === false) return '#dc2626';
+return '#2563eb';
+}
+
+function renderMorningCheckRow(row) {
+const color = morningCheckStatusColor(row);
+const isSettled = row.status === 'done';
+const rightText = isSettled ? (row.summary || '') : (row.status === 'running' ? 'Running…' : 'Waiting');
+const hasDetails = isSettled && Array.isArray(row.details) && row.details.length > 0;
+const detailsId = `_mcDetails_${row.key}`;
+
+return `
+<div style="border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px; background: white;">
+<div style="display: flex; align-items: center; gap: 8px;">
+<span style="width: 8px; height: 8px; border-radius: 50%; background: ${color}; flex-shrink: 0;"></span>
+<span style="font-size: 12px; font-weight: 600; color: #1e293b; flex-shrink: 0;">${row.label}</span>
+<span style="font-size: 12px; color: #64748b; flex: 1; text-align: right;">${rightText}</span>
+${hasDetails ? `<span onclick="window._toggleMorningCheckDetails('${row.key}')" style="font-size: 11px; color: #4f46e5; cursor: pointer; flex-shrink: 0;">Details</span>` : ''}
+</div>
+${hasDetails ? `
+<div id="${detailsId}" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f1f5f9; font-size: 11px; color: #475569; line-height: 1.6;">
+${row.details.map(d => `<div>${d}</div>`).join('')}
+</div>` : ''}
+</div>`;
+}
+
+// Separate page/section reached only via the header toggle - never
+// something the background auto-detect poll enters or leaves on its
+// own (see currentPanelMode), since that poll's silent rebuilds on a
+// page switch would otherwise yank the user out of this view every
+// time a check navigates to a different Konnect page mid-run.
+function renderMorningChecksBody() {
+if (morningChecksResults.length === 0) {
+return `
+<div style="padding: 24px 4px; text-align: center;">
+<div style="color: #cbd5e1; margin-bottom: 12px;">${svgIcon('checklist', 40, ' stroke-width: 1.5;')}</div>
+<p style="color: #64748b; margin: 0 0 20px 0; font-size: 14px; line-height: 1.6;">Runs the five morning checks in order - SLA Count, In Progress, Lead Type Check, All Leads Are Routed To, Voicemail - and reports each result here.</p>
+<button onclick="window._runAllMorningChecks();" style="padding: 10px 20px; background: #1e293b; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;">Run All Checks</button>
+</div>`;
+}
+
+const rows = morningChecksResults.map(renderMorningCheckRow).join('');
+const allDone = morningChecksResults.every(r => r.status === 'done');
+
+return `
+<div style="display: flex; flex-direction: column; gap: 8px;">
+${rows}
+</div>
+<div style="margin-top: 16px; text-align: center;">
+<button onclick="window._runAllMorningChecks();" ${runningMorningChecks ? 'disabled' : ''}
+style="padding: 8px 18px; background: ${runningMorningChecks ? '#cbd5e1' : '#1e293b'}; color: white; border: none; border-radius: 8px; cursor: ${runningMorningChecks ? 'default' : 'pointer'}; font-size: 13px; font-weight: 600;">
+${runningMorningChecks ? 'Running…' : (allDone ? 'Run Again' : 'Run All Checks')}
+</button>
+</div>`;
+}
+
+function displayMorningChecks() {
+mountPanel(renderPanelShell({
+title: 'Morning Checks',
+count: '',
+newCount: 0,
+removedCount: 0,
+summaryHtml: '',
+assignSectionHtml: '',
+bodyHtml: renderMorningChecksBody(),
+hideSearch: true
+}));
+}
+
+window._toggleMorningCheckDetails = function(key) {
+const el = document.getElementById(`_mcDetails_${key}`);
+if (!el) return;
+el.style.display = el.style.display === 'none' ? 'block' : 'none';
+};
+
+window._toggleMorningChecks = function() {
+if (runningMorningChecks) return;
+if (currentPanelMode === 'morningChecks') {
+currentPanelMode = 'normal';
+runExtraction();
+return;
+}
+currentPanelMode = 'morningChecks';
+morningChecksResults = [];
+displayMorningChecks();
+};
+
+// Runs the five checks in the fixed order the user asked for, updating
+// the page after each one completes so results appear progressively
+// rather than all at once at the end. Each check function already
+// saves/restores its own hash internally (see each window._checkXxx
+// above), so this only needs to capture the hash once up front - to
+// pass to the SLA count check as "where to go back to check" if it
+// isn't already sitting on the SLA page - and restore it at the very
+// end as a final safety net.
+window._runAllMorningChecks = async function() {
+if (runningMorningChecks) return;
+runningMorningChecks = true;
+const originalHash = window.location.hash;
+
+const checkFns = {
+sla: () => window._checkSlaCount(originalHash),
+inProgress: () => window._checkInProgress(),
+leadType: () => window._checkLeadTypes(),
+routedTo: () => window._checkRoutedTo(),
+voicemail: () => window._checkVoicemails()
+};
+
+morningChecksResults = MORNING_CHECKS_ORDER.map(step => ({ ...step, status: 'pending' }));
+displayMorningChecks();
+
+try {
+for (const step of MORNING_CHECKS_ORDER) {
+morningChecksResults = morningChecksResults.map(r => r.key === step.key ? { ...r, status: 'running' } : r);
+displayMorningChecks();
+
+let result;
+try {
+result = await checkFns[step.key]();
+} catch (err) {
+result = { ok: null, summary: `Error - ${err && err.message ? err.message : err}` };
+}
+
+morningChecksResults = morningChecksResults.map(r => r.key === step.key ? { ...r, status: 'done', ...result } : r);
+displayMorningChecks();
+}
+} finally {
+runningMorningChecks = false;
+window.location.hash = originalHash;
+}
+};
+
 async function extractAndExportSla() {
-if (extracting || assigning) return;
+if (extracting || assigning || runningMorningChecks) return;
 extracting = true;
 
 try {
@@ -2646,7 +2785,7 @@ extracting = false;
 // No modal click-and-wait needed here - Email/Mobile/Landline are plain
 // text columns, so this is a single synchronous pass over the table.
 async function extractAndExportPending() {
-if (extracting || assigning) return;
+if (extracting || assigning || runningMorningChecks) return;
 extracting = true;
 
 try {
@@ -3387,7 +3526,7 @@ clearInterval(window._slaAutoDetectInterval);
 }
 let lastKnownPageType = detectPageType();
 window._slaAutoDetectInterval = setInterval(() => {
-if (extracting || assigning) return;
+if (extracting || assigning || runningMorningChecks || currentPanelMode === 'morningChecks') return;
 const pageType = detectPageType();
 if (pageType && pageType !== lastKnownPageType) {
 lastKnownPageType = pageType;
