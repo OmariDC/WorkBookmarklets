@@ -138,7 +138,7 @@ const MORNING_CHECKS_ORDER = [
 { key: 'routedTo', label: 'All Leads Are Routed To' },
 { key: 'voicemail', label: 'Voicemail' },
 ];
-const MORNING_CHECKS_OVERLAY_ID = '_slaMorningChecksOverlay';
+const PAGE_FLASH_OVERLAY_ID = '_slaPageFlashOverlay';
 
 function categorizeTier(campaign, source) {
 const camp = campaign.toLowerCase();
@@ -317,6 +317,7 @@ observer.observe(trigger, { childList: true, subtree: true, characterData: true 
 // brief visible page flash.
 window._clearWholeQueue = async function() {
 const originalHash = window.location.hash;
+showPageFlashOverlay('Clearing the queue…');
 try {
 window.location.hash = '#/Queue/QueueByAgent';
 const clearBtn = await waitForElement('button[ng-click="ClearQueues()"]');
@@ -341,7 +342,13 @@ window.location.hash = originalHash;
 // would keep showing the pre-clear "assigned" state until the
 // badge happened to be clicked again for an unrelated reason.
 await waitForElement('table');
-runExtraction();
+// Awaited (runExtraction now returns the underlying extraction
+// promise) so the overlay stays up through re-ingestion instead of
+// dropping right as the newly-cleared leads' detail modals start
+// popping open/closed - extractAndExportSla manages its own overlay
+// for that part, but only if this hasn't already cleared it first.
+await runExtraction();
+hidePageFlashOverlay();
 }
 };
 
@@ -727,6 +734,21 @@ window._checkVoicemails = async function(skipRestore) {
 const originalHash = window.location.hash;
 try {
 window.location.hash = '#/Queue/Voicemails';
+// Same Customer Hub / Service Booking module filter as the Queue by
+// Agent page (see ensureCustomerHubModule) - the queue count is
+// module-scoped, so if this page was left on a different module the
+// number read below would be for the wrong queue entirely. Assumes
+// (not yet confirmed against a real "wrong module selected" case)
+// that switching modules re-triggers the same async count fetch
+// waitForVoicemailCount already waits out below.
+const moduleTrigger = await waitForElement('div[title="Filter by Module"]', 15000);
+if (!moduleTrigger) {
+return { ok: null, summary: 'Could not find the module filter after navigating - aborted.' };
+}
+const moduleOk = await ensureCustomerHubModule();
+if (!moduleOk) {
+return { ok: null, summary: 'Could not confirm the Customer Hub module is selected - aborted.' };
+}
 const count = await waitForVoicemailCount();
 if (count === null) {
 return { ok: null, summary: 'Could not read the voicemail queue count - aborted.' };
@@ -2648,6 +2670,12 @@ if (!el) return;
 el.style.display = el.style.display === 'none' ? 'block' : 'none';
 };
 
+// Leaves morningChecksResults untouched on both the way out and the
+// way back in - the last run's results should still be sitting there
+// after switching to the normal queue view and back, not just while
+// the panel itself happens to stay mounted. They're only ever replaced
+// by an actual re-run (window._runAllMorningChecks resets the array
+// itself right before it starts).
 window._toggleMorningChecks = function() {
 if (runningMorningChecks) return;
 if (currentPanelMode === 'morningChecks') {
@@ -2656,7 +2684,6 @@ runExtraction();
 return;
 }
 currentPanelMode = 'morningChecks';
-morningChecksResults = [];
 displayMorningChecks();
 };
 
@@ -2676,8 +2703,18 @@ displayMorningChecks();
 // comment on window._checkRoutedTo).
 const MORNING_CHECKS_EXECUTION_ORDER = ['sla', 'routedTo', 'leadType', 'inProgress', 'voicemail'];
 
-function showMorningChecksOverlay() {
-if (document.getElementById(MORNING_CHECKS_OVERLAY_ID)) return;
+// Shared by anything that causes a real Konnect page navigation/re-
+// render mid-flow (Morning Checks, Clear Queue, ingesting freshly-seen
+// SLA leads) - masks the underlying page's own flashing/repopulating
+// so it doesn't read as the screen glitching, without slowing down
+// whatever's actually running underneath it (purely cosmetic).
+function showPageFlashOverlay(message) {
+const existing = document.getElementById(PAGE_FLASH_OVERLAY_ID);
+if (existing) {
+const label = existing.querySelector('[data-overlay-label]');
+if (label) label.textContent = message;
+return;
+}
 if (!document.getElementById('_slaSpinKeyframes')) {
 const style = document.createElement('style');
 style.id = '_slaSpinKeyframes';
@@ -2685,17 +2722,17 @@ style.textContent = '@keyframes _slaSpin { to { transform: rotate(360deg); } }';
 document.head.appendChild(style);
 }
 const overlay = document.createElement('div');
-overlay.id = MORNING_CHECKS_OVERLAY_ID;
+overlay.id = PAGE_FLASH_OVERLAY_ID;
 overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(15,23,42,0.94); z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: white; font-size: 14px; font-weight: 600;';
 overlay.innerHTML = `
 <div style="width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.25); border-top-color: white; border-radius: 50%; animation: _slaSpin 0.8s linear infinite;"></div>
-<div>Running morning checks…</div>
+<div data-overlay-label>${message}</div>
 `;
 document.documentElement.appendChild(overlay);
 }
 
-function hideMorningChecksOverlay() {
-document.getElementById(MORNING_CHECKS_OVERLAY_ID)?.remove();
+function hidePageFlashOverlay() {
+document.getElementById(PAGE_FLASH_OVERLAY_ID)?.remove();
 }
 
 // Runs the five checks (see MORNING_CHECKS_EXECUTION_ORDER for why that
@@ -2708,14 +2745,14 @@ document.getElementById(MORNING_CHECKS_OVERLAY_ID)?.remove();
 // single step - originalHash is only restored once, at the very end.
 // Konnect's own pages re-rendering mid-navigation (a big table's rows
 // all populating at once, etc.) is what the user described as making
-// the screen look like it's glitching - showMorningChecksOverlay dims
+// the screen look like it's glitching - showPageFlashOverlay dims
 // the real page for the whole run so none of that is visible, without
 // slowing anything down (it's purely cosmetic, nothing waits on it).
 window._runAllMorningChecks = async function() {
 if (runningMorningChecks) return;
 runningMorningChecks = true;
 const originalHash = window.location.hash;
-showMorningChecksOverlay();
+showPageFlashOverlay('Running morning checks…');
 
 const checkFns = {
 sla: () => window._checkSlaCount(originalHash),
@@ -2746,7 +2783,7 @@ displayMorningChecks();
 } finally {
 runningMorningChecks = false;
 window.location.hash = originalHash;
-hideMorningChecksOverlay();
+hidePageFlashOverlay();
 }
 };
 
@@ -2790,6 +2827,12 @@ rowDescriptors.push({ cells, name, source, campaign, key, assigned: assignState.
 const pendingCount = rowDescriptors.filter(d => !previousByKey.has(d.key)).length;
 let remaining = pendingCount;
 setBadgeProgress(remaining);
+// Only the newly-seen leads below actually click into a detail modal
+// (cached ones are skipped entirely) - that's what pops the modal
+// open/closed rapidly per row and reads as the screen glitching, so
+// the overlay is only worth showing when there's actually one or more
+// of those, not on every routine scan.
+if (pendingCount > 0) showPageFlashOverlay('Loading new leads…');
 
 for (const d of rowDescriptors) {
 const existing = previousByKey.get(d.key);
@@ -2836,6 +2879,7 @@ console.error('SLA Export Error:', error);
 } finally {
 setBadgeProgress(0);
 extracting = false;
+hidePageFlashOverlay();
 }
 }
 
@@ -2873,9 +2917,9 @@ extracting = false;
 function runExtraction() {
 const pageType = detectPageType();
 if (pageType === PAGE_SLA) {
-extractAndExportSla();
+return extractAndExportSla();
 } else if (pageType === PAGE_PENDING) {
-extractAndExportPending();
+return extractAndExportPending();
 } else {
 console.error('SLA Manager: unrecognized page - expected the SLA queue or Pending Customers queue.');
 if (badge) {
@@ -2883,6 +2927,7 @@ const original = badge.innerHTML;
 badge.innerHTML = svgIcon('warning', 22);
 setTimeout(() => { badge.innerHTML = original; }, 1500);
 }
+return Promise.resolve();
 }
 }
 
