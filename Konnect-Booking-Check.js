@@ -588,6 +588,19 @@ console.info('KonnectBookingCheck timeline-readiness self-test passed (3/3)');
 // this selector on one real timeline but only 3 had a heading starting
 // "Manually Created Sales Lead from" (the 4th was some other pink-
 // styled event type) - both conditions are required.
+//
+// "Manually Created Sales Lead from" is not the only genuine lead
+// heading, though - confirmed live via a real false-negative: a Tier 2
+// Customer First lead's actual heading is "New Sales Lead from Customer
+// First", a different (and equally genuine - automatically created
+// from an online enquiry rather than entered by staff) prefix the
+// original scan's single test customer never happened to have. Both
+// are accepted; the 4th, still-unidentified non-lead pink entry from
+// that original scan is presumed to be neither (its own heading text
+// was never captured), so this may still need widening again if a
+// third genuine prefix turns up.
+const LEAD_HEADING_PREFIXES = ['Manually Created Sales Lead from', 'New Sales Lead from'];
+
 function getLoadedLeadEntries() {
 const icons = [...document.querySelectorAll('a.connected-customer-timeline-centre-pink')];
 const rows = icons
@@ -595,7 +608,8 @@ const rows = icons
 .filter(Boolean);
 return [...new Set(rows)].filter((row) => {
 const heading = row.querySelector('.connected-customer-title-pink');
-return heading?.textContent.replace(/\s+/g, ' ').trim().startsWith('Manually Created Sales Lead from');
+const text = heading?.textContent.replace(/\s+/g, ' ').trim() || '';
+return LEAD_HEADING_PREFIXES.some((prefix) => text.startsWith(prefix));
 });
 }
 
