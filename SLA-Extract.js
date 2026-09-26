@@ -214,6 +214,121 @@ observer.observe(document.body, { childList: true, subtree: true });
 });
 }
 
+// Generic version of the waitForModal pattern above - waits for any
+// selector to exist rather than specifically the customer-detail modal,
+// for navigating to a different Konnect page/route (Queue by Agent)
+// where content renders in asynchronously after the hash change.
+function waitForElement(selector, timeout = 5000) {
+return new Promise((resolve) => {
+const existing = document.querySelector(selector);
+if (existing) {
+resolve(existing);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(null);
+}, timeout);
+const observer = new MutationObserver(() => {
+const el = document.querySelector(selector);
+if (el) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(el);
+}
+});
+observer.observe(document.body, { childList: true, subtree: true });
+});
+}
+
+// The Customer Hub / Service Booking module selector on the Queue by
+// Agent page isn't a URL-based route - it's Angular scope state, and
+// neither option carries a distinguishing class when selected (both
+// <li> elements are class="ng-scope" either way). The only way to tell
+// which is active is reading the selector's own trigger text, and the
+// only way to change it is opening the dropdown and clicking the
+// matching <li> by its text content, then waiting for the trigger text
+// to actually update before trusting the switch took effect - a stale
+// module selection here would mean Clear Queues clears the wrong scope
+// entirely.
+async function ensureCustomerHubModule() {
+const trigger = document.querySelector('div[title="Filter by Module"]');
+if (!trigger) return false;
+const currentLabel = () => trigger.querySelector('span.ng-binding')?.textContent?.trim();
+if (currentLabel() === 'Customer Hub') return true;
+
+trigger.click();
+const menuItem = await waitForElement('li[ng-click="moduleSelected(module)"]');
+if (!menuItem) return false;
+
+const items = Array.from(document.querySelectorAll('li[ng-click="moduleSelected(module)"]'));
+const target = items.find(li => li.textContent.includes('Customer Hub'));
+if (!target) return false;
+target.click();
+
+return new Promise((resolve) => {
+if (currentLabel() === 'Customer Hub') {
+resolve(true);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(false);
+}, 3000);
+const observer = new MutationObserver(() => {
+if (currentLabel() === 'Customer Hub') {
+clearTimeout(timer);
+observer.disconnect();
+resolve(true);
+}
+});
+observer.observe(trigger, { childList: true, subtree: true, characterData: true });
+});
+}
+
+// Bulk-unassigns every currently-assigned lead in the queue back to
+// unassigned, via Konnect's own "Clear Queues" admin action - reached
+// through the Queue by Agent page rather than anything this bookmarklet
+// normally touches. Konnect shows no confirmation before firing this
+// itself (the only feedback is a "Queues Cleared" message after the
+// fact), so the confirm() here is this tool's own safety gate, not a
+// formality - there's no undo on either side once it runs. Navigates
+// the actual visible tab there and back (Konnect is a single-page app
+// sharing this same tab, not something reachable in a hidden
+// background context) so expect a brief visible page flash.
+window._clearWholeQueue = async function() {
+const ok = window.confirm('This will unassign EVERY currently-assigned lead across the whole queue, back to unassigned - not just what\'s shown here. Konnect does not confirm this itself and it cannot be undone. Proceed?');
+if (!ok) return;
+
+const originalHash = window.location.hash;
+try {
+window.location.hash = '#/Queue/QueueByAgent';
+const clearBtn = await waitForElement('button[ng-click="ClearQueues()"]');
+if (!clearBtn) {
+alert('Could not find the Clear Queues button after navigating - aborted, nothing was cleared.');
+return;
+}
+const moduleOk = await ensureCustomerHubModule();
+if (!moduleOk) {
+alert('Could not confirm the Customer Hub module is selected - aborted for safety, nothing was cleared.');
+return;
+}
+clearBtn.click();
+await sleep(800);
+} finally {
+window.location.hash = originalHash;
+// The auto-detect poll only re-scans on an actual page-TYPE change,
+// and Queue by Agent isn't a recognized type (detectPageType()
+// returns null there), so its own tracking never registers this
+// as a change - landing back on the same page type it already
+// thought it was on. Without an explicit re-scan here, the panel
+// would keep showing the pre-clear "assigned" state until the
+// badge happened to be clicked again for an unrelated reason.
+await waitForElement('table');
+runExtraction();
+}
+};
+
 async function extractCustomerDetails(customerElement) {
 const nameLink = customerElement.querySelector('a');
 if (!nameLink) {
@@ -1352,7 +1467,7 @@ return `
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${cfTiles}</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span style="font-size: 11px; color: #94a3b8;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
-<button onclick="window._quickAssign()" style="background: #059669; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('bolt', 11)} Quick Assign</button>
+<button onclick="window._clearWholeQueue()" style="background: #dc2626; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('warning', 11)} Clear Queue</button>
 </div>
 </div>`;
 }
@@ -1703,7 +1818,7 @@ return `
 <div style="font-size: 11px; color: #64748b; margin-bottom: 6px;">${callbackLine}</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span style="font-size: 11px; color: #94a3b8;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
-<button onclick="window._quickAssign()" style="background: #059669; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('bolt', 11)} Quick Assign</button>
+<button onclick="window._clearWholeQueue()" style="background: #dc2626; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('warning', 11)} Clear Queue</button>
 </div>
 </div>`;
 }
@@ -2416,34 +2531,13 @@ return null;
 return agents;
 }
 
-// A fixed, opinionated "clear what's urgent right now" sweep for the LEAD
-// side of the equation - deliberately ignores whatever tiers/callback-types
-// happen to be checked (that's what the manual button is for). Pending
-// Customers: New + Auto Rescheduled leads due by the top of the next hour.
-// SLA: every tier due within the next hour.
-window._quickAssign = async function() {
-if (assigning) {
-cancelRequested = true;
-return;
-}
-const agents = beginQuickAssign();
-if (!agents) return;
-if (currentPageType === PAGE_PENDING) {
-const leads = collectPendingCustomers();
-const eligible = filterPendingLeads(leads, { callbackTypes: new Set(CALLBACK_TYPES_PRIMARY), cutoffDate: defaultHourCutoff() });
-const prioritized = prioritizePendingLeads(eligible);
-const limited = applyAssignLimit(prioritized);
-const plan = roundRobinAssign(limited, agents);
-await executeAssignmentRun(plan, locatePendingAssignCell);
-} else {
-const leads = collectAssignableLeads();
-const eligible = filterAssignableLeads(leads, { tiers: new Set([1, 2, 3, 4]), windowMinutes: 60, customerFirstOnly: false, emailOnly: false });
-const prioritized = prioritizeLeads(eligible);
-const limited = applyAssignLimit(prioritized);
-const plan = roundRobinAssign(limited, agents);
-await executeAssignmentRun(plan, locateAssignCell);
-}
-};
+// The general "Quick Assign" button that used to live here was removed:
+// on SLA it was byte-for-byte identical to clicking the "1h" due-summary
+// tile (same tiers, same window), and on Pending its narrower New/Auto
+// Rescheduled-only scope is still reachable via the manual button with
+// those two boxes checked - genuinely lost a one-click version of that
+// specific scope, kept for the sake of not having a button that
+// silently duplicated a tile right next to it.
 
 // Each due-summary tile (Missed/15m/30m/1h, and the Customer First row)
 // is itself a quick-assign shortcut - clicking one runs assignment using
