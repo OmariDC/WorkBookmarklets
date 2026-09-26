@@ -466,7 +466,7 @@ window.location.hash = originalHash;
 }
 };
 
-// Stage 1 of the "All leads are Routed to" check: a pure scanner, no
+// Stage 1 of the Lead Type Check: a pure scanner, no
 // judgment - there's no expected-sources list to check against yet, so
 // this just reports what it actually found (today and yesterday, both
 // via the same page's own Today/Yesterday controls) for manual review.
@@ -584,16 +584,15 @@ window.location.hash = originalHash;
 }
 };
 
-// Stage 2: the real "All leads are Routed to" check, now that a scan
-// has confirmed which sources actually need to show up daily (a few
-// others appear too, but only case-by-case, not required). Whole-of-
-// yesterday counts for now, not narrowed to the 7pm-8am overnight
-// window specifically - that refinement is pending real sample values
-// from the Created Date/Lead Created columns to parse against, so it
-// isn't guessed at here.
+// Stage 2: the real Lead Type Check, now that a scan has confirmed
+// which sources actually need to show up daily (a few others appear
+// too, but only case-by-case, not required). Originally mislabeled as
+// "All leads are Routed to" - that name belongs to a different, later
+// check (a per-row check of the Routed To column, see
+// window._checkRoutedTo), not this one.
 const EXPECTED_DAILY_SOURCES = ['Robins & Day Website', 'Customer First', 'Autotrader - Deal Builder', 'Cargurus'];
 
-window._checkSourcesRouting = async function() {
+window._checkLeadTypes = async function() {
 const originalHash = window.location.hash;
 try {
 window.location.hash = '#/Queue/InboundAPI';
@@ -608,7 +607,7 @@ const todayCounts = extractSourceCounts();
 
 const missingToday = EXPECTED_DAILY_SOURCES.filter(s => !todayCounts[s]);
 if (missingToday.length === 0) {
-alert('All leads are Routed to: OK');
+alert('Lead Type Check: OK');
 return;
 }
 
@@ -628,9 +627,63 @@ const yesterdayCounts = extractSourceCounts(isInOvernightWindow);
 const stillMissing = missingToday.filter(s => !yesterdayCounts[s]);
 
 if (stillMissing.length === 0) {
-alert(`All leads are Routed to: OK (found overnight yesterday: ${missingToday.join(', ')})`);
+alert(`Lead Type Check: OK (found overnight yesterday: ${missingToday.join(', ')})`);
 } else {
-alert(`All leads are Routed to: MISSING\n${stillMissing.join('\n')}`);
+alert(`Lead Type Check: MISSING\n${stillMissing.join('\n')}`);
+}
+} finally {
+window.location.hash = originalHash;
+}
+};
+
+// "All leads are Routed to" - the real one, distinct from Lead Type
+// Check above despite the earlier mix-up. Per-row, today only: every
+// lead's own Routed To cell (index 11) should have something in it.
+// Genuinely-unrouted rows are rare enough that a confirmed real
+// example wasn't available to check against, so this treats a cell as
+// unrouted if it's blank OR if its entire trimmed content exactly
+// matches a known "no value" word - matched as a whole-cell equality,
+// not a substring search, so a legitimate agent/team name that merely
+// contains "no" (or similar) can't misfire this.
+const UNROUTED_PLACEHOLDER_WORDS = ['no', 'not', 'n/a', 'na', 'none', 'not routed', 'not applicable', 'unrouted'];
+
+function isUnroutedCell(text) {
+const t = (text || '').trim();
+if (t === '') return true;
+return UNROUTED_PLACEHOLDER_WORDS.includes(t.toLowerCase());
+}
+
+window._checkRoutedTo = async function() {
+const originalHash = window.location.hash;
+try {
+window.location.hash = '#/Queue/InboundAPI';
+const table = await waitForElement('table.table-striped', 15000);
+if (!table) {
+alert('Could not load the Inbound API table - aborted, nothing was checked.');
+return;
+}
+await sleep(300);
+
+const rows = Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length > 0);
+const problems = [];
+rows.forEach((row) => {
+const cells = row.querySelectorAll('td');
+if (cells.length < 12) return;
+const routedTo = cells[11]?.textContent?.trim() || '';
+if (isUnroutedCell(routedTo)) {
+problems.push({
+apiReference: cells[0]?.textContent?.trim() || '(blank)',
+source: cells[8]?.textContent?.trim() || '(blank)',
+enquiryType: cells[9]?.textContent?.trim() || '(blank)'
+});
+}
+});
+
+if (problems.length === 0) {
+alert('All leads are Routed to: OK');
+} else {
+const lines = problems.map(p => `Api Ref: ${p.apiReference} | Source: ${p.source} | Enquiry: ${p.enquiryType}`).join('\n');
+alert(`All leads are Routed to: ${problems.length} NOT ROUTED\n${lines}`);
 }
 } finally {
 window.location.hash = originalHash;
@@ -2342,7 +2395,8 @@ ${bodyHtml}
 <span style="display: flex; gap: 10px;">
 <span onclick="window._checkInProgress()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">In Progress</span>
 <span onclick="window._scanSources()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Scan Sources</span>
-<span onclick="window._checkSourcesRouting()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Routed To</span>
+<span onclick="window._checkLeadTypes()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Lead Types</span>
+<span onclick="window._checkRoutedTo()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Routed To</span>
 </span>
 <button onclick="(function() { if (confirm('Clear all data and stop?')) { window._slaResetBookmarklet(); } })();"
 style="padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
