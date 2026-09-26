@@ -1576,6 +1576,8 @@ th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid #e2e8f0; }
 .nonbooking { color: #64748b; }
 .copy-buttons { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
 .hidden { display: none; }
+.footer { border-top: 1px solid #cbd5e1; padding: 8px 12px; background: white; display: flex; justify-content: flex-end; border-radius: 0 0 10px 10px; }
+.footer button { padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; }
 </style>
 <div class="panel">
 <div class="header" id="headerEl">
@@ -1608,6 +1610,9 @@ th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid #e2e8f0; }
 <button class="action" id="btnCopyPrioritised">Copy prioritised</button>
 <button class="action" id="btnDownload">Download TSV</button>
 </div>
+</div>
+<div class="footer">
+<button id="btnClearStop">Clear & Stop</button>
 </div>
 </div>
 `;
@@ -1713,6 +1718,23 @@ clearStoredSession();
 session = null;
 pasteBox.value = '';
 uiHandle.setState('Idle', '-', '-');
+});
+
+// Same behavior as SLA-Extract.js's own Clear & Stop: a confirm gate,
+// then stop the currently running instance and tear down its panel -
+// not a data wipe (that's what Clear session, above, is for). The
+// persisted session in localStorage is deliberately left alone, same
+// as SLA-Extract.js leaves its own localStorage-backed settings alone
+// here - re-running the bookmarklet afterward picks the session back
+// up rather than starting blank.
+root.getElementById('btnClearStop').addEventListener('click', () => {
+const ok = window.confirm('Clear all data and stop?');
+if (!ok) return;
+if (session) session.cancelled = true;
+isRunning = false;
+host.remove();
+window.__konnectBookingCheck = null;
+console.info('Konnect Booking Check stopped - click the bookmarklet again to run');
 });
 
 root.getElementById('btnCopy').addEventListener('click', () => {
