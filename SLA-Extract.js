@@ -2592,9 +2592,14 @@ if (!tierSet.has(c.tier)) return false;
 if (customerFirstOnly && !(c.source || '').toLowerCase().includes('customer first')) return false;
 return true;
 });
-const header = ['Name', 'Phone', 'Email', 'Registration', 'Source', 'Campaign', 'Created'].join('\t');
+// Registration dropped per instruction - not something that needs
+// copying, and not something the receiving tool can reliably search by
+// either (it's often a SALESLEAD-style placeholder rather than a real
+// plate, not present on Konnect Live's own customer records to match
+// against).
+const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'].join('\t');
 const lines = rows.map((c) => [
-tsvSafe(stripTitle(c.name)), tsvSafe(c.phone), tsvSafe(c.email), tsvSafe(c.registration), tsvSafe(c.source), tsvSafe(c.campaign), tsvSafe(c.createdText)
+tsvSafe(stripTitle(c.name)), tsvSafe(c.phone), tsvSafe(c.email), tsvSafe(c.source), tsvSafe(c.campaign), tsvSafe(c.createdText)
 ].join('\t'));
 return { tsv: [header, ...lines].join('\n'), count: rows.length };
 }
