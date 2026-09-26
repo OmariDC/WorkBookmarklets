@@ -294,9 +294,15 @@ observer.observe(document.body, { childList: true, subtree: true });
 // Navigates via the app's own hash route rather than a menu/dropdown
 // sequence (per instruction - avoids selecting the wrong menu item).
 // Waits for the search-type radios to exist rather than a fixed delay.
+// 15s, not the default 8s - confirmed live (same lesson learned
+// repeatedly on the Konnect Manager side, e.g. the Live Campaigns
+// month selector): the FIRST navigation to a route in a session can be
+// meaningfully slower than every visit after it, and a slow-but-
+// successful wait costs nothing since it resolves the moment the
+// element actually appears either way.
 async function openSearchPage() {
 window.location.hash = KONNECT_LIVE_SEARCH_HASH;
-const radio = await waitForElement('input[name="bookingSearchBy"]');
+const radio = await waitForElement('input[name="bookingSearchBy"]', 15000);
 return !!radio;
 }
 
@@ -334,12 +340,16 @@ return input.value === value;
 // already showing from a previous search) then off again (confirmed
 // finished), then reads the settled count. Returns null if a search
 // never detectably started or never finished within timeout - callers
-// treat that as SEARCH_TIMEOUT, not a zero-result search.
-async function submitSearchAndWaitForResults(timeout = 8000) {
+// treat that as SEARCH_TIMEOUT, not a zero-result search. Both waits
+// widened from their original tighter defaults (1500ms/8000ms) after a
+// real first-search-in-a-session SEARCH_TIMEOUT, with the very next
+// search (same session, already warmed up) succeeding immediately
+// after - the same "first time is slower" pattern as openSearchPage.
+async function submitSearchAndWaitForResults(timeout = 15000) {
 const button = findSearchButton();
 if (!button || button.disabled) return null;
 button.click();
-const started = await waitForSpinnerState(true, 1500);
+const started = await waitForSpinnerState(true, 5000);
 if (!started) return null;
 const finished = await waitForSpinnerState(false, timeout);
 if (!finished) return null;
