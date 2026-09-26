@@ -958,7 +958,15 @@ function ensureWheelStyles() {
 if (document.getElementById('_slaWheelStyles')) return;
 const style = document.createElement('style');
 style.id = '_slaWheelStyles';
-style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #4f46e5; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef2ff !important; }';
+// Tier/callback-type/special-filter toggles were plain label+checkbox
+// rows - a bare HTML form look. Styled as chips instead via :has(), so
+// the underlying <input> stays a real checkbox (every existing
+// :checked/:not(:checked) query elsewhere in the file keeps working
+// unchanged) while only the *label* wrapping it changes appearance -
+// the input itself is visually hidden (opacity/size, not display:none,
+// so it stays focusable/clickable) rather than replaced with a custom
+// control.
+style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #4f46e5; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef2ff !important; } .chip-label { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 14px; border: 1px solid #cbd5e1; background: white; color: #64748b; font-size: 12px; cursor: pointer; user-select: none; transition: background 0.15s, border-color 0.15s, color 0.15s; } .chip-label input { position: absolute; opacity: 0; width: 0; height: 0; } .chip-label:has(input:checked) { background: #eef2ff; border-color: #4f46e5; color: #4338ca; font-weight: 600; }';
 document.head.appendChild(style);
 }
 
@@ -1323,7 +1331,7 @@ renderStatTile(`${m}m`, customerFirstDueCounts[i], customerFirstDueCounts[i] > 0
 ).join('');
 
 return `
-<div id="slaDueSummary" style="padding: 10px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-size: 13px; color: #1e293b;">
+<div id="slaDueSummary" style="padding: 12px 20px 0; background: #f8fafc; font-size: 13px; color: #1e293b;">
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
 <div style="font-size: 11px; font-weight: 700; color: ${CUSTOMER_FIRST_ACCENT}; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Customer First</div>
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${cfTiles}</div>
@@ -1434,14 +1442,18 @@ return prioritized.slice(0, limit);
 // in both functions; factored out once both were stable rather than
 // during initial development, since the shared shape only became
 // obvious after both existed.
+// No longer a collapsible "Assign Leads" section wrapping everything -
+// agents/limit/preview/button/results are the actual look-and-act
+// content, so they're always visible directly beneath the due-summary
+// tiles above (same background, no border between them - reads as one
+// continuous zone rather than two stacked panels). Only the filter
+// controls (tiers/callback-type/time window), which are setup you set
+// once and rarely revisit, are tucked behind their own small "Filters"
+// disclosure.
 function renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, runHandlerName, filtersZoneHtml) {
+const filtersOpen = !!settings.filtersOpen;
 return `
-<div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #e2e8f0;">
-<div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
-<span style="font-weight: 700; color: #1e293b; font-size: 15px; display: inline-flex; align-items: center; gap: 6px;">${svgIcon('bolt', 14)} Assign Leads</span>
-<span style="color: #1e293b;">${chevronIcon(!settings.sectionOpen, 'assignSectionToggle')}</span>
-</div>
-<div id="assignSectionBody" style="margin-top: 12px; display: ${settings.sectionOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
+<div id="assignSectionContainer" style="padding: 0 20px 16px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
 <div style="margin-bottom: 10px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
 <span style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px;">AGENTS ONLINE</span>
@@ -1453,7 +1465,7 @@ return `
 </span>
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
-<div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: #f8fafc; border-radius: 4px; font-size: 11px; color: #1e293b;"></div>
+<div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: white; border-radius: 4px; font-size: 11px; color: #1e293b;"></div>
 </div>
 <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px;">
 ${renderAssignLimitControl(settings)}
@@ -1465,9 +1477,11 @@ ${buttonDisabled ? (canCheckAgentRoster() ? 'No agents online' : "Can't check ag
 </button>
 <div id="assignResultsSummary"></div>
 <div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: #64748b; max-height: 100px; overflow-y: auto;"></div>
-<div style="background: #f1f5f9; border-radius: 6px; padding: 12px; margin-top: 16px;">
-${filtersZoneHtml}
+<div onclick="window._toggleFiltersZone()" style="cursor: pointer; display: flex; align-items: center; gap: 6px; margin-top: 14px; font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px;">
+${chevronIcon(!filtersOpen, 'filtersZoneToggle')} FILTERS
 </div>
+<div id="filtersZoneBody" style="display: ${filtersOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; margin-top: 10px; padding-right: 6px;">
+${filtersZoneHtml}
 </div>
 </div>`;
 }
@@ -1485,8 +1499,9 @@ const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).l
 const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
 
 const tierCheckboxes = [1, 2, 3, 4].map(t => `
-<label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: #1e293b;">
-<input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()"> Tier ${t} <span id="tier-count-${t}" style="color:#94a3b8;">(${tierCounts[t - 1]})</span>
+<label class="chip-label">
+<input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()">
+Tier ${t} <span id="tier-count-${t}" style="opacity: 0.7;">(${tierCounts[t - 1]})</span>
 </label>`).join('');
 
 const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
@@ -1495,16 +1510,18 @@ const buttonDisabled = agents.length === 0;
 const filtersZoneHtml = `
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">TIERS</div>
-<div style="display: flex; gap: 10px; flex-wrap: wrap;">${tierCheckboxes}</div>
+<div style="display: flex; gap: 6px; flex-wrap: wrap;">${tierCheckboxes}</div>
 </div>
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">SPECIAL FILTERS</div>
-<div style="display: flex; flex-direction: column; gap: 6px;">
-<label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: #1e293b;">
-<input type="checkbox" id="assignCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateAssignPreview()"> Customer First only <span style="color:#94a3b8;">(${customerFirstCount})</span>
+<div style="display: flex; gap: 6px; flex-wrap: wrap;">
+<label class="chip-label">
+<input type="checkbox" id="assignCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateAssignPreview()">
+Customer First <span style="opacity: 0.7;">(${customerFirstCount})</span>
 </label>
-<label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: #1e293b;">
-<input type="checkbox" id="assignEmailOnly" ${settings.emailOnly ? 'checked' : ''} onchange="window._updateAssignPreview()"> Email only (no phone) <span style="color:#94a3b8;">(${emailOnlyCount})</span>
+<label class="chip-label">
+<input type="checkbox" id="assignEmailOnly" ${settings.emailOnly ? 'checked' : ''} onchange="window._updateAssignPreview()">
+Email only <span style="opacity: 0.7;">(${emailOnlyCount})</span>
 </label>
 </div>
 </div>
@@ -1658,7 +1675,7 @@ renderStatTile('Next hour', dueNextHour, false, `window._quickAssignPendingTile(
 ].join('');
 
 return `
-<div id="pendingDueSummary" style="padding: 10px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-size: 13px; color: #1e293b;">
+<div id="pendingDueSummary" style="padding: 12px 20px 0; background: #f8fafc; font-size: 13px; color: #1e293b;">
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
 <div style="font-size: 11px; color: #64748b; margin-bottom: 6px;">${callbackLine}</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
@@ -1681,13 +1698,15 @@ const callbackCounts = computePendingCallbackCounts(leads, initialCutoffDate);
 const countFor = (type) => callbackCounts[type] || 0;
 
 const primaryCheckboxes = CALLBACK_TYPES_PRIMARY.map(type => `
-<label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: #1e293b;">
-<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${excludedCallbackTypes.has(type) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="color:#94a3b8;">(${countFor(type)})</span>
+<label class="chip-label">
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${excludedCallbackTypes.has(type) ? '' : 'checked'} onchange="window._updateAssignPreview()">
+${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="opacity: 0.7;">(${countFor(type)})</span>
 </label>`).join('');
 
 const advancedCheckboxes = CALLBACK_TYPES_ADVANCED.map(type => `
-<label style="display: flex; align-items: center; gap: 4px; font-size: 13px; color: #1e293b;">
-<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${includedAdvancedCallbackTypes.has(type) ? 'checked' : ''} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="color:#94a3b8;">(${countFor(type)})</span>
+<label class="chip-label">
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${includedAdvancedCallbackTypes.has(type) ? 'checked' : ''} onchange="window._updateAssignPreview()">
+${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="opacity: 0.7;">(${countFor(type)})</span>
 </label>`).join('');
 
 const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
@@ -1698,11 +1717,11 @@ const advancedOpenStyle = settings.advancedOpen ? 'display: flex;' : 'display: n
 const filtersZoneHtml = `
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">CALLBACK TYPE</div>
-<div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
+<div style="display: flex; gap: 6px; flex-wrap: wrap;">${primaryCheckboxes}</div>
 <div onclick="window._toggleAdvancedCallbackTypes()" style="margin-top: 6px; font-size: 11px; color: #4f46e5; cursor: pointer;">
 ${chevronIcon(!settings.advancedOpen, 'advancedCallbackToggle')} Advanced (Manual Rescheduled, Post Closure)
 </div>
-<div id="advancedCallbackTypes" style="${advancedOpenStyle} gap: 10px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
+<div id="advancedCallbackTypes" style="${advancedOpenStyle} gap: 6px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
 </div>
 <div>
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">DUE BEFORE</div>
@@ -2281,14 +2300,18 @@ setSectionCollapsed(sectionId, !isHidden);
 }
 };
 
-window._toggleAssignSection = function() {
-const body = document.getElementById('assignSectionBody');
-const toggle = document.getElementById('assignSectionToggle');
+window._toggleFiltersZone = function() {
+const body = document.getElementById('filtersZoneBody');
+const toggle = document.getElementById('filtersZoneToggle');
 if (!body || !toggle) return;
 const isHidden = body.style.display === 'none';
 body.style.display = isHidden ? 'block' : 'none';
 toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
-saveAssignSettings({ sectionOpen: isHidden });
+saveAssignSettings({ filtersOpen: isHidden });
+// The time wheel lives inside this disclosure - scrollTop assignments
+// silently no-op while its container is display:none, so the wheel's
+// position never actually took effect until now that it's visible
+// (same root cause as the original "wheel always shows 00:00" bug).
 if (isHidden) syncAllWheelPositions();
 };
 
@@ -2315,17 +2338,14 @@ saveAssignSettings({ advancedOpen: shouldOpen });
 // meant to give: not just "will something happen" but "is this a
 // reasonable way to divide it up."
 // Shared by every quick-criteria entry point (the general Quick Assign
-// button and each clickable due-summary tile): expand the section if
-// it's collapsed so progress is visible, then resolve which agents are
-// actually checked - agent selection is real state the user is
+// button and each clickable due-summary tile): resolves which agents
+// are actually checked - agent selection is real state the user is
 // deliberately curating and always gets respected, no matter which
 // fixed lead-criteria shortcut triggered the run. Returns null (and
-// leaves a message in the log) if nothing's selected.
+// leaves a message in the log) if nothing's selected. Progress/results
+// are always visible now (nothing to expand first), since agents/
+// button/results are no longer behind a collapsible section.
 function beginQuickAssign() {
-const body = document.getElementById('assignSectionBody');
-if (body && body.style.display === 'none') {
-window._toggleAssignSection();
-}
 const selectedAgentIds = new Set(
 Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map(el => el.value)
 );
