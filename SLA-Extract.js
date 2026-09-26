@@ -574,9 +574,18 @@ observer.observe(target, { childList: true, subtree: true, characterData: true }
 // missing on the very first run of a session, then passed immediately on
 // an unchanged re-run a moment later. Waits for an actual data row (not
 // just the table container) before either check trusts what it reads.
+// Requires the STRICTER of the two checks' own column requirements
+// (Routed To reads index 11, so needs 12+ cells) rather than just "any
+// td at all" - a row can exist in the DOM with only its first couple of
+// cells attached mid-render, which used to pass an "any td" check while
+// still being short of the 9 cells extractSourceCounts requires, so it
+// silently got skipped entirely - a table caught in that state reads
+// back as completely empty rather than failing loudly, which is what
+// produced the false "every lead type is missing" report.
+const INBOUND_MIN_CELLS = 12;
 function waitForInboundRows(timeout = 15000) {
 return new Promise((resolve) => {
-const hasRows = () => Array.from(document.querySelectorAll('table.table-striped tr')).some(r => r.querySelectorAll('td').length > 0);
+const hasRows = () => Array.from(document.querySelectorAll('table.table-striped tr')).some(r => r.querySelectorAll('td').length >= INBOUND_MIN_CELLS);
 if (hasRows()) {
 resolve(true);
 return;
@@ -633,6 +642,17 @@ return { ok: null, summary: 'Inbound API table loaded but no rows appeared - abo
 const todayLabel = currentInboundDateLabel();
 const todayCounts = extractSourceCounts();
 const details = sourceCountLines(todayCounts);
+
+// Zero of ANY source (not just the expected ones) is a load problem,
+// not a real result - waitForInboundRows confirming full-width rows
+// exist doesn't rule out every other explanation (wrong table matched,
+// a stale/mid-transition read, etc.), and reporting every expected
+// source as missing on the back of an empty read is exactly the false
+// alarm this is meant to catch, rather than confidently declaring a
+// real problem off a read that likely just didn't work.
+if (Object.keys(todayCounts).length === 0) {
+return { ok: null, summary: 'Inbound API table read back with zero rows for Today - likely not fully loaded, re-run to confirm.', details };
+}
 
 const missingToday = EXPECTED_DAILY_SOURCES.filter(s => !todayCounts[s]);
 if (missingToday.length === 0) {
@@ -702,11 +722,13 @@ if (!rowsLoaded) {
 return { ok: null, summary: 'Inbound API table loaded but no rows appeared - aborted.' };
 }
 
-const rows = Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length > 0);
+const rows = Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length >= 12);
+if (rows.length === 0) {
+return { ok: null, summary: 'Inbound API table read back with zero usable rows for Today - likely not fully loaded, re-run to confirm.' };
+}
 const problems = [];
 rows.forEach((row) => {
 const cells = row.querySelectorAll('td');
-if (cells.length < 12) return;
 const routedTo = cells[11]?.textContent?.trim() || '';
 if (isUnroutedCell(routedTo)) {
 problems.push({
