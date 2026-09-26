@@ -353,14 +353,52 @@ const triggers = Array.from(document.querySelectorAll('div[data-toggle="dropdown
 return triggers.find(t => /^\d{4}\s*-\s*[A-Za-z]+$/.test(t.querySelector('span.ng-binding')?.textContent?.trim() || ''));
 }
 
+// findMonthSelectorTrigger() alone is a synchronous, one-shot DOM
+// query with no wait - calling it immediately after a hash change (the
+// very first thing reloadCurrentMonthCampaigns did) can run before
+// Angular has rendered anything at all for a route visited for the
+// first time in a session, failing even though the selector logic
+// itself is correct. This actually confirmed against real use: the
+// first click aborted, an immediate second click (page already loaded
+// from the first attempt) succeeded instantly.
+function waitForMonthSelectorTrigger(timeout = 15000) {
+return new Promise((resolve) => {
+const existing = findMonthSelectorTrigger();
+if (existing) {
+resolve(existing);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(null);
+}, timeout);
+const observer = new MutationObserver(() => {
+const found = findMonthSelectorTrigger();
+if (found) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(found);
+}
+});
+observer.observe(document.body, { childList: true, subtree: true });
+});
+}
+
 async function reloadCurrentMonthCampaigns() {
-const trigger = findMonthSelectorTrigger();
+const trigger = await waitForMonthSelectorTrigger();
 if (!trigger) return false;
 const label = trigger.querySelector('span.ng-binding')?.textContent?.trim();
 if (!label) return false;
 
 trigger.click();
-const firstOption = await waitForElement('li[ng-click="monthToDateSelected(monthToDate)"]');
+// The first visit to this route in a session took long enough to
+// abort with the original 5s default (Angular presumably compiling/
+// fetching this route for the first time) - a second click right
+// after succeeded instantly, confirming it's a one-off warm-up cost
+// rather than something wrong with the selectors themselves. Given
+// generously here since a slow-but-successful wait costs nothing (it
+// resolves the moment the element actually appears either way).
+const firstOption = await waitForElement('li[ng-click="monthToDateSelected(monthToDate)"]', 15000);
 if (!firstOption) return false;
 
 const options = Array.from(document.querySelectorAll('li[ng-click="monthToDateSelected(monthToDate)"]'));
@@ -368,7 +406,7 @@ const target = options.find(li => li.textContent.trim() === label);
 if (!target) return false;
 target.click();
 
-const firstRow = await waitForElement('tr[ng-repeat="camp in campaigns"]');
+const firstRow = await waitForElement('tr[ng-repeat="camp in campaigns"]', 15000);
 if (!firstRow) return false;
 // ng-repeat renders every row for a digest in one batch, but with
 // ~300 rows a short settle delay is cheap insurance against reading
@@ -492,7 +530,7 @@ window._scanSources = async function() {
 const originalHash = window.location.hash;
 try {
 window.location.hash = '#/Queue/InboundAPI';
-const table = await waitForElement('table.table-striped');
+const table = await waitForElement('table.table-striped', 15000);
 if (!table) {
 alert('Could not load the Inbound API table - aborted, nothing was scanned.');
 return;
@@ -521,6 +559,59 @@ alert(formatSourceReport('Today', todayCounts) + '\n\n' + formatSourceReport('Ye
 // controller calls getTodaysData() in its constructor, so the next
 // fresh visit to this page loads Today automatically regardless of
 // whatever this scan left it on.
+window.location.hash = originalHash;
+}
+};
+
+// Stage 2: the real "All leads are Routed to" check, now that a scan
+// has confirmed which sources actually need to show up daily (a few
+// others appear too, but only case-by-case, not required). Whole-of-
+// yesterday counts for now, not narrowed to the 7pm-8am overnight
+// window specifically - that refinement is pending real sample values
+// from the Created Date/Lead Created columns to parse against, so it
+// isn't guessed at here.
+const EXPECTED_DAILY_SOURCES = ['Robins & Day Website', 'Customer First', 'Autotrader - Deal Builder', 'Cargurus'];
+
+window._checkSourcesRouting = async function() {
+const originalHash = window.location.hash;
+try {
+window.location.hash = '#/Queue/InboundAPI';
+const table = await waitForElement('table.table-striped', 15000);
+if (!table) {
+alert('Could not load the Inbound API table - aborted, nothing was checked.');
+return;
+}
+await sleep(300);
+const todayLabel = currentInboundDateLabel();
+const todayCounts = extractSourceCounts();
+
+const missingToday = EXPECTED_DAILY_SOURCES.filter(s => !todayCounts[s]);
+if (missingToday.length === 0) {
+alert('All leads are Routed to: OK');
+return;
+}
+
+const yesterdayLink = document.querySelector('li[ng-click="getYesterdaysData()"]');
+if (!yesterdayLink) {
+alert(`Could not check yesterday (control not found).\nMissing today: ${missingToday.join(', ')}`);
+return;
+}
+yesterdayLink.click();
+const changed = await waitForInboundDateChange(todayLabel, 15000);
+if (!changed) {
+alert(`Could not confirm yesterday's data loaded.\nMissing today: ${missingToday.join(', ')}`);
+return;
+}
+await sleep(300);
+const yesterdayCounts = extractSourceCounts();
+const stillMissing = missingToday.filter(s => !yesterdayCounts[s]);
+
+if (stillMissing.length === 0) {
+alert(`All leads are Routed to: OK (found in yesterday instead: ${missingToday.join(', ')})`);
+} else {
+alert(`All leads are Routed to: MISSING\n${stillMissing.join('\n')}`);
+}
+} finally {
 window.location.hash = originalHash;
 }
 };
@@ -2230,6 +2321,7 @@ ${bodyHtml}
 <span style="display: flex; gap: 10px;">
 <span onclick="window._checkInProgress()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">In Progress</span>
 <span onclick="window._scanSources()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Scan Sources</span>
+<span onclick="window._checkSourcesRouting()" title="Morning check - temporary, will move once all checks are defined" style="font-size: 11px; color: #4f46e5; cursor: pointer;">Routed To</span>
 </span>
 <button onclick="(function() { if (confirm('Clear all data and stop?')) { window._slaResetBookmarklet(); } })();"
 style="padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
