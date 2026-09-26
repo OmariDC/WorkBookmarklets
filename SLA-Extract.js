@@ -289,17 +289,15 @@ observer.observe(trigger, { childList: true, subtree: true, characterData: true 
 // Bulk-unassigns every currently-assigned lead in the queue back to
 // unassigned, via Konnect's own "Clear Queues" admin action - reached
 // through the Queue by Agent page rather than anything this bookmarklet
-// normally touches. Konnect shows no confirmation before firing this
-// itself (the only feedback is a "Queues Cleared" message after the
-// fact), so the confirm() here is this tool's own safety gate, not a
-// formality - there's no undo on either side once it runs. Navigates
-// the actual visible tab there and back (Konnect is a single-page app
-// sharing this same tab, not something reachable in a hidden
-// background context) so expect a brief visible page flash.
+// normally touches. No confirm prompt - deliberately removed at the
+// user's request since this button isn't reachable by accident.
+// Konnect itself shows no confirmation before firing this either (only
+// a "Queues Cleared" message after the fact), and there's no undo on
+// either side once it runs. Navigates the actual visible tab there and
+// back (Konnect is a single-page app sharing this same tab, not
+// something reachable in a hidden background context) so expect a
+// brief visible page flash.
 window._clearWholeQueue = async function() {
-const ok = window.confirm('This will unassign EVERY currently-assigned lead across the whole queue, back to unassigned - not just what\'s shown here. Konnect does not confirm this itself and it cannot be undone. Proceed?');
-if (!ok) return;
-
 const originalHash = window.location.hash;
 try {
 window.location.hash = '#/Queue/QueueByAgent';
