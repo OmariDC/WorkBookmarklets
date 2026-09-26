@@ -1721,28 +1721,26 @@ function renderCallbackTypeSection(typeName, customers, color) {
 const sectionId = 'cb-' + slugify(typeName);
 
 if (customers.length === 0) {
-return `<div style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 8px;
-border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(15,23,42,0.08);">
-<h3 style="margin: 0; color: ${color}; font-size: 15px; font-weight: 600;">${escapeHtml(typeName)}</h3>
-<p style="margin: 8px 0 0 0; color: #94a3b8; font-size: 13px;">No customers</p>
+return `<div style="margin-bottom: 16px; padding: 10px 4px; border-bottom: 2px solid ${color};">
+<span style="color: ${color}; font-size: 15px; font-weight: 700;">${escapeHtml(typeName)}</span>
+<span style="margin-left: 10px; color: #94a3b8; font-size: 13px;">No customers</span>
 </div>`;
 }
 
 const collapsed = isSectionCollapsed(sectionId);
-return `<div style="margin-bottom: 20px;">
-<div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 16px; background: white; border-radius: 8px 8px 0 0;
-display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
-border-bottom: 2px solid #e2e8f0;">
+return `<div style="margin-bottom: 16px;">
+<div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 10px 4px;
+display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
 <div>
 <span style="font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(typeName)}</span>
 <span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
 </div>
 <span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + sectionId)}</span>
 </div>
-<div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(15,23,42,0.08);">
-${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f1f5f9;">
+<div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
+${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px; border-bottom: 1px solid #e2e8f0;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #1e293b; font-weight: 700; font-size: 15px;">${escapeHtml(c.name)}</span>
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
 </div>
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
@@ -1765,9 +1763,9 @@ ${renderCopyableField(c.landline)}
 <span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
 </div>
 </div>
-<div style="padding-top: 10px; border-top: 1px solid #e2e8f0; display: flex; gap: 6px; flex-wrap: wrap; font-size: 13px;">
-<span style="background: #e2e8f0; color: #1e293b; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.brand || '')}</span>
-<span style="background: #d1fae5; color: #059669; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.campaign || '')}</span>
+<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
+<span style="color: #64748b;">${escapeHtml(c.brand || '')}</span>
+<span style="color: #059669;">${escapeHtml(c.campaign || '')}</span>
 </div>
 </div>`).join('')}
 </div>
@@ -1776,28 +1774,26 @@ ${renderCopyableField(c.landline)}
 
 function renderTierSection(tierName, customers, color, tierId) {
 if (customers.length === 0) {
-return `<div style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 8px;
-border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(15,23,42,0.08);">
-<h3 style="margin: 0; color: ${color}; font-size: 15px; font-weight: 600;">${tierName}</h3>
-<p style="margin: 8px 0 0 0; color: #94a3b8; font-size: 13px;">No customers</p>
+return `<div style="margin-bottom: 16px; padding: 10px 4px; border-bottom: 2px solid ${color};">
+<span style="color: ${color}; font-size: 15px; font-weight: 700;">${tierName}</span>
+<span style="margin-left: 10px; color: #94a3b8; font-size: 13px;">No customers</span>
 </div>`;
 }
 
 const collapsed = isSectionCollapsed(tierId);
-return `<div style="margin-bottom: 20px;">
-<div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 16px; background: white; border-radius: 8px 8px 0 0;
-display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
-border-bottom: 2px solid #e2e8f0;">
+return `<div style="margin-bottom: 16px;">
+<div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 10px 4px;
+display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
 <div>
 <span style="font-weight: 700; color: #1e293b; font-size: 15px;">${tierName}</span>
 <span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
 </div>
 <span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + tierId)}</span>
 </div>
-<div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(15,23,42,0.08);">
-${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f1f5f9;">
+<div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
+${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px; border-bottom: 1px solid #e2e8f0;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #1e293b; font-weight: 700; font-size: 15px;">${escapeHtml(c.name)}</span>
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
 </div>
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
@@ -1810,9 +1806,9 @@ ${renderCopyableField(c.phone)}
 ${renderCopyableField(c.email)}
 </div>
 </div>
-<div style="padding-top: 10px; border-top: 1px solid #e2e8f0; display: flex; gap: 6px; flex-wrap: wrap; font-size: 13px;">
-<span style="background: #e2e8f0; color: #1e293b; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.source)}</span>
-<span style="background: #d1fae5; color: #059669; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.campaign)}</span>
+<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
+<span style="color: #64748b;">${escapeHtml(c.source)}</span>
+<span style="color: #059669;">${escapeHtml(c.campaign)}</span>
 </div>
 </div>`).join('')}
 </div>
@@ -1841,24 +1837,27 @@ background: #f8fafc; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.25), 0 4px 12
 z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 display: flex; flex-direction: column; transition: transform 0.3s ease; ${isMinimized ? 'transform: translateX(150%);' : ''}">
 
-<div style="position: sticky; top: 0; background: linear-gradient(135deg, #1e293b 0%, #334155 100%); color: white; padding: 20px;
-display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #059669;
+<div style="position: sticky; top: 0; background: #1e293b; color: white; padding: 10px 14px;
+display: flex; justify-content: space-between; align-items: center;
 flex-shrink: 0;">
-<div style="display: flex; align-items: center; gap: 12px;">
-<h2 style="margin: 0; font-size: 20px; font-weight: 700;">${title}</h2>
-<span style="background: #059669; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">${count}</span>
-${newCount > 0 ? `<span style="background: #d97706; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">+${newCount}</span>` : ''}
-${removedCount > 0 ? `<span style="background: #64748b; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
+<div style="display: flex; align-items: center; gap: 8px;">
+<h2 style="margin: 0; font-size: 15px; font-weight: 700;">${title}</h2>
+<span style="color: #94a3b8; font-size: 13px;">${count}</span>
+${newCount > 0 ? `<span style="color: #d97706; font-size: 13px; font-weight: 600;">+${newCount}</span>` : ''}
+${removedCount > 0 ? `<span style="color: #94a3b8; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
 </div>
-<div style="display: flex; gap: 8px;">
+<div style="display: flex; gap: 2px;">
 <button id="_slaSizeBtn" onclick="window._togglePanelSize();"
-style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; border-radius: 4px; transition: all 0.2s; display: flex; align-items: center;"
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
 title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${svgIcon(isFull ? 'shrink' : 'expand', 14)}</button>
 <button onclick="document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0;"
-style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; border-radius: 4px; transition: all 0.2s; display: flex; align-items: center;"
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
 title="Top">${svgIcon('arrowUp', 14)}</button>
 <button id="_slaMinimizeBtn" onclick="window._toggleMinimizePanel();"
-style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; border-radius: 4px; transition: all 0.2s; display: flex; align-items: center;"
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
 title="Minimize">${svgIcon(isMinimized ? 'restore' : 'minimize', 14)}</button>
 </div>
 </div>
