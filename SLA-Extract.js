@@ -327,6 +327,107 @@ runExtraction();
 }
 };
 
+// ===================================================================
+// MORNING CHECKS
+//
+// A separate daily routine from lead assignment, done once at the
+// start of a shift against Konnect pages this tool otherwise never
+// touches. Built one check at a time, each confirmed against real DOM
+// before being added - same approach as everything else in this file.
+// Reporting is a plain alert() for now and each check is only reachable
+// via the console (window._checkInProgress()) rather than a button -
+// deliberately, until all the checks in this routine are defined, so
+// the UI gets designed once as a proper page instead of accreting a
+// throwaway button per check that then needs reworking.
+// ===================================================================
+
+// The month selector has no id/title/distinguishing attribute - just a
+// Bootstrap dropdown - so it's matched by its distinctive "YYYY - Month"
+// text content instead, which nothing else on the page would have. The
+// page auto-selects the current month already, but nothing loads until
+// that same month is explicitly re-clicked - the trigger's own
+// displayed text already tells us which one that is, so there's no
+// need to compute "the current month" independently.
+function findMonthSelectorTrigger() {
+const triggers = Array.from(document.querySelectorAll('div[data-toggle="dropdown"]'));
+return triggers.find(t => /^\d{4}\s*-\s*[A-Za-z]+$/.test(t.querySelector('span.ng-binding')?.textContent?.trim() || ''));
+}
+
+async function reloadCurrentMonthCampaigns() {
+const trigger = findMonthSelectorTrigger();
+if (!trigger) return false;
+const label = trigger.querySelector('span.ng-binding')?.textContent?.trim();
+if (!label) return false;
+
+trigger.click();
+const firstOption = await waitForElement('li[ng-click="monthToDateSelected(monthToDate)"]');
+if (!firstOption) return false;
+
+const options = Array.from(document.querySelectorAll('li[ng-click="monthToDateSelected(monthToDate)"]'));
+const target = options.find(li => li.textContent.trim() === label);
+if (!target) return false;
+target.click();
+
+const firstRow = await waitForElement('tr[ng-repeat="camp in campaigns"]');
+if (!firstRow) return false;
+// ng-repeat renders every row for a digest in one batch, but with
+// ~300 rows a short settle delay is cheap insurance against reading
+// mid-render.
+await sleep(400);
+return true;
+}
+
+// Column index 9 is In Progress specifically because this always
+// navigates via a fixed showSLA=true/deferred=false URL - that URL
+// guarantees the column layout (the 4 SLA columns and the Deferred
+// column are both present, not conditionally missing), confirmed
+// against two independent sample rows before writing this.
+function extractInProgressData() {
+const totalTh = document.querySelector('th[title="Items that have had one or more attempts (total)"]');
+const totalMatch = totalTh ? totalTh.textContent.match(/\((\d+)\)/) : null;
+const total = totalMatch ? Number(totalMatch[1]) : null;
+
+const rows = Array.from(document.querySelectorAll('tr[ng-repeat="camp in campaigns"]'));
+const breakdown = [];
+let sum = 0;
+rows.forEach((row) => {
+const cells = row.querySelectorAll('td');
+if (cells.length < 13) return;
+const name = cells[3]?.textContent?.trim() || '(unnamed)';
+const inProgress = Number(cells[9]?.textContent?.trim()) || 0;
+sum += inProgress;
+if (inProgress > 0) breakdown.push({ name, inProgress });
+});
+breakdown.sort((a, b) => b.inProgress - a.inProgress);
+return { total, sum, breakdown };
+}
+
+window._checkInProgress = async function() {
+const originalHash = window.location.hash;
+try {
+window.location.hash = '#/onGoingCampaigns/module/-6/deferred/false/showSLA/true';
+const loaded = await reloadCurrentMonthCampaigns();
+if (!loaded) {
+alert('Could not load the current month\'s campaigns - aborted, nothing was checked.');
+return;
+}
+const { total, sum, breakdown } = extractInProgressData();
+if (total === null) {
+alert('Could not find the In Progress total - aborted, nothing was checked.');
+return;
+}
+if (sum === total) {
+alert(`In Progress: OK (${total})`);
+} else {
+const diff = total - sum;
+const lines = breakdown.map(b => `${b.name}: ${b.inProgress}`).join('\n');
+alert(`In Progress: MISMATCH\nTop total: ${total}\nRows sum to: ${sum}\nOff by: ${diff}\n\nBreakdown (non-zero rows):\n${lines || '(none)'}`);
+}
+} finally {
+window.location.hash = originalHash;
+}
+};
+
 async function extractCustomerDetails(customerElement) {
 const nameLink = customerElement.querySelector('a');
 if (!nameLink) {
