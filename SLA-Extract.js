@@ -310,6 +310,68 @@ document.documentElement.style.overflow = pageFlashOverlayPrevOverflow || '';
 pageFlashOverlayPrevOverflow = null;
 }
 
+// Confirmed live on the SLA queue page: <i class="fa fa-refresh"
+// ng-class="{ 'fa-spin' : loading }" ng-click="getData()" title="Refresh">.
+// No id/aria-label to key off instead - the ng-click name plus its class
+// together are specific enough not to collide with anything else on the
+// page. Clicking it adds fa-spin immediately and Angular's own
+// $scope.loading clears it again once the refetch actually finishes
+// (observed ~1.1s in testing, but that's real network time, not assumed
+// to be a fixed delay) - waiting for the class to toggle both ways is
+// what confirms the refetch genuinely started and genuinely finished,
+// rather than guessing a duration.
+function findNativeLeadsRefreshIcon() {
+return document.querySelector('i.fa-refresh[ng-click="getData()"]');
+}
+
+function waitForRefreshIconSpinState(icon, spinning, timeout) {
+return new Promise((resolve) => {
+if (icon.classList.contains('fa-spin') === spinning) {
+resolve(true);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(false);
+}, timeout);
+const observer = new MutationObserver(() => {
+if (icon.classList.contains('fa-spin') === spinning) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(true);
+}
+});
+observer.observe(icon, { attributes: true, attributeFilter: ['class'] });
+});
+}
+
+// Triggered by clicking the panel's own title (see renderPanelShell's
+// onTitleClick) - lets the underlying leads list get refreshed, and this
+// panel resynced with it, without ever needing to reach Konnect's own
+// refresh icon by hand, which a full-screen panel covers entirely and a
+// compact one usually gets in the way of too. Clicks the native icon
+// first if this page happens to have one (falls through to a plain
+// re-scan otherwise, rather than failing - the panel refresh is the part
+// that actually matters), waits for its spin state to confirm the
+// refetch genuinely ran, then runs this panel's normal full re-scan so
+// newly-arrived leads get properly ingested (tiered, detail-scraped),
+// not just a stale re-render of what was already cached.
+window._refreshLeadsAndPanel = async function() {
+if (extracting || assigning || runningMorningChecks) return;
+showPageFlashOverlay('Refreshing leads…');
+try {
+const icon = findNativeLeadsRefreshIcon();
+if (icon) {
+icon.click();
+await waitForRefreshIconSpinState(icon, true, 2000);
+await waitForRefreshIconSpinState(icon, false, 15000);
+}
+await runExtraction();
+} finally {
+hidePageFlashOverlay();
+}
+};
+
 // The Customer Hub / Service Booking module selector on the Queue by
 // Agent page isn't a URL-based route - it's Angular scope state, and
 // neither option carries a distinguishing class when selected (both
@@ -2820,7 +2882,7 @@ ${renderCopyableField(c.email)}
 </div>`;
 }
 
-function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml, hideSearch }) {
+function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml, hideSearch, onTitleClick }) {
 const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 const isFull = panelSize === 'full';
 const positionStyle = isFull
@@ -2846,7 +2908,7 @@ display: flex; flex-direction: column; transition: transform 0.3s ease; ${isMini
 display: flex; justify-content: space-between; align-items: center;
 flex-shrink: 0;">
 <div style="display: flex; align-items: center; gap: 8px;">
-<h2 style="margin: 0; font-size: 15px; font-weight: 700;">${title}</h2>
+<h2 ${onTitleClick ? `onclick="${onTitleClick}" title="Click to refresh the leads and this panel" style="margin: 0; font-size: 15px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 4px;"` : `style="margin: 0; font-size: 15px; font-weight: 700;"`}>${title}${onTitleClick ? svgIcon('refresh', 12, ' opacity: 0.55;') : ''}</h2>
 <span style="color: #94a3b8; font-size: 13px;">${count}</span>
 ${newCount > 0 ? `<span style="color: #d97706; font-size: 13px; font-weight: 600;">+${newCount}</span>` : ''}
 ${removedCount > 0 ? `<span style="color: #94a3b8; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
@@ -2955,7 +3017,8 @@ count: customers.length,
 newCount, removedCount,
 summaryHtml: renderSlaDueSummary(),
 assignSectionHtml: renderAssignSection(),
-bodyHtml
+bodyHtml,
+onTitleClick: 'window._refreshLeadsAndPanel()'
 }));
 }
 
@@ -2985,7 +3048,8 @@ count: customers.length,
 newCount, removedCount,
 summaryHtml: renderPendingDueSummary(),
 assignSectionHtml: renderPendingAssignSection(),
-bodyHtml
+bodyHtml,
+onTitleClick: 'window._refreshLeadsAndPanel()'
 }));
 }
 
