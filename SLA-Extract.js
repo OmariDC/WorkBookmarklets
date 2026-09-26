@@ -565,6 +565,37 @@ observer.observe(target, { childList: true, subtree: true, characterData: true }
 });
 }
 
+// table.table-striped existing doesn't mean it's actually populated yet -
+// on a route visited for the first time in a session (same warm-up cost
+// documented on the Live Campaigns month selector), the empty table
+// shell can render before ng-repeat has actually inserted any data rows,
+// and a fixed sleep(300) wasn't always long enough to outlast it - this
+// was confirmed live: Lead Type Check reported every expected source as
+// missing on the very first run of a session, then passed immediately on
+// an unchanged re-run a moment later. Waits for an actual data row (not
+// just the table container) before either check trusts what it reads.
+function waitForInboundRows(timeout = 15000) {
+return new Promise((resolve) => {
+const hasRows = () => Array.from(document.querySelectorAll('table.table-striped tr')).some(r => r.querySelectorAll('td').length > 0);
+if (hasRows()) {
+resolve(true);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(false);
+}, timeout);
+const observer = new MutationObserver(() => {
+if (hasRows()) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(true);
+}
+});
+observer.observe(document.body, { childList: true, subtree: true });
+});
+}
+
 // Today's source counts, formatted as "Source: count" lines sorted by
 // count - the secondary "what sources there are" display the user
 // wants shown alongside the OK/MISSING verdict without dominating it,
@@ -595,7 +626,10 @@ const table = await waitForElement('table.table-striped', 15000);
 if (!table) {
 return { ok: null, summary: 'Could not load the Inbound API table - aborted.' };
 }
-await sleep(300);
+const rowsLoaded = await waitForInboundRows();
+if (!rowsLoaded) {
+return { ok: null, summary: 'Inbound API table loaded but no rows appeared - aborted.' };
+}
 const todayLabel = currentInboundDateLabel();
 const todayCounts = extractSourceCounts();
 const details = sourceCountLines(todayCounts);
@@ -614,7 +648,7 @@ const changed = await waitForInboundDateChange(todayLabel, 15000);
 if (!changed) {
 return { ok: false, summary: `MISSING - ${missingToday.join(', ')} (could not confirm yesterday's data loaded)`, details };
 }
-await sleep(300);
+await waitForInboundRows();
 const yesterdayCounts = extractSourceCounts(isInOvernightWindow);
 const stillMissing = missingToday.filter(s => !yesterdayCounts[s]);
 
@@ -663,7 +697,10 @@ const table = await waitForElement('table.table-striped', 15000);
 if (!table) {
 return { ok: null, summary: 'Could not load the Inbound API table - aborted.' };
 }
-await sleep(300);
+const rowsLoaded = await waitForInboundRows();
+if (!rowsLoaded) {
+return { ok: null, summary: 'Inbound API table loaded but no rows appeared - aborted.' };
+}
 
 const rows = Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length > 0);
 const problems = [];
@@ -2784,6 +2821,13 @@ displayMorningChecks();
 runningMorningChecks = false;
 window.location.hash = originalHash;
 hidePageFlashOverlay();
+// The loop's own last displayMorningChecks() call (right after the
+// final check's result lands) still had runningMorningChecks === true
+// at render time - that flag only flips above, after the loop exits -
+// so without this the button stayed stuck on disabled "Running…"
+// until something else (leaving and re-entering the page) forced a
+// fresh render.
+displayMorningChecks();
 }
 };
 
@@ -2953,6 +2997,17 @@ badge.style.fontSize = '22px';
 // recover from that.
 function handleBadgeClick() {
 localStorage.setItem(PANEL_STATE_KEY, 'visible');
+// Morning Checks routinely leaves the visible tab sitting on pages
+// runExtraction()/detectPageType() don't recognize at all (Live
+// Campaigns, Inbound API, Voicemails, Queue by Agent) - previously,
+// minimizing while on one of those meant the badge (the only way back,
+// since a minimized panel's own restore button is off-screen with the
+// rest of it) just flashed a warning icon and did nothing, with no way
+// to reopen the panel until navigating back to the SLA/Pending page.
+if (currentPanelMode === 'morningChecks') {
+displayMorningChecks();
+return;
+}
 runExtraction();
 }
 
