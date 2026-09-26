@@ -428,6 +428,103 @@ window.location.hash = originalHash;
 }
 };
 
+// Stage 1 of the "All leads are Routed to" check: a pure scanner, no
+// judgment - there's no expected-sources list to check against yet, so
+// this just reports what it actually found (today and yesterday, both
+// via the same page's own Today/Yesterday controls) for manual review.
+// Once that list exists, stage 2 becomes: does every expected source
+// appear today; for any that don't, check yesterday before calling it
+// actually missing.
+//
+// "Yesterday" makes a real network request (getYesterdaysData() calls
+// the API and replaces $scope.leads - it's not a client-side filter on
+// already-rendered rows), so this waits for the date label itself to
+// change rather than assuming the click took effect instantly.
+function extractSourceCounts() {
+const rows = Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length > 0);
+const counts = {};
+rows.forEach((row) => {
+const cells = row.querySelectorAll('td');
+if (cells.length < 9) return;
+const source = cells[8]?.textContent?.trim() || '(blank)';
+counts[source] = (counts[source] || 0) + 1;
+});
+return counts;
+}
+
+function currentInboundDateLabel() {
+return document.querySelector('div[title="Select A Date"] span.ng-binding')?.textContent?.trim();
+}
+
+function waitForInboundDateChange(previousLabel, timeout = 8000) {
+return new Promise((resolve) => {
+const target = document.querySelector('div[title="Select A Date"]');
+if (!target) {
+resolve(false);
+return;
+}
+if (currentInboundDateLabel() && currentInboundDateLabel() !== previousLabel) {
+resolve(true);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(false);
+}, timeout);
+const observer = new MutationObserver(() => {
+if (currentInboundDateLabel() && currentInboundDateLabel() !== previousLabel) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(true);
+}
+});
+observer.observe(target, { childList: true, subtree: true, characterData: true });
+});
+}
+
+function formatSourceReport(label, counts) {
+const total = Object.values(counts).reduce((a, b) => a + b, 0);
+const lines = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([source, count]) => `${source}: ${count}`);
+return `${label} (${total} total):\n${lines.join('\n') || '(no rows)'}`;
+}
+
+window._scanSources = async function() {
+const originalHash = window.location.hash;
+try {
+window.location.hash = '#/Queue/InboundAPI';
+const table = await waitForElement('table.table-striped');
+if (!table) {
+alert('Could not load the Inbound API table - aborted, nothing was scanned.');
+return;
+}
+await sleep(300);
+const todayLabel = currentInboundDateLabel();
+const todayCounts = extractSourceCounts();
+
+const yesterdayLink = document.querySelector('li[ng-click="getYesterdaysData()"]');
+if (!yesterdayLink) {
+alert('Could not find the Yesterday control - only got today.\n\n' + formatSourceReport('Today', todayCounts));
+return;
+}
+yesterdayLink.click();
+const changed = await waitForInboundDateChange(todayLabel);
+if (!changed) {
+alert('Could not confirm Yesterday\'s data loaded - only got today.\n\n' + formatSourceReport('Today', todayCounts));
+return;
+}
+await sleep(300);
+const yesterdayCounts = extractSourceCounts();
+
+alert(formatSourceReport('Today', todayCounts) + '\n\n' + formatSourceReport('Yesterday', yesterdayCounts));
+} finally {
+// No need to explicitly restore Today here - the page's own
+// controller calls getTodaysData() in its constructor, so the next
+// fresh visit to this page loads Today automatically regardless of
+// whatever this scan left it on.
+window.location.hash = originalHash;
+}
+};
+
 async function extractCustomerDetails(customerElement) {
 const nameLink = customerElement.querySelector('a');
 if (!nameLink) {
