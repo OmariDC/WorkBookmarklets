@@ -3097,8 +3097,13 @@ setBadgeProgress(remaining);
 // (cached ones are skipped entirely) - that's what pops the modal
 // open/closed rapidly per row and reads as the screen glitching, so
 // the overlay is only worth showing when there's actually one or more
-// of those, not on every routine scan.
-if (pendingCount > 0) showPageFlashOverlay('Loading new leads…');
+// of those, not on every routine scan. The badge's own countdown
+// (setBadgeProgress) is what used to show this - it's still updated
+// the same way below, but the overlay now sits on top of it (same
+// z-index, later in the DOM) for the exact pages this most often runs
+// on, so the remaining count needs to live in the overlay text too or
+// it's invisible for the whole ingestion.
+if (pendingCount > 0) showPageFlashOverlay(`Loading new leads… (${remaining} left)`);
 
 for (const d of rowDescriptors) {
 const existing = previousByKey.get(d.key);
@@ -3131,6 +3136,7 @@ console.warn('Error processing row:', error);
 } finally {
 remaining--;
 setBadgeProgress(remaining);
+showPageFlashOverlay(`Loading new leads… (${remaining} left)`);
 }
 }
 
