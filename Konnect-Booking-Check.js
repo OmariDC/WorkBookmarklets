@@ -404,6 +404,150 @@ window.KonnectBookingCheck.chooseCustomerResult = chooseCustomerResult;
 window.KonnectBookingCheck.isSafeCustomerLink = isSafeCustomerLink;
 
 // ===================================================================
+// TIMELINE READINESS (state machine step: WAIT_FOR_TIMELINE)
+//
+// Confirmed live via a high-resolution repeated trace: the route
+// changes (~825ms) well before the timeline actually finishes loading
+// (~1000-1160ms) - customer identity even populates mid-load, so
+// "route changed" and "customer root exists" are both real but
+// insufficient signals on their own. The verified boundary is route +
+// both roots present + loading spinner hidden + Refresh control
+// visible. Pink entries are deliberately NOT required - a customer can
+// legitimately have zero sales leads and still be a fully "loaded"
+// timeline (READY_WITH_ZERO_ELIGIBLE_SALES_LEADS), which the caller
+// then treats as NO_ELIGIBLE_LEAD_EVENTS rather than waiting forever
+// for pink entries that will never appear.
+// ===================================================================
+
+const CONNECTED_CUSTOMER_ROUTE_PATTERN = /^#\/connectedCustomer\/\d+(?:\?|$)/;
+const CUSTOMER_ROOT_SELECTOR = 'div[ng-view] > div.ng-scope:has(> .row.timeline-editing-header)';
+const CUSTOMER_ROOT_FALLBACK_SELECTOR = 'div.ng-scope:has(> .row.timeline-editing-header)';
+const TIMELINE_ROOT_SELECTOR = 'div[ng-view] > div.ng-scope:has(> .row.timeline-editing-header) > div[style="margin-top:80px;"]';
+const TIMELINE_ROOT_FALLBACK_SELECTOR = '.row.timeline-editing-header + div[style="margin-top:80px;"]';
+const TIMELINE_LOADING_SELECTOR = 'i[title="Refreshing..."][ng-show="loading"]';
+const TIMELINE_REFRESH_READY_SELECTOR = 'i[title="Refresh"][ng-show="!loading"]';
+
+// ng-hide is a CSS class (display:none), but this checks the actual
+// computed state rather than the class name itself - the same
+// dimension/opacity/display checks confirmed live, robust to however
+// the hidden state is actually implemented.
+function isRendered(element) {
+if (!element) return false;
+const style = getComputedStyle(element);
+return style.display !== 'none'
+&& style.visibility !== 'hidden'
+&& Number(style.opacity) !== 0
+&& !!(element.offsetWidth || element.offsetHeight || element.getClientRects().length);
+}
+
+function findCustomerRoot() {
+return document.querySelector(CUSTOMER_ROOT_SELECTOR) || document.querySelector(CUSTOMER_ROOT_FALLBACK_SELECTOR);
+}
+
+function findTimelineRoot() {
+return document.querySelector(TIMELINE_ROOT_SELECTOR) || document.querySelector(TIMELINE_ROOT_FALLBACK_SELECTOR);
+}
+
+function getTimelineReadyState() {
+if (!CONNECTED_CUSTOMER_ROUTE_PATTERN.test(window.location.hash)) {
+return { state: 'NOT_READY', reason: 'Connected-customer route not active' };
+}
+
+const customerRoot = findCustomerRoot();
+const timelineRoot = findTimelineRoot();
+if (!customerRoot || !timelineRoot) {
+return { state: 'NOT_READY', reason: 'Customer or timeline root absent' };
+}
+
+const loading = isRendered(document.querySelector(TIMELINE_LOADING_SELECTOR));
+const refreshReady = isRendered(document.querySelector(TIMELINE_REFRESH_READY_SELECTOR));
+if (loading || !refreshReady) {
+return { state: 'LOADING', reason: loading ? 'Refreshing indicator is visibly rendered' : 'Refresh control is not yet visibly rendered' };
+}
+
+const eligiblePinkEntries = timelineRoot.querySelectorAll('a.connected-customer-timeline-centre-pink').length;
+if (eligiblePinkEntries > 0) {
+return { state: 'READY_WITH_SALES_LEADS', reason: 'Loading indicator hidden, Refresh visible, eligible pink entries present', timelineRoot, eligiblePinkEntries };
+}
+return { state: 'READY_WITH_ZERO_ELIGIBLE_SALES_LEADS', reason: 'Loading indicator hidden and Refresh visible; no eligible pink entries present', timelineRoot, eligiblePinkEntries: 0 };
+}
+
+// Confirmed normal completion lands around 1-1.2s; the 10s ceiling is a
+// genuine failure boundary, not a routine wait. Driven primarily by
+// MutationObserver (used throughout this file and the rest of the
+// WorkBookmarklets codebase without issue) with a 100ms poll as a
+// defensive fallback, since the live inspection that confirmed this
+// signal couldn't itself verify MutationObserver firing reliability in
+// its sandboxed environment.
+function waitForTimelineReady(timeout = 10000) {
+return new Promise((resolve) => {
+const startedAt = Date.now();
+let settled = false;
+
+function finish(result) {
+if (settled) return;
+settled = true;
+clearInterval(pollTimer);
+observer.disconnect();
+resolve(result);
+}
+
+function check() {
+const state = getTimelineReadyState();
+if (state.state === 'READY_WITH_SALES_LEADS' || state.state === 'READY_WITH_ZERO_ELIGIBLE_SALES_LEADS') {
+finish(state);
+return true;
+}
+if (Date.now() - startedAt >= timeout) {
+finish({ state: 'FAILED', reason: `Timed out waiting for timeline readiness (last state: ${state.state} - ${state.reason})` });
+return true;
+}
+return false;
+}
+
+if (check()) return;
+
+const observer = new MutationObserver(() => { check(); });
+observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
+const pollTimer = setInterval(check, 100);
+});
+}
+
+// Clicks the confirmed customer-record link (rejecting mailto:/tel:
+// links defensively via isSafeCustomerLink) and waits for the full
+// confirmed readiness predicate above - not just the route changing,
+// which is confirmed to happen well before the timeline actually
+// finishes loading.
+async function openCustomerAndWaitForTimeline(customerResult, timeout = 10000) {
+if (!customerResult || !customerResult.link || !isSafeCustomerLink(customerResult.link)) {
+return { state: 'FAILED', reason: 'CUSTOMER_NOT_LINKED' };
+}
+customerResult.link.click();
+return waitForTimelineReady(timeout);
+}
+
+window.KonnectBookingCheck.getTimelineReadyState = getTimelineReadyState;
+window.KonnectBookingCheck.waitForTimelineReady = waitForTimelineReady;
+window.KonnectBookingCheck.openCustomerAndWaitForTimeline = openCustomerAndWaitForTimeline;
+
+(function timelineReadinessSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected ${expected}, got ${actual}`);
+}
+
+check('connected customer route matches', CONNECTED_CUSTOMER_ROUTE_PATTERN.test('#/connectedCustomer/3487237?redirectRoute=%2Fsearch'), true);
+check('connected customer route matches with no query', CONNECTED_CUSTOMER_ROUTE_PATTERN.test('#/connectedCustomer/3487237'), true);
+check('search route does not match', CONNECTED_CUSTOMER_ROUTE_PATTERN.test('#/search?redirectRoute=%2Fsearch'), false);
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck timeline-readiness self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck timeline-readiness self-test passed (3/3)');
+}
+})();
+
+// ===================================================================
 // TIMELINE (state machine steps: WAIT_FOR_TIMELINE -> SCAN_LOADED_ENTRIES
 // -> MATCH_CREATED_DATETIME -> OPEN_LEAD_MODAL -> WAIT_FOR_REQUIRED_FIELDS
 // -> VALIDATE_LEAD -> EXTRACT_INITIAL_NOTES)
