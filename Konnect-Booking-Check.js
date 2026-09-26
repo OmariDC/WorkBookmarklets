@@ -783,7 +783,13 @@ observer.observe(document.body, { childList: true, subtree: true });
 // modal, re-queries the target fresh (never trusts a possibly-stale
 // reference), scrolls it into view once, and dispatches one bubbled
 // mouse click - never repeatedly clicks beyond that single retry.
-async function openLeadModal(row, timeout = 3000) {
+//
+// 10s, not the confirmed ~1-1.2s-implies-3s-is-plenty figure - real
+// testing found this genuinely timing out (same "first action in a
+// session is slower" pattern already found twice elsewhere in this
+// tool: the search page and the search-submit wait). A slow-but-
+// successful wait costs nothing.
+async function openLeadModal(row, timeout = 10000) {
 const target = findLeadClickTarget(row);
 if (!target || !target.isConnected) return null;
 target.click();
@@ -1357,23 +1363,44 @@ if (workingCandidates.length === 0) {
 return finalizeResult(result, { status: 'EXCEPTION', exception: 'TARGET_CREATED_DATETIME_NOT_FOUND' });
 }
 
+// Previously collapsed three genuinely different failures into the
+// same generic LEAD_VALIDATION_FAILED - real testing showed this
+// masking a case where the modal never actually opened at all (the
+// click target was fine, but waitForActiveLeadModal never saw the
+// readiness predicate settle), which needs a different fix (a timeout,
+// see openLeadModal above) than a real validation contradiction would.
+// Tracked per candidate and the most informative one is reported: a
+// click/modal failure is more actionable than "validation failed",
+// which only makes sense once we know the modal genuinely opened.
 const validated = [];
+const candidateFailures = [];
 for (const candidate of workingCandidates) {
+const clickTarget = findLeadClickTarget(candidate.row);
+if (!clickTarget || !clickTarget.isConnected) {
+candidateFailures.push('LEAD_CLICK_TARGET_NOT_FOUND');
+continue;
+}
 const modalState = await openLeadModal(candidate.row);
 if (!modalState) {
-continue; // LEAD_CLICK_TARGET_NOT_FOUND / LEAD_MODAL_TIMEOUT for this one candidate - try the next
+candidateFailures.push('LEAD_MODAL_TIMEOUT');
+continue;
 }
 const panelFields = extractLeadPanelFields(modalState.panel);
 const validation = validateLeadCandidate(panelFields, row);
 if (validation.ok) {
 const initialNotes = extractInitialNotes(modalState.panel);
 validated.push({ candidate, panelFields, initialNotes });
+} else {
+candidateFailures.push('LEAD_VALIDATION_FAILED');
 }
 await closeLeadModal();
 }
 
 if (validated.length === 0) {
-return finalizeResult(result, { status: 'EXCEPTION', exception: 'LEAD_VALIDATION_FAILED' });
+const exception = candidateFailures.includes('LEAD_CLICK_TARGET_NOT_FOUND') ? 'LEAD_CLICK_TARGET_NOT_FOUND'
+: candidateFailures.includes('LEAD_MODAL_TIMEOUT') ? 'LEAD_MODAL_TIMEOUT'
+: 'LEAD_VALIDATION_FAILED';
+return finalizeResult(result, { status: 'EXCEPTION', exception, warnings: candidateFailures });
 }
 if (validated.length > 1) {
 return finalizeResult(result, { status: 'EXCEPTION', exception: 'AMBIGUOUS_LEAD' });
