@@ -189,6 +189,44 @@ return { tier: 4, reason: 'Inbound' };
 return { tier: 4, reason: 'Uncategorized' };
 }
 
+// Display-only urgency ordering/labeling for the SLA tier cards -
+// distinct from computeSortKey further down (used for ROUND-ROBIN
+// ASSIGNMENT ordering), which deliberately pushes Missed leads slightly
+// behind ones still due imminently so a fair-share sweep doesn't always
+// hand every agent's next lead to whoever's already overdue. That
+// fairness concern doesn't apply to what a human should see FIRST while
+// visually triaging the list - here, more overdue always means show it
+// first, no penalty.
+function computeDisplaySortKey(customer) {
+if (!customer.slaDate) return Infinity;
+return customer.slaDate.getTime() - Date.now();
+}
+
+function sortByUrgency(customers) {
+return [...customers].sort((a, b) => computeDisplaySortKey(a) - computeDisplaySortKey(b));
+}
+
+// Status text is only confirmed to say "Missed" once a lead's SLA date
+// has passed, but msUntil <= 0 is checked too in case the status column
+// hasn't caught up yet - a lead already past its due time is urgent
+// regardless of what the Status cell currently says. emphasize marks
+// the bucket the user asked to "stand out even further" - Missed and
+// due-within-15-minutes both get it, since both mean "needs attention
+// right now", not just "coming up soon".
+function slaUrgencyInfo(customer) {
+if (!customer.slaDate) return { label: null, color: null, emphasize: false };
+const minsUntil = Math.round((customer.slaDate.getTime() - Date.now()) / 60000);
+if (customer.status === 'Missed' || minsUntil <= 0) {
+return { label: `MISSED ${Math.abs(minsUntil)}m ago`, color: '#dc2626', emphasize: true };
+}
+if (minsUntil <= 15) return { label: `Due in ${minsUntil}m`, color: '#dc2626', emphasize: true };
+if (minsUntil <= 30) return { label: `Due in ${minsUntil}m`, color: '#d97706', emphasize: false };
+if (minsUntil <= 60) return { label: `Due in ${minsUntil}m`, color: '#ca8a04', emphasize: false };
+const hrs = Math.floor(minsUntil / 60);
+const mins = minsUntil % 60;
+return { label: `Due in ${hrs}h ${mins}m`, color: '#64748b', emphasize: false };
+}
+
 function findDetailModal() {
 return document.querySelector('[role="alertdialog"]') || document.querySelector('.modal');
 }
@@ -268,6 +306,43 @@ resolve(el);
 }
 });
 observer.observe(document.body, { childList: true, subtree: true });
+});
+}
+
+// detectPageType() reads the table's header row, which renders before
+// ng-repeat has actually populated any data rows for the page just
+// switched to - the background auto-detect poll calls extractAndExportSla/
+// Pending the instant it notices the header match, which could mean
+// reading a still-loading table as "0 leads" and reporting an empty
+// queue that a moment later turns out to have plenty, needing a manual
+// refresh to fix (confirmed live, swapping Pending -> SLA). A smaller,
+// one-shot version of what waitForInboundRowsSettled solved for the
+// Inbound API page - there's no evidence this table loads progressively
+// in chunks the way that one does, just a short delay before it renders
+// in one batch, so this only needs to wait for the FIRST row rather than
+// watch for growth to stop. Resolves instantly if rows already exist
+// (the common case costs nothing), or after timeout with none found -
+// callers still treat that as a genuinely empty queue rather than
+// erroring, since an actually-empty SLA/Pending queue is a normal state.
+function waitForLeadsTableRows(table, timeout = 8000) {
+return new Promise((resolve) => {
+const hasRows = () => table.querySelectorAll('tbody tr').length > 0;
+if (hasRows()) {
+resolve(true);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(false);
+}, timeout);
+const observer = new MutationObserver(() => {
+if (hasRows()) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(true);
+}
+});
+observer.observe(table, { childList: true, subtree: true });
 });
 }
 
@@ -1342,6 +1417,25 @@ return `<span style="padding: 4px 6px; border-radius: 4px; background: #e2e8f0; 
 }
 const display = escapeHtml(value);
 return `<span class="sla-copyable" data-value="${display}" style="cursor: pointer; padding: 4px 6px; border-radius: 4px; background: #eef2ff; color: #1e293b; display: inline-block; font-size: 13px;">${display}</span>`;
+}
+
+// Wraps a customer card's contact-info grid (phone/email, or mobile/
+// email/landline on the Pending Customers side) behind a collapsed-by-
+// default disclosure - these fields matter for the moment you're about
+// to make contact, not for scanning/triaging the list, and showing them
+// unconditionally on every card was a lot of the visual clutter in what
+// was otherwise meant to be a quick scan. Toggled relative to the
+// clicked element (nextElementSibling) rather than by a per-card id,
+// since there's no natural unique id to hang one off here and DOM
+// traversal avoids needing one.
+function renderContactToggle(gridInnerHtml) {
+return `
+<div onclick="window._toggleCustomerContact(this)" style="cursor: pointer; display: flex; align-items: center; gap: 4px; font-size: 11px; color: #4f46e5; margin-bottom: 8px;">
+${svgIcon('chevron', 12, ' transition: transform 0.15s ease; transform: rotate(-90deg);')} Contact details
+</div>
+<div style="display: none; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
+${gridInnerHtml}
+</div>`;
 }
 
 function renderAssignmentBadge(assigned, agentName) {
@@ -2820,11 +2914,15 @@ display: flex; justify-content: space-between; align-items: center; border-botto
 </div>
 <div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
 ${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px; border-bottom: 1px solid #e2e8f0;">
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
 </div>
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
+<div style="margin-bottom: 10px;">
+<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
+<span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
+</div>
+${renderContactToggle(`
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">MOBILE</div>
 ${renderCopyableField(c.mobile)}
@@ -2833,17 +2931,11 @@ ${renderCopyableField(c.mobile)}
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
 ${renderCopyableField(c.email)}
 </div>
-</div>
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">LANDLINE</div>
 ${renderCopyableField(c.landline)}
 </div>
-<div>
-<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
-<span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
-</div>
-</div>
+`)}
 <div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
 <span style="color: #64748b;">${escapeHtml(c.brand || '')}</span>
 <span style="color: #059669;">${escapeHtml(c.campaign || '')}</span>
@@ -2872,12 +2964,15 @@ display: flex; justify-content: space-between; align-items: center; border-botto
 <span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + tierId)}</span>
 </div>
 <div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
-${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px; border-bottom: 1px solid #e2e8f0;">
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
+${customers.map(c => {
+const urgency = slaUrgencyInfo(c);
+return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px 12px 10px; border-bottom: 1px solid #e2e8f0; ${urgency.emphasize ? `border-left: 3px solid ${urgency.color}; background: ${urgency.color}0d;` : ''}">
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
 </div>
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
+${urgency.label ? `<div style="margin-bottom: 10px;"><span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${urgency.color}1a; color: ${urgency.color};">${urgency.label}</span></div>` : ''}
+${renderContactToggle(`
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
 ${renderCopyableField(c.phone)}
@@ -2886,12 +2981,13 @@ ${renderCopyableField(c.phone)}
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
 ${renderCopyableField(c.email)}
 </div>
-</div>
+`)}
 <div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
 <span style="color: #64748b;">${escapeHtml(c.source)}</span>
 <span style="color: #059669;">${escapeHtml(c.campaign)}</span>
 </div>
-</div>`).join('')}
+</div>`;
+}).join('')}
 </div>
 </div>`;
 }
@@ -3006,10 +3102,10 @@ currentPageType = PAGE_SLA;
 currentPanelMode = 'normal';
 invalidateLeadsCache();
 const tiered = {
-tier1: customers.filter(c => c.tier === 1),
-tier2: customers.filter(c => c.tier === 2),
-tier3: customers.filter(c => c.tier === 3),
-tier4: customers.filter(c => c.tier === 4)
+tier1: sortByUrgency(customers.filter(c => c.tier === 1)),
+tier2: sortByUrgency(customers.filter(c => c.tier === 2)),
+tier3: sortByUrgency(customers.filter(c => c.tier === 3)),
+tier4: sortByUrgency(customers.filter(c => c.tier === 4))
 };
 
 const bodyHtml = customers.length === 0 ? `
@@ -3077,6 +3173,7 @@ if (!table) {
 console.error('SLA Table not found');
 return;
 }
+await waitForLeadsTableRows(table);
 
 const previousByKey = new Map(currentCustomers.map(c => [c.key, c]));
 const seenKeys = new Set();
@@ -3098,10 +3195,14 @@ if (!name || !campaign) continue;
 // leads from the same source/campaign don't collide with each other.
 const key = `${name}||${registration}||${source}||${campaign}`;
 seenKeys.add(key);
-// Assign state is read fresh every scan, even for cached leads below -
-// unlike phone/email, it changes constantly and must never be stale.
+// Assign state, SLA date and status are all read fresh every scan,
+// even for cached leads below - unlike phone/email, due/status change
+// (or at least need re-evaluating against the current time) and must
+// never be stale.
 const assignState = getAssignCellState(cells[COL_ASSIGN]);
-rowDescriptors.push({ cells, name, source, campaign, key, assigned: assignState.assigned, agentName: assignState.agentName });
+const slaDate = parseKonnectDate(cells[COL_SLA_DATE]?.textContent?.trim() || '');
+const status = cells[COL_STATUS]?.textContent?.trim();
+rowDescriptors.push({ cells, name, source, campaign, key, assigned: assignState.assigned, agentName: assignState.agentName, slaDate, status });
 }
 
 const pendingCount = rowDescriptors.filter(d => !previousByKey.has(d.key)).length;
@@ -3122,9 +3223,10 @@ if (pendingCount > 0) showPageFlashOverlay(`Loading new leads… (${remaining} l
 for (const d of rowDescriptors) {
 const existing = previousByKey.get(d.key);
 if (existing) {
-// Keep cached phone/email, but never the cached assigned/agentName -
-// that's re-read fresh above on every scan regardless of cache hit.
-customers.push({ ...existing, assigned: d.assigned, agentName: d.agentName });
+// Keep cached phone/email, but never the cached assigned/agentName/
+// slaDate/status - those are re-read fresh above on every scan
+// regardless of cache hit.
+customers.push({ ...existing, assigned: d.assigned, agentName: d.agentName, slaDate: d.slaDate, status: d.status });
 continue;
 }
 
@@ -3142,7 +3244,9 @@ reason: tierInfo.reason,
 phone: details.phone,
 email: details.email,
 assigned: d.assigned,
-agentName: d.agentName
+agentName: d.agentName,
+slaDate: d.slaDate,
+status: d.status
 });
 addedCount++;
 } catch (error) {
@@ -3181,6 +3285,7 @@ if (!table) {
 console.error('Pending Customers table not found');
 return;
 }
+await waitForLeadsTableRows(table);
 
 const previousByKey = new Map(currentPendingCustomers.map(c => [c.key, c]));
 const leads = collectPendingCustomers();
@@ -3402,6 +3507,15 @@ tierContent.style.display = isHidden ? 'grid' : 'none';
 toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
 setSectionCollapsed(tierId, !isHidden);
 }
+};
+
+window._toggleCustomerContact = function(toggleEl) {
+const wrapper = toggleEl.nextElementSibling;
+if (!wrapper) return;
+const opening = wrapper.style.display === 'none';
+wrapper.style.display = opening ? 'grid' : 'none';
+const chevron = toggleEl.querySelector('svg');
+if (chevron) chevron.style.transform = opening ? 'rotate(0deg)' : 'rotate(-90deg)';
 };
 
 window._toggleCallbackType = function(sectionId) {
