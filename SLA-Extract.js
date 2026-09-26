@@ -259,6 +259,38 @@ observer.observe(document.body, { childList: true, subtree: true });
 });
 }
 
+// Shared by anything that causes a real Konnect page navigation/re-
+// render mid-flow (Morning Checks, Clear Queue, ingesting freshly-seen
+// SLA leads) - masks the underlying page's own flashing/repopulating
+// so it doesn't read as the screen glitching, without slowing down
+// whatever's actually running underneath it (purely cosmetic).
+function showPageFlashOverlay(message) {
+const existing = document.getElementById(PAGE_FLASH_OVERLAY_ID);
+if (existing) {
+const label = existing.querySelector('[data-overlay-label]');
+if (label) label.textContent = message;
+return;
+}
+if (!document.getElementById('_slaSpinKeyframes')) {
+const style = document.createElement('style');
+style.id = '_slaSpinKeyframes';
+style.textContent = '@keyframes _slaSpin { to { transform: rotate(360deg); } }';
+document.head.appendChild(style);
+}
+const overlay = document.createElement('div');
+overlay.id = PAGE_FLASH_OVERLAY_ID;
+overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(15,23,42,0.94); z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: white; font-size: 14px; font-weight: 600;';
+overlay.innerHTML = `
+<div style="width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.25); border-top-color: white; border-radius: 50%; animation: _slaSpin 0.8s linear infinite;"></div>
+<div data-overlay-label>${message}</div>
+`;
+document.documentElement.appendChild(overlay);
+}
+
+function hidePageFlashOverlay() {
+document.getElementById(PAGE_FLASH_OVERLAY_ID)?.remove();
+}
+
 // The Customer Hub / Service Booking module selector on the Queue by
 // Agent page isn't a URL-based route - it's Angular scope state, and
 // neither option carries a distinguishing class when selected (both
@@ -842,6 +874,269 @@ return { ok: null, summary: 'Could not find the SLA queue table - aborted.' };
 }
 return { ok: null, summary: `${collectAssignableLeads().length}` };
 };
+
+// Persisted (not just in-memory) so "last run" survives a bookmarklet
+// re-invocation later in the shift, same reasoning as ASSIGN_LOG_KEY.
+// Scoped to today only - same lesson as the assignment log's own
+// day-pruning: a stale run from yesterday showing up as "last run" this
+// morning would be actively misleading rather than just unhelpful.
+const MORNING_CHECKS_LAST_RUN_KEY = '_slaMorningChecksLastRun';
+
+function saveMorningChecksLastRun(results, elapsedMs) {
+try {
+localStorage.setItem(MORNING_CHECKS_LAST_RUN_KEY, JSON.stringify({
+time: new Date().toISOString(),
+elapsedMs,
+failedLabels: results.filter(r => r.ok === false).map(r => r.label)
+}));
+} catch (error) {
+// ignore
+}
+}
+
+function loadMorningChecksLastRun() {
+try {
+const raw = JSON.parse(localStorage.getItem(MORNING_CHECKS_LAST_RUN_KEY) || 'null');
+if (!raw || new Date(raw.time).toDateString() !== new Date().toDateString()) return null;
+return raw;
+} catch (error) {
+return null;
+}
+}
+
+function formatElapsed(ms) {
+return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function renderLastRunLine(lastRun) {
+if (!lastRun) return '';
+const issueText = lastRun.failedLabels.length === 0
+? 'All OK'
+: `${lastRun.failedLabels.length} issue${lastRun.failedLabels.length > 1 ? 's' : ''} (${escapeHtml(lastRun.failedLabels.join(', '))})`;
+return `<div style="font-size: 11px; color: #94a3b8; margin-top: 8px;">Last run today at ${formatTimeForInput(new Date(lastRun.time))} &middot; ${issueText} &middot; ${formatElapsed(lastRun.elapsedMs)}</div>`;
+}
+
+function morningCheckStatusColor(row) {
+if (row.status === 'pending') return '#cbd5e1';
+if (row.status === 'running') return '#d97706';
+if (row.ok === true) return '#16a34a';
+if (row.ok === false) return '#dc2626';
+return '#2563eb';
+}
+
+// Only rendered once every check has actually settled (the 5 rows below
+// already show live progress while a run is in flight) - a colored
+// banner as the very first thing on the page is what answers "did
+// anything go wrong" at a glance, without reading all 5 rows individually.
+function renderMorningChecksSummaryBanner(results) {
+const allDone = results.every(r => r.status === 'done');
+if (!allDone) {
+const doneCount = results.filter(r => r.status === 'done').length;
+return `<div style="padding: 8px 12px; border-radius: 8px; background: #eef2ff; color: #4338ca; font-size: 12px; font-weight: 600; text-align: center; margin-bottom: 10px;">Running check ${doneCount + 1} of ${results.length}…</div>`;
+}
+// ok:null (SLA Count, Voicemail) is a plain count, not a pass/fail
+// judgment - only an explicit ok:false counts as an issue here.
+const failed = results.filter(r => r.ok === false);
+if (failed.length === 0) {
+return `<div style="padding: 10px 12px; border-radius: 8px; background: #d1fae5; color: #059669; font-size: 13px; font-weight: 700; text-align: center; margin-bottom: 10px;">${svgIcon('checklist', 14)} All checks passed</div>`;
+}
+return `<div style="padding: 10px 12px; border-radius: 8px; background: #fee2e2; color: #dc2626; font-size: 13px; font-weight: 700; text-align: center; margin-bottom: 10px;">${svgIcon('warning', 14)} ${failed.length} issue${failed.length > 1 ? 's' : ''} found - ${escapeHtml(failed.map(f => f.label).join(', '))}</div>`;
+}
+
+function renderMorningCheckRow(row) {
+const color = morningCheckStatusColor(row);
+const isSettled = row.status === 'done';
+const isRunning = row.status === 'running';
+const isPending = row.status === 'pending';
+const rightText = isSettled ? (row.summary || '') : (isRunning ? 'Running…' : 'Waiting');
+const hasDetails = isSettled && Array.isArray(row.details) && row.details.length > 0;
+const detailsId = `_mcDetails_${row.key}`;
+const chevronId = `_mcChevron_${row.key}`;
+// Status reads through three visual states, not just the dot color:
+// pending rows sit dimmed/dashed since there's nothing to report yet,
+// running gets a light indigo highlight so it's obvious at a glance
+// which check is currently in flight, and done settles to a solid
+// white card - the left accent border (colored per status, same
+// pattern as the tier/callback-type section borders elsewhere in this
+// panel) is what carries the OK/issue/count signal once settled.
+const background = isPending ? '#f8fafc' : (isRunning ? '#eef2ff' : 'white');
+const borderColor = isRunning ? '#c7d2fe' : '#e2e8f0';
+const borderStyle = isPending ? 'dashed' : 'solid';
+
+return `
+<div style="border: 1px ${borderStyle} ${borderColor}; border-left: 3px solid ${color}; border-radius: 8px; padding: 10px 12px; background: ${background}; opacity: ${isPending ? '0.65' : '1'}; transition: background 0.2s ease, opacity 0.2s ease;">
+<div style="display: flex; align-items: center; gap: 8px; ${hasDetails ? 'cursor: pointer;' : ''}" ${hasDetails ? `onclick="window._toggleMorningCheckDetails('${row.key}')"` : ''}>
+<span style="width: 8px; height: 8px; border-radius: 50%; background: ${color}; flex-shrink: 0;"></span>
+<span style="font-size: 12px; font-weight: 600; color: #1e293b; flex-shrink: 0;">${row.label}</span>
+<span style="font-size: 12px; color: #64748b; flex: 1; text-align: right;">${escapeHtml(rightText)}</span>
+${hasDetails ? chevronIcon(true, chevronId) : ''}
+</div>
+${hasDetails ? `
+<div id="${detailsId}" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f1f5f9; font-size: 11px; color: #475569; line-height: 1.6;">
+${row.details.map(d => `<div>${escapeHtml(d)}</div>`).join('')}
+</div>` : ''}
+</div>`;
+}
+
+// Separate page/section reached only via the header toggle - never
+// something the background auto-detect poll enters or leaves on its
+// own (see currentPanelMode), since that poll's silent rebuilds on a
+// page switch would otherwise yank the user out of this view every
+// time a check navigates to a different Konnect page mid-run.
+function renderMorningChecksBody() {
+const lastRun = loadMorningChecksLastRun();
+
+if (morningChecksResults.length === 0) {
+return `
+<div style="padding: 24px 4px; text-align: center;">
+<div style="color: #cbd5e1; margin-bottom: 12px;">${svgIcon('checklist', 40, ' stroke-width: 1.5;')}</div>
+<p style="color: #64748b; margin: 0 0 20px 0; font-size: 14px; line-height: 1.6;">Runs the five morning checks in order - SLA Count, In Progress, Lead Type Check, All Leads Are Routed To, Voicemail - and reports each result here.</p>
+<button onclick="window._runAllMorningChecks();" style="padding: 10px 20px; background: #1e293b; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;">Run All Checks</button>
+${renderLastRunLine(lastRun)}
+</div>`;
+}
+
+const banner = renderMorningChecksSummaryBanner(morningChecksResults);
+const rows = morningChecksResults.map(renderMorningCheckRow).join('');
+const allDone = morningChecksResults.every(r => r.status === 'done');
+
+return `
+${banner}
+<div style="display: flex; flex-direction: column; gap: 8px;">
+${rows}
+</div>
+<div style="margin-top: 16px; text-align: center;">
+<button onclick="window._runAllMorningChecks();" ${runningMorningChecks ? 'disabled' : ''}
+style="padding: 8px 18px; background: ${runningMorningChecks ? '#cbd5e1' : '#1e293b'}; color: white; border: none; border-radius: 8px; cursor: ${runningMorningChecks ? 'default' : 'pointer'}; font-size: 13px; font-weight: 600;">
+${runningMorningChecks ? 'Running…' : (allDone ? 'Run Again' : 'Run All Checks')}
+</button>
+${allDone ? renderLastRunLine(lastRun) : ''}
+</div>`;
+}
+
+function displayMorningChecks() {
+mountPanel(renderPanelShell({
+title: 'Morning Checks',
+count: '',
+newCount: 0,
+removedCount: 0,
+summaryHtml: '',
+assignSectionHtml: '',
+bodyHtml: renderMorningChecksBody(),
+hideSearch: true
+}));
+}
+
+window._toggleMorningCheckDetails = function(key) {
+const el = document.getElementById(`_mcDetails_${key}`);
+if (!el) return;
+const opening = el.style.display === 'none';
+el.style.display = opening ? 'block' : 'none';
+const chevron = document.getElementById(`_mcChevron_${key}`);
+if (chevron) chevron.style.transform = `rotate(${opening ? 0 : -90}deg)`;
+};
+
+// Leaves morningChecksResults untouched on both the way out and the
+// way back in - the last run's results should still be sitting there
+// after switching to the normal queue view and back, not just while
+// the panel itself happens to stay mounted. They're only ever replaced
+// by an actual re-run (window._runAllMorningChecks resets the array
+// itself right before it starts).
+window._toggleMorningChecks = function() {
+if (runningMorningChecks) return;
+if (currentPanelMode === 'morningChecks') {
+currentPanelMode = 'normal';
+runExtraction();
+return;
+}
+currentPanelMode = 'morningChecks';
+displayMorningChecks();
+};
+
+// Fastest order to actually RUN the checks in - independent of
+// MORNING_CHECKS_ORDER, which is only the fixed order they're DISPLAYED
+// in (renderMorningChecksBody always renders by that order regardless
+// of what order results actually arrive in). sla costs nothing (no
+// navigation, it's already sitting on the page it needs). routedTo and
+// leadType both live on the Inbound API page, so running them back to
+// back means leadType's own navigation to that page is a same-hash
+// no-op and its waitForElement resolves instantly - one page load
+// instead of two. routedTo has to go first in that pair: it always
+// does a fresh navigation (guaranteeing Today's data), whereas leadType
+// can end on Yesterday if it needed the overnight fallback, and reusing
+// the page without a fresh navigation only stays correct because
+// nothing after leadType depends on it being back on Today (see the
+// comment on window._checkRoutedTo).
+const MORNING_CHECKS_EXECUTION_ORDER = ['sla', 'routedTo', 'leadType', 'inProgress', 'voicemail'];
+
+// Runs the five checks (see MORNING_CHECKS_EXECUTION_ORDER for why that
+// order, not the display order, is used to actually run them), updating
+// the page after each one completes so results appear progressively
+// rather than all at once at the end. Each check function saves/
+// restores its own hash internally, but skipRestore=true is passed here
+// so a check leaves the browser wherever it landed instead of bouncing
+// back through the page morning checks started from between every
+// single step - originalHash is only restored once, at the very end.
+// Konnect's own pages re-rendering mid-navigation (a big table's rows
+// all populating at once, etc.) is what the user described as making
+// the screen look like it's glitching - showPageFlashOverlay dims
+// the real page for the whole run so none of that is visible, without
+// slowing anything down (it's purely cosmetic, nothing waits on it).
+window._runAllMorningChecks = async function() {
+if (runningMorningChecks) return;
+runningMorningChecks = true;
+const originalHash = window.location.hash;
+const runStartedAt = Date.now();
+showPageFlashOverlay('Running morning checks…');
+
+const checkFns = {
+sla: () => window._checkSlaCount(originalHash),
+inProgress: () => window._checkInProgress(true),
+leadType: () => window._checkLeadTypes(true),
+routedTo: () => window._checkRoutedTo(true),
+voicemail: () => window._checkVoicemails(true)
+};
+
+morningChecksResults = MORNING_CHECKS_ORDER.map(step => ({ ...step, status: 'pending' }));
+displayMorningChecks();
+
+try {
+for (const key of MORNING_CHECKS_EXECUTION_ORDER) {
+morningChecksResults = morningChecksResults.map(r => r.key === key ? { ...r, status: 'running' } : r);
+displayMorningChecks();
+
+let result;
+try {
+result = await checkFns[key]();
+} catch (err) {
+result = { ok: null, summary: `Error - ${err && err.message ? err.message : err}` };
+}
+
+morningChecksResults = morningChecksResults.map(r => r.key === key ? { ...r, status: 'done', ...result } : r);
+displayMorningChecks();
+}
+} finally {
+runningMorningChecks = false;
+window.location.hash = originalHash;
+hidePageFlashOverlay();
+saveMorningChecksLastRun(morningChecksResults, Date.now() - runStartedAt);
+// The loop's own last displayMorningChecks() call (right after the
+// final check's result lands) still had runningMorningChecks === true
+// at render time - that flag only flips above, after the loop exits -
+// so without this the button stayed stuck on disabled "Running…"
+// until something else (leaving and re-entering the page) forced a
+// fresh render.
+displayMorningChecks();
+}
+};
+
+// ===================================================================
+// LEAD DETAIL RENDERING HELPERS
+//
+// Shared by both the SLA and Pending Customers panels - customer detail
+// modal scraping, clipboard copy, and the per-lead assignment cell/badge/
+// picker markup used in both tier and callback-type sections.
+// ===================================================================
 
 async function extractCustomerDetails(customerElement) {
 const nameLink = customerElement.querySelector('a');
@@ -2654,293 +2949,6 @@ assignSectionHtml: renderPendingAssignSection(),
 bodyHtml
 }));
 }
-
-// Persisted (not just in-memory) so "last run" survives a bookmarklet
-// re-invocation later in the shift, same reasoning as ASSIGN_LOG_KEY.
-// Scoped to today only - same lesson as the assignment log's own
-// day-pruning: a stale run from yesterday showing up as "last run" this
-// morning would be actively misleading rather than just unhelpful.
-const MORNING_CHECKS_LAST_RUN_KEY = '_slaMorningChecksLastRun';
-
-function saveMorningChecksLastRun(results, elapsedMs) {
-try {
-localStorage.setItem(MORNING_CHECKS_LAST_RUN_KEY, JSON.stringify({
-time: new Date().toISOString(),
-elapsedMs,
-failedLabels: results.filter(r => r.ok === false).map(r => r.label)
-}));
-} catch (error) {
-// ignore
-}
-}
-
-function loadMorningChecksLastRun() {
-try {
-const raw = JSON.parse(localStorage.getItem(MORNING_CHECKS_LAST_RUN_KEY) || 'null');
-if (!raw || new Date(raw.time).toDateString() !== new Date().toDateString()) return null;
-return raw;
-} catch (error) {
-return null;
-}
-}
-
-function formatElapsed(ms) {
-return `${(ms / 1000).toFixed(1)}s`;
-}
-
-function renderLastRunLine(lastRun) {
-if (!lastRun) return '';
-const issueText = lastRun.failedLabels.length === 0
-? 'All OK'
-: `${lastRun.failedLabels.length} issue${lastRun.failedLabels.length > 1 ? 's' : ''} (${escapeHtml(lastRun.failedLabels.join(', '))})`;
-return `<div style="font-size: 11px; color: #94a3b8; margin-top: 8px;">Last run today at ${formatTimeForInput(new Date(lastRun.time))} &middot; ${issueText} &middot; ${formatElapsed(lastRun.elapsedMs)}</div>`;
-}
-
-function morningCheckStatusColor(row) {
-if (row.status === 'pending') return '#cbd5e1';
-if (row.status === 'running') return '#d97706';
-if (row.ok === true) return '#16a34a';
-if (row.ok === false) return '#dc2626';
-return '#2563eb';
-}
-
-// Only rendered once every check has actually settled (the 5 rows below
-// already show live progress while a run is in flight) - a colored
-// banner as the very first thing on the page is what answers "did
-// anything go wrong" at a glance, without reading all 5 rows individually.
-function renderMorningChecksSummaryBanner(results) {
-const allDone = results.every(r => r.status === 'done');
-if (!allDone) {
-const doneCount = results.filter(r => r.status === 'done').length;
-return `<div style="padding: 8px 12px; border-radius: 8px; background: #eef2ff; color: #4338ca; font-size: 12px; font-weight: 600; text-align: center; margin-bottom: 10px;">Running check ${doneCount + 1} of ${results.length}…</div>`;
-}
-// ok:null (SLA Count, Voicemail) is a plain count, not a pass/fail
-// judgment - only an explicit ok:false counts as an issue here.
-const failed = results.filter(r => r.ok === false);
-if (failed.length === 0) {
-return `<div style="padding: 10px 12px; border-radius: 8px; background: #d1fae5; color: #059669; font-size: 13px; font-weight: 700; text-align: center; margin-bottom: 10px;">${svgIcon('checklist', 14)} All checks passed</div>`;
-}
-return `<div style="padding: 10px 12px; border-radius: 8px; background: #fee2e2; color: #dc2626; font-size: 13px; font-weight: 700; text-align: center; margin-bottom: 10px;">${svgIcon('warning', 14)} ${failed.length} issue${failed.length > 1 ? 's' : ''} found - ${escapeHtml(failed.map(f => f.label).join(', '))}</div>`;
-}
-
-function renderMorningCheckRow(row) {
-const color = morningCheckStatusColor(row);
-const isSettled = row.status === 'done';
-const isRunning = row.status === 'running';
-const isPending = row.status === 'pending';
-const rightText = isSettled ? (row.summary || '') : (isRunning ? 'Running…' : 'Waiting');
-const hasDetails = isSettled && Array.isArray(row.details) && row.details.length > 0;
-const detailsId = `_mcDetails_${row.key}`;
-const chevronId = `_mcChevron_${row.key}`;
-// Status reads through three visual states, not just the dot color:
-// pending rows sit dimmed/dashed since there's nothing to report yet,
-// running gets a light indigo highlight so it's obvious at a glance
-// which check is currently in flight, and done settles to a solid
-// white card - the left accent border (colored per status, same
-// pattern as the tier/callback-type section borders elsewhere in this
-// panel) is what carries the OK/issue/count signal once settled.
-const background = isPending ? '#f8fafc' : (isRunning ? '#eef2ff' : 'white');
-const borderColor = isRunning ? '#c7d2fe' : '#e2e8f0';
-const borderStyle = isPending ? 'dashed' : 'solid';
-
-return `
-<div style="border: 1px ${borderStyle} ${borderColor}; border-left: 3px solid ${color}; border-radius: 8px; padding: 10px 12px; background: ${background}; opacity: ${isPending ? '0.65' : '1'}; transition: background 0.2s ease, opacity 0.2s ease;">
-<div style="display: flex; align-items: center; gap: 8px; ${hasDetails ? 'cursor: pointer;' : ''}" ${hasDetails ? `onclick="window._toggleMorningCheckDetails('${row.key}')"` : ''}>
-<span style="width: 8px; height: 8px; border-radius: 50%; background: ${color}; flex-shrink: 0;"></span>
-<span style="font-size: 12px; font-weight: 600; color: #1e293b; flex-shrink: 0;">${row.label}</span>
-<span style="font-size: 12px; color: #64748b; flex: 1; text-align: right;">${escapeHtml(rightText)}</span>
-${hasDetails ? chevronIcon(true, chevronId) : ''}
-</div>
-${hasDetails ? `
-<div id="${detailsId}" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f1f5f9; font-size: 11px; color: #475569; line-height: 1.6;">
-${row.details.map(d => `<div>${escapeHtml(d)}</div>`).join('')}
-</div>` : ''}
-</div>`;
-}
-
-// Separate page/section reached only via the header toggle - never
-// something the background auto-detect poll enters or leaves on its
-// own (see currentPanelMode), since that poll's silent rebuilds on a
-// page switch would otherwise yank the user out of this view every
-// time a check navigates to a different Konnect page mid-run.
-function renderMorningChecksBody() {
-const lastRun = loadMorningChecksLastRun();
-
-if (morningChecksResults.length === 0) {
-return `
-<div style="padding: 24px 4px; text-align: center;">
-<div style="color: #cbd5e1; margin-bottom: 12px;">${svgIcon('checklist', 40, ' stroke-width: 1.5;')}</div>
-<p style="color: #64748b; margin: 0 0 20px 0; font-size: 14px; line-height: 1.6;">Runs the five morning checks in order - SLA Count, In Progress, Lead Type Check, All Leads Are Routed To, Voicemail - and reports each result here.</p>
-<button onclick="window._runAllMorningChecks();" style="padding: 10px 20px; background: #1e293b; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;">Run All Checks</button>
-${renderLastRunLine(lastRun)}
-</div>`;
-}
-
-const banner = renderMorningChecksSummaryBanner(morningChecksResults);
-const rows = morningChecksResults.map(renderMorningCheckRow).join('');
-const allDone = morningChecksResults.every(r => r.status === 'done');
-
-return `
-${banner}
-<div style="display: flex; flex-direction: column; gap: 8px;">
-${rows}
-</div>
-<div style="margin-top: 16px; text-align: center;">
-<button onclick="window._runAllMorningChecks();" ${runningMorningChecks ? 'disabled' : ''}
-style="padding: 8px 18px; background: ${runningMorningChecks ? '#cbd5e1' : '#1e293b'}; color: white; border: none; border-radius: 8px; cursor: ${runningMorningChecks ? 'default' : 'pointer'}; font-size: 13px; font-weight: 600;">
-${runningMorningChecks ? 'Running…' : (allDone ? 'Run Again' : 'Run All Checks')}
-</button>
-${allDone ? renderLastRunLine(lastRun) : ''}
-</div>`;
-}
-
-function displayMorningChecks() {
-mountPanel(renderPanelShell({
-title: 'Morning Checks',
-count: '',
-newCount: 0,
-removedCount: 0,
-summaryHtml: '',
-assignSectionHtml: '',
-bodyHtml: renderMorningChecksBody(),
-hideSearch: true
-}));
-}
-
-window._toggleMorningCheckDetails = function(key) {
-const el = document.getElementById(`_mcDetails_${key}`);
-if (!el) return;
-const opening = el.style.display === 'none';
-el.style.display = opening ? 'block' : 'none';
-const chevron = document.getElementById(`_mcChevron_${key}`);
-if (chevron) chevron.style.transform = `rotate(${opening ? 0 : -90}deg)`;
-};
-
-// Leaves morningChecksResults untouched on both the way out and the
-// way back in - the last run's results should still be sitting there
-// after switching to the normal queue view and back, not just while
-// the panel itself happens to stay mounted. They're only ever replaced
-// by an actual re-run (window._runAllMorningChecks resets the array
-// itself right before it starts).
-window._toggleMorningChecks = function() {
-if (runningMorningChecks) return;
-if (currentPanelMode === 'morningChecks') {
-currentPanelMode = 'normal';
-runExtraction();
-return;
-}
-currentPanelMode = 'morningChecks';
-displayMorningChecks();
-};
-
-// Fastest order to actually RUN the checks in - independent of
-// MORNING_CHECKS_ORDER, which is only the fixed order they're DISPLAYED
-// in (renderMorningChecksBody always renders by that order regardless
-// of what order results actually arrive in). sla costs nothing (no
-// navigation, it's already sitting on the page it needs). routedTo and
-// leadType both live on the Inbound API page, so running them back to
-// back means leadType's own navigation to that page is a same-hash
-// no-op and its waitForElement resolves instantly - one page load
-// instead of two. routedTo has to go first in that pair: it always
-// does a fresh navigation (guaranteeing Today's data), whereas leadType
-// can end on Yesterday if it needed the overnight fallback, and reusing
-// the page without a fresh navigation only stays correct because
-// nothing after leadType depends on it being back on Today (see the
-// comment on window._checkRoutedTo).
-const MORNING_CHECKS_EXECUTION_ORDER = ['sla', 'routedTo', 'leadType', 'inProgress', 'voicemail'];
-
-// Shared by anything that causes a real Konnect page navigation/re-
-// render mid-flow (Morning Checks, Clear Queue, ingesting freshly-seen
-// SLA leads) - masks the underlying page's own flashing/repopulating
-// so it doesn't read as the screen glitching, without slowing down
-// whatever's actually running underneath it (purely cosmetic).
-function showPageFlashOverlay(message) {
-const existing = document.getElementById(PAGE_FLASH_OVERLAY_ID);
-if (existing) {
-const label = existing.querySelector('[data-overlay-label]');
-if (label) label.textContent = message;
-return;
-}
-if (!document.getElementById('_slaSpinKeyframes')) {
-const style = document.createElement('style');
-style.id = '_slaSpinKeyframes';
-style.textContent = '@keyframes _slaSpin { to { transform: rotate(360deg); } }';
-document.head.appendChild(style);
-}
-const overlay = document.createElement('div');
-overlay.id = PAGE_FLASH_OVERLAY_ID;
-overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(15,23,42,0.94); z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: white; font-size: 14px; font-weight: 600;';
-overlay.innerHTML = `
-<div style="width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.25); border-top-color: white; border-radius: 50%; animation: _slaSpin 0.8s linear infinite;"></div>
-<div data-overlay-label>${message}</div>
-`;
-document.documentElement.appendChild(overlay);
-}
-
-function hidePageFlashOverlay() {
-document.getElementById(PAGE_FLASH_OVERLAY_ID)?.remove();
-}
-
-// Runs the five checks (see MORNING_CHECKS_EXECUTION_ORDER for why that
-// order, not the display order, is used to actually run them), updating
-// the page after each one completes so results appear progressively
-// rather than all at once at the end. Each check function saves/
-// restores its own hash internally, but skipRestore=true is passed here
-// so a check leaves the browser wherever it landed instead of bouncing
-// back through the page morning checks started from between every
-// single step - originalHash is only restored once, at the very end.
-// Konnect's own pages re-rendering mid-navigation (a big table's rows
-// all populating at once, etc.) is what the user described as making
-// the screen look like it's glitching - showPageFlashOverlay dims
-// the real page for the whole run so none of that is visible, without
-// slowing anything down (it's purely cosmetic, nothing waits on it).
-window._runAllMorningChecks = async function() {
-if (runningMorningChecks) return;
-runningMorningChecks = true;
-const originalHash = window.location.hash;
-const runStartedAt = Date.now();
-showPageFlashOverlay('Running morning checks…');
-
-const checkFns = {
-sla: () => window._checkSlaCount(originalHash),
-inProgress: () => window._checkInProgress(true),
-leadType: () => window._checkLeadTypes(true),
-routedTo: () => window._checkRoutedTo(true),
-voicemail: () => window._checkVoicemails(true)
-};
-
-morningChecksResults = MORNING_CHECKS_ORDER.map(step => ({ ...step, status: 'pending' }));
-displayMorningChecks();
-
-try {
-for (const key of MORNING_CHECKS_EXECUTION_ORDER) {
-morningChecksResults = morningChecksResults.map(r => r.key === key ? { ...r, status: 'running' } : r);
-displayMorningChecks();
-
-let result;
-try {
-result = await checkFns[key]();
-} catch (err) {
-result = { ok: null, summary: `Error - ${err && err.message ? err.message : err}` };
-}
-
-morningChecksResults = morningChecksResults.map(r => r.key === key ? { ...r, status: 'done', ...result } : r);
-displayMorningChecks();
-}
-} finally {
-runningMorningChecks = false;
-window.location.hash = originalHash;
-hidePageFlashOverlay();
-saveMorningChecksLastRun(morningChecksResults, Date.now() - runStartedAt);
-// The loop's own last displayMorningChecks() call (right after the
-// final check's result lands) still had runningMorningChecks === true
-// at render time - that flag only flips above, after the loop exits -
-// so without this the button stayed stuck on disabled "Running…"
-// until something else (leaving and re-entering the page) forced a
-// fresh render.
-displayMorningChecks();
-}
-};
 
 async function extractAndExportSla() {
 if (extracting || assigning || runningMorningChecks) return;
