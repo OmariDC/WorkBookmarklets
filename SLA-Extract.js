@@ -35,7 +35,8 @@ minimize: '<line x1="5" y1="12" x2="19" y2="12"/>',
 restore: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
 arrowUp: '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',
 chevron: '<polyline points="6 9 12 15 18 9"/>',
-checklist: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'
+checklist: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
+copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'
 };
 
 function svgIcon(name, size, extraStyle) {
@@ -2544,6 +2545,126 @@ function saveAssignSettings(partial) {
 localStorage.setItem(ASSIGN_SETTINGS_KEY, JSON.stringify({ ...loadAssignSettings(), ...partial }));
 }
 
+// Scope for the "Copy for Booking Check" export (feeds a separate,
+// external bookmarklet on a different site - see the header popover
+// below) - kept entirely separate from ASSIGN_SETTINGS_KEY since this
+// is a one-off export scope, not part of the assign filters, and
+// deliberately not surfaced anywhere in the main Assign flow at all.
+const BOOKING_CHECK_EXPORT_KEY = '_slaBookingCheckExportSettings';
+
+function loadBookingCheckExportSettings() {
+try {
+const raw = JSON.parse(localStorage.getItem(BOOKING_CHECK_EXPORT_KEY));
+if (raw && Array.isArray(raw.tiers)) return raw;
+} catch (error) {
+// ignore
+}
+return { tiers: [2], customerFirstOnly: true };
+}
+
+function saveBookingCheckExportSettings(settings) {
+try {
+localStorage.setItem(BOOKING_CHECK_EXPORT_KEY, JSON.stringify(settings));
+} catch (error) {
+// ignore
+}
+}
+
+// Tabs/newlines within a field would corrupt the TSV structure the
+// receiving bookmarklet parses by splitting on tabs - stripped rather
+// than escaped, since none of these fields should ever legitimately
+// contain one.
+function tsvSafe(value) {
+return String(value || '').replace(/[\t\r\n]+/g, ' ').trim();
+}
+
+// Reads from currentCustomers (the same cache the panel itself is
+// already showing) rather than re-scanning the table - this is a
+// point-in-time snapshot of whatever's already been ingested, not a
+// fresh extraction. Name is stripped of its title (Mr./Mrs./etc,
+// same as the existing copy-to-clipboard fields elsewhere in this
+// panel) since the receiving tool only uses it as supporting
+// confirmation, not as a search key.
+function buildBookingCheckTsv(tiers, customerFirstOnly) {
+const tierSet = new Set(tiers);
+const rows = currentCustomers.filter((c) => {
+if (!tierSet.has(c.tier)) return false;
+if (customerFirstOnly && !(c.source || '').toLowerCase().includes('customer first')) return false;
+return true;
+});
+const header = ['Name', 'Phone', 'Email', 'Registration', 'Source', 'Campaign', 'Created'].join('\t');
+const lines = rows.map((c) => [
+tsvSafe(stripTitle(c.name)), tsvSafe(c.phone), tsvSafe(c.email), tsvSafe(c.registration), tsvSafe(c.source), tsvSafe(c.campaign), tsvSafe(c.createdText)
+].join('\t'));
+return { tsv: [header, ...lines].join('\n'), count: rows.length };
+}
+
+// Deliberately a small popover toggled from a single header icon, not a
+// permanent section in the main Assign flow - this only matters
+// occasionally (feeding a separate bookmarklet on another site), so it
+// shouldn't cost any visible space the rest of the time. Positioned
+// absolutely against PANEL_BOX_ID (the nearest positioned ancestor,
+// since that box itself is position:fixed) rather than pushing any
+// other content down when open.
+function renderBookingCheckExportPopover() {
+const settings = loadBookingCheckExportSettings();
+const selectedTiers = new Set(settings.tiers);
+const { count } = buildBookingCheckTsv(settings.tiers, settings.customerFirstOnly);
+
+const tierCheckboxes = [1, 2, 3, 4].map(t => `
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;">
+<input type="checkbox" class="booking-export-tier" value="${t}" ${selectedTiers.has(t) ? 'checked' : ''} onchange="window._updateBookingCheckExportPreview()">
+Tier ${t}
+</label>`).join('');
+
+return `
+<div id="bookingCheckExportPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 200px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
+<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">COPY FOR BOOKING CHECK</div>
+<div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${tierCheckboxes}</div>
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b; margin-bottom: 10px;">
+<input type="checkbox" id="bookingExportCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateBookingCheckExportPreview()">
+Customer First only
+</label>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+<span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}</span>
+<button onclick="window._copyBookingCheckExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
+</div>
+</div>`;
+}
+
+window._toggleBookingCheckExportPopover = function() {
+const popover = document.getElementById('bookingCheckExportPopover');
+if (!popover) return;
+popover.style.display = popover.style.display === 'none' ? 'block' : 'none';
+};
+
+window._updateBookingCheckExportPreview = function() {
+const tiers = Array.from(document.querySelectorAll('.booking-export-tier:checked')).map(el => Number(el.value));
+const customerFirstOnly = document.getElementById('bookingExportCustomerFirstOnly')?.checked || false;
+saveBookingCheckExportSettings({ tiers, customerFirstOnly });
+const { count } = buildBookingCheckTsv(tiers, customerFirstOnly);
+const countEl = document.getElementById('bookingExportRowCount');
+if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}`;
+};
+
+window._copyBookingCheckExport = function(buttonEl) {
+const settings = loadBookingCheckExportSettings();
+const { tsv, count } = buildBookingCheckTsv(settings.tiers, settings.customerFirstOnly);
+const original = buttonEl.textContent;
+if (count === 0) {
+buttonEl.textContent = 'No leads';
+setTimeout(() => { buttonEl.textContent = original; }, 1200);
+return;
+}
+navigator.clipboard.writeText(tsv).then(() => {
+buttonEl.textContent = `✓ Copied ${count}`;
+setTimeout(() => { buttonEl.textContent = original; }, 1500);
+}).catch(() => {
+buttonEl.textContent = '✗ Failed';
+setTimeout(() => { buttonEl.textContent = original; }, 1500);
+});
+};
+
 // Tier/callback-type section open-closed state used to live only in the
 // DOM (a plain style.display toggle), which meant it reset to fully-open
 // on every panel rebuild - collapsing sections you don't care about, to
@@ -3027,7 +3148,7 @@ ${renderCopyableField(c.email)}
 </div>`;
 }
 
-function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml, hideSearch, onTitleClick }) {
+function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml, hideSearch, onTitleClick, showBookingCheckExport }) {
 const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 const isFull = panelSize === 'full';
 const positionStyle = isFull
@@ -3059,6 +3180,10 @@ ${newCount > 0 ? `<span style="color: #d97706; font-size: 13px; font-weight: 600
 ${removedCount > 0 ? `<span style="color: #94a3b8; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
 </div>
 <div style="display: flex; gap: 2px;">
+${showBookingCheckExport ? `<button onclick="window._toggleBookingCheckExportPopover();"
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
+title="Copy for Booking Check">${svgIcon('copy', 14)}</button>` : ''}
 <button onclick="window._toggleMorningChecks();"
 style="background: ${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='#94a3b8';"
@@ -3078,6 +3203,7 @@ title="Minimize">${svgIcon(isMinimized ? 'restore' : 'minimize', 14)}</button>
 </div>
 </div>
 
+${showBookingCheckExport ? renderBookingCheckExportPopover() : ''}
 ${summaryHtml || ''}
 ${assignSectionHtml}
 
@@ -3163,7 +3289,8 @@ newCount, removedCount,
 summaryHtml: renderSlaDueSummary(),
 assignSectionHtml: renderAssignSection(),
 bodyHtml,
-onTitleClick: 'window._refreshLeadsAndPanel()'
+onTitleClick: 'window._refreshLeadsAndPanel()',
+showBookingCheckExport: true
 }));
 }
 
@@ -3237,7 +3364,13 @@ seenKeys.add(key);
 const assignState = getAssignCellState(cells[COL_ASSIGN]);
 const slaDate = parseKonnectDate(cells[COL_SLA_DATE]?.textContent?.trim() || '');
 const status = cells[COL_STATUS]?.textContent?.trim();
-rowDescriptors.push({ cells, name, source, campaign, key, assigned: assignState.assigned, agentName: assignState.agentName, slaDate, status });
+// Kept as the raw displayed text, not parsed into a Date - this is
+// only ever surfaced verbatim (the Booking Check export), where the
+// receiving tool needs to parse it itself against Konnect Live's own
+// displayed format, not a value that's already been through a second
+// layer of reformatting here.
+const createdText = cells[COL_CREATED]?.textContent?.trim() || '';
+rowDescriptors.push({ cells, name, registration, source, campaign, key, assigned: assignState.assigned, agentName: assignState.agentName, slaDate, status, createdText });
 }
 
 const pendingCount = rowDescriptors.filter(d => !previousByKey.has(d.key)).length;
@@ -3259,9 +3392,11 @@ for (const d of rowDescriptors) {
 const existing = previousByKey.get(d.key);
 if (existing) {
 // Keep cached phone/email, but never the cached assigned/agentName/
-// slaDate/status - those are re-read fresh above on every scan
-// regardless of cache hit.
-customers.push({ ...existing, assigned: d.assigned, agentName: d.agentName, slaDate: d.slaDate, status: d.status });
+// slaDate/status/createdText - those are re-read fresh above on every
+// scan regardless of cache hit. registration is folded into the key
+// itself, so it can't change without also changing d.key, but it's
+// re-taken from d anyway for consistency with everything else here.
+customers.push({ ...existing, registration: d.registration, assigned: d.assigned, agentName: d.agentName, slaDate: d.slaDate, status: d.status, createdText: d.createdText });
 continue;
 }
 
@@ -3272,6 +3407,7 @@ const details = await extractCustomerDetails(d.cells[0]);
 customers.push({
 key: d.key,
 name: d.name,
+registration: d.registration,
 campaign: d.campaign,
 source: d.source,
 tier: tierInfo.tier,
@@ -3281,7 +3417,8 @@ email: details.email,
 assigned: d.assigned,
 agentName: d.agentName,
 slaDate: d.slaDate,
-status: d.status
+status: d.status,
+createdText: d.createdText
 });
 addedCount++;
 } catch (error) {
