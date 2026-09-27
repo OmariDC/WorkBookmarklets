@@ -2904,12 +2904,15 @@ const TEST_DRIVE_INTENT_KEYWORDS = ['test drive', 'drive', 'look at', 'view', 's
 // Genuine expressed interest in a vehicle that stops short of visit
 // intent (no "test drive"/"come in"/etc) - real example: "Hi I would
 // potentially be interested in this vehicle, and trading in my..."
-// Per instruction, this stays NON-BOOKING (no date, no visit intent -
-// still requires a live call to get anywhere), but is more contactable
-// than a blank/generic answer, so it ranks higher within NON-BOOKING
-// (see bookingPriorityRank) rather than becoming its own category.
-// First-pass phrase, not an exhaustive confirmed set.
-const POTENTIAL_INTEREST_PHRASES = ['potentially be interested in', 'potentially interested in'];
+// "possibly interested in" is the same signal in the framework
+// document's own wording ("possibly interested in the following
+// vehicle [MODEL]") - both forms recognized. Per instruction, this
+// stays NON-BOOKING (no date, no visit intent - still requires a live
+// call to get anywhere), but is more contactable than a blank/generic
+// answer, so it ranks higher within NON-BOOKING (see
+// bookingPriorityRank) rather than becoming its own category.
+// First-pass phrase list, not an exhaustive confirmed set.
+const POTENTIAL_INTEREST_PHRASES = ['potentially be interested in', 'potentially interested in', 'possibly interested in'];
 
 // Deliberately a loose substring check, not the strict brand-prefix
 // suffix match isInScope() uses for Enquiry-New - per instruction, this
