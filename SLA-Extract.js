@@ -120,6 +120,7 @@ let assigning = false;
 let cancelRequested = false;
 let lastFailedAssignmentPlan = null;
 let lastFailedLocateCellFn = null;
+let lastFailedPageType = null;
 let currentPageType = null;
 let currentCustomers = [];
 let currentPendingCustomers = [];
@@ -2076,9 +2077,11 @@ window._retryFailedAssignments = async function() {
 if (!lastFailedAssignmentPlan || lastFailedAssignmentPlan.length === 0) return;
 const plan = lastFailedAssignmentPlan;
 const locateCellFn = lastFailedLocateCellFn;
+const pageType = lastFailedPageType;
 lastFailedAssignmentPlan = null;
 lastFailedLocateCellFn = null;
-await executeAssignmentRun(plan, locateCellFn);
+lastFailedPageType = null;
+await executeAssignmentRun(plan, locateCellFn, pageType);
 };
 
 // Only ever holds today's entries - a stale entry from a previous day
@@ -4517,7 +4520,7 @@ missedOnly: !!missedOnly
 const prioritized = prioritizeLeads(eligible);
 const limited = applyAssignLimit(prioritized);
 const plan = roundRobinAssign(limited, agents);
-await executeAssignmentRun(plan, locateAssignCell);
+await executeAssignmentRun(plan, locateAssignCell, PAGE_SLA);
 };
 
 // Mirrors _quickAssignSlaTile for the Pending Customers due-summary tiles
@@ -4539,14 +4542,14 @@ const eligible = filterPendingLeads(leads, { callbackTypes: new Set(CALLBACK_TYP
 const prioritized = prioritizePendingLeads(eligible);
 const limited = applyAssignLimit(prioritized);
 const plan = roundRobinAssign(limited, agents);
-await executeAssignmentRun(plan, locatePendingAssignCell);
+await executeAssignmentRun(plan, locatePendingAssignCell, PAGE_PENDING);
 };
 // Shared by the manual Assign button (whatever filters are checked) and
 // Quick Assign (its own fixed opinionated criteria) - both just need to
 // build a plan and hand it off the same way.
 const ASSIGN_CONFIRM_THRESHOLD = 10;
 
-async function executeAssignmentRun(plan, locateCellFn) {
+async function executeAssignmentRun(plan, locateCellFn, pageType) {
 const button = document.getElementById('assignRunButton');
 const log = document.getElementById('assignResultsLog');
 if (!button || !log) return null;
@@ -4601,9 +4604,31 @@ button.textContent = 'Assign Unassigned Leads';
 const failedEntries = results.filter(r => !r.ok).map(r => ({ lead: r.lead, agent: r.agent }));
 lastFailedAssignmentPlan = failedEntries.length > 0 ? failedEntries : null;
 lastFailedLocateCellFn = failedEntries.length > 0 ? locateCellFn : null;
-renderAssignResultsSummary(results);
+lastFailedPageType = failedEntries.length > 0 ? pageType : null;
 appendAssignmentLog(results);
 console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
+
+// The assign click itself only mutates the live table's own assign
+// cell for each lead - it never touches currentCustomers/
+// currentPendingCustomers (this panel's own cached render source), so
+// the lead cards kept showing the pre-assign "unassigned" state until
+// an unrelated manual refresh. Same lightweight fix as Clear Queue's
+// own (window._clearWholeQueue): update the cache directly from this
+// run's own results and re-render, rather than re-running the full
+// ingestion pipeline. That replaces assignResultsSummary's own DOM
+// too, so it's (re)rendered AFTER this, not before - or the fresh
+// render would wipe it again.
+if (succeeded > 0) {
+const successByKey = new Map(results.filter(r => r.ok).map(r => [r.lead.key, r.agent.name]));
+if (pageType === PAGE_PENDING) {
+currentPendingCustomers = currentPendingCustomers.map((c) => successByKey.has(c.key) ? { ...c, assigned: true, agentName: successByKey.get(c.key) } : c);
+displayPendingPanel(currentPendingCustomers);
+} else {
+currentCustomers = currentCustomers.map((c) => successByKey.has(c.key) ? { ...c, assigned: true, agentName: successByKey.get(c.key) } : c);
+displayPanel(currentCustomers);
+}
+}
+renderAssignResultsSummary(results);
 return results;
 }
 
@@ -4648,7 +4673,7 @@ return;
 
 const limited = applyAssignLimit(prioritized);
 const plan = roundRobinAssign(limited, agents);
-await executeAssignmentRun(plan, locateAssignCell);
+await executeAssignmentRun(plan, locateAssignCell, PAGE_SLA);
 };
 
 window._runPendingAssignment = async function() {
@@ -4690,7 +4715,7 @@ return;
 
 const limited = applyAssignLimit(prioritized);
 const plan = roundRobinAssign(limited, agents);
-await executeAssignmentRun(plan, locatePendingAssignCell);
+await executeAssignmentRun(plan, locatePendingAssignCell, PAGE_PENDING);
 };
 
 
