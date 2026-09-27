@@ -2004,6 +2004,7 @@ if (!advanced) break;
 }
 } finally {
 isRunning = false;
+hidePageFlashOverlay();
 uiHandle.setState(session.cancelled ? 'Cancelled' : (session.done ? 'Done' : 'Paused'));
 }
 }
@@ -2123,6 +2124,51 @@ console.error('KonnectBookingCheck orchestration self-test FAILED:\n' + failures
 console.info('KonnectBookingCheck orchestration self-test passed (8/8)');
 }
 })();
+
+// ===================================================================
+// PAGE FLASH OVERLAY - same pattern as SLA-Extract.js's own
+// showPageFlashOverlay/hidePageFlashOverlay (Refreshing leads/Clearing
+// the queue/Morning Checks there). Konnect Live's own pages re-
+// rendering mid-navigation while searching/opening a customer/opening
+// a lead modal looks exactly like the same "glitching" that overlay
+// was built to hide, just on a different site. Lower z-index than the
+// panel host (2147483000) so the floating panel itself - and its own
+// live progress state - stays visible on top of the dimmed page.
+// ===================================================================
+
+const KBC_PAGE_FLASH_OVERLAY_ID = '_kbcPageFlashOverlay';
+let kbcPageFlashOverlayPrevOverflow = null;
+
+function showPageFlashOverlay(message) {
+const existing = document.getElementById(KBC_PAGE_FLASH_OVERLAY_ID);
+if (existing) {
+const label = existing.querySelector('[data-overlay-label]');
+if (label) label.textContent = message;
+return;
+}
+if (!document.getElementById('_kbcSpinKeyframes')) {
+const style = document.createElement('style');
+style.id = '_kbcSpinKeyframes';
+style.textContent = '@keyframes _kbcSpin { to { transform: rotate(360deg); } }';
+document.head.appendChild(style);
+}
+const overlay = document.createElement('div');
+overlay.id = KBC_PAGE_FLASH_OVERLAY_ID;
+overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(15,23,42,0.94); z-index: 999999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: white; font-size: 14px; font-weight: 600;';
+overlay.innerHTML = `
+<div style="width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.25); border-top-color: white; border-radius: 50%; animation: _kbcSpin 0.8s linear infinite;"></div>
+<div data-overlay-label>${message}</div>
+`;
+kbcPageFlashOverlayPrevOverflow = document.documentElement.style.overflow;
+document.documentElement.style.overflow = 'hidden';
+document.documentElement.appendChild(overlay);
+}
+
+function hidePageFlashOverlay() {
+document.getElementById(KBC_PAGE_FLASH_OVERLAY_ID)?.remove();
+document.documentElement.style.overflow = kbcPageFlashOverlayPrevOverflow || '';
+kbcPageFlashOverlayPrevOverflow = null;
+}
 
 // ===================================================================
 // UI PANEL - Shadow DOM, draggable, per the spec's interface list.
@@ -2480,7 +2526,12 @@ root.getElementById('btnProcessNext').addEventListener('click', async () => {
 const s = ensureSessionFromPasteBox();
 if (!s.headerOk) { uiHandle.setState(`Header error: ${s.headerError}`); return; }
 s.cancelled = false;
+showPageFlashOverlay('Checking lead…');
+try {
 await stepOnce(s, uiHandle);
+} finally {
+hidePageFlashOverlay();
+}
 uiHandle.setState(s.done ? 'Done' : 'Paused after one row');
 });
 
@@ -2490,9 +2541,17 @@ if (!s.headerOk) { uiHandle.setState(`Header error: ${s.headerError}`); return; 
 s.paused = false;
 s.cancelled = false;
 pauseResumeBtn.textContent = 'Pause';
+showPageFlashOverlay('Checking leads…');
 runLoop(s, uiHandle);
 });
 
+// Pausing doesn't actually exit runLoop's while-loop (it just idles on
+// a 200ms poll internally, waiting for session.paused to clear) - the
+// overlay is shown/hidden here, at the actual user action, rather than
+// inside runLoop's own try/finally, since that only fires once the
+// loop truly ends (done/cancelled), not on every pause. Without this,
+// pausing would leave the real page dimmed for as long as it stayed
+// paused.
 const pauseResumeBtn = root.getElementById('btnPauseResume');
 pauseResumeBtn.addEventListener('click', () => {
 if (!session) return;
@@ -2500,11 +2559,13 @@ if (session.paused) {
 session.paused = false;
 pauseResumeBtn.textContent = 'Pause';
 uiHandle.setState('Resuming...');
+showPageFlashOverlay('Checking leads…');
 runLoop(session, uiHandle);
 } else {
 session.paused = true;
 pauseResumeBtn.textContent = 'Resume';
 uiHandle.setState('Paused');
+hidePageFlashOverlay();
 }
 });
 
@@ -2525,6 +2586,7 @@ clearStoredSession();
 session = null;
 pasteBox.value = '';
 pauseResumeBtn.textContent = 'Pause';
+hidePageFlashOverlay();
 uiHandle.setState('Idle', '-', '-');
 });
 
@@ -2541,6 +2603,7 @@ const ok = window.confirm('Clear all data and stop?');
 if (!ok) return;
 if (session) session.cancelled = true;
 isRunning = false;
+hidePageFlashOverlay();
 clearStoredSession();
 session = null;
 host.remove();
