@@ -3240,34 +3240,65 @@ if (category === 'NON-BOOKING') return '#64748b';
 return '#1e293b';
 }
 
+// Same normalization as Konnect-Booking-Check.js's own normalizeEmail/
+// normalizePhone, so a lead classified there matches back to the exact
+// same customer here regardless of formatting differences (spacing,
+// +44 vs leading 0, etc).
+function normalizeEmailForBookingCheckMatch(value) {
+return String(value || '').trim().toLowerCase();
+}
+
+function normalizePhoneForBookingCheckMatch(value) {
+const digits = String(value || '').replace(/\D+/g, '');
+if (digits.startsWith('44')) return '0' + digits.slice(2);
+return digits;
+}
+
+// The whole point of classifying here instead of in Konnect Booking
+// Check's own UI is to see the result on the SAME card used to assign/
+// view contact details - not a second, disconnected flat list. Matched
+// by email (preferred) or phone, since Booking Check's raw export
+// never carries Registration or this panel's own `key`; Created
+// disambiguates the rare case of multiple rows sharing one contact
+// (the same customer with two separate leads).
+function findBookingCheckResultForCustomer(c, results) {
+if (!results || results.length === 0) return null;
+const emailKey = normalizeEmailForBookingCheckMatch(c.email);
+const phoneKey = normalizePhoneForBookingCheckMatch(c.phone);
+const candidates = results.filter((r) => {
+const rEmailKey = normalizeEmailForBookingCheckMatch(r.email);
+if (emailKey && rEmailKey) return emailKey === rEmailKey;
+const rPhoneKey = normalizePhoneForBookingCheckMatch(r.phone);
+if (phoneKey && rPhoneKey) return phoneKey === rPhoneKey;
+return false;
+});
+if (candidates.length <= 1) return candidates[0] || null;
+return candidates.find((r) => r.created === c.createdText) || candidates[0];
+}
+
+// The point of classifying here (rather than reading results in
+// Konnect Booking Check's own UI) is to see them on the real lead
+// cards below - alongside Assign, contact details, everything already
+// built for that - not a second flat list duplicating what Booking
+// Check already shows. This popover is just the input mechanism
+// (paste + Classify); the actual results render as a badge on each
+// matching card via findBookingCheckResultForCustomer, and the panel
+// re-renders immediately after classifying so they show up right away.
 function renderBookingCheckImportPopover() {
 const state = loadBookingCheckImportState();
-
-const resultsHtml = state.results.length === 0
-? `<div style="font-size: 12px; color: #94a3b8; padding: 8px 0 0;">Paste results from Konnect Booking Check's "Copy raw for Extract" button, then press Classify.</div>`
-: `<div style="max-height: 260px; overflow-y: auto; margin-top: 8px; border-top: 1px solid #e2e8f0; padding-top: 8px;">
-<table style="width: 100%; border-collapse: collapse; font-size: 11px;">
-<thead><tr>
-<th style="text-align: left; padding: 3px 4px; border-bottom: 1px solid #e2e8f0;">Name</th>
-<th style="text-align: left; padding: 3px 4px; border-bottom: 1px solid #e2e8f0;">Category</th>
-</tr></thead>
-<tbody>${state.results.map((r) => `
-<tr title="${escapeHtml(r.reason || '')}">
-<td style="padding: 3px 4px; border-bottom: 1px solid #f1f5f9;">${escapeHtml(r.name || '')}</td>
-<td style="padding: 3px 4px; border-bottom: 1px solid #f1f5f9; color: ${bookingCheckImportCategoryColor(r.category)}; font-weight: ${r.category === 'CONFIRMED DATE & TIME' ? '600' : '400'};">${escapeHtml(r.category || '')}</td>
-</tr>`).join('')}</tbody>
-</table>
-</div>`;
+const matchedCount = state.results.filter((r) => currentCustomers.some((c) => findBookingCheckResultForCustomer(c, [r]))).length;
+const summary = state.results.length === 0
+? `<div style="font-size: 12px; color: #94a3b8; padding: 8px 0 0;">Paste results from Konnect Booking Check's "Copy raw for Extract" button, then press Classify - they'll show up as a badge on the matching lead card below.</div>`
+: `<div style="font-size: 12px; color: #64748b; padding: 8px 0 0;">${state.results.length} classified, ${matchedCount} matched to a lead in the current list below.${state.results.length !== matchedCount ? ' The rest aren\'t in the current SLA list (already assigned, expired, or a different queue).' : ''}</div>`;
 
 return `
 <div id="bookingCheckImportPopover" style="display: none; position: absolute; top: 46px; right: 46px; z-index: 5; width: 320px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">CLASSIFY BOOKING CHECK RESULTS</div>
 <textarea id="bookingCheckImportBox" placeholder="Paste TSV from Konnect Booking Check" oninput="window._updateBookingCheckImportInput(this.value)" style="width: 100%; height: 60px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px;">${escapeHtml(state.rawInput)}</textarea>
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px;">
-<span id="bookingImportRowCount" style="font-size: 11px; color: #64748b;">${state.results.length} classified</span>
+<div style="display: flex; justify-content: flex-end; margin-top: 8px;">
 <button onclick="window._classifyBookingCheckImport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Classify</button>
 </div>
-${resultsHtml}
+${summary}
 </div>`;
 }
 
@@ -3301,10 +3332,13 @@ return;
 }
 const results = classifyBookingCheckImportRows(parsed.rows);
 saveBookingCheckImportState({ rawInput, results });
-const countEl = document.getElementById('bookingImportRowCount');
-if (countEl) countEl.textContent = `${results.length} classified`;
-const popover = document.getElementById('bookingCheckImportPopover');
-if (popover) popover.outerHTML = renderBookingCheckImportPopover();
+// Full panel re-render, not just this popover - the whole point is
+// getting results onto the real lead cards (findBookingCheckResultFor
+// Customer, rendered per-card in renderTierSection), not just updating
+// this popover's own summary text. buttonEl itself is about to be
+// replaced along with the rest of the panel, so nothing below
+// references it again.
+displayPanel(currentCustomers);
 const reopened = document.getElementById('bookingCheckImportPopover');
 if (reopened) reopened.style.display = 'block';
 };
@@ -3754,6 +3788,11 @@ return `<div style="margin-bottom: 16px; padding: 10px 4px; border-bottom: 2px s
 }
 
 const collapsed = isSectionCollapsed(tierId);
+// Loaded once per tier section (not per card) - the whole point of
+// classifying in this panel rather than Konnect Booking Check's own
+// UI is to see the result on this exact card, next to Assign/contact
+// details, instead of a second disconnected list.
+const bookingCheckResults = loadBookingCheckImportState().results;
 return `<div style="margin-bottom: 16px;">
 <div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 10px 4px;
 display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
@@ -3766,12 +3805,15 @@ display: flex; justify-content: space-between; align-items: center; border-botto
 <div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
 ${customers.map(c => {
 const urgency = slaUrgencyInfo(c);
+const bookingCheck = findBookingCheckResultForCustomer(c, bookingCheckResults);
+const bookingCheckTitle = bookingCheck ? [bookingCheck.reason, bookingCheck.initialNotes].filter(Boolean).join('\n\n') : '';
 return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px 12px 10px; border-bottom: 1px solid #e2e8f0; ${urgency.emphasize ? `border-left: 3px solid ${urgency.color}; background: ${urgency.color}0d;` : ''}">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
 </div>
 ${urgency.label ? `<div style="margin-bottom: 10px;"><span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${urgency.color}1a; color: ${urgency.color};">${urgency.label}</span></div>` : ''}
+${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.category)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.category)};">${escapeHtml(bookingCheck.category)}</span></div>` : ''}
 ${renderContactToggle(`
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
