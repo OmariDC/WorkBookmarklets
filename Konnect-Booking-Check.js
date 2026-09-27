@@ -13,13 +13,21 @@
 // only the one piece that has zero DOM dependency and can be built and
 // tested standalone: the classifier itself.
 //
-// SCOPE: Tier 2 "Enquiry - New" / Source "Customer First" leads only,
-// per the tool's stated purpose. Any other campaign/source combination
-// is deliberately classified NON-BOOKING for now rather than guessed at
-// - the wider multi-tier framework (Test Drive Request, Electric,
-// Motability, Leapmotor, Offer Request, PX Valuation, Enquiry-Used,
-// Cargurus, etc.) exists but is explicitly held back until this
-// narrower scope is proven working end to end.
+// SCOPE: covers all 4 tiers per the confirmed lead-filtering framework
+// (Electric, Reserve-Used, Test Drive Request, Enquiry-New/Customer
+// First, Motability, Leapmotor, Offer Request, PX Valuation, Enquiry-
+// Used, Robins & Day Enquiry-New, General/Register Interest, Cargurus).
+// Every tier's detection criteria comes from that framework; every
+// tier's OUTPUT is mapped onto the same 4 agreed categories (CONFIRMED
+// DATE & TIME, DATE ONLY, WARM ENQUIRY, NON-BOOKING) rather than
+// growing the category vocabulary further - the framework's own
+// "RESERVED"/"ALREADY ACTIONED" label folded into NON-BOOKING instead
+// of becoming its own category. WARM ENQUIRY itself was originally
+// called BOOKING (TEST DRIVE), renamed once it started covering PX
+// Valuation/Enquiry-Used vehicle-interest signals too - "test drive"
+// stopped describing what the category actually meant. A campaign/
+// source combination this framework never described still defaults to
+// NON-BOOKING rather than being guessed at.
 //
 // Everything through search, timeline scan/matching, lead modal read/
 // validate/close, and Initial Notes classification is confirmed
@@ -134,44 +142,121 @@ function isTestDriveRequestCampaign(campaign) {
 return String(campaign || '').trim().toLowerCase().includes('test drive');
 }
 
-function classifyInitialNotes(initialNotes, { campaign, source } = {}) {
-const { hasDateField, comments } = parseInitialNotesFields(initialNotes);
-const lower = comments.toLowerCase();
+// ===================================================================
+// FULL MULTI-TIER FRAMEWORK - per the confirmed lead-filtering
+// framework document (all 4 tiers), extending beyond the original
+// Tier 2 Enquiry - New / Customer First-only scope. Dispatch order
+// below follows the framework's own stated priority (Electric first,
+// since it overrides regardless of any other campaign wording; the
+// rest in the order its own "FILTERING ALGORITHM" summary gives),
+// with Reserve - Used and Leapmotor (prose-only, not in that summary)
+// inserted where they don't collide with anything else. All campaign/
+// source matching stays a loose, lowercased substring check rather
+// than the framework's own "(exact)" wording - an exact-match check
+// already broke once in this file against real brand-prefixed
+// campaign values (see isInScope's history), so every tier here is
+// deliberately as lenient as that fix.
+// ===================================================================
 
-// Test Drive Request tier: no date/time requirement - a booking here
-// is just a genuine answer showing dealership-visit intent. Checked
-// before the Enquiry-New isInScope() gate since Source/Campaign aren't
-// hard requirements for this tier.
-if (isTestDriveRequestCampaign(campaign)) {
+function isElectricCampaign(campaign) {
+return String(campaign || '').toLowerCase().includes('electric');
+}
+
+function isReserveUsedCampaign(campaign) {
+const c = String(campaign || '').toLowerCase();
+return c.includes('reserve') && c.includes('used');
+}
+
+function isMotabilityCampaign(campaign) {
+return String(campaign || '').toLowerCase().includes('motability');
+}
+
+function isLeapmotorSource(source) {
+return String(source || '').toLowerCase().includes('leapmotor');
+}
+
+function isOfferRequestNewCampaign(campaign) {
+const c = String(campaign || '').toLowerCase();
+return c.includes('offer request') && c.includes('new');
+}
+
+function isPxValuationNewCampaign(campaign) {
+const c = String(campaign || '').toLowerCase();
+return (c.includes('px valuation') || c.includes('p/x valuation')) && c.includes('new');
+}
+
+function isEnquiryUsedCampaign(campaign) {
+const c = String(campaign || '').toLowerCase();
+return c.includes('enquiry') && c.includes('used');
+}
+
+function isRobinsDayEnquiryNew(campaign, source) {
+const c = String(campaign || '').toLowerCase();
+const s = String(source || '').toLowerCase();
+return c.includes('enquiry') && c.includes('new') && s.includes('robins');
+}
+
+function isGeneralInterestCampaign(campaign, source) {
+const c = String(campaign || '').toLowerCase();
+const s = String(source || '').toLowerCase();
+return c.includes('general') || c.includes('register interest') || c.includes('brochure download') || c.includes('inbound') || s.includes('inbound');
+}
+
+function isCargurusLead(campaign, source) {
+const c = String(campaign || '').toLowerCase();
+const s = String(source || '').toLowerCase();
+return c.includes('cargurus') || s.includes('cargurus');
+}
+
+const MOTABILITY_BOOKING_WORDS = ['priority', 'booked', 'confirmation needed'];
+
+// First-pass list of specific vehicle models named in the framework's
+// PX Valuation examples - a generic "car-valuation"/"home page" visit
+// with none of these is the NON-BOOKING default for this tier.
+// Matched against a hyphen/underscore-normalized haystack (see
+// classifyPxValuationTier), so every entry here uses spaces even where
+// the real URL form uses a hyphen (e.g. "e-c3").
+const PX_VEHICLE_MODEL_WORDS = ['c3 aircross', 'e c3', 'c5 aircross', '2008', '3008', 'frontera', 'possibly interested in the following vehicle'];
+
+// UK number plate shape (e.g. "WR25XYT") - confirms a specific vehicle
+// is being discussed for Enquiry - Used's WARM tier.
+const UK_REG_PLATE_PATTERN = /\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/i;
+
+const ENQUIRY_USED_WARM_PHRASES = ['requests call', 'wants to view', 'interested in', 'asking about', 'technical questions'];
+
+const ENQUIRY_USED_SHOPPING_WORDS = ['imv', 'deal rating', 'email preferred', 'call preferred', 'text preferred', 'delivery cost'];
+
+// Tier 1: Test Drive Request - New/Used. Per the framework, time-of-day
+// preference words count as full DATE+TIME confirmation for THIS tier
+// specifically (unlike Tier 2 Enquiry-New, where the same wording only
+// reaches DATE ONLY) - the vehicle/date are already locked in via this
+// campaign's own dropdown/field structure, so a time preference is
+// enough to call it confirmed.
+function classifyTestDriveRequestTier(hasDateField, comments, lower) {
 if (containsAny(lower, OVERRIDE_KEYWORDS)) {
-return {
-category: 'NON-BOOKING',
-reason: 'Comments mention finance/business/technical-support wording, which overrides to Non-Booking regardless of tier.',
-confidence: 'high'
-};
+return { category: 'NON-BOOKING', reason: 'Test Drive Request lead, but comments mention finance/business/technical-support wording, which overrides to Non-Booking.', confidence: 'high' };
+}
+if (hasDateField) {
+if (isBlankComments(comments)) {
+return { category: 'DATE ONLY', reason: 'Test Drive Request lead: date field present, Customer Comments is blank.', confidence: 'high' };
+}
+if (containsAny(lower, TIME_PREFERENCE_WORDS) || EXACT_TIME_PATTERN.test(comments)) {
+return { category: 'CONFIRMED DATE & TIME', reason: 'Test Drive Request lead: date field present with a time preference or exact time in comments.', confidence: 'high' };
+}
+return { category: 'DATE ONLY', reason: 'Test Drive Request lead: date field present, no time indication in comments.', confidence: 'medium' };
 }
 if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return {
-category: 'BOOKING (TEST DRIVE)',
-reason: 'Test Drive Request lead with a genuine answer mentioning a dealership visit/test drive - no date/time required for this tier.',
-confidence: 'medium'
-};
+return { category: 'WARM ENQUIRY', reason: 'Test Drive Request lead with a genuine answer mentioning a dealership visit/test drive - no date field present for this tier.', confidence: 'medium' };
 }
-return {
-category: 'NON-BOOKING',
-reason: 'Test Drive Request lead but Customer Comments is blank or does not mention any dealership-visit/test-drive wording.',
-confidence: 'medium'
-};
+return { category: 'NON-BOOKING', reason: 'Test Drive Request lead with no date field and no dealership-visit wording in comments.', confidence: 'medium' };
 }
 
-if (!isInScope(campaign, source)) {
-return {
-category: 'NON-BOOKING',
-reason: `Outside current scope (Campaign="${campaign || ''}", Source="${source || ''}") - only Tier 2 Enquiry - New / Customer First is classified for now; other tiers are filtered to Non-Booking until their own rules are confirmed.`,
-confidence: 'high'
-};
-}
-
+// Tier 2: Enquiry - New / Customer First - the original, battle-tested
+// scope, unchanged from its own iteration (Oscar Scully's brand-prefix
+// fix, Stephen Dracup's no-date-but-test-drive-mention carve-out, and
+// relative-date-in-comments detection all still apply exactly as
+// before).
+function classifyEnquiryNewCustomerFirstTier(hasDateField, comments, lower) {
 if (containsAny(lower, OVERRIDE_KEYWORDS)) {
 return {
 category: 'NON-BOOKING',
@@ -181,11 +266,6 @@ confidence: 'high'
 }
 
 if (!hasDateField) {
-// A day/relative-date mention in the comments ("Monday", "tomorrow")
-// stands in for the missing structured date field - per instruction,
-// "classified the date way": voicemail-actionable, same as a real
-// date with no further detail, unless paired with an exact time (as
-// concrete as a fully confirmed booking).
 if (containsAny(lower, RELATIVE_DATE_WORDS)) {
 if (EXACT_TIME_PATTERN.test(comments)) {
 return {
@@ -200,19 +280,9 @@ reason: 'No structured date field, but comments mention a specific day/relative 
 confidence: 'medium'
 };
 }
-// Real case that exposed this: Stephen Dracup's lead is genuinely
-// Tier 2 Enquiry - New / Customer First (not a "Test Drive Request"
-// campaign - isTestDriveRequestCampaign() above never applies to it),
-// but had no date field and comments mentioning "test drive" - this
-// unconditionally returned NON-BOOKING before ever looking at what the
-// comments said. Per instruction, that's wrong for this lead type: a
-// genuine answer showing dealership-visit intent is itself a booking,
-// no date field required, same as the dedicated Test Drive Request
-// tier above - but it still requires reaching the customer live (no
-// date to reference in a voicemail), unlike every branch above.
 if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
 return {
-category: 'BOOKING (TEST DRIVE)',
+category: 'WARM ENQUIRY',
 reason: 'No date field, but comments show genuine dealership-visit/test-drive intent - counts as a booking regardless of date.',
 confidence: 'medium'
 };
@@ -248,19 +318,142 @@ confidence: 'high'
 };
 }
 
-// Date present, comments non-blank, no override keywords, no time-
-// preference words, no exact time - genuine free-text content
-// (vehicle/model, "test drive", location, etc), matching the Tier 2
-// section's own stated rule directly. A LEAD 88 vs LEAD 123 pair that
-// looked like this bucket disagreeing with itself turned out to be bad
-// example data (LEAD 88's real Customer Comments is blank, not the
-// vehicle-mention text it was first given as - already correctly
-// caught above by isBlankComments before reaching here), not an actual
-// rule conflict, so this stays high confidence.
 return {
 category: 'CONFIRMED DATE & TIME',
 reason: 'Date field present and comments contain genuine context beyond a blank or time-preference-only response.',
 confidence: 'high'
+};
+}
+
+function classifyMotabilityTier(comments, lower) {
+if (containsAny(lower, MOTABILITY_BOOKING_WORDS) && EXACT_TIME_PATTERN.test(comments)) {
+return { category: 'CONFIRMED DATE & TIME', reason: 'Motability lead: comments explicitly state booking language with a specific time.', confidence: 'high' };
+}
+return { category: 'NON-BOOKING', reason: 'Motability lead: no explicit booking/priority language with a specific time - most Motability leads have no date confirmed initially.', confidence: 'medium' };
+}
+
+// The framework's own vocabulary calls this "WARM ENQUIRY" too - same
+// real-world shape as the dedicated test-drive/visit-intent case:
+// no date anywhere, but a genuine signal of interest, so it requires
+// reaching the customer live rather than being actionable by voicemail
+// alone.
+function classifyPxValuationTier(lower) {
+// The real signal here is usually a URL path ("citroen-c3-aircross-
+// pch"), hyphenated rather than spaced - normalize hyphens/underscores
+// to spaces so "c3 aircross" matches "c3-aircross" too.
+const normalized = lower.replace(/[-_]/g, ' ');
+if (containsAny(normalized, PX_VEHICLE_MODEL_WORDS)) {
+return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead: comments/URL show interest in a specific vehicle model - no date field for this campaign type, but a real signal worth calling on.', confidence: 'medium' };
+}
+return { category: 'NON-BOOKING', reason: 'PX Valuation lead: generic valuation page, no specific vehicle of interest identified.', confidence: 'medium' };
+}
+
+function classifyEnquiryUsedTier(source, comments, lower) {
+const sourceLower = String(source || '').toLowerCase();
+if (sourceLower.includes('phone') && EXACT_TIME_PATTERN.test(comments)) {
+return { category: 'CONFIRMED DATE & TIME', reason: 'Enquiry - Used lead: phone source with a specific date and time in comments.', confidence: 'high' };
+}
+if (containsAny(lower, ENQUIRY_USED_SHOPPING_WORDS) || sourceLower.includes('cargurus')) {
+return { category: 'NON-BOOKING', reason: 'Enquiry - Used lead: comments show price-comparison/shopping language (IMV, deal rating, etc), not booking intent.', confidence: 'high' };
+}
+// Same WARM ENQUIRY shape as PX Valuation above.
+if (UK_REG_PLATE_PATTERN.test(comments) || containsAny(lower, ENQUIRY_USED_WARM_PHRASES)) {
+return { category: 'WARM ENQUIRY', reason: 'Enquiry - Used lead: comments reference a specific vehicle/registration with interest, but no date confirmed - worth calling on.', confidence: 'medium' };
+}
+return { category: 'NON-BOOKING', reason: 'Enquiry - Used lead: no specific vehicle interest or booking language identified.', confidence: 'medium' };
+}
+
+function classifyInitialNotes(initialNotes, { campaign, source } = {}) {
+const { hasDateField, comments } = parseInitialNotesFields(initialNotes);
+const lower = comments.toLowerCase();
+
+// Tier 1: Electric - checked first since it overrides regardless of
+// any other campaign wording, per the framework's explicit rule.
+if (isElectricCampaign(campaign)) {
+return { category: 'CONFIRMED DATE & TIME', reason: 'Brand - Electric campaign: treated as confirmed date & time per the framework\'s stated rule for this campaign type.', confidence: 'medium' };
+}
+
+// Tier 1: Reserve - Used - already actioned online, nothing for this
+// tool to book. Mapped to NON-BOOKING (no separate "already actioned"
+// category) - there's no live-contact follow-up needed here either,
+// unlike a genuine NON-BOOKING enquiry, but it's the closest of the
+// four agreed categories and keeps the vocabulary from growing.
+if (isReserveUsedCampaign(campaign)) {
+return { category: 'NON-BOOKING', reason: 'Reserve - Used campaign: vehicle already reserved online, not applicable to booking tiers.', confidence: 'high' };
+}
+
+// Tier 1: Test Drive Request - New/Used.
+if (isTestDriveRequestCampaign(campaign)) {
+return classifyTestDriveRequestTier(hasDateField, comments, lower);
+}
+
+// Tier 2: Enquiry - New / Customer First - original scope, unchanged.
+if (isInScope(campaign, source)) {
+return classifyEnquiryNewCustomerFirstTier(hasDateField, comments, lower);
+}
+
+// Tier 2: Motability.
+if (isMotabilityCampaign(campaign)) {
+return classifyMotabilityTier(comments, lower);
+}
+
+// Tier 2: Leapmotor - deliberately always Non-Booking per the
+// framework's own explicit choice, despite noting high conversion
+// potential, pending its own rules being confirmed.
+if (isLeapmotorSource(source)) {
+return { category: 'NON-BOOKING', reason: 'Leapmotor source: requires call confirmation despite high conversion potential - flagged Non-Booking pending its own rules.', confidence: 'medium' };
+}
+
+// Tier 3: Offer Request - New - always Non-Booking by definition.
+if (isOfferRequestNewCampaign(campaign)) {
+return { category: 'NON-BOOKING', reason: 'Offer Request - New campaign: 100% quote/offer interest by definition, never a booking.', confidence: 'high' };
+}
+
+// Tier 3: PX Valuation - New.
+if (isPxValuationNewCampaign(campaign)) {
+return classifyPxValuationTier(lower);
+}
+
+// Tier 3: Enquiry - Used.
+if (isEnquiryUsedCampaign(campaign)) {
+return classifyEnquiryUsedTier(source, comments, lower);
+}
+
+// Tier 4: Enquiry - New (Robins & Day Website) - always Non-Booking by
+// definition (a plain campaign-form completion, not this dealership's
+// own Customer First enquiry).
+if (isRobinsDayEnquiryNew(campaign, source)) {
+return { category: 'NON-BOOKING', reason: 'Enquiry - New from Robins & Day Website: 100% campaign form completion by definition, never a booking.', confidence: 'high' };
+}
+
+// Tier 4: General / Register Interest / Brochure Download / Inbound.
+if (isGeneralInterestCampaign(campaign, source)) {
+return { category: 'NON-BOOKING', reason: 'General/register-interest/brochure/inbound campaign: research or interest capture, not a booking.', confidence: 'high' };
+}
+
+// Tier 4: Cargurus (catch-all if not already caught under Enquiry -
+// Used above).
+if (isCargurusLead(campaign, source)) {
+return { category: 'NON-BOOKING', reason: 'Cargurus lead: third-party price-comparison platform, not a direct booking.', confidence: 'high' };
+}
+
+// Final catch-all shared across every tier: finance/business/
+// technical wording overrides to Non-Booking regardless of tier.
+if (containsAny(lower, OVERRIDE_KEYWORDS)) {
+return {
+category: 'NON-BOOKING',
+reason: 'Comments mention finance/business/technical-support wording, which overrides to Non-Booking regardless of tier.',
+confidence: 'high'
+};
+}
+
+// Unmatched by any confirmed tier rule - safe default rather than
+// guessing at a campaign/source combination the framework never
+// described.
+return {
+category: 'NON-BOOKING',
+reason: `Campaign="${campaign || ''}" / Source="${source || ''}" doesn't match any confirmed tier rule - defaulting to Non-Booking rather than guessing.`,
+confidence: 'low'
 };
 }
 
@@ -1348,7 +1541,7 @@ const cases = [
 // per instruction, since this tier will be sent non-Customer-First
 // leads too and Campaign/Source are a routing hint here, not a hard
 // gate.
-{ name: 'Test Drive Request campaign, no date, answered', date: null, comments: 'Would like to test drive the new C4 this weekend', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'BOOKING (TEST DRIVE)' },
+{ name: 'Test Drive Request campaign, no date, answered', date: null, comments: 'Would like to test drive the new C4 this weekend', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'WARM ENQUIRY' },
 { name: 'Test Drive Request campaign, blank comments', date: null, comments: '-', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' },
 { name: 'Test Drive Request campaign, finance override', date: null, comments: 'Can I get a PCH quote as well as a test drive', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' },
 // Stephen Dracup's REAL lead: Campaign is genuinely "Citroen - Enquiry
@@ -1358,7 +1551,7 @@ const cases = [
 // mentioning "test drive", because the !hasDateField branch used to
 // bail before ever looking at the comments. This is the case that
 // exposed that gap.
-{ name: 'Stephen Dracup (real: Enquiry - New, no date, mentions test drive)', date: null, comments: 'Would like to book a test drive when convenient', campaign: 'Citroen - Enquiry - New', source: 'Customer First', expect: 'BOOKING (TEST DRIVE)' },
+{ name: 'Stephen Dracup (real: Enquiry - New, no date, mentions test drive)', date: null, comments: 'Would like to book a test drive when convenient', campaign: 'Citroen - Enquiry - New', source: 'Customer First', expect: 'WARM ENQUIRY' },
 // Relative-date-in-comments ("classified the date way"): no structured
 // date field, but the comments name a specific day/relative date -
 // still voicemail-actionable, same DATE ONLY tier as a real date field
@@ -1366,13 +1559,66 @@ const cases = [
 { name: 'No date field, comments say "Monday"', date: null, comments: 'Could come in Monday if possible', expect: 'DATE ONLY' },
 { name: 'No date field, comments say "tomorrow"', date: null, comments: 'Free tomorrow afternoon', expect: 'DATE ONLY' },
 // Visit-intent wording plus a relative-date mention: the relative-date
-// wins the category (still DATE ONLY, not BOOKING (TEST DRIVE)) - the
+// wins the category (still DATE ONLY, not WARM ENQUIRY) - the
 // day mentioned is what makes it voicemail-actionable regardless of
 // the "view"/"test drive" wording also being present.
 { name: 'Visit intent + relative date: "view this vehicle tomorrow"', date: null, comments: 'Id like to view this vehicle tomorrow', expect: 'DATE ONLY' },
 // Relative-date PLUS an exact time is as concrete as a real confirmed
 // date+time, even with no structured date field.
-{ name: 'No date field, comments say "Monday at 3pm"', date: null, comments: 'Monday at 3pm works for me', expect: 'CONFIRMED DATE & TIME' }
+{ name: 'No date field, comments say "Monday at 3pm"', date: null, comments: 'Monday at 3pm works for me', expect: 'CONFIRMED DATE & TIME' },
+
+// ===== Tier 1: Electric - always confirmed, regardless of comments. =====
+{ name: 'Electric campaign (always confirmed)', date: null, comments: '-', campaign: 'Citroen - Electric', expect: 'CONFIRMED DATE & TIME' },
+
+// ===== Tier 1: Reserve - Used - already actioned, not a booking lead. =====
+{ name: 'Reserve - Used (already reserved online)', date: null, comments: 'Vehicle reserved online', campaign: 'Citroen - Reserve - Used', expect: 'NON-BOOKING' },
+
+// ===== Tier 1: Test Drive Request WITH a date field - unlike Tier 2,
+// time-preference words alone count as full confirmation here. =====
+{ name: 'Test Drive Request + date + "early appointment"', date: '06/08/2026', comments: 'early appointment', campaign: 'Citroen - Test Drive Request', source: 'Robins & Day Website', expect: 'CONFIRMED DATE & TIME' },
+{ name: 'Test Drive Request + date + "Sunday morning please earliest slot"', date: '09/08/2026', comments: 'Sunday morning please earliest slot', campaign: 'Citroen - Test Drive Request', source: 'Robins & Day Website', expect: 'CONFIRMED DATE & TIME' },
+{ name: 'Test Drive Request + date + blank comments', date: '04/08/2026', comments: '-', campaign: 'Citroen - Test Drive Request', source: 'Robins & Day Website', expect: 'DATE ONLY' },
+{ name: 'Test Drive Request + date + "Would like to see/test drive" (no time)', date: '08/08/2026', comments: 'Would like to see/test drive', campaign: 'Citroen - Test Drive Request', source: 'Robins & Day Website', expect: 'DATE ONLY' },
+
+// ===== Tier 2: Motability - only confirmed with explicit booking
+// language AND a specific time; blank/generic defaults to Non-Booking. =====
+{ name: 'Motability + explicit booking language + time', date: null, comments: 'PRIORITY ACCEPTANCE REQUIRED. Customer booked 05/08 at 15:00', campaign: 'Motability', expect: 'CONFIRMED DATE & TIME' },
+{ name: 'Motability + blank (default)', date: null, comments: '-', campaign: 'Motability', expect: 'NON-BOOKING' },
+
+// ===== Tier 2: Leapmotor - always Non-Booking for now, per the
+// framework's own explicit choice despite noting high conversion
+// potential. Also confirms campaign text ending in "Enquiry - New"
+// doesn't get mis-routed into Tier 2 when Source isn't Customer First. =====
+{ name: 'Leapmotor source (default requires call)', date: null, comments: '123456', campaign: 'Leapmotor - Enquiry - New', source: 'Leapmotor', expect: 'NON-BOOKING' },
+
+// ===== Tier 3: Offer Request - New - always Non-Booking by definition. =====
+{ name: 'Offer Request - New (always non-booking)', date: null, comments: '-', campaign: 'Citroen - Offer Request - New', expect: 'NON-BOOKING' },
+
+// ===== Tier 3: PX Valuation - New - WARM ENQUIRY only with a specific
+// vehicle model identified; generic valuation-page visits default to
+// Non-Booking. =====
+{ name: 'PX Valuation + specific vehicle model (hyphenated URL)', date: null, comments: 'The customer was on the following website page: https://x/citroen-c3-aircross-pch', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
+{ name: 'PX Valuation + generic valuation page', date: null, comments: 'https://stellantisandyou.co.uk/car-valuation', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
+
+// ===== Tier 3: Enquiry - Used - phone+time is confirmed, a specific
+// registration/model with interest is WARM ENQUIRY, Cargurus/shopping
+// language is Non-Booking. =====
+{ name: 'Enquiry - Used + phone + date/time', date: null, comments: '05/08/2026, 12:00 test drive C4 X Max before discussing transfer', campaign: 'Enquiry - Used', source: 'Phone call (Inbound)', expect: 'CONFIRMED DATE & TIME' },
+{ name: 'Enquiry - Used + specific registration + requests call', date: null, comments: 'Jeep Avenger SUV WR25XYT - requests call', campaign: 'Enquiry - Used', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
+{ name: 'Enquiry - Used + Cargurus shopping language', date: null, comments: 'IMV £17,499, high price, email preferred', campaign: 'Enquiry - Used', source: 'Cargurus', expect: 'NON-BOOKING' },
+
+// ===== Tier 4: Enquiry - New from Robins & Day Website - always
+// Non-Booking by definition (a plain campaign-form completion, unlike
+// Tier 2's Customer First enquiries). =====
+{ name: 'Enquiry - New from Robins & Day (always non-booking)', date: null, comments: 'Source: Citroen e-C3 Aircross PCH Enquiry Form', campaign: 'Enquiry - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
+
+// ===== Tier 4: General/Register Interest/Brochure/Inbound - research
+// or interest capture, never a booking. =====
+{ name: 'General campaign (research/interest capture)', date: null, comments: 'Sourced from mobility scheme enquiry', campaign: 'General', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
+
+// ===== Tier 4: Cargurus, standalone (not also an Enquiry - Used
+// campaign) - still catches via the dedicated Cargurus check. =====
+{ name: 'Cargurus lead (standalone campaign)', date: null, comments: 'IMV £15,000, deal rating: fair', campaign: 'Cargurus Lead', source: 'Cargurus', expect: 'NON-BOOKING' }
 ];
 
 const failures = [];
@@ -1758,7 +2004,7 @@ return session.rows.map((row) => session.results[row.inputIndex]).filter(Boolean
 // above every requires-pickup category. Within "requires pickup", a
 // lead with expressed visit/test-drive intent is more likely to
 // convert than one that was merely answered with no real signal, so
-// BOOKING (TEST DRIVE) ranks above plain NON-BOOKING rather than
+// WARM ENQUIRY ranks above plain NON-BOOKING rather than
 // beside it.
 function bookingPriorityRank(result) {
 if (!result || result.status !== 'CLASSIFIED') return 6;
@@ -1767,7 +2013,7 @@ if (result.category === 'DATE ONLY') {
 const { comments } = parseInitialNotesFields(result.initialNotes);
 return containsAny(comments.toLowerCase(), TIME_PREFERENCE_WORDS) ? 2 : 3;
 }
-if (result.category === 'BOOKING (TEST DRIVE)') return 4;
+if (result.category === 'WARM ENQUIRY') return 4;
 if (result.category === 'NON-BOOKING') return 5;
 return 6;
 }
@@ -1852,11 +2098,11 @@ check('rank: DATE ONLY + time preference beats plain DATE ONLY',
 bookingPriorityRank({ status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: 'Customer Comments: Sunday morning please' })
 < bookingPriorityRank({ status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: 'Customer Comments: -' }),
 true);
-check('rank: DATE ONLY beats BOOKING (TEST DRIVE)',
-bookingPriorityRank({ status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: '' }) < bookingPriorityRank({ status: 'CLASSIFIED', category: 'BOOKING (TEST DRIVE)' }),
+check('rank: DATE ONLY beats WARM ENQUIRY',
+bookingPriorityRank({ status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: '' }) < bookingPriorityRank({ status: 'CLASSIFIED', category: 'WARM ENQUIRY' }),
 true);
-check('rank: BOOKING (TEST DRIVE) beats NON-BOOKING',
-bookingPriorityRank({ status: 'CLASSIFIED', category: 'BOOKING (TEST DRIVE)' }) < bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING' }),
+check('rank: WARM ENQUIRY beats NON-BOOKING',
+bookingPriorityRank({ status: 'CLASSIFIED', category: 'WARM ENQUIRY' }) < bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING' }),
 true);
 check('rank: unclassified/exception rows sink to the bottom',
 bookingPriorityRank({ status: 'EXCEPTION', category: null }) > bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING' }),
@@ -1941,7 +2187,7 @@ button.primary { background: #1e293b; color: white; border-color: #1e293b; }
 .exception { color: #dc2626; }
 .confirmed { color: #059669; font-weight: 600; }
 .dateonly { color: #d97706; }
-.pickup { color: #2563eb; }
+.warm { color: #2563eb; }
 .nonbooking { color: #64748b; }
 .hidden { display: none; }
 .footer { border-top: 1px solid #cbd5e1; padding: 8px 12px; background: white; display: flex; justify-content: flex-end; border-radius: 0 0 10px 10px; }
@@ -2080,13 +2326,13 @@ const detailsState = { tiers: new Set([1, 2, 3, 4]), customers: new Set() };
 function categoryClass(r) {
 if (!r) return '';
 if (r.exception) return 'exception';
-// BOOKING (TEST DRIVE) is NOT the same tier of value as an actual
+// WARM ENQUIRY is NOT the same tier of value as an actual
 // confirmed date/time - it requires reaching the customer live, no
 // voicemail can act on it alone - so it gets its own distinct color
 // rather than sharing "confirmed"'s green/bold styling.
 if (r.category === 'CONFIRMED DATE & TIME') return 'confirmed';
 if (r.category === 'DATE ONLY') return 'dateonly';
-if (r.category === 'BOOKING (TEST DRIVE)') return 'pickup';
+if (r.category === 'WARM ENQUIRY') return 'warm';
 if (r.category === 'NON-BOOKING') return 'nonbooking';
 return '';
 }
