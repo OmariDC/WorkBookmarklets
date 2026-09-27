@@ -565,6 +565,142 @@ hidePageFlashOverlay();
 };
 
 // ===================================================================
+// AGENT QUEUE POSITIONS - confirmed live on the same Queue by Agent
+// page Clear Queue already navigates to. Each agent has their own
+// repeated panel (li[ng-repeat="agent in fullqueue | filter:
+// filterMessages"] > objectqueuelist), holding up to 10 lead rows
+// (ul.list-group > li.queueitem.list-group-item, ng-repeat="item in
+// queueList") in queue order - DOM order top-to-bottom is queue
+// position, 1st = top. The page's own info-icon tooltip confirms only
+// the last 10 queued items per agent are ever shown, so counts/
+// positions here are scoped to that window, not necessarily the true
+// full queue for an agent holding more than 10.
+//
+// "Done" vs "not done" has NO class difference (both are exactly
+// "queueitem list-group-item ng-scope") - it's item.IsProcessed's own
+// ng-style adding an explicit inline "background-color: rgb(244, 244,
+// 244)" only when done; not-done rows carry no background-color at
+// all. Each row's customer identity lives in a title attribute shaped
+// "Name | Email | Phone" on a span inside the row's .pull-right block -
+// matched by title containing "|" rather than a fixed selector path,
+// since sibling spans (campaign, "Outbound Call Attempts") also carry
+// unrelated title attributes.
+// ===================================================================
+
+const AGENT_QUEUE_SNAPSHOT_KEY = '_slaAgentQueueSnapshot';
+
+function loadAgentQueueSnapshot() {
+try {
+const raw = JSON.parse(localStorage.getItem(AGENT_QUEUE_SNAPSHOT_KEY));
+if (raw && Array.isArray(raw.agents)) return raw;
+} catch (error) {
+// ignore
+}
+return { scannedAt: null, agents: [] };
+}
+
+function saveAgentQueueSnapshot(agents) {
+try {
+localStorage.setItem(AGENT_QUEUE_SNAPSHOT_KEY, JSON.stringify({ scannedAt: new Date().toISOString(), agents }));
+} catch (error) {
+// ignore
+}
+}
+
+function scrapeAgentQueuePositions() {
+const agentPanels = document.querySelectorAll('li[ng-repeat="agent in fullqueue | filter: filterMessages"]');
+const agents = [];
+agentPanels.forEach((panelLi) => {
+const nameEl = panelLi.querySelector('.queueitem.panel-heading div[style*="font-weight:bold"]');
+const agentName = nameEl ? nameEl.textContent.trim() : '';
+if (!agentName) return;
+
+const rows = [...panelLi.querySelectorAll('ul.list-group > li.queueitem.list-group-item')];
+const queue = rows.map((row, index) => {
+const infoSpan = [...row.querySelectorAll('span[title]')].find((el) => (el.getAttribute('title') || '').includes('|'));
+const title = infoSpan ? infoSpan.getAttribute('title') || '' : '';
+const parts = title.split('|').map((s) => s.trim());
+const processed = /background-color:\s*rgb\(244,\s*244,\s*244\)/.test(row.getAttribute('style') || '');
+return { position: index + 1, name: parts[0] || '', email: parts[1] || '', phone: parts[2] || '', processed };
+});
+
+agents.push({
+agentName,
+totalShown: queue.length,
+notDoneCount: queue.filter((item) => !item.processed).length,
+queue
+});
+});
+return agents;
+}
+
+// Navigates to Queue by Agent, scrapes every agent's queue, and comes
+// back - same navigation shape as window._clearWholeQueue. Read-only
+// (no click/action on Konnect's own data), so no confirmation needed.
+window._checkAgentQueuePositions = async function(buttonEl) {
+const originalHash = window.location.hash;
+const originatingPageType = detectPageType();
+const originalText = buttonEl ? buttonEl.textContent : null;
+if (buttonEl) buttonEl.textContent = 'Checking…';
+showPageFlashOverlay('Checking agent queues…');
+try {
+window.location.hash = '#/Queue/QueueByAgent';
+const ready = await waitForElement('li[ng-repeat="agent in fullqueue | filter: filterMessages"]', 15000);
+if (!ready) {
+alert('Could not find the Queue by Agent panels after navigating - aborted.');
+return;
+}
+const moduleOk = await ensureCustomerHubModule();
+if (!moduleOk) {
+alert('Could not confirm the Customer Hub module is selected - aborted, nothing was read.');
+return;
+}
+// Angular renders the panel shell first and fills in each agent's
+// queueList items a moment after - same "first paint isn't the full
+// picture yet" pattern seen elsewhere in this file, not assumed here
+// without seeing it, but cheap enough to wait out regardless.
+await sleep(500);
+const agents = scrapeAgentQueuePositions();
+saveAgentQueueSnapshot(agents);
+if (originatingPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers);
+else displayPanel(currentCustomers);
+} finally {
+window.location.hash = originalHash;
+hidePageFlashOverlay();
+if (buttonEl) buttonEl.textContent = originalText;
+}
+};
+
+// Matches a lead (any shape with .email/.phone) to its position in
+// whichever agent's queue it's in, from the last snapshot taken by
+// window._checkAgentQueuePositions - a point-in-time read, not live,
+// same tradeoff already accepted for the agent roster elsewhere here.
+function findAgentQueuePositionForLead(lead) {
+const snapshot = loadAgentQueueSnapshot();
+if (!snapshot.agents || snapshot.agents.length === 0) return null;
+const emailKey = normalizeEmailForBookingCheckMatch(lead.email);
+const phoneKey = normalizePhoneForBookingCheckMatch(lead.phone);
+if (!emailKey && !phoneKey) return null;
+for (const agent of snapshot.agents) {
+for (const item of agent.queue) {
+const itemEmailKey = normalizeEmailForBookingCheckMatch(item.email);
+const itemPhoneKey = normalizePhoneForBookingCheckMatch(item.phone);
+const matches = (emailKey && itemEmailKey && emailKey === itemEmailKey) || (phoneKey && itemPhoneKey && phoneKey === itemPhoneKey);
+if (matches) {
+return { agentName: agent.agentName, position: item.position, totalShown: agent.totalShown, processed: item.processed };
+}
+}
+}
+return null;
+}
+
+function ordinal(n) {
+const s = ['th', 'st', 'nd', 'rd'];
+const v = n % 100;
+return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+// ===================================================================
 // MORNING CHECKS
 //
 // A separate daily routine from lead assignment, done once at the
@@ -2475,12 +2611,25 @@ const label = canCheckAgentRoster()
 : "Can't check agents right now (no unassigned lead to read from)";
 return `<div style="font-size: 13px; color: #94a3b8;">${label}</div>`;
 }
-return agents.map(a => `
+// Not-done count comes from the last window._checkAgentQueuePositions
+// snapshot (a point-in-time read of Konnect's own Queue by Agent page,
+// scoped to the last 10 queued items per agent) - matched by name
+// since that snapshot has no agent id, only the plain name Konnect
+// itself displays there.
+const queueSnapshot = loadAgentQueueSnapshot();
+const queueByName = new Map(queueSnapshot.agents.map((q) => [normalizeAgentName(q.agentName), q]));
+return agents.map(a => {
+const queueInfo = queueByName.get(normalizeAgentName(a.name));
+const queueBadge = queueInfo
+? `<span title="${queueInfo.notDoneCount} not yet called, out of the last ${queueInfo.totalShown} queued (as of ${escapeHtml(new Date(queueSnapshot.scannedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))})" style="margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 700; background: #eef2ff; color: #4338ca;">${queueInfo.notDoneCount}</span>`
+: '';
+return `
 <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #1e293b;" ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
 <input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()">
 <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${statusDotColor(a.status)}; flex-shrink: 0;"></span>
-${escapeHtml(a.name)}
-</label>`).join('');
+${escapeHtml(a.name)}${queueBadge}
+</label>`;
+}).join('');
 }
 
 // Shared by both assign sections - a plain number input capping how many
@@ -3467,6 +3616,7 @@ ${chevronIcon(!assignOpen, 'assignSectionToggle')} ASSIGN
 <span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #4f46e5; cursor: pointer;">None</span>
 <span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('refresh', 11)} Refresh</span>
 <span onclick="window._toggleAssignHistory()" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('history', 11)} History</span>
+<span onclick="window._checkAgentQueuePositions(this)" title="Reads each agent's live call queue from Konnect's own Queue by Agent page - shows how many leads each agent hasn't called yet, and where a given lead sits in that queue" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('checklist', 11)} Queue</span>
 </span>
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
@@ -3763,7 +3913,9 @@ display: flex; justify-content: space-between; align-items: center; border-botto
 <span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + sectionId)}</span>
 </div>
 <div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
-${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px; border-bottom: 1px solid #e2e8f0;">
+${customers.map(c => {
+const queuePosition = c.assigned ? findAgentQueuePositionForLead({ email: c.email, phone: c.mobile }) : null;
+return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px; border-bottom: 1px solid #e2e8f0;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
@@ -3772,6 +3924,7 @@ ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
 <span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
 </div>
+${queuePosition ? `<div style="margin-bottom: 10px;"><span title="In ${escapeHtml(queuePosition.agentName)}'s live call queue, out of the last ${queuePosition.totalShown} shown${queuePosition.processed ? ' (already called)' : ''}" style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: #f1f5f9; color: #64748b; border: 1px solid #e2e8f0;">${ordinal(queuePosition.position)} in queue</span></div>` : ''}
 ${renderContactToggle(`
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">MOBILE</div>
@@ -3790,7 +3943,8 @@ ${renderCopyableField(c.landline)}
 <span style="color: #64748b;">${escapeHtml(c.brand || '')}</span>
 <span style="color: #059669;">${escapeHtml(c.campaign || '')}</span>
 </div>
-</div>`).join('')}
+</div>`;
+}).join('')}
 </div>
 </div>`;
 }
@@ -3823,6 +3977,7 @@ ${customers.map(c => {
 const urgency = slaUrgencyInfo(c);
 const bookingCheck = findBookingCheckResultForCustomer(c, bookingCheckResults);
 const bookingCheckTitle = bookingCheck ? [bookingCheck.reason, bookingCheck.initialNotes].filter(Boolean).join('\n\n') : '';
+const queuePosition = c.assigned ? findAgentQueuePositionForLead(c) : null;
 return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px 12px 10px; border-bottom: 1px solid #e2e8f0; ${urgency.emphasize ? `border-left: 3px solid ${urgency.color}; background: ${urgency.color}0d;` : ''}">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
@@ -3830,6 +3985,7 @@ ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
 </div>
 ${urgency.label ? `<div style="margin-bottom: 10px;"><span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${urgency.color}1a; color: ${urgency.color};">${urgency.label}</span></div>` : ''}
 ${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.category)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.category)};">${escapeHtml(bookingCheck.category)}</span></div>` : ''}
+${queuePosition ? `<div style="margin-bottom: 10px;"><span title="In ${escapeHtml(queuePosition.agentName)}'s live call queue, out of the last ${queuePosition.totalShown} shown${queuePosition.processed ? ' (already called)' : ''}" style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: #f1f5f915; color: #64748b; border: 1px solid #e2e8f0;">${ordinal(queuePosition.position)} in queue</span></div>` : ''}
 ${renderContactToggle(`
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
