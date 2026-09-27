@@ -521,6 +521,11 @@ observer.observe(trigger, { childList: true, subtree: true, characterData: true 
 // brief visible page flash.
 window._clearWholeQueue = async function() {
 const originalHash = window.location.hash;
+// Captured before navigating away, since Clear Queue is offered from
+// both the SLA and Pending Customers summaries - detectPageType()
+// would otherwise be reading Queue by Agent's own (unrecognized) page
+// by the time this matters.
+const originatingPageType = detectPageType();
 showPageFlashOverlay('Clearing the queue…');
 try {
 window.location.hash = '#/Queue/QueueByAgent';
@@ -536,22 +541,24 @@ return;
 }
 clearBtn.click();
 await sleep(800);
+// Clear Queues only unassigns every currently-assigned lead - it
+// doesn't touch any lead's underlying details (name/phone/email/
+// campaign/etc), so the fix for the panel showing stale "assigned"
+// state is updating that one field on the already-cached leads, not
+// re-running the full ingestion pipeline (runExtraction ->
+// extractAndExportSla/extractAndExportPending). That would re-open
+// every lead's detail modal again for no reason, since nothing about
+// them actually changed besides assignment - confirmed live as an
+// unwanted full re-ingestion, not the cheap refresh this needs.
+if (originatingPageType === PAGE_PENDING) {
+currentPendingCustomers = currentPendingCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
+displayPendingPanel(currentPendingCustomers);
+} else {
+currentCustomers = currentCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
+displayPanel(currentCustomers);
+}
 } finally {
 window.location.hash = originalHash;
-// The auto-detect poll only re-scans on an actual page-TYPE change,
-// and Queue by Agent isn't a recognized type (detectPageType()
-// returns null there), so its own tracking never registers this
-// as a change - landing back on the same page type it already
-// thought it was on. Without an explicit re-scan here, the panel
-// would keep showing the pre-clear "assigned" state until the
-// badge happened to be clicked again for an unrelated reason.
-await waitForElement('table');
-// Awaited (runExtraction now returns the underlying extraction
-// promise) so the overlay stays up through re-ingestion instead of
-// dropping right as the newly-cleared leads' detail modals start
-// popping open/closed - extractAndExportSla manages its own overlay
-// for that part, but only if this hasn't already cleared it first.
-await runExtraction();
 hidePageFlashOverlay();
 }
 };
