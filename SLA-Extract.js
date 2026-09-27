@@ -145,6 +145,7 @@ let refreshingLeads = false;
 // Drives renderMorningChecksBody(); empty means "hasn't been run yet".
 let morningChecksResults = [];
 const MORNING_CHECKS_ORDER = [
+{ key: 'emailOnly', label: 'Email Only Count' },
 { key: 'sla', label: 'SLA Count' },
 { key: 'inProgress', label: 'In Progress' },
 { key: 'leadType', label: 'Lead Type Check' },
@@ -1043,7 +1044,13 @@ await sleep(300);
 if (detectPageType() !== PAGE_SLA) {
 return { ok: null, summary: 'Could not find the SLA queue table - aborted.' };
 }
-return { ok: null, summary: `${collectAssignableLeads().length}` };
+// isEmailOnly is already computed per-lead by collectAssignableLeads
+// (same field the Assign section's own "Email only" checkbox count
+// uses) - the Email Only Count row above this one is populated from
+// this same call rather than running its own separate check.
+const leads = collectAssignableLeads();
+const emailOnlyCount = leads.filter(l => l.isEmailOnly).length;
+return { ok: null, summary: `${leads.length}`, emailOnlyCount };
 };
 
 // Persisted (not just in-memory) so "last run" survives a bookmarklet
@@ -1260,9 +1267,11 @@ displayMorningChecks();
 // comment on window._checkRoutedTo).
 const MORNING_CHECKS_EXECUTION_ORDER = ['sla', 'routedTo', 'leadType', 'inProgress', 'voicemail'];
 
-// Runs the five checks (see MORNING_CHECKS_EXECUTION_ORDER for why that
-// order, not the display order, is used to actually run them), updating
-// the page after each one completes so results appear progressively
+// Runs the five real checks (see MORNING_CHECKS_EXECUTION_ORDER for why
+// that order, not the display order, is used to actually run them) -
+// Email Only Count is a sixth displayed row but has no check function
+// of its own, populated as a side effect of "sla" instead (see below).
+// Updates the page after each check completes so results appear progressively
 // rather than all at once at the end. Each check function saves/
 // restores its own hash internally, but skipRestore=true is passed here
 // so a check leaves the browser wherever it landed instead of bouncing
@@ -1304,6 +1313,16 @@ result = { ok: null, summary: `Error - ${err && err.message ? err.message : err}
 }
 
 morningChecksResults = morningChecksResults.map(r => r.key === key ? { ...r, status: 'done', ...result } : r);
+// Email Only Count has no check function of its own (see
+// MORNING_CHECKS_EXECUTION_ORDER, which doesn't list it) - it's
+// populated here as a side effect of the SLA check, which already
+// collects every lead's isEmailOnly flag while it's on the page.
+// Always settled alongside "sla" (even on failure, when
+// emailOnlyCount is absent) so it never dangles in "Waiting" forever.
+if (key === 'sla') {
+const emailSummary = typeof result.emailOnlyCount === 'number' ? `${result.emailOnlyCount}` : 'Could not be determined (SLA check failed).';
+morningChecksResults = morningChecksResults.map(r => r.key === 'emailOnly' ? { ...r, status: 'done', ok: null, summary: emailSummary } : r);
+}
 displayMorningChecks();
 }
 } finally {
