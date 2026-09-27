@@ -700,6 +700,25 @@ const v = n % 100;
 return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
+// Reused as-is for the normal case (assigned here, and genuinely
+// queued) and the mismatch case (shows unassigned here, but Konnect's
+// own Queue by Agent already has it queued to someone) - same badge
+// slot on the card either way, just recolored/reworded, rather than
+// adding a second element for the mismatch. Per instruction: don't
+// clutter the UI with an extra warning section just for this.
+function renderQueuePositionBadge(assigned, queuePosition) {
+if (!queuePosition) return '';
+const mismatch = !assigned;
+const label = mismatch ? `⚠ Already in ${escapeHtml(queuePosition.agentName)}'s queue` : `${ordinal(queuePosition.position)} in queue`;
+const title = mismatch
+? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${escapeHtml(queuePosition.agentName)} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.`
+: `In ${escapeHtml(queuePosition.agentName)}'s live call queue, out of the last ${queuePosition.totalShown} shown${queuePosition.processed ? ' (already called)' : ''}`;
+const color = mismatch ? '#dc2626' : '#64748b';
+const background = mismatch ? '#dc262615' : '#f1f5f915';
+const border = mismatch ? '#dc2626' : '#e2e8f0';
+return `<div style="margin-bottom: 10px;"><span title="${title}" style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${background}; color: ${color}; border: 1px solid ${border};">${label}</span></div>`;
+}
+
 // ===================================================================
 // MORNING CHECKS
 //
@@ -3914,7 +3933,7 @@ display: flex; justify-content: space-between; align-items: center; border-botto
 </div>
 <div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
 ${customers.map(c => {
-const queuePosition = c.assigned ? findAgentQueuePositionForLead({ email: c.email, phone: c.mobile }) : null;
+const queuePosition = findAgentQueuePositionForLead({ email: c.email, phone: c.mobile });
 return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px; border-bottom: 1px solid #e2e8f0;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
@@ -3924,7 +3943,7 @@ ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
 <span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
 </div>
-${queuePosition ? `<div style="margin-bottom: 10px;"><span title="In ${escapeHtml(queuePosition.agentName)}'s live call queue, out of the last ${queuePosition.totalShown} shown${queuePosition.processed ? ' (already called)' : ''}" style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: #f1f5f9; color: #64748b; border: 1px solid #e2e8f0;">${ordinal(queuePosition.position)} in queue</span></div>` : ''}
+${renderQueuePositionBadge(c.assigned, queuePosition)}
 ${renderContactToggle(`
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">MOBILE</div>
@@ -3977,7 +3996,7 @@ ${customers.map(c => {
 const urgency = slaUrgencyInfo(c);
 const bookingCheck = findBookingCheckResultForCustomer(c, bookingCheckResults);
 const bookingCheckTitle = bookingCheck ? [bookingCheck.reason, bookingCheck.initialNotes].filter(Boolean).join('\n\n') : '';
-const queuePosition = c.assigned ? findAgentQueuePositionForLead(c) : null;
+const queuePosition = findAgentQueuePositionForLead(c);
 return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px 12px 10px; border-bottom: 1px solid #e2e8f0; ${urgency.emphasize ? `border-left: 3px solid ${urgency.color}; background: ${urgency.color}0d;` : ''}">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
@@ -3985,7 +4004,7 @@ ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
 </div>
 ${urgency.label ? `<div style="margin-bottom: 10px;"><span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${urgency.color}1a; color: ${urgency.color};">${urgency.label}</span></div>` : ''}
 ${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.category)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.category)};">${escapeHtml(bookingCheck.category)}</span></div>` : ''}
-${queuePosition ? `<div style="margin-bottom: 10px;"><span title="In ${escapeHtml(queuePosition.agentName)}'s live call queue, out of the last ${queuePosition.totalShown} shown${queuePosition.processed ? ' (already called)' : ''}" style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: #f1f5f915; color: #64748b; border: 1px solid #e2e8f0;">${ordinal(queuePosition.position)} in queue</span></div>` : ''}
+${renderQueuePositionBadge(c.assigned, queuePosition)}
 ${renderContactToggle(`
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
