@@ -650,26 +650,25 @@ queue
 return agents;
 }
 
-// Navigates to Queue by Agent, scrapes every agent's queue, and comes
-// back - same navigation shape as window._clearWholeQueue. Read-only
-// (no click/action on Konnect's own data), so no confirmation needed.
-window._checkAgentQueuePositions = async function(buttonEl) {
+// Navigates to Queue by Agent, scrapes every agent's queue, saves the
+// snapshot, and comes back - same navigation shape as
+// window._clearWholeQueue. Shared by the manual "Queue" link and the
+// automatic post-assign re-scan below, so the navigation logic only
+// exists once. Returns true/false rather than throwing, since a failed
+// refresh shouldn't abort whatever the caller was already doing.
+async function refreshAgentQueueSnapshot() {
 const originalHash = window.location.hash;
-const originatingPageType = detectPageType();
-const originalText = buttonEl ? buttonEl.textContent : null;
-if (buttonEl) buttonEl.textContent = 'Checking…';
-showPageFlashOverlay('Checking agent queues…');
 try {
 window.location.hash = '#/Queue/QueueByAgent';
 const ready = await waitForElement('li[ng-repeat="agent in fullqueue | filter: filterMessages"]', 15000);
 if (!ready) {
-alert('Could not find the Queue by Agent panels after navigating - aborted.');
-return;
+console.warn('[SLA Extract] Could not find the Queue by Agent panels after navigating - queue snapshot not refreshed.');
+return false;
 }
 const moduleOk = await ensureCustomerHubModule();
 if (!moduleOk) {
-alert('Could not confirm the Customer Hub module is selected - aborted, nothing was read.');
-return;
+console.warn('[SLA Extract] Could not confirm the Customer Hub module is selected - queue snapshot not refreshed.');
+return false;
 }
 // Angular renders the panel shell first and fills in each agent's
 // queueList items a moment after - same "first paint isn't the full
@@ -685,10 +684,23 @@ agent: a.agentName, notDone: a.notDoneCount, totalShown: a.totalShown,
 sample: a.queue.slice(0, 3).map((q) => ({ position: q.position, name: q.name, email: q.email, phone: q.phone, processed: q.processed }))
 })));
 saveAgentQueueSnapshot(agents);
+return true;
+} finally {
+window.location.hash = originalHash;
+}
+}
+
+window._checkAgentQueuePositions = async function(buttonEl) {
+const originatingPageType = detectPageType();
+const originalText = buttonEl ? buttonEl.textContent : null;
+if (buttonEl) buttonEl.textContent = 'Checking…';
+showPageFlashOverlay('Checking agent queues…');
+try {
+const ok = await refreshAgentQueueSnapshot();
+if (!ok) alert('Could not check agent queues - see console for details.');
 if (originatingPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers);
 else displayPanel(currentCustomers);
 } finally {
-window.location.hash = originalHash;
 hidePageFlashOverlay();
 if (buttonEl) buttonEl.textContent = originalText;
 }
@@ -4819,9 +4831,15 @@ console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
 if (succeeded > 0) {
 // The newly-assigned leads' real queue position is now something
 // different from whatever the last scan found (or unknown, if there
-// never was one) - clearing here rather than re-scanning Queue by
-// Agent avoids a second full navigation right after every assign run.
-clearAgentQueueSnapshot();
+// never was one) - per instruction, auto re-scan Queue by Agent so
+// the badges reflect reality immediately, accepting the extra
+// navigation this adds to every successful assign run.
+showPageFlashOverlay('Checking agent queues…');
+try {
+await refreshAgentQueueSnapshot();
+} finally {
+hidePageFlashOverlay();
+}
 const successByKey = new Map(results.filter(r => r.ok).map(r => [r.lead.key, r.agent.name]));
 if (pageType === PAGE_PENDING) {
 currentPendingCustomers = currentPendingCustomers.map((c) => successByKey.has(c.key) ? { ...c, assigned: true, agentName: successByKey.get(c.key) } : c);
