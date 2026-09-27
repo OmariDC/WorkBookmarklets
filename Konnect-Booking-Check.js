@@ -219,8 +219,12 @@ const ENQUIRY_USED_SHOPPING_WORDS = ['imv', 'deal rating', 'email preferred', 'c
 // campaign's own dropdown/field structure, so a time preference is
 // enough to call it confirmed.
 function classifyTestDriveRequestTier(hasDateField, comments, lower) {
-if (containsAny(lower, OVERRIDE_KEYWORDS)) {
-return { category: 'NON-BOOKING', reason: 'Test Drive Request lead, but comments mention finance/business/technical-support wording, which overrides to Non-Booking.', confidence: 'high' };
+// Finance/business/technical wording only overrides to Non-Booking
+// when there's NO genuine visit-intent wording alongside it - per
+// instruction, a lead that also shows real interest in coming in
+// shouldn't be suppressed just because it mentions a quote too.
+if (containsAny(lower, OVERRIDE_KEYWORDS) && !containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
+return { category: 'NON-BOOKING', reason: 'Test Drive Request lead, but comments mention finance/business/technical-support wording with no visit-intent wording alongside it, which overrides to Non-Booking.', confidence: 'high' };
 }
 if (hasDateField) {
 if (isBlankComments(comments)) {
@@ -243,10 +247,14 @@ return { category: 'NON-BOOKING', reason: 'Test Drive Request lead with no date 
 // relative-date-in-comments detection all still apply exactly as
 // before).
 function classifyEnquiryNewCustomerFirstTier(hasDateField, comments, lower) {
-if (containsAny(lower, OVERRIDE_KEYWORDS)) {
+// Finance/business/technical wording only overrides to Non-Booking
+// when there's NO genuine visit-intent wording alongside it - per
+// instruction, a lead that also shows real interest in coming in
+// shouldn't be suppressed just because it mentions a quote too.
+if (containsAny(lower, OVERRIDE_KEYWORDS) && !containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
 return {
 category: 'NON-BOOKING',
-reason: 'Comments mention finance/business/technical-support wording, which overrides to Non-Booking regardless of any date field.',
+reason: 'Comments mention finance/business/technical-support wording with no visit-intent wording alongside it, which overrides to Non-Booking regardless of any date field.',
 confidence: 'high'
 };
 }
@@ -329,8 +337,10 @@ return { category: 'NON-BOOKING', reason: 'Motability lead: no explicit booking/
 // the same "genuine answer showing visit intent" wording every other
 // tier uses, not merely having looked at one particular model's page.
 function classifyPxValuationTier(comments, lower) {
-if (containsAny(lower, OVERRIDE_KEYWORDS)) {
-return { category: 'NON-BOOKING', reason: 'PX Valuation lead, but comments mention finance/business/technical-support wording, which overrides to Non-Booking.', confidence: 'high' };
+// Finance/business/technical wording only overrides to Non-Booking
+// when there's NO genuine visit-intent wording alongside it.
+if (containsAny(lower, OVERRIDE_KEYWORDS) && !containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
+return { category: 'NON-BOOKING', reason: 'PX Valuation lead, but comments mention finance/business/technical-support wording with no visit-intent wording alongside it, which overrides to Non-Booking.', confidence: 'high' };
 }
 if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
 return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead with a genuine answer showing dealership-visit intent.', confidence: 'medium' };
@@ -1537,7 +1547,11 @@ const cases = [
 // gate.
 { name: 'Test Drive Request campaign, no date, answered', date: null, comments: 'Would like to test drive the new C4 this weekend', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'WARM ENQUIRY' },
 { name: 'Test Drive Request campaign, blank comments', date: null, comments: '-', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' },
-{ name: 'Test Drive Request campaign, finance override', date: null, comments: 'Can I get a PCH quote as well as a test drive', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' },
+{ name: 'Test Drive Request campaign, finance wording alone (override)', date: null, comments: 'Can I get a PCH quote please', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' },
+// Per instruction: finance wording does NOT override to Non-Booking
+// when genuine visit-intent wording is also present - the visit intent
+// wins.
+{ name: 'Test Drive Request campaign, finance wording + visit intent (visit intent wins)', date: null, comments: 'Can I get a PCH quote as well as a test drive', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'WARM ENQUIRY' },
 // Stephen Dracup's REAL lead: Campaign is genuinely "Citroen - Enquiry
 // - New" / Customer First (in Tier 2, not a Test Drive Request
 // campaign at all) - isTestDriveRequestCampaign() never applies here.
@@ -1546,6 +1560,9 @@ const cases = [
 // bail before ever looking at the comments. This is the case that
 // exposed that gap.
 { name: 'Stephen Dracup (real: Enquiry - New, no date, mentions test drive)', date: null, comments: 'Would like to book a test drive when convenient', campaign: 'Citroen - Enquiry - New', source: 'Customer First', expect: 'WARM ENQUIRY' },
+// Per instruction: finance/business/technical wording does NOT override
+// to Non-Booking when genuine visit-intent wording is also present.
+{ name: 'Enquiry - New: finance wording + visit intent (visit intent wins)', date: null, comments: 'Could I get a finance quote, and also come in to view the car', campaign: 'Citroen - Enquiry - New', source: 'Customer First', expect: 'WARM ENQUIRY' },
 // Relative-date-in-comments ("classified the date way"): no structured
 // date field, but the comments name a specific day/relative date -
 // still voicemail-actionable, same DATE ONLY tier as a real date field
