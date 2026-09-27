@@ -620,10 +620,10 @@ if (cleared) {
 await waitForLeadsTableReady();
 if (originatingPageType === PAGE_PENDING) {
 currentPendingCustomers = currentPendingCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
-displayPendingPanel(currentPendingCustomers);
+displayPendingPanel(currentPendingCustomers, 0, 0, false);
 } else {
 currentCustomers = currentCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
-displayPanel(currentCustomers);
+displayPanel(currentCustomers, 0, 0, false);
 }
 }
 hidePageFlashOverlay();
@@ -775,8 +775,8 @@ if (!ok) alert('Could not check agent queues - see console for details.');
 // here; this path went straight through displayPanel/displayPendingPanel
 // and never did.
 await waitForLeadsTableReady();
-if (originatingPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers);
-else displayPanel(currentCustomers);
+if (originatingPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, 0, 0, false);
+else displayPanel(currentCustomers, 0, 0, false);
 } finally {
 hidePageFlashOverlay();
 if (buttonEl) buttonEl.textContent = originalText;
@@ -4275,11 +4275,23 @@ window._manualAssignLead(el.dataset.pageType, el.dataset.leadKey, el.value, el);
 initAssignSectionWheels();
 }
 
-function displayPanel(customers, newCount = 0, removedCount = 0) {
+// invalidateCache defaults to true (every existing caller relies on
+// this forcing a fresh collectAssignableLeads() scrape when genuinely
+// new table data just landed) - but the queue-position-only re-renders
+// (handleBadgeClick's second render, the post-assign auto re-scan,
+// _checkAgentQueuePositions, _clearWholeQueue) pass false, since none
+// of them changed what's actually in the SLA/Pending table - only the
+// Queue by Agent badges - and forcing a fresh live-DOM scrape right
+// after navigating away and back to get those badges was exactly the
+// race that kept reading the table before Angular had repopulated it
+// (a wait alone couldn't fully close this - reusing the already-correct
+// cache/currentCustomers instead avoids touching the live DOM at all
+// for this render).
+function displayPanel(customers, newCount = 0, removedCount = 0, invalidateCache = true) {
 currentCustomers = customers;
 currentPageType = PAGE_SLA;
 currentPanelMode = 'normal';
-invalidateLeadsCache();
+if (invalidateCache) invalidateLeadsCache();
 const tiered = {
 tier1: sortByUrgency(customers.filter(c => c.tier === 1)),
 tier2: sortByUrgency(customers.filter(c => c.tier === 2)),
@@ -4313,11 +4325,12 @@ showBookingCheckImport: true
 }));
 }
 
-function displayPendingPanel(customers, newCount = 0, removedCount = 0) {
+// See displayPanel's own comment on invalidateCache - same reasoning.
+function displayPendingPanel(customers, newCount = 0, removedCount = 0, invalidateCache = true) {
 currentPendingCustomers = customers;
 currentPageType = PAGE_PENDING;
 currentPanelMode = 'normal';
-invalidateLeadsCache();
+if (invalidateCache) invalidateLeadsCache();
 
 const grouped = CALLBACK_TYPE_ORDER.map(type => ({
 type,
@@ -4573,8 +4586,8 @@ await waitForLeadsTableReady();
 } finally {
 hidePageFlashOverlay();
 }
-if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers);
-else displayPanel(currentCustomers);
+if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, 0, 0, false);
+else displayPanel(currentCustomers, 0, 0, false);
 }
 
 function attachBadgeHoverEffects() {
@@ -4974,10 +4987,10 @@ hidePageFlashOverlay();
 const successByKey = new Map(results.filter(r => r.ok).map(r => [r.lead.key, r.agent.name]));
 if (pageType === PAGE_PENDING) {
 currentPendingCustomers = currentPendingCustomers.map((c) => successByKey.has(c.key) ? { ...c, assigned: true, agentName: successByKey.get(c.key) } : c);
-displayPendingPanel(currentPendingCustomers);
+displayPendingPanel(currentPendingCustomers, 0, 0, false);
 } else {
 currentCustomers = currentCustomers.map((c) => successByKey.has(c.key) ? { ...c, assigned: true, agentName: successByKey.get(c.key) } : c);
-displayPanel(currentCustomers);
+displayPanel(currentCustomers, 0, 0, false);
 }
 }
 renderAssignResultsSummary(results);
