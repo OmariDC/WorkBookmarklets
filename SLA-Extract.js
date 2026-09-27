@@ -661,6 +661,13 @@ return;
 // without seeing it, but cheap enough to wait out regardless.
 await sleep(500);
 const agents = scrapeAgentQueuePositions();
+// No visible confirmation this scrape actually found anything real -
+// logged so a "why isn't the badge showing" report can be diagnosed
+// from what was actually seen, not guessed at.
+console.info(`[SLA Extract] Queue by Agent scan: ${agents.length} agent panel(s) found`, agents.map((a) => ({
+agent: a.agentName, notDone: a.notDoneCount, totalShown: a.totalShown,
+sample: a.queue.slice(0, 3).map((q) => ({ position: q.position, name: q.name, email: q.email, phone: q.phone, processed: q.processed }))
+})));
 saveAgentQueueSnapshot(agents);
 if (originatingPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers);
 else displayPanel(currentCustomers);
