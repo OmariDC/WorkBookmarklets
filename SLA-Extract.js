@@ -2664,6 +2664,16 @@ return normalizedCampaign.endsWith('enquiry - new') && normalizedSource === 'cus
 // more real Test Drive Request leads are seen.
 const TEST_DRIVE_INTENT_KEYWORDS = ['test drive', 'drive', 'look at', 'view', 'see the car', 'come in', 'visit', 'pop in'];
 
+// Genuine expressed interest in a vehicle that stops short of visit
+// intent (no "test drive"/"come in"/etc) - real example: "Hi I would
+// potentially be interested in this vehicle, and trading in my..."
+// Per instruction, this stays NON-BOOKING (no date, no visit intent -
+// still requires a live call to get anywhere), but is more contactable
+// than a blank/generic answer, so it ranks higher within NON-BOOKING
+// (see bookingPriorityRank) rather than becoming its own category.
+// First-pass phrase, not an exhaustive confirmed set.
+const POTENTIAL_INTEREST_PHRASES = ['potentially be interested in', 'potentially interested in'];
+
 // Deliberately a loose substring check, not the strict brand-prefix
 // suffix match isInScope() uses for Enquiry-New - per instruction, this
 // tier will also be sent leads whose Source isn't "Customer First" and
@@ -2876,6 +2886,9 @@ return { category: 'NON-BOOKING', reason: 'PX Valuation lead, but comments menti
 if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
 return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead with a genuine answer showing dealership-visit intent.', confidence: 'medium' };
 }
+if (containsAny(lower, POTENTIAL_INTEREST_PHRASES)) {
+return { category: 'NON-BOOKING', reason: 'PX Valuation lead: comments express genuine interest in a vehicle, but no visit intent - still Non-Booking, but more contactable than a generic page visit.', confidence: 'medium' };
+}
 return { category: 'NON-BOOKING', reason: 'PX Valuation lead: a specific vehicle page visit alone is tracked behavior, not something the customer said - not a real warm signal.', confidence: 'medium' };
 }
 
@@ -3001,15 +3014,21 @@ confidence: 'low'
 // convert than one that was merely answered with no real signal, so
 // WARM ENQUIRY ranks above plain NON-BOOKING rather than beside it.
 function bookingPriorityRank(result) {
-if (!result || result.status !== 'CLASSIFIED') return 6;
+if (!result || result.status !== 'CLASSIFIED') return 7;
 if (result.category === 'CONFIRMED DATE & TIME') return 1;
 if (result.category === 'DATE ONLY') {
 const { comments } = parseInitialNotesFields(result.initialNotes);
 return containsAny(comments.toLowerCase(), TIME_PREFERENCE_WORDS) ? 2 : 3;
 }
 if (result.category === 'WARM ENQUIRY') return 4;
-if (result.category === 'NON-BOOKING') return 5;
-return 6;
+if (result.category === 'NON-BOOKING') {
+// A genuine "potentially interested in..." answer, though not visit
+// intent, is still more contactable than a blank/generic one - ranks
+// above plain NON-BOOKING without becoming its own category.
+const { comments } = parseInitialNotesFields(result.initialNotes);
+return containsAny(comments.toLowerCase(), POTENTIAL_INTEREST_PHRASES) ? 5 : 6;
+}
+return 7;
 }
 
 // Scope for the "Copy for Booking Check" export (feeds a separate,
