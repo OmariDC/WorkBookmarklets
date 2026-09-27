@@ -100,8 +100,15 @@ return needles.some((n) => haystackLower.includes(n));
 // real rules are deliberately deferred until this scope is confirmed
 // working.
 function isInScope(campaign, source) {
-return String(campaign || '').trim().toLowerCase() === 'enquiry - new'
-&& String(source || '').trim().toLowerCase() === 'customer first';
+// Real SLA export campaign values are always brand-prefixed
+// ("Citroen - Enquiry - New", "Alfa Romeo - Enquiry - New", etc.) -
+// confirmed live across every real Customer First lead tested. An
+// exact-equality check against the bare "enquiry - new" never matches
+// any real row, so match the campaign *category* by its trailing
+// segment instead.
+const normalizedCampaign = String(campaign || '').trim().toLowerCase().replace(/\s+/g, ' ');
+const normalizedSource = String(source || '').trim().toLowerCase();
+return normalizedCampaign.endsWith('enquiry - new') && normalizedSource === 'customer first';
 }
 
 function classifyInitialNotes(initialNotes, { campaign, source } = {}) {
@@ -1214,12 +1221,18 @@ const cases = [
 { name: 'LEAD 102', date: null, comments: '-', expect: 'NON-BOOKING' },
 { name: 'LEAD 109', date: null, comments: 'Could I please get 2 PCH (leasing) quotes - Citroen eC3 Aircross (Electric) Max Standard Range 44kWh', expect: 'NON-BOOKING' },
 { name: 'LEAD 114', date: null, comments: 'Finance on this Vehicle', expect: 'NON-BOOKING' },
-{ name: 'LEAD 117', date: null, comments: "I'm interested in your 0% purchase offer for the e-C3. Please send details and your best purchase price", expect: 'NON-BOOKING' }
+{ name: 'LEAD 117', date: null, comments: "I'm interested in your 0% purchase offer for the e-C3. Please send details and your best purchase price", expect: 'NON-BOOKING' },
+// Real SLA export campaigns are always brand-prefixed (e.g. "Citroen -
+// Enquiry - New") rather than the bare "Enquiry - New" - confirmed
+// live via Oscar Scully's row, which was wrongly falling into
+// NON-BOOKING/"Outside current scope" before isInScope() was fixed to
+// match on the trailing campaign segment instead of exact equality.
+{ name: 'Oscar Scully (brand-prefixed campaign)', date: '29/09/2026', comments: '-', campaign: 'Citroen - Enquiry - New', expect: 'DATE ONLY' }
 ];
 
 const failures = [];
 cases.forEach((c) => {
-const result = classifyInitialNotes(notesFor(c.date, c.comments), { campaign: CAMPAIGN, source: SOURCE });
+const result = classifyInitialNotes(notesFor(c.date, c.comments), { campaign: c.campaign || CAMPAIGN, source: SOURCE });
 if (result.category !== c.expect) {
 failures.push(`${c.name}: expected ${c.expect}, got ${result.category} (${result.reason})`);
 }
