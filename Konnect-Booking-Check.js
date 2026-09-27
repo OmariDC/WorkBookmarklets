@@ -210,12 +210,6 @@ return c.includes('cargurus') || s.includes('cargurus');
 
 const MOTABILITY_BOOKING_WORDS = ['priority', 'booked', 'confirmation needed'];
 
-// UK number plate shape (e.g. "WR25XYT") - confirms a specific vehicle
-// is being discussed for Enquiry - Used's WARM tier.
-const UK_REG_PLATE_PATTERN = /\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/i;
-
-const ENQUIRY_USED_WARM_PHRASES = ['requests call', 'wants to view', 'interested in', 'asking about', 'technical questions'];
-
 const ENQUIRY_USED_SHOPPING_WORDS = ['imv', 'deal rating', 'email preferred', 'call preferred', 'text preferred', 'delivery cost'];
 
 // Tier 1: Test Drive Request - New/Used. Per the framework, time-of-day
@@ -352,11 +346,15 @@ return { category: 'CONFIRMED DATE & TIME', reason: 'Enquiry - Used lead: phone 
 if (containsAny(lower, ENQUIRY_USED_SHOPPING_WORDS) || sourceLower.includes('cargurus')) {
 return { category: 'NON-BOOKING', reason: 'Enquiry - Used lead: comments show price-comparison/shopping language (IMV, deal rating, etc), not booking intent.', confidence: 'high' };
 }
-// Same WARM ENQUIRY shape as PX Valuation above.
-if (UK_REG_PLATE_PATTERN.test(comments) || containsAny(lower, ENQUIRY_USED_WARM_PHRASES)) {
-return { category: 'WARM ENQUIRY', reason: 'Enquiry - Used lead: comments reference a specific vehicle/registration with interest, but no date confirmed - worth calling on.', confidence: 'medium' };
+// A registration/model mention or a vague phrase like "requests call"
+// isn't enough on its own - per instruction, that doesn't actually
+// show they want to visit, same as PX Valuation's page-visit-alone
+// issue. WARM ENQUIRY requires the same genuine visit-intent wording
+// every other tier uses.
+if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
+return { category: 'WARM ENQUIRY', reason: 'Enquiry - Used lead with a genuine answer showing dealership-visit intent, but no date confirmed - worth calling on.', confidence: 'medium' };
 }
-return { category: 'NON-BOOKING', reason: 'Enquiry - Used lead: no specific vehicle interest or booking language identified.', confidence: 'medium' };
+return { category: 'NON-BOOKING', reason: 'Enquiry - Used lead: no genuine visit-intent wording identified.', confidence: 'medium' };
 }
 
 function classifyInitialNotes(initialNotes, { campaign, source } = {}) {
@@ -1598,11 +1596,13 @@ const cases = [
 { name: 'PX Valuation + generic valuation page', date: null, comments: 'https://stellantisandyou.co.uk/car-valuation', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
 { name: 'PX Valuation + genuine visit-intent wording (warm)', date: null, comments: 'Would like to come in and view the C5 Aircross in person', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
 
-// ===== Tier 3: Enquiry - Used - phone+time is confirmed, a specific
-// registration/model with interest is WARM ENQUIRY, Cargurus/shopping
-// language is Non-Booking. =====
+// ===== Tier 3: Enquiry - Used - phone+time is confirmed. A vague
+// phrase like "requests call" is NOT enough for WARM ENQUIRY on its
+// own (doesn't actually show visit intent); genuine visit-intent
+// wording does. Cargurus/shopping language is Non-Booking. =====
 { name: 'Enquiry - Used + phone + date/time', date: null, comments: '05/08/2026, 12:00 test drive C4 X Max before discussing transfer', campaign: 'Enquiry - Used', source: 'Phone call (Inbound)', expect: 'CONFIRMED DATE & TIME' },
-{ name: 'Enquiry - Used + specific registration + requests call', date: null, comments: 'Jeep Avenger SUV WR25XYT - requests call', campaign: 'Enquiry - Used', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
+{ name: 'Enquiry - Used + registration + "requests call" alone (not warm)', date: null, comments: 'Jeep Avenger SUV WR25XYT - requests call', campaign: 'Enquiry - Used', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
+{ name: 'Enquiry - Used + genuine visit-intent wording (warm)', date: null, comments: 'Jeep Avenger SUV WR25XYT - wants to come and view it', campaign: 'Enquiry - Used', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
 { name: 'Enquiry - Used + Cargurus shopping language', date: null, comments: 'IMV £17,499, high price, email preferred', campaign: 'Enquiry - Used', source: 'Cargurus', expect: 'NON-BOOKING' },
 
 // ===== Tier 4: Enquiry - New from Robins & Day Website - always
