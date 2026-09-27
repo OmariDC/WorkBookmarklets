@@ -2039,18 +2039,6 @@ const lines = orderedResults(session).map((r) => [r.name, r.phone, r.email, r.ca
 return [header, ...lines].join('\n');
 }
 
-// Sorted by bookingPriorityRank (voicemail-actionable ahead of
-// requires-pickup, ranked by likelihood within each) rather than a
-// flat category order - Array.prototype.sort is stable, so rows within
-// the same rank keep their original input order.
-function buildPrioritisedCopyText(session) {
-const rows = orderedResults(session);
-const ordered = [...rows].sort((a, b) => bookingPriorityRank(a) - bookingPriorityRank(b));
-const header = ['Name', 'Phone', 'Email', 'Booking classification'].join('\t');
-const lines = ordered.map((r) => [r.name, r.phone, r.email, r.category || r.exception || 'PENDING'].join('\t'));
-return [header, ...lines].join('\n');
-}
-
 // Feeds the reverse handoff into SLA-Extract.js: for large batches,
 // classification runs there instead (right next to the assign-
 // criteria/tier features), using its own ported copy of this same
@@ -2066,29 +2054,13 @@ r.name, r.phone, r.email, r.source, r.campaign, r.created,
 return [header.join('\t'), ...lines].join('\n');
 }
 
-function buildFullAuditTsv(session) {
-const header = ['InputIndex', 'Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'MatchMethod', 'TimelineTimestamp', 'VisibleLeadId', 'ModalDate', 'SourceValidation', 'CampaignValidation', 'InitialNotes', 'Category', 'Reason', 'Confidence', 'Status', 'Exception', 'Warnings', 'ProcessingTimestamp'];
-const lines = orderedResults(session).map((r) => [
-r.inputIndex, r.name, r.phone, r.email, r.source, r.campaign, r.created,
-r.customerMatchMethod || '', r.timelineTimestamp || '', r.visibleLeadId || '',
-r.modalDate || '', r.sourceValidation || '', JSON.stringify(r.campaignValidation || ''),
-(r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
-r.category || '', r.reason || '', r.confidence || '', r.status, r.exception || '',
-(r.warnings || []).join(' | ').replace(/\t/g, ' ').replace(/\r?\n/g, ' '),
-r.processingTimestamp || ''
-].join('\t'));
-return [header.join('\t'), ...lines].join('\n');
-}
-
 window.KonnectBookingCheck.buildProcessingGroups = buildProcessingGroups;
 window.KonnectBookingCheck.newSession = newSession;
 window.KonnectBookingCheck.stepOnce = stepOnce;
 window.KonnectBookingCheck.runLoop = runLoop;
 window.KonnectBookingCheck.orderedResults = orderedResults;
 window.KonnectBookingCheck.buildDefaultCopyText = buildDefaultCopyText;
-window.KonnectBookingCheck.buildPrioritisedCopyText = buildPrioritisedCopyText;
 window.KonnectBookingCheck.bookingPriorityRank = bookingPriorityRank;
-window.KonnectBookingCheck.buildFullAuditTsv = buildFullAuditTsv;
 window.KonnectBookingCheck.buildRawNotesTsvForExtract = buildRawNotesTsvForExtract;
 
 (function orchestrationSelfTest() {
@@ -2118,8 +2090,6 @@ results: {
 2: { name: 'Bob', phone: '07000000000', email: '', category: 'NON-BOOKING', status: 'CLASSIFIED' }
 }
 };
-const prioritised = buildPrioritisedCopyText(fakeSession).split('\n').slice(1);
-check('prioritised order: confirmed, date-only, non-booking', prioritised.map((line) => line.split('\t')[0]), ['Alice Again', 'Alice', 'Bob']);
 
 // Full 5-tier rank per instruction: voicemail-actionable (confirmed >
 // date+time-preference > plain date-only) always outranks
@@ -2150,7 +2120,7 @@ check('raw Extract export header shape', rawExtractTsv.split('\n')[0], 'Name\tPh
 if (failures.length > 0) {
 console.error('KonnectBookingCheck orchestration self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck orchestration self-test passed (9/9)');
+console.info('KonnectBookingCheck orchestration self-test passed (8/8)');
 }
 })();
 
@@ -2209,10 +2179,10 @@ document.documentElement.appendChild(host);
 const root = host.attachShadow({ mode: 'open' });
 root.innerHTML = `
 <style>
-.panel { width: 440px; max-height: 90vh; overflow-y: auto; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.35); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #1e293b; }
-.header { background: #1e293b; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; border-radius: 10px 10px 0 0; cursor: move; user-select: none; }
+.panel { width: 440px; max-height: 90vh; display: flex; flex-direction: column; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.35); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #1e293b; overflow: hidden; }
+.header { flex-shrink: 0; background: #1e293b; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; border-radius: 10px 10px 0 0; cursor: move; user-select: none; }
 .header button { background: transparent; border: none; color: #94a3b8; cursor: pointer; font-size: 14px; }
-.bodyEl { padding: 10px 12px; }
+.bodyEl { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 12px; }
 textarea { width: 100%; height: 70px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px; }
 .row-count { color: #64748b; margin: 4px 0 8px; }
 .section-label { color: #94a3b8; text-transform: uppercase; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; margin: 10px 0 4px; }
@@ -2229,8 +2199,15 @@ button.primary { background: #1e293b; color: white; border-color: #1e293b; }
 .warm { color: #2563eb; }
 .nonbooking { color: #64748b; }
 .hidden { display: none; }
-.footer { border-top: 1px solid #cbd5e1; padding: 8px 12px; background: white; display: flex; justify-content: flex-end; border-radius: 0 0 10px 10px; }
+.footer { flex-shrink: 0; border-top: 1px solid #cbd5e1; padding: 8px 12px; background: white; display: flex; justify-content: flex-end; border-radius: 0 0 10px 10px; }
 .footer button { padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; }
+.topSection { flex-shrink: 0; border: 1px solid #e2e8f0; border-radius: 6px; background: white; margin-bottom: 8px; }
+.topSection > summary { padding: 6px 8px; cursor: pointer; font-weight: 600; color: #475569; list-style: none; }
+.topSection > summary::-webkit-details-marker { display: none; }
+.topSection > summary::before { content: '\\25B8'; margin-right: 6px; color: #94a3b8; }
+.topSection[open] > summary::before { content: '\\25BE'; }
+.topSection-content { padding: 0 8px 8px; }
+.exportBar { flex-shrink: 0; }
 .tier { border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 6px; background: white; }
 .tier > summary { padding: 5px 8px; cursor: pointer; font-weight: 600; list-style: none; display: flex; justify-content: space-between; }
 .tier > summary::-webkit-details-marker { display: none; }
@@ -2249,6 +2226,7 @@ button.primary { background: #1e293b; color: white; border-color: #1e293b; }
 .notes-block { white-space: pre-wrap; background: white; border: 1px solid #e2e8f0; border-radius: 4px; padding: 6px; margin-top: 4px; font-family: monospace; font-size: 10.5px; }
 .reason { color: #64748b; font-style: italic; margin-top: 3px; }
 .empty-state { color: #94a3b8; padding: 8px 4px; }
+#resultsBody { flex: 1; min-height: 40px; overflow-y: auto; }
 </style>
 <div class="panel">
 <div class="header" id="headerEl">
@@ -2256,6 +2234,9 @@ button.primary { background: #1e293b; color: white; border-color: #1e293b; }
 <button id="minBtn" title="Minimize">_</button>
 </div>
 <div class="bodyEl" id="bodyEl">
+<details class="topSection" id="topSection" open>
+<summary>Batch input</summary>
+<div class="topSection-content">
 <textarea id="pasteBox" placeholder="Paste TSV: Name  Phone  Email  Source  Campaign  Created"></textarea>
 <div class="row-count" id="rowCount">0 rows parsed</div>
 <div class="buttons">
@@ -2270,14 +2251,16 @@ button.primary { background: #1e293b; color: white; border-color: #1e293b; }
 <div>State: <span id="curState">Idle</span></div>
 <div>Completed: <span id="completedCount">0</span> &middot; Exceptions: <span id="exceptionCount">0</span> &middot; Total: <span id="totalCount">0</span></div>
 </div>
+</div>
+</details>
 <div id="resultsBody"></div>
+<div class="exportBar">
 <div class="section-label">Export</div>
 <div class="buttons">
 <button class="action" id="btnCopy">Copy results</button>
-<button class="action" id="btnCopyPrioritised">Copy prioritised</button>
 <button class="action" id="btnCopyRawForExtract">Copy raw for Extract</button>
-<button class="action" id="btnDownload">Download TSV</button>
 <button class="action" id="btnClear">Clear session</button>
+</div>
 </div>
 </div>
 <div class="footer">
@@ -2573,36 +2556,12 @@ copyTextToClipboard(buildDefaultCopyText(s))
 .catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
 });
 
-root.getElementById('btnCopyPrioritised').addEventListener('click', (event) => {
-const s = ensureSessionFromPasteBox();
-const count = orderedResults(s).length;
-copyTextToClipboard(buildPrioritisedCopyText(s))
-.then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count}`, false))
-.catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
-});
-
 root.getElementById('btnCopyRawForExtract').addEventListener('click', (event) => {
 const s = ensureSessionFromPasteBox();
 const count = orderedResults(s).length;
 copyTextToClipboard(buildRawNotesTsvForExtract(s))
 .then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count}`, false))
 .catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
-});
-
-root.getElementById('btnDownload').addEventListener('click', (event) => {
-const s = ensureSessionFromPasteBox();
-try {
-const blob = new Blob([buildFullAuditTsv(s)], { type: 'text/tab-separated-values' });
-const url = URL.createObjectURL(blob);
-const a = document.createElement('a');
-a.href = url;
-a.download = 'konnect-booking-check-results.tsv';
-a.click();
-setTimeout(() => URL.revokeObjectURL(url), 5000);
-showButtonFeedback(event.currentTarget, '✓ Downloaded', false);
-} catch (error) {
-showButtonFeedback(event.currentTarget, '✗ Download failed', true);
-}
 });
 
 minBtn.addEventListener('click', () => { bodyEl.classList.toggle('hidden'); });
