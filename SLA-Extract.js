@@ -358,6 +358,24 @@ observer.observe(table, { childList: true, subtree: true });
 });
 }
 
+// Shared by every flow that navigates away (Queue by Agent) and back
+// before re-rendering the SLA/Pending panel - handleBadgeClick, the
+// post-successful-assign auto re-scan, window._checkAgentQueuePositions,
+// and window._clearWholeQueue all do this same navigate-away-and-back
+// before calling displayPanel/displayPendingPanel. The hash changing
+// back is just the route changing, not Angular having actually
+// repopulated the table's rows yet (same gap this file already guards
+// against for the auto-detect poll, via waitForLeadsTableRows itself).
+// renderAssignSection (behind every one of those render calls) reads
+// document.querySelector('table') synchronously via
+// collectAssignableLeads - skipping this wait showed correct data
+// briefly, then "0 leads due"/"No leads match the current filters"
+// until an unrelated manual refresh fixed it.
+async function waitForLeadsTableReady() {
+const table = await waitForElement('table');
+if (table) await waitForLeadsTableRows(table);
+}
+
 // Shared by anything that causes a real Konnect page navigation/re-
 // render mid-flow (Morning Checks, Clear Queue, ingesting freshly-seen
 // SLA leads) - masks the underlying page's own flashing/repopulating
@@ -484,37 +502,58 @@ hidePageFlashOverlay();
 // module selection here would mean Clear Queues clears the wrong scope
 // entirely.
 async function ensureCustomerHubModule() {
+// Re-queries the trigger fresh every time rather than trusting one
+// captured reference across the whole switch - confirmed live starting
+// from Service Booking, but reported live to time out starting from
+// "Service" specifically. The likely difference: switching away from
+// that module regenerates this whole element (Angular tearing down and
+// recreating it) rather than just mutating its label text in place,
+// which is what every previously-tested starting module did. A stale
+// captured `trigger` would silently watch a node that's no longer part
+// of the live document, so its own MutationObserver would never fire
+// and the label would never appear to change, even though the switch
+// genuinely succeeded on the page - a timeout that looks identical to a
+// real failure. Reading document.querySelector fresh on every check
+// avoids depending on that one reference surviving.
+const readLabel = () => document.querySelector('div[title="Filter by Module"] span.ng-binding')?.textContent?.trim() || null;
+if (readLabel() === 'Customer Hub') return true;
+
 const trigger = document.querySelector('div[title="Filter by Module"]');
 if (!trigger) return false;
-const currentLabel = () => trigger.querySelector('span.ng-binding')?.textContent?.trim();
-if (currentLabel() === 'Customer Hub') return true;
-
 trigger.click();
+
 const menuItem = await waitForElement('li[ng-click="moduleSelected(module)"]');
 if (!menuItem) return false;
 
 const items = Array.from(document.querySelectorAll('li[ng-click="moduleSelected(module)"]'));
 const target = items.find(li => li.textContent.includes('Customer Hub'));
-if (!target) return false;
+if (!target) {
+console.warn('[SLA Extract] Customer Hub option not found in the module dropdown - items seen:', items.map(li => li.textContent.trim()));
+return false;
+}
 target.click();
 
+if (readLabel() === 'Customer Hub') return true;
+
 return new Promise((resolve) => {
-if (currentLabel() === 'Customer Hub') {
-resolve(true);
-return;
-}
 const timer = setTimeout(() => {
 observer.disconnect();
+console.warn('[SLA Extract] Timed out waiting for module switch to Customer Hub - trigger now reads:', readLabel());
 resolve(false);
 }, 3000);
+// Observes document.body, not the trigger element captured above (see
+// comment at the top of this function) - same broad-observe pattern
+// waitForElement already uses elsewhere in this file, for the same
+// reason: the element being watched for a change can be replaced
+// outright, not just mutated.
 const observer = new MutationObserver(() => {
-if (currentLabel() === 'Customer Hub') {
+if (readLabel() === 'Customer Hub') {
 clearTimeout(timer);
 observer.disconnect();
 resolve(true);
 }
 });
-observer.observe(trigger, { childList: true, subtree: true, characterData: true });
+observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 });
 }
 
@@ -537,6 +576,7 @@ const originalHash = window.location.hash;
 // by the time this matters.
 const originatingPageType = detectPageType();
 showPageFlashOverlay('Clearing the queue…');
+let cleared = false;
 try {
 window.location.hash = '#/Queue/QueueByAgent';
 const clearBtn = await waitForElement('button[ng-click="ClearQueues()"]');
@@ -561,6 +601,23 @@ await sleep(800);
 // them actually changed besides assignment - confirmed live as an
 // unwanted full re-ingestion, not the cheap refresh this needs.
 clearAgentQueueSnapshot();
+cleared = true;
+} finally {
+window.location.hash = originalHash;
+}
+
+// Rendering used to happen inside the try block above, before this hash
+// restore ran - collectAssignableLeads (behind renderAssignSection,
+// itself behind displayPanel/displayPendingPanel) reads
+// document.querySelector('table') directly, so it was reading whatever
+// table belonged to the Queue by Agent page (or none at all), not the
+// SLA/Pending one. And the hash changing back here is itself just the
+// route changing, not Angular having actually repopulated the SLA/
+// Pending table yet - same gap waitForLeadsTableRows exists for
+// elsewhere in this file - so a wait for real rows is needed here too,
+// not just moving the render after the hash restore.
+if (cleared) {
+await waitForLeadsTableReady();
 if (originatingPageType === PAGE_PENDING) {
 currentPendingCustomers = currentPendingCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
 displayPendingPanel(currentPendingCustomers);
@@ -568,10 +625,8 @@ displayPendingPanel(currentPendingCustomers);
 currentCustomers = currentCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
 displayPanel(currentCustomers);
 }
-} finally {
-window.location.hash = originalHash;
-hidePageFlashOverlay();
 }
+hidePageFlashOverlay();
 };
 
 // ===================================================================
@@ -707,6 +762,19 @@ showPageFlashOverlay('Checking agent queues…');
 try {
 const ok = await refreshAgentQueueSnapshot();
 if (!ok) alert('Could not check agent queues - see console for details.');
+// refreshAgentQueueSnapshot navigates to Queue by Agent and back - its
+// own finally block resets window.location.hash, but that's just the
+// route changing, not the SLA/Pending table having actually
+// re-rendered yet (same gap documented above waitForLeadsTableRows for
+// the auto-detect poll). Re-rendering the panel immediately here was
+// reading a table that Angular hadn't repopulated after the navigation
+// back, so renderAssignSection's "due this hour/next hour" tiles
+// (fed by collectAssignableLeads' own unguarded, synchronous scrape)
+// briefly went from correct counts to "0 leads due" until the next
+// manual refresh fixed it. extractAndExportSla/Pending already wait
+// here; this path went straight through displayPanel/displayPendingPanel
+// and never did.
+await waitForLeadsTableReady();
 if (originatingPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers);
 else displayPanel(currentCustomers);
 } finally {
@@ -4493,6 +4561,15 @@ await window._refreshLeadsAndPanel();
 showPageFlashOverlay('Checking agent queues…');
 try {
 await refreshAgentQueueSnapshot();
+// Same gap as window._checkAgentQueuePositions/_clearWholeQueue: the
+// navigate-away-and-back this just did only changes the route -
+// Angular still needs a moment to actually repopulate the SLA/Pending
+// table afterward. Rendering immediately here (this is the actual
+// floating-badge "activate" path) was the real source of the reported
+// "no leads match search"/tiles briefly going to zero on Pending
+// Customers - this function has its own inline render call, so it
+// never went through the fix already made in the other two functions.
+await waitForLeadsTableReady();
 } finally {
 hidePageFlashOverlay();
 }
@@ -4884,6 +4961,13 @@ if (succeeded > 0) {
 showPageFlashOverlay('Checking agent queues…');
 try {
 await refreshAgentQueueSnapshot();
+// Same gap as the other three call sites of refreshAgentQueueSnapshot
+// in this file: the navigate-away-and-back it just did only changes
+// the route, Angular still needs a moment to repopulate the SLA/
+// Pending table afterward - reading it immediately (via the render
+// below) briefly showed "0 leads due"/"No leads match the current
+// filters" right after every successful assign run, on both pages.
+await waitForLeadsTableReady();
 } finally {
 hidePageFlashOverlay();
 }
