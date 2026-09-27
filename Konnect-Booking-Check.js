@@ -346,12 +346,18 @@ return { category: 'NON-BOOKING', reason: 'Motability lead: no explicit booking/
 // warm signal, just browsing/valuation-checking. WARM ENQUIRY requires
 // the same "genuine answer showing visit intent" wording every other
 // tier uses, not merely having looked at one particular model's page.
+// No OVERRIDE_KEYWORDS check here, unlike every other tier - PX
+// Valuation's comments are a tracked URL, not the customer's own
+// words (the framework never specified a finance-override for this
+// tier either). A real bug this exposed: 'pch' (a FINANCE_KEYWORDS
+// entry) matches as a bare substring anywhere, including inside a URL
+// slug like ".../citroen-c5-aircross-pch" - a very common real
+// dealer-site pattern for a PCH/finance vehicle listing, not the
+// customer discussing finance at all. Didn't change the final
+// category here (both branches land on NON-BOOKING), but mislabelled
+// the reason and was one visit-intent-keyword collision away from
+// mislabelling the category too.
 function classifyPxValuationTier(comments, lower) {
-// Finance/business/technical wording only overrides to Non-Booking
-// when there's NO genuine visit-intent wording alongside it.
-if (containsAny(lower, OVERRIDE_KEYWORDS) && !containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return { category: 'NON-BOOKING', reason: 'PX Valuation lead, but comments mention finance/business/technical-support wording with no visit-intent wording alongside it, which overrides to Non-Booking.', confidence: 'high' };
-}
 if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
 return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead with a genuine answer showing dealership-visit intent.', confidence: 'medium' };
 }
@@ -1624,7 +1630,11 @@ const cases = [
 // visit-intent wording in the comments, same as every other tier. =====
 { name: 'PX Valuation + specific vehicle page visit alone (not warm)', date: null, comments: 'The customer was on the following website page: https://x/citroen-c3-aircross-pch', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
 { name: 'PX Valuation + generic valuation page', date: null, comments: 'https://stellantisandyou.co.uk/car-valuation', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
-{ name: 'PX Valuation + "before completing the valuation" phrasing (still non-booking)', date: null, comments: 'The customer was on the following page, before completing the valuation: https://x/citroen-c5-aircross', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
+// Real reported phrasing, with a "-pch" URL slug (a common real
+// dealer-site PCH/finance vehicle-listing suffix) - confirms the
+// FINANCE_KEYWORDS 'pch' entry matching inside a URL slug doesn't
+// hijack this into the (now-removed) override branch.
+{ name: 'PX Valuation + "website page, before completing the valuation" phrasing with -pch URL', date: null, comments: 'The customer was on the following website page, before completing the valuation: https://example.com/citroen-c5-aircross-pch', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
 // Genuine interest short of visit intent - still Non-Booking (no
 // separate category), but ranks higher within it (see the priority-
 // rank check below).
@@ -2161,6 +2171,9 @@ bookingPriorityRank({ status: 'CLASSIFIED', category: 'WARM ENQUIRY' })
 && bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: Hi I would potentially be interested in this vehicle' })
 < bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: -' }),
 true);
+check('rank: PX Valuation generic page-link-only NON-BOOKING is bottom tier (same as blank), not the "potentially interested" sub-rank',
+bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: The customer was on the following website page, before completing the valuation: https://example.com/citroen-c5-aircross-pch' }),
+bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: -' }));
 
 // The exact contract SLA-Extract.js's "Classify Booking Check
 // results" panel parses (BOOKING_CHECK_IMPORT_HEADER there) - pinned
@@ -2173,7 +2186,7 @@ check('raw Extract export header shape', rawExtractTsv.split('\n')[0], 'Name\tPh
 if (failures.length > 0) {
 console.error('KonnectBookingCheck orchestration self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck orchestration self-test passed (9/9)');
+console.info('KonnectBookingCheck orchestration self-test passed (10/10)');
 }
 })();
 
