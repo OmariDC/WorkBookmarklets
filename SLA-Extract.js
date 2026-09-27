@@ -144,7 +144,16 @@ let refreshingLeads = false;
 // Populated by window._runAllMorningChecks as each check completes -
 // {key, label, status: 'pending'|'running'|'done', ok, summary, details}.
 // Drives renderMorningChecksBody(); empty means "hasn't been run yet".
-let morningChecksResults = [];
+// Restored from today's persisted run (if any) rather than always
+// starting empty - per instruction, results should persist across a
+// bookmarklet re-invocation/page reload until explicitly cleared or a
+// fresh run overwrites them, not silently reset just because the
+// panel/page was closed and reopened. loadMorningChecksLastRun is
+// defined further down but hoisted, and already scopes to today only.
+let morningChecksResults = (function() {
+const lastRun = loadMorningChecksLastRun();
+return (lastRun && Array.isArray(lastRun.results)) ? lastRun.results : [];
+})();
 const MORNING_CHECKS_ORDER = [
 { key: 'emailOnly', label: 'Email Only Count' },
 { key: 'sla', label: 'SLA Count' },
@@ -1263,7 +1272,8 @@ try {
 localStorage.setItem(MORNING_CHECKS_LAST_RUN_KEY, JSON.stringify({
 time: new Date().toISOString(),
 elapsedMs,
-failedLabels: results.filter(r => r.ok === false).map(r => r.label)
+failedLabels: results.filter(r => r.ok === false).map(r => r.label),
+results
 }));
 } catch (error) {
 // ignore
@@ -1386,9 +1396,23 @@ ${rows}
 style="padding: 8px 18px; background: ${runningMorningChecks ? '#cbd5e1' : '#1e293b'}; color: white; border: none; border-radius: 8px; cursor: ${runningMorningChecks ? 'default' : 'pointer'}; font-size: 13px; font-weight: 600;">
 ${runningMorningChecks ? 'Running…' : (allDone ? 'Run Again' : 'Run All Checks')}
 </button>
+${allDone && !runningMorningChecks ? `<span onclick="window._clearMorningChecks();" style="margin-left: 10px; font-size: 12px; color: #94a3b8; cursor: pointer; text-decoration: underline;">Clear</span>` : ''}
 ${allDone ? renderLastRunLine(lastRun) : ''}
 </div>`;
 }
+
+// Results otherwise persist until end of day or the next run (see
+// morningChecksResults' own init) - this is the explicit third way to
+// get back to "hasn't been run yet", per instruction.
+window._clearMorningChecks = function() {
+morningChecksResults = [];
+try {
+localStorage.removeItem(MORNING_CHECKS_LAST_RUN_KEY);
+} catch (error) {
+// ignore
+}
+displayMorningChecks();
+};
 
 function displayMorningChecks() {
 mountPanel(renderPanelShell({
@@ -3957,6 +3981,9 @@ return `<div style="margin-bottom: 16px; padding: 10px 4px; border-bottom: 2px s
 }
 
 const collapsed = isSectionCollapsed(sectionId);
+// Loaded once per section (not per card) - same pattern as
+// renderTierSection's own bookingCheckResults.
+const bookingCheckResults = loadBookingCheckImportState().results;
 return `<div style="margin-bottom: 16px;">
 <div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 10px 4px;
 display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
@@ -3969,6 +3996,8 @@ display: flex; justify-content: space-between; align-items: center; border-botto
 <div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
 ${customers.map(c => {
 const queuePosition = findAgentQueuePositionForLead({ email: c.email, phone: c.mobile });
+const bookingCheck = findBookingCheckResultForCustomer({ email: c.email, phone: c.mobile }, bookingCheckResults);
+const bookingCheckTitle = bookingCheck ? [bookingCheck.reason, bookingCheck.initialNotes].filter(Boolean).join('\n\n') : '';
 return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px; border-bottom: 1px solid #e2e8f0;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
@@ -3978,6 +4007,7 @@ ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
 <span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
 </div>
+${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.category)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.category)};">${escapeHtml(bookingCheck.category)}</span></div>` : ''}
 ${renderQueuePositionBadge(c.assigned, queuePosition)}
 ${renderContactToggle(`
 <div>
@@ -4239,7 +4269,8 @@ newCount, removedCount,
 summaryHtml: renderPendingDueSummary(),
 assignSectionHtml: renderPendingAssignSection(),
 bodyHtml,
-onTitleClick: 'window._refreshLeadsAndPanel()'
+onTitleClick: 'window._refreshLeadsAndPanel()',
+showBookingCheckImport: true
 }));
 }
 
