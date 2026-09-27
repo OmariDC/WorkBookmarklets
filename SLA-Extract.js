@@ -551,6 +551,7 @@ await sleep(800);
 // every lead's detail modal again for no reason, since nothing about
 // them actually changed besides assignment - confirmed live as an
 // unwanted full re-ingestion, not the cheap refresh this needs.
+clearAgentQueueSnapshot();
 if (originatingPageType === PAGE_PENDING) {
 currentPendingCustomers = currentPendingCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
 displayPendingPanel(currentPendingCustomers);
@@ -602,6 +603,21 @@ return { scannedAt: null, agents: [] };
 function saveAgentQueueSnapshot(agents) {
 try {
 localStorage.setItem(AGENT_QUEUE_SNAPSHOT_KEY, JSON.stringify({ scannedAt: new Date().toISOString(), agents }));
+} catch (error) {
+// ignore
+}
+}
+
+// Clear Queue and a successful assign run both change every affected
+// lead's real queue position - the stale snapshot would show a "3rd in
+// queue" badge on a lead that isn't queued to anyone anymore (Clear
+// Queue), or the wrong position for one that's genuinely just been
+// added (assign). Wiping it (not re-scanning Queue by Agent again) is
+// the same "cheap and correct beats an unnecessary re-scan" choice
+// already made for both of those actions' own lead-card refresh.
+function clearAgentQueueSnapshot() {
+try {
+localStorage.removeItem(AGENT_QUEUE_SNAPSHOT_KEY);
 } catch (error) {
 // ignore
 }
@@ -4801,6 +4817,11 @@ console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
 // too, so it's (re)rendered AFTER this, not before - or the fresh
 // render would wipe it again.
 if (succeeded > 0) {
+// The newly-assigned leads' real queue position is now something
+// different from whatever the last scan found (or unknown, if there
+// never was one) - clearing here rather than re-scanning Queue by
+// Agent avoids a second full navigation right after every assign run.
+clearAgentQueueSnapshot();
 const successByKey = new Map(results.filter(r => r.ok).map(r => [r.lead.key, r.agent.name]));
 if (pageType === PAGE_PENDING) {
 currentPendingCustomers = currentPendingCustomers.map((c) => successByKey.has(c.key) ? { ...c, assigned: true, agentName: successByKey.get(c.key) } : c);
