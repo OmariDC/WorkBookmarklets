@@ -2377,10 +2377,24 @@ if (r.category === 'NON-BOOKING') return 'nonbooking';
 return '';
 }
 
+// Same click-to-copy visual pattern as SLA-Extract.js's .sla-copyable
+// fields (cursor pointer, light indigo background) - per instruction,
+// customer number/name/email in this dropdown should work the same
+// way. data-value carries the unescaped-for-copy text; the click
+// handler (wired in render(), since this HTML is rebuilt from scratch
+// every render) reads it back out via .dataset.value, which the
+// browser un-escapes automatically from the HTML attribute.
+function copyableField(value) {
+if (!value) return '';
+const display = escapeHtmlForUi(value);
+return `<span class="kbc-copyable" data-value="${display}" style="cursor: pointer; padding: 1px 5px; border-radius: 4px; background: #eef2ff; color: #1e293b; display: inline-block;">${display}</span>`;
+}
+
 function customerBodyHtml(r) {
 const parts = [];
-if (r.phone) parts.push(`<div class="field"><b>Phone:</b> ${escapeHtmlForUi(r.phone)}</div>`);
-if (r.email) parts.push(`<div class="field"><b>Email:</b> ${escapeHtmlForUi(r.email)}</div>`);
+parts.push(`<div class="field"><b>Name:</b> ${copyableField(r.name)}</div>`);
+if (r.phone) parts.push(`<div class="field"><b>Phone:</b> ${copyableField(r.phone)}</div>`);
+if (r.email) parts.push(`<div class="field"><b>Email:</b> ${copyableField(r.email)}</div>`);
 parts.push(`<div class="field"><b>Campaign:</b> ${escapeHtmlForUi(r.campaign || '-')} &middot; <b>Source:</b> ${escapeHtmlForUi(r.source || '-')}</div>`);
 parts.push(`<div class="field"><b>Created:</b> ${escapeHtmlForUi(r.created || '-')}</div>`);
 if (r.reason) parts.push(`<div class="reason">${escapeHtmlForUi(r.reason)}</div>`);
@@ -2437,6 +2451,24 @@ el.addEventListener('toggle', () => { if (el.open) detailsState.tiers.add(key); 
 resultsBody.querySelectorAll('details.customer').forEach((el) => {
 const key = Number(el.dataset.key);
 el.addEventListener('toggle', () => { if (el.open) detailsState.customers.add(key); else detailsState.customers.delete(key); });
+});
+resultsBody.querySelectorAll('.kbc-copyable').forEach((el) => {
+el.addEventListener('click', () => {
+const original = el.textContent;
+copyTextToClipboard(el.dataset.value)
+.then(() => {
+el.textContent = '✓ Copied!';
+el.style.background = '#059669';
+el.style.color = 'white';
+setTimeout(() => { el.textContent = original; el.style.background = ''; el.style.color = ''; }, 1200);
+})
+.catch(() => {
+el.textContent = '✗ Failed';
+el.style.background = '#dc2626';
+el.style.color = 'white';
+setTimeout(() => { el.textContent = original; el.style.background = ''; el.style.color = ''; }, 1200);
+});
+});
 });
 
 completedCountEl.textContent = String(ordered.filter((r) => r.status === 'CLASSIFIED').length);
