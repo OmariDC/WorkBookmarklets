@@ -1745,6 +1745,47 @@ console.info('KonnectBookingCheck orchestration self-test passed (3/3)');
 // above still run cleanly under a plain Node harness.
 // ===================================================================
 
+// Same Tier 1-4 categorization SLA-Extract.js already uses for its own
+// panel (categorizeTier there) - ported verbatim rather than inventing
+// a separate grouping, per instruction that this panel should group
+// leads "into the same tiers as the extract ui".
+function categorizeTier(campaign, source) {
+const camp = String(campaign || '').toLowerCase();
+const src = String(source || '').toLowerCase();
+
+if (camp.includes('test drive request') && camp.includes('new'))
+return { tier: 1, reason: 'Test Drive Request - New' };
+if (camp.includes('test drive request') && camp.includes('used'))
+return { tier: 1, reason: 'Test Drive Request - Used' };
+if (camp.includes('electric'))
+return { tier: 1, reason: 'Brand - Electric' };
+if (camp.includes('reserve') && camp.includes('used'))
+return { tier: 1, reason: 'Reserve - Used' };
+
+if (camp.includes('enquiry') && camp.includes('new') && src.includes('customer first'))
+return { tier: 2, reason: 'Enquiry - New (Customer First)' };
+if (camp.includes('motability'))
+return { tier: 2, reason: 'Motability' };
+if (src.includes('leapmotor'))
+return { tier: 2, reason: 'Leapmotor (Source)' };
+
+if (camp.includes('enquiry') && camp.includes('used'))
+return { tier: 3, reason: 'Enquiry - Used' };
+if (camp.includes('offer request') && camp.includes('new'))
+return { tier: 3, reason: 'Offer Request - New' };
+if ((camp.includes('px valuation') || camp.includes('p/x valuation')) && camp.includes('new'))
+return { tier: 3, reason: 'PX Valuation - New' };
+
+if (camp.includes('enquiry') && camp.includes('new') && src.includes('robins'))
+return { tier: 4, reason: 'Enquiry - New (Robins & Day)' };
+if (camp.includes('general'))
+return { tier: 4, reason: 'General' };
+if (camp.includes('inbound'))
+return { tier: 4, reason: 'Inbound' };
+
+return { tier: 4, reason: 'Uncategorized' };
+}
+
 function buildPanelMarkup() {
 const host = document.createElement('div');
 host.id = '_kbcPanelHost';
@@ -1753,28 +1794,45 @@ document.documentElement.appendChild(host);
 const root = host.attachShadow({ mode: 'open' });
 root.innerHTML = `
 <style>
-.panel { width: 380px; max-height: 90vh; overflow-y: auto; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.35); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #1e293b; }
+.panel { width: 440px; max-height: 90vh; overflow-y: auto; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.35); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #1e293b; }
 .header { background: #1e293b; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; border-radius: 10px 10px 0 0; cursor: move; user-select: none; }
 .header button { background: transparent; border: none; color: #94a3b8; cursor: pointer; font-size: 14px; }
 .bodyEl { padding: 10px 12px; }
-textarea { width: 100%; height: 90px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px; }
+textarea { width: 100%; height: 70px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px; }
 .row-count { color: #64748b; margin: 4px 0 8px; }
-.buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.section-label { color: #94a3b8; text-transform: uppercase; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; margin: 10px 0 4px; }
+.section-label:first-child { margin-top: 0; }
+.buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
 button.action { padding: 5px 8px; border: 1px solid #cbd5e1; background: white; border-radius: 6px; cursor: pointer; font-size: 11px; }
 button.action:hover { background: #eef2ff; }
 button.primary { background: #1e293b; color: white; border-color: #1e293b; }
 .status { background: white; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
 .status div { margin-bottom: 2px; }
-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid #e2e8f0; }
 .exception { color: #dc2626; }
 .confirmed { color: #059669; font-weight: 600; }
 .dateonly { color: #d97706; }
 .nonbooking { color: #64748b; }
-.copy-buttons { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
 .hidden { display: none; }
 .footer { border-top: 1px solid #cbd5e1; padding: 8px 12px; background: white; display: flex; justify-content: flex-end; border-radius: 0 0 10px 10px; }
 .footer button { padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; }
+.tier { border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 6px; background: white; }
+.tier > summary { padding: 5px 8px; cursor: pointer; font-weight: 600; list-style: none; display: flex; justify-content: space-between; }
+.tier > summary::-webkit-details-marker { display: none; }
+.tier > summary::before { content: '\\25B8'; margin-right: 6px; color: #94a3b8; }
+.tier[open] > summary::before { content: '\\25BE'; }
+.tier-count { color: #94a3b8; font-weight: 400; }
+.customer { border-top: 1px solid #f1f5f9; }
+.customer > summary { padding: 5px 8px 5px 20px; cursor: pointer; list-style: none; display: flex; justify-content: space-between; gap: 6px; }
+.customer > summary::-webkit-details-marker { display: none; }
+.customer > summary::before { content: '\\25B8'; margin-right: 6px; color: #cbd5e1; }
+.customer[open] > summary::before { content: '\\25BE'; }
+.customer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.customer-body { padding: 4px 8px 8px 28px; background: #f8fafc; }
+.customer-body .field { margin-bottom: 3px; }
+.customer-body .field b { color: #475569; }
+.notes-block { white-space: pre-wrap; background: white; border: 1px solid #e2e8f0; border-radius: 4px; padding: 6px; margin-top: 4px; font-family: monospace; font-size: 10.5px; }
+.reason { color: #64748b; font-style: italic; margin-top: 3px; }
+.empty-state { color: #94a3b8; padding: 8px 4px; }
 </style>
 <div class="panel">
 <div class="header" id="headerEl">
@@ -1785,12 +1843,10 @@ th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid #e2e8f0; }
 <textarea id="pasteBox" placeholder="Paste TSV: Name  Phone  Email  Source  Campaign  Created"></textarea>
 <div class="row-count" id="rowCount">0 rows parsed</div>
 <div class="buttons">
-<button class="action primary" id="btnProcessNext">Process next</button>
 <button class="action primary" id="btnStart">Start</button>
-<button class="action" id="btnPause">Pause</button>
-<button class="action" id="btnResume">Resume</button>
+<button class="action primary" id="btnPauseResume">Pause</button>
+<button class="action" id="btnProcessNext">Process next</button>
 <button class="action" id="btnCancel">Cancel</button>
-<button class="action" id="btnClear">Clear session</button>
 </div>
 <div class="status">
 <div>Customer: <span id="curCustomer">-</span></div>
@@ -1798,14 +1854,13 @@ th, td { text-align: left; padding: 3px 4px; border-bottom: 1px solid #e2e8f0; }
 <div>State: <span id="curState">Idle</span></div>
 <div>Completed: <span id="completedCount">0</span> &middot; Exceptions: <span id="exceptionCount">0</span> &middot; Total: <span id="totalCount">0</span></div>
 </div>
-<table>
-<thead><tr><th>Name</th><th>Result</th></tr></thead>
-<tbody id="resultsBody"></tbody>
-</table>
-<div class="copy-buttons">
+<div id="resultsBody"></div>
+<div class="section-label">Export</div>
+<div class="buttons">
 <button class="action" id="btnCopy">Copy results</button>
 <button class="action" id="btnCopyPrioritised">Copy prioritised</button>
 <button class="action" id="btnDownload">Download TSV</button>
+<button class="action" id="btnClear">Clear session</button>
 </div>
 </div>
 <div class="footer">
@@ -1820,18 +1875,18 @@ function escapeHtmlForUi(value) {
 return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// The async Clipboard API alone gave no visible feedback either way
-// (a success and a silent failure looked identical) and had no
-// fallback if it's blocked/restricted in this page's context - a real
-// possibility for a bookmarklet injected into a third-party SPA.
-// Falls back to a hidden textarea + execCommand('copy'), which works
-// in more restricted contexts the async API can refuse.
+// execCommand first, synchronously, NOT inside a Promise chain - both
+// execCommand('copy') and (in stricter embedded contexts) even the
+// modern Clipboard API only work reliably within the click handler's
+// original synchronous "user activation" window. The previous version
+// tried the async Clipboard API first and only fell back to
+// execCommand inside its .catch() - by the time that ran, execution
+// was several microtask ticks removed from the actual click, which
+// silently loses that user-activation association in exactly the kind
+// of restricted, third-party-injected-iframe context a bookmarklet
+// runs in (confirmed live: buttons showed no error, but nothing ever
+// reached the clipboard). Trying the synchronous path first fixes it.
 function copyTextToClipboard(text) {
-const viaClipboardApi = navigator.clipboard && navigator.clipboard.writeText
-? navigator.clipboard.writeText(text)
-: Promise.reject(new Error('Clipboard API unavailable'));
-
-return viaClipboardApi.catch(() => new Promise((resolve, reject) => {
 try {
 const textarea = document.createElement('textarea');
 textarea.value = text;
@@ -1842,11 +1897,13 @@ textarea.focus();
 textarea.select();
 const ok = document.execCommand('copy');
 textarea.remove();
-if (ok) resolve(); else reject(new Error('execCommand copy failed'));
+if (ok) return Promise.resolve();
 } catch (error) {
-reject(error);
+// fall through to the async API below
 }
-}));
+return navigator.clipboard && navigator.clipboard.writeText
+? navigator.clipboard.writeText(text)
+: Promise.reject(new Error('Clipboard copy failed'));
 }
 
 function showButtonFeedback(button, text, isError) {
@@ -1880,19 +1937,40 @@ const headerEl = root.getElementById('headerEl');
 let session = loadStoredSession();
 if (session) pasteBox.value = session.rawInput || '';
 
+// <details> open/closed state doesn't survive an innerHTML rebuild, and
+// render() is called after every processed row - without tracking this
+// separately, expanding a customer's notes to read them would just get
+// collapsed again the moment the next row finishes. Tiers default open
+// (few of them, useful to see counts at a glance); customers default
+// closed, per instruction ("collapsed under the customer's name x
+// contact details").
+const detailsState = { tiers: new Set([1, 2, 3, 4]), customers: new Set() };
+
 function categoryClass(r) {
 if (!r) return '';
 if (r.exception) return 'exception';
-if (r.category === 'CONFIRMED DATE & TIME') return 'confirmed';
+if (r.category === 'CONFIRMED DATE & TIME' || r.category === 'BOOKING (TEST DRIVE)') return 'confirmed';
 if (r.category === 'DATE ONLY') return 'dateonly';
 if (r.category === 'NON-BOOKING') return 'nonbooking';
 return '';
 }
 
+function customerBodyHtml(r) {
+const parts = [];
+if (r.phone) parts.push(`<div class="field"><b>Phone:</b> ${escapeHtmlForUi(r.phone)}</div>`);
+if (r.email) parts.push(`<div class="field"><b>Email:</b> ${escapeHtmlForUi(r.email)}</div>`);
+parts.push(`<div class="field"><b>Campaign:</b> ${escapeHtmlForUi(r.campaign || '-')} &middot; <b>Source:</b> ${escapeHtmlForUi(r.source || '-')}</div>`);
+parts.push(`<div class="field"><b>Created:</b> ${escapeHtmlForUi(r.created || '-')}</div>`);
+if (r.reason) parts.push(`<div class="reason">${escapeHtmlForUi(r.reason)}</div>`);
+if (r.initialNotes) parts.push(`<div class="notes-block">${escapeHtmlForUi(r.initialNotes)}</div>`);
+else if (r.status === 'EXCEPTION') parts.push(`<div class="reason">No Initial Notes read - ${escapeHtmlForUi(r.exception || '')}</div>`);
+return parts.join('');
+}
+
 function render() {
 if (!session) {
 rowCountEl.textContent = '0 rows parsed';
-resultsBody.innerHTML = '';
+resultsBody.innerHTML = '<div class="empty-state">Paste a batch above to begin.</div>';
 completedCountEl.textContent = '0';
 exceptionCountEl.textContent = '0';
 totalCountEl.textContent = '0';
@@ -1900,7 +1978,42 @@ return;
 }
 rowCountEl.textContent = `${session.rows.length} rows parsed` + (session.headerOk ? '' : ` - ${session.headerError}`);
 const ordered = orderedResults(session);
-resultsBody.innerHTML = ordered.map((r) => `<tr class="${categoryClass(r)}"><td>${escapeHtmlForUi(r.name)}</td><td>${escapeHtmlForUi(r.category || r.exception || 'Pending')}</td></tr>`).join('');
+
+if (ordered.length === 0) {
+resultsBody.innerHTML = '<div class="empty-state">No results yet - press Start or Process next.</div>';
+} else {
+const byTier = new Map();
+ordered.forEach((r) => {
+const tier = categorizeTier(r.campaign, r.source).tier;
+if (!byTier.has(tier)) byTier.set(tier, []);
+byTier.get(tier).push(r);
+});
+resultsBody.innerHTML = Array.from(byTier.keys()).sort((a, b) => a - b).map((tier) => {
+const rows = byTier.get(tier);
+const customersHtml = rows.map((r) => `
+<details class="customer" data-key="${r.inputIndex}" ${detailsState.customers.has(r.inputIndex) ? 'open' : ''}>
+<summary><span class="customer-name">${escapeHtmlForUi(r.name)}</span><span class="${categoryClass(r)}">${escapeHtmlForUi(r.category || r.exception || 'Pending')}</span></summary>
+<div class="customer-body">${customerBodyHtml(r)}</div>
+</details>
+`).join('');
+return `
+<details class="tier" data-key="${tier}" ${detailsState.tiers.has(tier) ? 'open' : ''}>
+<summary><span>Tier ${tier}</span><span class="tier-count">${rows.length}</span></summary>
+${customersHtml}
+</details>
+`;
+}).join('');
+}
+
+resultsBody.querySelectorAll('details.tier').forEach((el) => {
+const key = Number(el.dataset.key);
+el.addEventListener('toggle', () => { if (el.open) detailsState.tiers.add(key); else detailsState.tiers.delete(key); });
+});
+resultsBody.querySelectorAll('details.customer').forEach((el) => {
+const key = Number(el.dataset.key);
+el.addEventListener('toggle', () => { if (el.open) detailsState.customers.add(key); else detailsState.customers.delete(key); });
+});
+
 completedCountEl.textContent = String(ordered.filter((r) => r.status === 'CLASSIFIED').length);
 exceptionCountEl.textContent = String(ordered.filter((r) => r.status === 'EXCEPTION').length);
 totalCountEl.textContent = String(session.rows.length);
@@ -1936,15 +2049,23 @@ const s = ensureSessionFromPasteBox();
 if (!s.headerOk) { uiHandle.setState(`Header error: ${s.headerError}`); return; }
 s.paused = false;
 s.cancelled = false;
+pauseResumeBtn.textContent = 'Pause';
 runLoop(s, uiHandle);
 });
 
-root.getElementById('btnPause').addEventListener('click', () => {
-if (session) { session.paused = true; uiHandle.setState('Paused'); }
-});
-
-root.getElementById('btnResume').addEventListener('click', () => {
-if (session) { session.paused = false; uiHandle.setState('Resuming...'); runLoop(session, uiHandle); }
+const pauseResumeBtn = root.getElementById('btnPauseResume');
+pauseResumeBtn.addEventListener('click', () => {
+if (!session) return;
+if (session.paused) {
+session.paused = false;
+pauseResumeBtn.textContent = 'Pause';
+uiHandle.setState('Resuming...');
+runLoop(session, uiHandle);
+} else {
+session.paused = true;
+pauseResumeBtn.textContent = 'Resume';
+uiHandle.setState('Paused');
+}
 });
 
 root.getElementById('btnCancel').addEventListener('click', () => {
@@ -1963,6 +2084,7 @@ if (session) session.cancelled = true;
 clearStoredSession();
 session = null;
 pasteBox.value = '';
+pauseResumeBtn.textContent = 'Pause';
 uiHandle.setState('Idle', '-', '-');
 });
 
