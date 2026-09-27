@@ -1400,8 +1400,19 @@ return finalizeResult(result, { status: 'EXCEPTION', exception: 'TARGET_CREATED_
 // Tracked per candidate and the most informative one is reported: a
 // click/modal failure is more actionable than "validation failed",
 // which only makes sense once we know the modal genuinely opened.
+// Two rounds of live testing both came back LEAD_VALIDATION_FAILED
+// with no further detail, which turned out to be genuinely ambiguous
+// to diagnose from that code alone (it could mean the modal opened and
+// contradicted, or - as the second round suggested - a stale modal
+// being reused without a real click happening at all). Logs the actual
+// decision at each step, and - critically - surfaces
+// validateLeadCandidate's own detailed reason string (previously
+// computed and then discarded, only the generic exception code ever
+// reached the output) into this row's warnings, so the real cause is
+// visible in the TSV/console instead of needing another round-trip.
 const validated = [];
 const candidateFailures = [];
+const candidateFailureDetails = [];
 for (const candidate of workingCandidates) {
 if (isCancelled(session)) {
 candidateFailures.push('CANCELLED');
@@ -1409,9 +1420,11 @@ break;
 }
 const clickTarget = findLeadClickTarget(candidate.row);
 if (!clickTarget || !clickTarget.isConnected) {
+console.warn('[KonnectBookingCheck] click target not found for candidate at', candidate.rawTimestamp);
 candidateFailures.push('LEAD_CLICK_TARGET_NOT_FOUND');
 continue;
 }
+console.info('[KonnectBookingCheck] clicking candidate at', candidate.rawTimestamp, 'visibleLeadId=', candidate.leadId);
 const modalState = await openLeadModal(candidate.row);
 if (isCancelled(session)) {
 // The modal may have opened right as Cancel/Clear & Stop was
@@ -1422,16 +1435,20 @@ candidateFailures.push('CANCELLED');
 break;
 }
 if (!modalState) {
+console.warn('[KonnectBookingCheck] modal did not become ready for candidate at', candidate.rawTimestamp);
 candidateFailures.push('LEAD_MODAL_TIMEOUT');
 continue;
 }
 const panelFields = extractLeadPanelFields(modalState.panel);
+console.info('[KonnectBookingCheck] modal opened - extracted fields:', JSON.stringify(panelFields));
 const validation = validateLeadCandidate(panelFields, row);
 if (validation.ok) {
 const initialNotes = extractInitialNotes(modalState.panel);
 validated.push({ candidate, panelFields, initialNotes, warnings: validation.warnings || [] });
 } else {
+console.warn('[KonnectBookingCheck] validation rejected candidate:', validation.reason);
 candidateFailures.push('LEAD_VALIDATION_FAILED');
+candidateFailureDetails.push(`${validation.reason} (modal Date="${panelFields.date || ''}", modal Source="${panelFields.source || ''}", SLA Created="${row.created}", SLA Source="${row.source}")`);
 }
 await closeLeadModal();
 }
@@ -1441,7 +1458,7 @@ const exception = candidateFailures.includes('CANCELLED') ? 'CANCELLED'
 : candidateFailures.includes('LEAD_CLICK_TARGET_NOT_FOUND') ? 'LEAD_CLICK_TARGET_NOT_FOUND'
 : candidateFailures.includes('LEAD_MODAL_TIMEOUT') ? 'LEAD_MODAL_TIMEOUT'
 : 'LEAD_VALIDATION_FAILED';
-return finalizeResult(result, { status: 'EXCEPTION', exception, warnings: candidateFailures });
+return finalizeResult(result, { status: 'EXCEPTION', exception, warnings: candidateFailureDetails.length > 0 ? candidateFailureDetails : candidateFailures });
 }
 if (validated.length > 1) {
 return finalizeResult(result, { status: 'EXCEPTION', exception: 'AMBIGUOUS_LEAD' });
@@ -1578,13 +1595,15 @@ return [header, ...lines].join('\n');
 }
 
 function buildFullAuditTsv(session) {
-const header = ['InputIndex', 'Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'MatchMethod', 'TimelineTimestamp', 'VisibleLeadId', 'ModalDate', 'SourceValidation', 'CampaignValidation', 'InitialNotes', 'Category', 'Reason', 'Confidence', 'Status', 'Exception', 'ProcessingTimestamp'];
+const header = ['InputIndex', 'Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'MatchMethod', 'TimelineTimestamp', 'VisibleLeadId', 'ModalDate', 'SourceValidation', 'CampaignValidation', 'InitialNotes', 'Category', 'Reason', 'Confidence', 'Status', 'Exception', 'Warnings', 'ProcessingTimestamp'];
 const lines = orderedResults(session).map((r) => [
 r.inputIndex, r.name, r.phone, r.email, r.source, r.campaign, r.created,
 r.customerMatchMethod || '', r.timelineTimestamp || '', r.visibleLeadId || '',
 r.modalDate || '', r.sourceValidation || '', JSON.stringify(r.campaignValidation || ''),
 (r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
-r.category || '', r.reason || '', r.confidence || '', r.status, r.exception || '', r.processingTimestamp || ''
+r.category || '', r.reason || '', r.confidence || '', r.status, r.exception || '',
+(r.warnings || []).join(' | ').replace(/\t/g, ' ').replace(/\r?\n/g, ' '),
+r.processingTimestamp || ''
 ].join('\t'));
 return [header.join('\t'), ...lines].join('\n');
 }
@@ -1854,21 +1873,24 @@ pasteBox.value = '';
 uiHandle.setState('Idle', '-', '-');
 });
 
-// Same behavior as SLA-Extract.js's own Clear & Stop: a confirm gate,
-// then stop the currently running instance and tear down its panel -
-// not a data wipe (that's what Clear session, above, is for). The
-// persisted session in localStorage is deliberately left alone, same
-// as SLA-Extract.js leaves its own localStorage-backed settings alone
-// here - re-running the bookmarklet afterward picks the session back
-// up rather than starting blank.
+// Originally left the persisted session alone, matching SLA-Extract.js's
+// own Clear & Stop exactly (per instruction at the time) - but real use
+// showed that reading as "not actually clearing it" here: reopening the
+// bookmarklet afterward still showed the old batch/results, which reads
+// as broken for a tool built around rapid iterate-and-retest cycles,
+// even though it was working as originally specified. Now a genuine
+// full reset - stops whatever's running, wipes the stored session, and
+// tears down the panel - so reopening always starts from a clean slate.
 root.getElementById('btnClearStop').addEventListener('click', () => {
 const ok = window.confirm('Clear all data and stop?');
 if (!ok) return;
 if (session) session.cancelled = true;
 isRunning = false;
+clearStoredSession();
+session = null;
 host.remove();
 window.__konnectBookingCheck = null;
-console.info('Konnect Booking Check stopped - click the bookmarklet again to run');
+console.info('Konnect Booking Check stopped and cleared - click the bookmarklet again to start fresh');
 });
 
 root.getElementById('btnCopy').addEventListener('click', (event) => {
