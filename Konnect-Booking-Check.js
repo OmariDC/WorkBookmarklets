@@ -2051,6 +2051,21 @@ const lines = ordered.map((r) => [r.name, r.phone, r.email, r.category || r.exce
 return [header, ...lines].join('\n');
 }
 
+// Feeds the reverse handoff into SLA-Extract.js: for large batches,
+// classification runs there instead (right next to the assign-
+// criteria/tier features), using its own ported copy of this same
+// classifier - this just hands back the raw fields, no classification
+// columns, matching exactly the column shape SLA-Extract.js's
+// "Classify Booking Check results" panel expects to parse.
+function buildRawNotesTsvForExtract(session) {
+const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes'];
+const lines = orderedResults(session).map((r) => [
+r.name, r.phone, r.email, r.source, r.campaign, r.created,
+(r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | ')
+].join('\t'));
+return [header.join('\t'), ...lines].join('\n');
+}
+
 function buildFullAuditTsv(session) {
 const header = ['InputIndex', 'Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'MatchMethod', 'TimelineTimestamp', 'VisibleLeadId', 'ModalDate', 'SourceValidation', 'CampaignValidation', 'InitialNotes', 'Category', 'Reason', 'Confidence', 'Status', 'Exception', 'Warnings', 'ProcessingTimestamp'];
 const lines = orderedResults(session).map((r) => [
@@ -2074,6 +2089,7 @@ window.KonnectBookingCheck.buildDefaultCopyText = buildDefaultCopyText;
 window.KonnectBookingCheck.buildPrioritisedCopyText = buildPrioritisedCopyText;
 window.KonnectBookingCheck.bookingPriorityRank = bookingPriorityRank;
 window.KonnectBookingCheck.buildFullAuditTsv = buildFullAuditTsv;
+window.KonnectBookingCheck.buildRawNotesTsvForExtract = buildRawNotesTsvForExtract;
 
 (function orchestrationSelfTest() {
 const failures = [];
@@ -2123,10 +2139,18 @@ check('rank: unclassified/exception rows sink to the bottom',
 bookingPriorityRank({ status: 'EXCEPTION', category: null }) > bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING' }),
 true);
 
+// The exact contract SLA-Extract.js's "Classify Booking Check
+// results" panel parses (BOOKING_CHECK_IMPORT_HEADER there) - pinned
+// down explicitly since the two files can't share a module and would
+// otherwise only find out they'd drifted apart by failing silently on
+// a real paste.
+const rawExtractTsv = buildRawNotesTsvForExtract(fakeSession);
+check('raw Extract export header shape', rawExtractTsv.split('\n')[0], 'Name\tPhone\tEmail\tSource\tCampaign\tCreated\tInitialNotes');
+
 if (failures.length > 0) {
 console.error('KonnectBookingCheck orchestration self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck orchestration self-test passed (8/8)');
+console.info('KonnectBookingCheck orchestration self-test passed (9/9)');
 }
 })();
 
@@ -2251,6 +2275,7 @@ button.primary { background: #1e293b; color: white; border-color: #1e293b; }
 <div class="buttons">
 <button class="action" id="btnCopy">Copy results</button>
 <button class="action" id="btnCopyPrioritised">Copy prioritised</button>
+<button class="action" id="btnCopyRawForExtract">Copy raw for Extract</button>
 <button class="action" id="btnDownload">Download TSV</button>
 <button class="action" id="btnClear">Clear session</button>
 </div>
@@ -2520,6 +2545,14 @@ root.getElementById('btnCopyPrioritised').addEventListener('click', (event) => {
 const s = ensureSessionFromPasteBox();
 const count = orderedResults(s).length;
 copyTextToClipboard(buildPrioritisedCopyText(s))
+.then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count}`, false))
+.catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
+});
+
+root.getElementById('btnCopyRawForExtract').addEventListener('click', (event) => {
+const s = ensureSessionFromPasteBox();
+const count = orderedResults(s).length;
+copyTextToClipboard(buildRawNotesTsvForExtract(s))
 .then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count}`, false))
 .catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
 });
