@@ -893,16 +893,26 @@ if (slaRow.source && panelFields.source && normalizeForCompare(slaRow.source) !=
 return { ok: false, reason: `Source contradicts: SLA="${slaRow.source}" modal="${panelFields.source}"` };
 }
 
+// Campaign is NOT a reliable confirmation field, confirmed live on a
+// real, objectively-correct match (Date matched to the minute, Source
+// matched exactly): the SLA table's own "Campaign" column and the lead
+// modal's "Campaign" field are different underlying data, not the same
+// value in a different format - one is Konnect's own SLA-queue
+// categorization ("Citroen - Enquiry - New"), the other is the lead's
+// actual marketing campaign/form name ("Test drive request"). Treating
+// a mismatch here as a contradiction was rejecting correct leads every
+// time. Kept as an informational warning only, never a rejection.
+const warnings = [];
 if (slaRow.campaign && panelFields.campaign && (panelFields.campaign.primary || panelFields.campaign.parenthetical)) {
 const target = normalizeForCompare(slaRow.campaign);
 const primaryMatch = panelFields.campaign.primary && normalizeForCompare(panelFields.campaign.primary) === target;
 const parentheticalMatch = panelFields.campaign.parenthetical && normalizeForCompare(panelFields.campaign.parenthetical) === target;
 if (!primaryMatch && !parentheticalMatch) {
-return { ok: false, reason: `Campaign contradicts both modal representations: SLA="${slaRow.campaign}"` };
+warnings.push(`Campaign differs (informational only, not a rejection): SLA="${slaRow.campaign}" modal primary="${panelFields.campaign.primary || ''}" parenthetical="${panelFields.campaign.parenthetical || ''}"`);
 }
 }
 
-return { ok: true };
+return { ok: true, warnings };
 }
 
 window.KonnectBookingCheck.getLoadedLeadEntries = getLoadedLeadEntries;
@@ -1389,7 +1399,7 @@ const panelFields = extractLeadPanelFields(modalState.panel);
 const validation = validateLeadCandidate(panelFields, row);
 if (validation.ok) {
 const initialNotes = extractInitialNotes(modalState.panel);
-validated.push({ candidate, panelFields, initialNotes });
+validated.push({ candidate, panelFields, initialNotes, warnings: validation.warnings || [] });
 } else {
 candidateFailures.push('LEAD_VALIDATION_FAILED');
 }
@@ -1406,13 +1416,14 @@ if (validated.length > 1) {
 return finalizeResult(result, { status: 'EXCEPTION', exception: 'AMBIGUOUS_LEAD' });
 }
 
-const { candidate, panelFields, initialNotes } = validated[0];
+const { candidate, panelFields, initialNotes, warnings } = validated[0];
 const auditPatch = {
 timelineTimestamp: candidate.rawTimestamp,
 visibleLeadId: candidate.leadId,
 modalDate: panelFields.date,
 sourceValidation: panelFields.source,
-campaignValidation: panelFields.campaign
+campaignValidation: panelFields.campaign,
+warnings: warnings || []
 };
 
 if (initialNotes === null) {
