@@ -1306,7 +1306,17 @@ done: !parsed.headerOk || groups.length === 0
 // alternates. A non-empty result set that fails to resolve to a safe,
 // unique customer (CUSTOMER_NOT_LINKED/CUSTOMER_AMBIGUOUS) is terminal
 // for that attempt, not a trigger to try the other identifier.
-async function searchAndOpenCustomer(group) {
+// session is optional (standalone/console use doesn't need it) but
+// checked between every awaited sub-step when given, not just once
+// per attempt - Cancel/Clear & Stop are cooperative by necessity (none
+// of the underlying waits carry an abort signal), so this is what
+// keeps that gap to "at most one in-flight wait" rather than
+// "possibly this whole customer's remaining rows".
+function isCancelled(session) {
+return !!(session && session.cancelled);
+}
+
+async function searchAndOpenCustomer(group, session) {
 const sample = group.rows[0];
 const attempts = [];
 if (sample.normalizedEmail) attempts.push({ type: 'email', value: sample.email });
@@ -1315,16 +1325,21 @@ if (attempts.length === 0) return { status: 'FAILED', exception: 'NO_SEARCH_IDEN
 
 let lastException = 'NO_SEARCH_IDENTIFIER';
 for (const attempt of attempts) {
+if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 const opened = await openSearchPage();
+if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 if (!opened) { lastException = 'SEARCH_TIMEOUT'; continue; }
 
 const typeSelected = await selectSearchType(attempt.type);
+if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 if (!typeSelected) { lastException = 'SEARCH_TIMEOUT'; continue; }
 
 const entered = await enterSearchIdentifier(attempt.value);
+if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 if (!entered) { lastException = 'SEARCH_TIMEOUT'; continue; }
 
 const count = await submitSearchAndWaitForResults();
+if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 if (count === null) { lastException = 'SEARCH_TIMEOUT'; continue; }
 if (count === 0) { lastException = 'SEARCH_NO_RESULTS'; continue; }
 
@@ -1335,6 +1350,7 @@ return { status: 'FAILED', exception: choice.status };
 }
 
 const timelineState = await openCustomerAndWaitForTimeline(choice.result);
+if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 if (timelineState.state === 'FAILED') return { status: 'FAILED', exception: 'TIMELINE_TIMEOUT' };
 if (timelineState.state === 'READY_WITH_ZERO_ELIGIBLE_SALES_LEADS') {
 return { status: 'OK', matchMethod: attempt.type, noEligibleEvents: true };
@@ -1349,7 +1365,7 @@ return { status: 'FAILED', exception: lastException };
 // its customer - opens each exact-minute candidate one at a time,
 // closes it whether or not it validates, and only classifies once
 // exactly one candidate survives validation.
-async function processLeadRow(row) {
+async function processLeadRow(row, session) {
 const result = makeResultBase(row);
 const referenceNow = new Date();
 
@@ -1361,6 +1377,7 @@ return finalizeResult(result, { status: 'EXCEPTION', exception: 'INVALID_CREATED
 let workingCandidates = candidates;
 if (workingCandidates.length === 0) {
 for (let attempt = 0; attempt < 5; attempt++) {
+if (isCancelled(session)) return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
 const scrollResult = await loadOlderTimelineEntries();
 if (scrollResult.status === 'TIMELINE_SCROLL_CONTAINER_UNKNOWN') break;
 const rescan = findMatchingLeadCandidates(row.created, referenceNow);
@@ -1369,6 +1386,7 @@ if (!scrollResult.loadedNewEntries) break;
 }
 }
 
+if (isCancelled(session)) return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
 if (workingCandidates.length === 0) {
 return finalizeResult(result, { status: 'EXCEPTION', exception: 'TARGET_CREATED_DATETIME_NOT_FOUND' });
 }
@@ -1385,12 +1403,24 @@ return finalizeResult(result, { status: 'EXCEPTION', exception: 'TARGET_CREATED_
 const validated = [];
 const candidateFailures = [];
 for (const candidate of workingCandidates) {
+if (isCancelled(session)) {
+candidateFailures.push('CANCELLED');
+break;
+}
 const clickTarget = findLeadClickTarget(candidate.row);
 if (!clickTarget || !clickTarget.isConnected) {
 candidateFailures.push('LEAD_CLICK_TARGET_NOT_FOUND');
 continue;
 }
 const modalState = await openLeadModal(candidate.row);
+if (isCancelled(session)) {
+// The modal may have opened right as Cancel/Clear & Stop was
+// pressed - close it before giving up, so it isn't left open and
+// unattended once this stops.
+if (modalState) await closeLeadModal();
+candidateFailures.push('CANCELLED');
+break;
+}
 if (!modalState) {
 candidateFailures.push('LEAD_MODAL_TIMEOUT');
 continue;
@@ -1407,7 +1437,8 @@ await closeLeadModal();
 }
 
 if (validated.length === 0) {
-const exception = candidateFailures.includes('LEAD_CLICK_TARGET_NOT_FOUND') ? 'LEAD_CLICK_TARGET_NOT_FOUND'
+const exception = candidateFailures.includes('CANCELLED') ? 'CANCELLED'
+: candidateFailures.includes('LEAD_CLICK_TARGET_NOT_FOUND') ? 'LEAD_CLICK_TARGET_NOT_FOUND'
 : candidateFailures.includes('LEAD_MODAL_TIMEOUT') ? 'LEAD_MODAL_TIMEOUT'
 : 'LEAD_VALIDATION_FAILED';
 return finalizeResult(result, { status: 'EXCEPTION', exception, warnings: candidateFailures });
@@ -1466,7 +1497,7 @@ const group = session.groups[session.groupIndex];
 
 if (session.rowInGroupIndex === 0) {
 uiHandle.setState(`Searching for ${group.rows[0].name}...`, group.rows[0].name, null);
-const openResult = await searchAndOpenCustomer(group);
+const openResult = await searchAndOpenCustomer(group, session);
 if (openResult.status !== 'OK') {
 group.rows.forEach((row) => {
 session.results[row.inputIndex] = finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception: openResult.exception });
@@ -1488,7 +1519,7 @@ group.customerMatchMethod = openResult.matchMethod;
 
 const row = group.rows[session.rowInGroupIndex];
 uiHandle.setState(`Reading lead at ${row.created}...`, group.rows[0].name, row.created);
-const result = await processLeadRow(row);
+const result = await processLeadRow(row, session);
 result.customerMatchMethod = group.customerMatchMethod;
 session.results[row.inputIndex] = result;
 
