@@ -1439,6 +1439,16 @@ console.warn('[KonnectBookingCheck] modal did not become ready for candidate at'
 candidateFailures.push('LEAD_MODAL_TIMEOUT');
 continue;
 }
+// Empty Date/Source in the extracted fields (seen in real testing)
+// could mean either a genuine modal with an unexpected internal
+// structure, or - given no modal is visibly appearing on screen at
+// all per direct observation - that this matched some other stale or
+// hidden element that merely satisfies the readiness selectors
+// without being the real, freshly-opened lead modal. Logging the
+// actual matched element (not just the fields we tried to pull out of
+// it) removes the guesswork either way.
+console.info('[KonnectBookingCheck] modal element matched:', modalState.modal.className, '| panel used:', modalState.panel === modalState.modal ? '(fell back to whole modal - no .tab-pane.active found)' : modalState.panel.className, '| visible rect:', JSON.stringify(modalState.modal.getBoundingClientRect()));
+console.info('[KonnectBookingCheck] modal panel outerHTML (first 1500 chars):', modalState.panel.outerHTML.slice(0, 1500));
 const panelFields = extractLeadPanelFields(modalState.panel);
 console.info('[KonnectBookingCheck] modal opened - extracted fields:', JSON.stringify(panelFields));
 const validation = validateLeadCandidate(panelFields, row);
