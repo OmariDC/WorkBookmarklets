@@ -1904,6 +1904,14 @@ if (session) { session.cancelled = true; uiHandle.setState('Cancelling...'); }
 });
 
 root.getElementById('btnClear').addEventListener('click', () => {
+// Rebinding the module-level `session` variable alone doesn't stop a
+// runLoop/stepOnce already in flight - it holds its own closure over
+// the previous session object, so without cancelling that object too,
+// a stuck/slow row would finish, re-save itself via saveSession(), and
+// (if running via Start) the loop would keep auto-advancing through
+// the rest of the batch - confirmed live: clearing mid-freeze let
+// processing "carry on going" instead of stopping.
+if (session) session.cancelled = true;
 clearStoredSession();
 session = null;
 pasteBox.value = '';
