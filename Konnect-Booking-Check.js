@@ -550,24 +550,54 @@ return { state: 'READY_WITH_ZERO_ELIGIBLE_SALES_LEADS', reason: 'Loading indicat
 // defensive fallback, since the live inspection that confirmed this
 // signal couldn't itself verify MutationObserver firing reliability in
 // its sandboxed environment.
+//
+// Resolving the instant the Refresh icon first appears turned out to
+// be an intermittent race (reported live: same batch, same customer,
+// no data difference, only sometimes failed to find a lead that was
+// definitely there) - the same class of bug already confirmed twice
+// elsewhere in this file (the lead modal's Date/Source fields existing
+// as empty shells before Angular's data-binding actually populated
+// them; the search input's own confirmed ng-model-options debounce):
+// a loading indicator can clear before the ng-repeat digest has
+// finished rendering every entry into the DOM. Requiring the eligible-
+// entry count to stay unchanged for one quiet 300ms window before
+// resolving - not the instant readiness is first observed - catches a
+// still-populating timeline instead of scanning it mid-render.
 function waitForTimelineReady(timeout = 10000) {
 return new Promise((resolve) => {
 const startedAt = Date.now();
 let settled = false;
+let settleTimer = null;
+let lastEntryCount = -1;
 
 function finish(result) {
 if (settled) return;
 settled = true;
 clearInterval(pollTimer);
+clearTimeout(settleTimer);
 observer.disconnect();
 resolve(result);
 }
 
+function scheduleSettleCheck(state) {
+clearTimeout(settleTimer);
+lastEntryCount = state.eligiblePinkEntries;
+settleTimer = setTimeout(() => {
+const recheck = getTimelineReadyState();
+const stillReady = recheck.state === 'READY_WITH_SALES_LEADS' || recheck.state === 'READY_WITH_ZERO_ELIGIBLE_SALES_LEADS';
+if (stillReady && recheck.eligiblePinkEntries === lastEntryCount) {
+finish(recheck);
+}
+// Otherwise the next mutation/poll tick re-drives check() itself.
+}, 300);
+}
+
 function check() {
+if (settled) return true;
 const state = getTimelineReadyState();
 if (state.state === 'READY_WITH_SALES_LEADS' || state.state === 'READY_WITH_ZERO_ELIGIBLE_SALES_LEADS') {
-finish(state);
-return true;
+if (!settleTimer || state.eligiblePinkEntries !== lastEntryCount) scheduleSettleCheck(state);
+return false;
 }
 if (Date.now() - startedAt >= timeout) {
 finish({ state: 'FAILED', reason: `Timed out waiting for timeline readiness (last state: ${state.state} - ${state.reason})` });
@@ -576,7 +606,7 @@ return true;
 return false;
 }
 
-if (check()) return;
+check();
 
 const observer = new MutationObserver(() => { check(); });
 observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
