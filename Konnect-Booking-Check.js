@@ -762,6 +762,20 @@ if (!modal) return null;
 const panel = modal.querySelector('.tab-pane.active') || modal;
 const notes = panel.querySelector('#txtInitialNotes');
 if (!notes) return null;
+// #txtInitialNotes (and the Date/Source footer fields) can exist as
+// empty shells the instant the modal's structure renders, before
+// Angular's own data-binding has actually populated them a moment
+// later - confirmed live: automation was opening a real modal,
+// reading it while still blank, and closing it again fast enough to
+// never visually register as having opened at all (matching Date/
+// Source both coming back empty in every real test run). The
+// original spec's own stated readiness condition ("Date and Source
+// are present") was never actually implemented in its reference code,
+// which only checked #txtInitialNotes existing - this closes that
+// gap by requiring Date to have a genuine value too, not just its
+// container existing.
+const dateValue = extractLabeledFooterField(panel, 'Date');
+if (!dateValue) return null;
 return { modal, panel, notes };
 }
 
