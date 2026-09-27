@@ -2245,18 +2245,29 @@ kbcPageFlashOverlayPrevOverflow = null;
 // panel (categorizeTier there) - ported verbatim rather than inventing
 // a separate grouping, per instruction that this panel should group
 // leads "into the same tiers as the extract ui".
+// Order and matching here MUST mirror classifyInitialNotes' own
+// dispatch exactly (isElectricCampaign/isReserveUsedCampaign/
+// isTestDriveRequestCampaign/etc, further up this file) - this only
+// decides which section a card DISPLAYS under, but if it's stricter or
+// differently-ordered than what actually classified the lead, a card
+// can end up shown in the wrong tier from the ruleset that was really
+// applied to it. Previously required the full "test drive request" +
+// new/used here while the classifier itself only checked for a bare
+// "test drive" substring (isTestDriveRequestCampaign) - a campaign
+// matching the classifier's looser rule but not this stricter one
+// would get Tier 1 rules applied but display under Tier 4
+// "Uncategorized", with no way to tell from the UI which rules a card
+// actually got.
 function categorizeTier(campaign, source) {
 const camp = String(campaign || '').toLowerCase();
 const src = String(source || '').toLowerCase();
 
-if (camp.includes('test drive request') && camp.includes('new'))
-return { tier: 1, reason: 'Test Drive Request - New' };
-if (camp.includes('test drive request') && camp.includes('used'))
-return { tier: 1, reason: 'Test Drive Request - Used' };
 if (camp.includes('electric'))
 return { tier: 1, reason: 'Brand - Electric' };
 if (camp.includes('reserve') && camp.includes('used'))
 return { tier: 1, reason: 'Reserve - Used' };
+if (camp.includes('test drive'))
+return { tier: 1, reason: 'Test Drive Request' };
 
 if (camp.includes('enquiry') && camp.includes('new') && src.includes('customer first'))
 return { tier: 2, reason: 'Enquiry - New (Customer First)' };
@@ -2278,6 +2289,8 @@ if (camp.includes('general'))
 return { tier: 4, reason: 'General' };
 if (camp.includes('inbound'))
 return { tier: 4, reason: 'Inbound' };
+if (camp.includes('cargurus') || src.includes('cargurus'))
+return { tier: 4, reason: 'Cargurus' };
 
 return { tier: 4, reason: 'Uncategorized' };
 }
