@@ -1365,6 +1365,11 @@ const cases = [
 // alone.
 { name: 'No date field, comments say "Monday"', date: null, comments: 'Could come in Monday if possible', expect: 'DATE ONLY' },
 { name: 'No date field, comments say "tomorrow"', date: null, comments: 'Free tomorrow afternoon', expect: 'DATE ONLY' },
+// Visit-intent wording plus a relative-date mention: the relative-date
+// wins the category (still DATE ONLY, not BOOKING (TEST DRIVE)) - the
+// day mentioned is what makes it voicemail-actionable regardless of
+// the "view"/"test drive" wording also being present.
+{ name: 'Visit intent + relative date: "view this vehicle tomorrow"', date: null, comments: 'Id like to view this vehicle tomorrow', expect: 'DATE ONLY' },
 // Relative-date PLUS an exact time is as concrete as a real confirmed
 // date+time, even with no structured date field.
 { name: 'No date field, comments say "Monday at 3pm"', date: null, comments: 'Monday at 3pm works for me', expect: 'CONFIRMED DATE & TIME' }
