@@ -133,6 +133,16 @@ return normalizedCampaign.endsWith('enquiry - new') && normalizedSource === 'cus
 // more real Test Drive Request leads are seen.
 const TEST_DRIVE_INTENT_KEYWORDS = ['test drive', 'drive', 'look at', 'view', 'see the car', 'come in', 'visit', 'pop in'];
 
+// Genuine expressed interest in a vehicle that stops short of visit
+// intent (no "test drive"/"come in"/etc) - real example: "Hi I would
+// potentially be interested in this vehicle, and trading in my..."
+// Per instruction, this stays NON-BOOKING (no date, no visit intent -
+// still requires a live call to get anywhere), but is more contactable
+// than a blank/generic answer, so it ranks higher within NON-BOOKING
+// (see bookingPriorityRank) rather than becoming its own category.
+// First-pass phrase, not an exhaustive confirmed set.
+const POTENTIAL_INTEREST_PHRASES = ['potentially be interested in', 'potentially interested in'];
+
 // Deliberately a loose substring check, not the strict brand-prefix
 // suffix match isInScope() uses for Enquiry-New - per instruction, this
 // tier will also be sent leads whose Source isn't "Customer First" and
@@ -344,6 +354,9 @@ return { category: 'NON-BOOKING', reason: 'PX Valuation lead, but comments menti
 }
 if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
 return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead with a genuine answer showing dealership-visit intent.', confidence: 'medium' };
+}
+if (containsAny(lower, POTENTIAL_INTEREST_PHRASES)) {
+return { category: 'NON-BOOKING', reason: 'PX Valuation lead: comments express genuine interest in a vehicle, but no visit intent - still Non-Booking, but more contactable than a generic page visit.', confidence: 'medium' };
 }
 return { category: 'NON-BOOKING', reason: 'PX Valuation lead: a specific vehicle page visit alone is tracked behavior, not something the customer said - not a real warm signal.', confidence: 'medium' };
 }
@@ -1611,6 +1624,11 @@ const cases = [
 // visit-intent wording in the comments, same as every other tier. =====
 { name: 'PX Valuation + specific vehicle page visit alone (not warm)', date: null, comments: 'The customer was on the following website page: https://x/citroen-c3-aircross-pch', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
 { name: 'PX Valuation + generic valuation page', date: null, comments: 'https://stellantisandyou.co.uk/car-valuation', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
+{ name: 'PX Valuation + "before completing the valuation" phrasing (still non-booking)', date: null, comments: 'The customer was on the following page, before completing the valuation: https://x/citroen-c5-aircross', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
+// Genuine interest short of visit intent - still Non-Booking (no
+// separate category), but ranks higher within it (see the priority-
+// rank check below).
+{ name: 'PX Valuation + "potentially interested in" (still non-booking, more contactable)', date: null, comments: 'Hi I would potentially be interested in this vehicle, and trading in my 2010 hyundai santa fe. Could i speak to someone about this, i am based in Cornwall.', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
 { name: 'PX Valuation + genuine visit-intent wording (warm)', date: null, comments: 'Would like to come in and view the C5 Aircross in person', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
 
 // ===== Tier 3: Enquiry - Used - phone+time is confirmed. A vague
@@ -2014,6 +2032,12 @@ session.cancelled = false;
 try {
 while (!session.done && !session.cancelled) {
 if (session.paused) { await sleep(200); continue; }
+// Same "(N left)" countdown SLA-Extract.js's own overlay shows during
+// batch ingestion (setBadgeProgress there) - showPageFlashOverlay just
+// updates the existing overlay's text when already showing, so this
+// is cheap to call every iteration.
+const remaining = session.rows.length - Object.keys(session.results).length;
+showPageFlashOverlay(`Checking leads… (${remaining} left)`);
 const advanced = await stepOnce(session, uiHandle);
 uiHandle.render();
 if (!advanced) break;
@@ -2039,15 +2063,21 @@ return session.rows.map((row) => session.results[row.inputIndex]).filter(Boolean
 // WARM ENQUIRY ranks above plain NON-BOOKING rather than
 // beside it.
 function bookingPriorityRank(result) {
-if (!result || result.status !== 'CLASSIFIED') return 6;
+if (!result || result.status !== 'CLASSIFIED') return 7;
 if (result.category === 'CONFIRMED DATE & TIME') return 1;
 if (result.category === 'DATE ONLY') {
 const { comments } = parseInitialNotesFields(result.initialNotes);
 return containsAny(comments.toLowerCase(), TIME_PREFERENCE_WORDS) ? 2 : 3;
 }
 if (result.category === 'WARM ENQUIRY') return 4;
-if (result.category === 'NON-BOOKING') return 5;
-return 6;
+if (result.category === 'NON-BOOKING') {
+// A genuine "potentially interested in..." answer, though not visit
+// intent, is still more contactable than a blank/generic one - ranks
+// above plain NON-BOOKING without becoming its own category.
+const { comments } = parseInitialNotesFields(result.initialNotes);
+return containsAny(comments.toLowerCase(), POTENTIAL_INTEREST_PHRASES) ? 5 : 6;
+}
+return 7;
 }
 
 function buildDefaultCopyText(session) {
@@ -2123,7 +2153,13 @@ check('rank: WARM ENQUIRY beats NON-BOOKING',
 bookingPriorityRank({ status: 'CLASSIFIED', category: 'WARM ENQUIRY' }) < bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING' }),
 true);
 check('rank: unclassified/exception rows sink to the bottom',
-bookingPriorityRank({ status: 'EXCEPTION', category: null }) > bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING' }),
+bookingPriorityRank({ status: 'EXCEPTION', category: null }) > bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: -' }),
+true);
+check('rank: "potentially be interested in" NON-BOOKING beats plain NON-BOOKING, but still loses to WARM ENQUIRY',
+bookingPriorityRank({ status: 'CLASSIFIED', category: 'WARM ENQUIRY' })
+< bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: Hi I would potentially be interested in this vehicle' })
+&& bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: Hi I would potentially be interested in this vehicle' })
+< bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: -' }),
 true);
 
 // The exact contract SLA-Extract.js's "Classify Booking Check
@@ -2137,7 +2173,7 @@ check('raw Extract export header shape', rawExtractTsv.split('\n')[0], 'Name\tPh
 if (failures.length > 0) {
 console.error('KonnectBookingCheck orchestration self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck orchestration self-test passed (8/8)');
+console.info('KonnectBookingCheck orchestration self-test passed (9/9)');
 }
 })();
 
