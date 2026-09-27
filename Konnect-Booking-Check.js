@@ -1821,6 +1821,22 @@ if (!scrollResult.loadedNewEntries) break;
 
 if (isCancelled(session)) return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
 if (workingCandidates.length === 0) {
+// findMatchingLeadCandidates only ever logs a candidate COUNT, never
+// why a specific entry didn't match - parseTimelineTimestamp's regex
+// is strictly anchored (^...$), so any raw text that doesn't fit
+// either confirmed shape exactly (extra whitespace variant, a
+// different month abbreviation, anything appended/prepended) silently
+// parses to null and the entry is just excluded, with no trace of it
+// ever having been seen at all. Logging every loaded entry's raw text
+// and parse result here - even though it's visible on the page and
+// recorded identically to working leads, per the report that exposed
+// this gap - is what actually shows whether the match failed on a
+// genuine timestamp mismatch or on a raw-text shape this parser
+// doesn't recognize.
+console.warn('[KonnectBookingCheck] TARGET_CREATED_DATETIME_NOT_FOUND for row.created=', JSON.stringify(row.created), 'parsed target=', target, '- entries seen:', getLoadedLeadEntries().map((entryRow) => {
+const raw = extractTimelineTimestamp(entryRow);
+return { raw, parsed: raw ? parseTimelineTimestamp(raw, referenceNow) : null };
+}));
 return finalizeResult(result, { status: 'EXCEPTION', exception: 'TARGET_CREATED_DATETIME_NOT_FOUND' });
 }
 
