@@ -83,6 +83,14 @@ const OVERRIDE_KEYWORDS = [...FINANCE_KEYWORDS, ...BUSINESS_KEYWORDS, ...TECHNIC
 // actual time.
 const TIME_PREFERENCE_WORDS = ['morning', 'afternoon', 'evening', 'early', 'earliest slot', 'slot'];
 
+// A specific day/relative-date mention in free text ("Monday",
+// "tomorrow") even when the structured date field itself is blank -
+// per instruction, this still gives enough to reference in a
+// voicemail ("classified the date way"), so it's treated as
+// equivalent to having a date rather than falling through to
+// NON-BOOKING. First-pass list, not an exhaustive confirmed set.
+const RELATIVE_DATE_WORDS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'tomorrow', 'today', 'tonight', 'next week', 'this week'];
+
 // An actual clock time - 24h (17:48) or 12h with am/pm (5:00 pm, 3pm).
 // Confirmed rare for this lead type specifically (unlike Test Drive
 // Request campaigns' "Preferred Date/Time: ..., HH:MM"), but still
@@ -173,6 +181,25 @@ confidence: 'high'
 }
 
 if (!hasDateField) {
+// A day/relative-date mention in the comments ("Monday", "tomorrow")
+// stands in for the missing structured date field - per instruction,
+// "classified the date way": voicemail-actionable, same as a real
+// date with no further detail, unless paired with an exact time (as
+// concrete as a fully confirmed booking).
+if (containsAny(lower, RELATIVE_DATE_WORDS)) {
+if (EXACT_TIME_PATTERN.test(comments)) {
+return {
+category: 'CONFIRMED DATE & TIME',
+reason: 'No structured date field, but comments state a specific day/date together with an exact time - as concrete as a confirmed booking.',
+confidence: 'medium'
+};
+}
+return {
+category: 'DATE ONLY',
+reason: 'No structured date field, but comments mention a specific day/relative date - still enough to reference in a voicemail.',
+confidence: 'medium'
+};
+}
 // Real case that exposed this: Stephen Dracup's lead is genuinely
 // Tier 2 Enquiry - New / Customer First (not a "Test Drive Request"
 // campaign - isTestDriveRequestCampaign() above never applies to it),
@@ -181,7 +208,8 @@ if (!hasDateField) {
 // comments said. Per instruction, that's wrong for this lead type: a
 // genuine answer showing dealership-visit intent is itself a booking,
 // no date field required, same as the dedicated Test Drive Request
-// tier above.
+// tier above - but it still requires reaching the customer live (no
+// date to reference in a voicemail), unlike every branch above.
 if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
 return {
 category: 'BOOKING (TEST DRIVE)',
@@ -1330,7 +1358,16 @@ const cases = [
 // mentioning "test drive", because the !hasDateField branch used to
 // bail before ever looking at the comments. This is the case that
 // exposed that gap.
-{ name: 'Stephen Dracup (real: Enquiry - New, no date, mentions test drive)', date: null, comments: 'Would like to book a test drive when convenient', campaign: 'Citroen - Enquiry - New', source: 'Customer First', expect: 'BOOKING (TEST DRIVE)' }
+{ name: 'Stephen Dracup (real: Enquiry - New, no date, mentions test drive)', date: null, comments: 'Would like to book a test drive when convenient', campaign: 'Citroen - Enquiry - New', source: 'Customer First', expect: 'BOOKING (TEST DRIVE)' },
+// Relative-date-in-comments ("classified the date way"): no structured
+// date field, but the comments name a specific day/relative date -
+// still voicemail-actionable, same DATE ONLY tier as a real date field
+// alone.
+{ name: 'No date field, comments say "Monday"', date: null, comments: 'Could come in Monday if possible', expect: 'DATE ONLY' },
+{ name: 'No date field, comments say "tomorrow"', date: null, comments: 'Free tomorrow afternoon', expect: 'DATE ONLY' },
+// Relative-date PLUS an exact time is as concrete as a real confirmed
+// date+time, even with no structured date field.
+{ name: 'No date field, comments say "Monday at 3pm"', date: null, comments: 'Monday at 3pm works for me', expect: 'CONFIRMED DATE & TIME' }
 ];
 
 const failures = [];
@@ -1709,26 +1746,40 @@ function orderedResults(session) {
 return session.rows.map((row) => session.results[row.inputIndex]).filter(Boolean);
 }
 
+// Lower = more valuable/urgent. Per instruction, the real axis isn't
+// "how good is this booking" but "can this be actioned via a voicemail
+// alone, or does it require actually reaching the customer live" -
+// every voicemail-actionable category (any real date signal) ranks
+// above every requires-pickup category. Within "requires pickup", a
+// lead with expressed visit/test-drive intent is more likely to
+// convert than one that was merely answered with no real signal, so
+// BOOKING (TEST DRIVE) ranks above plain NON-BOOKING rather than
+// beside it.
+function bookingPriorityRank(result) {
+if (!result || result.status !== 'CLASSIFIED') return 6;
+if (result.category === 'CONFIRMED DATE & TIME') return 1;
+if (result.category === 'DATE ONLY') {
+const { comments } = parseInitialNotesFields(result.initialNotes);
+return containsAny(comments.toLowerCase(), TIME_PREFERENCE_WORDS) ? 2 : 3;
+}
+if (result.category === 'BOOKING (TEST DRIVE)') return 4;
+if (result.category === 'NON-BOOKING') return 5;
+return 6;
+}
+
 function buildDefaultCopyText(session) {
 const header = ['Name', 'Phone', 'Email', 'Booking classification'].join('\t');
 const lines = orderedResults(session).map((r) => [r.name, r.phone, r.email, r.category || r.exception || 'PENDING'].join('\t'));
 return [header, ...lines].join('\n');
 }
 
-// Confirmed categories first, in the required order; anything without
-// one of those three exact categories (still pending, or an exception)
-// is appended after, preserving original input order within each
-// group - exceptions are never mixed into NON-BOOKING.
+// Sorted by bookingPriorityRank (voicemail-actionable ahead of
+// requires-pickup, ranked by likelihood within each) rather than a
+// flat category order - Array.prototype.sort is stable, so rows within
+// the same rank keep their original input order.
 function buildPrioritisedCopyText(session) {
-const order = ['CONFIRMED DATE & TIME', 'DATE ONLY', 'NON-BOOKING'];
 const rows = orderedResults(session);
-const buckets = order.map(() => []);
-const rest = [];
-rows.forEach((r) => {
-const idx = order.indexOf(r.category);
-if (idx === -1) rest.push(r); else buckets[idx].push(r);
-});
-const ordered = [...buckets[0], ...buckets[1], ...buckets[2], ...rest];
+const ordered = [...rows].sort((a, b) => bookingPriorityRank(a) - bookingPriorityRank(b));
 const header = ['Name', 'Phone', 'Email', 'Booking classification'].join('\t');
 const lines = ordered.map((r) => [r.name, r.phone, r.email, r.category || r.exception || 'PENDING'].join('\t'));
 return [header, ...lines].join('\n');
@@ -1755,6 +1806,7 @@ window.KonnectBookingCheck.runLoop = runLoop;
 window.KonnectBookingCheck.orderedResults = orderedResults;
 window.KonnectBookingCheck.buildDefaultCopyText = buildDefaultCopyText;
 window.KonnectBookingCheck.buildPrioritisedCopyText = buildPrioritisedCopyText;
+window.KonnectBookingCheck.bookingPriorityRank = bookingPriorityRank;
 window.KonnectBookingCheck.buildFullAuditTsv = buildFullAuditTsv;
 
 (function orchestrationSelfTest() {
@@ -1779,18 +1831,36 @@ check('same customer keeps a separate result per row', groups[0].rows.map((r) =>
 const fakeSession = {
 rows: parsed.rows,
 results: {
-0: { name: 'Alice', phone: '', email: 'alice@example.com', category: 'DATE ONLY' },
-1: { name: 'Alice Again', phone: '', email: 'alice@example.com', category: 'CONFIRMED DATE & TIME' },
-2: { name: 'Bob', phone: '07000000000', email: '', category: 'NON-BOOKING' }
+0: { name: 'Alice', phone: '', email: 'alice@example.com', category: 'DATE ONLY', status: 'CLASSIFIED' },
+1: { name: 'Alice Again', phone: '', email: 'alice@example.com', category: 'CONFIRMED DATE & TIME', status: 'CLASSIFIED' },
+2: { name: 'Bob', phone: '07000000000', email: '', category: 'NON-BOOKING', status: 'CLASSIFIED' }
 }
 };
 const prioritised = buildPrioritisedCopyText(fakeSession).split('\n').slice(1);
 check('prioritised order: confirmed, date-only, non-booking', prioritised.map((line) => line.split('\t')[0]), ['Alice Again', 'Alice', 'Bob']);
 
+// Full 5-tier rank per instruction: voicemail-actionable (confirmed >
+// date+time-preference > plain date-only) always outranks
+// requires-pickup (test-drive intent > plain non-booking).
+check('rank: CONFIRMED DATE & TIME', bookingPriorityRank({ status: 'CLASSIFIED', category: 'CONFIRMED DATE & TIME' }), 1);
+check('rank: DATE ONLY + time preference beats plain DATE ONLY',
+bookingPriorityRank({ status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: 'Customer Comments: Sunday morning please' })
+< bookingPriorityRank({ status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: 'Customer Comments: -' }),
+true);
+check('rank: DATE ONLY beats BOOKING (TEST DRIVE)',
+bookingPriorityRank({ status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: '' }) < bookingPriorityRank({ status: 'CLASSIFIED', category: 'BOOKING (TEST DRIVE)' }),
+true);
+check('rank: BOOKING (TEST DRIVE) beats NON-BOOKING',
+bookingPriorityRank({ status: 'CLASSIFIED', category: 'BOOKING (TEST DRIVE)' }) < bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING' }),
+true);
+check('rank: unclassified/exception rows sink to the bottom',
+bookingPriorityRank({ status: 'EXCEPTION', category: null }) > bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING' }),
+true);
+
 if (failures.length > 0) {
 console.error('KonnectBookingCheck orchestration self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck orchestration self-test passed (3/3)');
+console.info('KonnectBookingCheck orchestration self-test passed (8/8)');
 }
 })();
 
@@ -1866,6 +1936,7 @@ button.primary { background: #1e293b; color: white; border-color: #1e293b; }
 .exception { color: #dc2626; }
 .confirmed { color: #059669; font-weight: 600; }
 .dateonly { color: #d97706; }
+.pickup { color: #2563eb; }
 .nonbooking { color: #64748b; }
 .hidden { display: none; }
 .footer { border-top: 1px solid #cbd5e1; padding: 8px 12px; background: white; display: flex; justify-content: flex-end; border-radius: 0 0 10px 10px; }
@@ -2004,8 +2075,13 @@ const detailsState = { tiers: new Set([1, 2, 3, 4]), customers: new Set() };
 function categoryClass(r) {
 if (!r) return '';
 if (r.exception) return 'exception';
-if (r.category === 'CONFIRMED DATE & TIME' || r.category === 'BOOKING (TEST DRIVE)') return 'confirmed';
+// BOOKING (TEST DRIVE) is NOT the same tier of value as an actual
+// confirmed date/time - it requires reaching the customer live, no
+// voicemail can act on it alone - so it gets its own distinct color
+// rather than sharing "confirmed"'s green/bold styling.
+if (r.category === 'CONFIRMED DATE & TIME') return 'confirmed';
 if (r.category === 'DATE ONLY') return 'dateonly';
+if (r.category === 'BOOKING (TEST DRIVE)') return 'pickup';
 if (r.category === 'NON-BOOKING') return 'nonbooking';
 return '';
 }
@@ -2044,10 +2120,13 @@ if (!byTier.has(tier)) byTier.set(tier, []);
 byTier.get(tier).push(r);
 });
 resultsBody.innerHTML = Array.from(byTier.keys()).sort((a, b) => a - b).map((tier) => {
-const rows = byTier.get(tier);
+// Sorted by bookingPriorityRank (voicemail-actionable first, then
+// requires-pickup ranked by likelihood) so the most actionable leads
+// in each tier surface at the top rather than input order.
+const rows = [...byTier.get(tier)].sort((a, b) => bookingPriorityRank(a) - bookingPriorityRank(b));
 const customersHtml = rows.map((r) => `
 <details class="customer" data-key="${r.inputIndex}" ${detailsState.customers.has(r.inputIndex) ? 'open' : ''}>
-<summary><span class="customer-name">${escapeHtmlForUi(r.name)}</span><span class="${categoryClass(r)}">${escapeHtmlForUi(r.category || r.exception || 'Pending')}</span></summary>
+<summary><span class="customer-name" title="${escapeHtmlForUi(r.initialNotes || 'No Initial Notes read yet.')}">${escapeHtmlForUi(r.name)}</span><span class="${categoryClass(r)}">${escapeHtmlForUi(r.category || r.exception || 'Pending')}</span></summary>
 <div class="customer-body">${customerBodyHtml(r)}</div>
 </details>
 `).join('');
