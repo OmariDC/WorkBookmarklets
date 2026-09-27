@@ -210,14 +210,6 @@ return c.includes('cargurus') || s.includes('cargurus');
 
 const MOTABILITY_BOOKING_WORDS = ['priority', 'booked', 'confirmation needed'];
 
-// First-pass list of specific vehicle models named in the framework's
-// PX Valuation examples - a generic "car-valuation"/"home page" visit
-// with none of these is the NON-BOOKING default for this tier.
-// Matched against a hyphen/underscore-normalized haystack (see
-// classifyPxValuationTier), so every entry here uses spaces even where
-// the real URL form uses a hyphen (e.g. "e-c3").
-const PX_VEHICLE_MODEL_WORDS = ['c3 aircross', 'e c3', 'c5 aircross', '2008', '3008', 'frontera', 'possibly interested in the following vehicle'];
-
 // UK number plate shape (e.g. "WR25XYT") - confirms a specific vehicle
 // is being discussed for Enquiry - Used's WARM tier.
 const UK_REG_PLATE_PATTERN = /\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/i;
@@ -337,15 +329,19 @@ return { category: 'NON-BOOKING', reason: 'Motability lead: no explicit booking/
 // no date anywhere, but a genuine signal of interest, so it requires
 // reaching the customer live rather than being actionable by voicemail
 // alone.
-function classifyPxValuationTier(lower) {
-// The real signal here is usually a URL path ("citroen-c3-aircross-
-// pch"), hyphenated rather than spaced - normalize hyphens/underscores
-// to spaces so "c3 aircross" matches "c3-aircross" too.
-const normalized = lower.replace(/[-_]/g, ' ');
-if (containsAny(normalized, PX_VEHICLE_MODEL_WORDS)) {
-return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead: comments/URL show interest in a specific vehicle model - no date field for this campaign type, but a real signal worth calling on.', confidence: 'medium' };
+// Which specific vehicle page they visited is tracked behavior, not
+// anything the customer said - per instruction, that's not a real
+// warm signal, just browsing/valuation-checking. WARM ENQUIRY requires
+// the same "genuine answer showing visit intent" wording every other
+// tier uses, not merely having looked at one particular model's page.
+function classifyPxValuationTier(comments, lower) {
+if (containsAny(lower, OVERRIDE_KEYWORDS)) {
+return { category: 'NON-BOOKING', reason: 'PX Valuation lead, but comments mention finance/business/technical-support wording, which overrides to Non-Booking.', confidence: 'high' };
 }
-return { category: 'NON-BOOKING', reason: 'PX Valuation lead: generic valuation page, no specific vehicle of interest identified.', confidence: 'medium' };
+if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
+return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead with a genuine answer showing dealership-visit intent.', confidence: 'medium' };
+}
+return { category: 'NON-BOOKING', reason: 'PX Valuation lead: a specific vehicle page visit alone is tracked behavior, not something the customer said - not a real warm signal.', confidence: 'medium' };
 }
 
 function classifyEnquiryUsedTier(source, comments, lower) {
@@ -411,7 +407,7 @@ return { category: 'NON-BOOKING', reason: 'Offer Request - New campaign: 100% qu
 
 // Tier 3: PX Valuation - New.
 if (isPxValuationNewCampaign(campaign)) {
-return classifyPxValuationTier(lower);
+return classifyPxValuationTier(comments, lower);
 }
 
 // Tier 3: Enquiry - Used.
@@ -1594,11 +1590,13 @@ const cases = [
 // ===== Tier 3: Offer Request - New - always Non-Booking by definition. =====
 { name: 'Offer Request - New (always non-booking)', date: null, comments: '-', campaign: 'Citroen - Offer Request - New', expect: 'NON-BOOKING' },
 
-// ===== Tier 3: PX Valuation - New - WARM ENQUIRY only with a specific
-// vehicle model identified; generic valuation-page visits default to
-// Non-Booking. =====
-{ name: 'PX Valuation + specific vehicle model (hyphenated URL)', date: null, comments: 'The customer was on the following website page: https://x/citroen-c3-aircross-pch', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
+// ===== Tier 3: PX Valuation - New - visiting a specific vehicle's
+// page alone is tracked behavior, not something the customer said, so
+// it's NOT a warm lead by itself. WARM ENQUIRY requires genuine
+// visit-intent wording in the comments, same as every other tier. =====
+{ name: 'PX Valuation + specific vehicle page visit alone (not warm)', date: null, comments: 'The customer was on the following website page: https://x/citroen-c3-aircross-pch', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
 { name: 'PX Valuation + generic valuation page', date: null, comments: 'https://stellantisandyou.co.uk/car-valuation', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
+{ name: 'PX Valuation + genuine visit-intent wording (warm)', date: null, comments: 'Would like to come in and view the C5 Aircross in person', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
 
 // ===== Tier 3: Enquiry - Used - phone+time is confirmed, a specific
 // registration/model with interest is WARM ENQUIRY, Cargurus/shopping
