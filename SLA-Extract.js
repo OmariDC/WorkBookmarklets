@@ -4463,7 +4463,7 @@ badge.style.fontSize = '22px';
 // off-screen, that button is off-screen with it, and only an explicit
 // "show it" action - not a rebuild that merely preserves state - can
 // recover from that.
-function handleBadgeClick() {
+async function handleBadgeClick() {
 localStorage.setItem(PANEL_STATE_KEY, 'visible');
 // Morning Checks routinely leaves the visible tab sitting on pages
 // runExtraction()/detectPageType() don't recognize at all (Live
@@ -4481,7 +4481,20 @@ return;
 // panel title - see window._refreshLeadsAndPanel) - "show me the
 // panel" and "make sure it's actually current" are the same ask when
 // you're the one pressing the button to bring it up.
-window._refreshLeadsAndPanel();
+await window._refreshLeadsAndPanel();
+// Per instruction: activating the panel this way should also scan
+// Queue by Agent for fresh queue positions, same as already happens
+// automatically after a successful assign run. Sequenced after the
+// above (not run alongside it) since both navigate/manipulate the
+// page - running them concurrently would race.
+showPageFlashOverlay('Checking agent queues…');
+try {
+await refreshAgentQueueSnapshot();
+} finally {
+hidePageFlashOverlay();
+}
+if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers);
+else displayPanel(currentCustomers);
 }
 
 function attachBadgeHoverEffects() {
