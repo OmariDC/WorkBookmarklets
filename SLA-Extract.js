@@ -164,15 +164,38 @@ const MORNING_CHECKS_ORDER = [
 ];
 const PAGE_FLASH_OVERLAY_ID = '_slaPageFlashOverlay';
 
+// Checked against the campaign's primary segment (before any
+// parenthetical) rather than the raw full string - confirmed real
+// collision: Customer First's "Citroen - Enquiry - New (Test drive
+// request)" contains "test drive request" only inside a parenthetical
+// marketing-form label; the campaign itself is "Enquiry - New", not a
+// dedicated Test Drive Request campaign like "Peugeot - Test Drive
+// Request - New (...)" where "test drive request" IS the campaign
+// category. Same fix as Konnect-Booking-Check.js's own
+// isTestDriveRequestCampaign/isInScope, ported back here for
+// consistency - this file's categorizeTier is what that one's own copy
+// was ported FROM, so both need to agree, not just the copy.
+function campaignPrimaryPart(campaign) {
+const c = String(campaign || '').trim();
+const parenIndex = c.indexOf('(');
+return (parenIndex === -1 ? c : c.slice(0, parenIndex)).toLowerCase();
+}
+
 function categorizeTier(campaign, source) {
 const camp = campaign.toLowerCase();
 const src = source.toLowerCase();
+const campPrimary = campaignPrimaryPart(campaign);
 
-if (camp.includes('test drive request') && camp.includes('new'))
+if (campPrimary.includes('test drive request') && campPrimary.includes('new'))
 return { tier: 1, reason: 'Test Drive Request - New' };
-if (camp.includes('test drive request') && camp.includes('used'))
+if (campPrimary.includes('test drive request') && campPrimary.includes('used'))
 return { tier: 1, reason: 'Test Drive Request - Used' };
-if (camp.includes('electric'))
+// Excludes Register Interest - confirmed real collision: "Citroen -
+// Register Interest (Electric Vehicles Register Your Interest)"
+// contains "electric" but is a research/interest-capture campaign
+// (Tier 4), not a "Brand - Electric" one. Same fix as
+// Konnect-Booking-Check.js's own isElectricCampaign.
+if (camp.includes('electric') && !camp.includes('register interest'))
 return { tier: 1, reason: 'Brand - Electric' };
 if (camp.includes('reserve') && camp.includes('used'))
 return { tier: 1, reason: 'Reserve - Used' };
@@ -200,6 +223,35 @@ return { tier: 4, reason: 'Inbound' };
 
 return { tier: 4, reason: 'Uncategorized' };
 }
+
+// This file had no self-test coverage at all before now, unlike
+// Konnect-Booking-Check.js's own copy of this same function - added
+// here specifically to catch the two collisions just fixed above (and
+// guard against them regressing back in), using real verbatim campaign
+// strings rather than synthetic ones.
+(function categorizeTierSelfTest() {
+const cases = [
+{ name: 'Real: Customer First Enquiry-New (Test drive request) stays Tier 2, not Tier 1', campaign: 'Citroen - Enquiry - New (Test drive request)', source: 'Customer First', expectTier: 2 },
+{ name: 'Real: dedicated Test Drive Request campaign is Tier 1', campaign: 'Peugeot - Test Drive Request - New (pcr_new_test_drive)', source: 'Robins & Day Website', expectTier: 1 },
+{ name: 'Real: Register Interest campaign containing "Electric" is not Tier 1 Electric', campaign: 'Citroen - Register Interest (Electric Vehicles Register Your Interest)', source: 'Robins & Day Website', expectTier: 4 },
+{ name: 'A genuine Brand - Electric campaign is still Tier 1', campaign: 'Citroen - Electric', source: 'Website', expectTier: 1 },
+{ name: 'Reserve - Used is Tier 1', campaign: 'Citroen - Reserve - Used', source: 'Robins & Day Website', expectTier: 1 },
+{ name: 'Motability is Tier 2', campaign: 'Motability', source: 'Motability', expectTier: 2 },
+{ name: 'Offer Request - New is Tier 3', campaign: 'Citroen - Offer Request - New (Quote request)', source: 'Customer First', expectTier: 3 }
+];
+const failures = [];
+cases.forEach((c) => {
+const result = categorizeTier(c.campaign, c.source);
+if (result.tier !== c.expectTier) {
+failures.push(`${c.name}: expected tier ${c.expectTier}, got tier ${result.tier} (${result.reason})`);
+}
+});
+if (failures.length > 0) {
+console.error('SLA Extract categorizeTier self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info(`SLA Extract categorizeTier self-test passed (${cases.length}/${cases.length})`);
+}
+})();
 
 // Display-only urgency ordering/labeling for the SLA tier cards -
 // distinct from computeSortKey further down (used for ROUND-ROBIN
