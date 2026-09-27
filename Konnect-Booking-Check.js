@@ -173,6 +173,22 @@ confidence: 'high'
 }
 
 if (!hasDateField) {
+// Real case that exposed this: Stephen Dracup's lead is genuinely
+// Tier 2 Enquiry - New / Customer First (not a "Test Drive Request"
+// campaign - isTestDriveRequestCampaign() above never applies to it),
+// but had no date field and comments mentioning "test drive" - this
+// unconditionally returned NON-BOOKING before ever looking at what the
+// comments said. Per instruction, that's wrong for this lead type: a
+// genuine answer showing dealership-visit intent is itself a booking,
+// no date field required, same as the dedicated Test Drive Request
+// tier above.
+if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
+return {
+category: 'BOOKING (TEST DRIVE)',
+reason: 'No date field, but comments show genuine dealership-visit/test-drive intent - counts as a booking regardless of date.',
+confidence: 'medium'
+};
+}
 return {
 category: 'NON-BOOKING',
 reason: 'No "First Appointment Date Desired" field present.',
@@ -1299,13 +1315,22 @@ const cases = [
 // NON-BOOKING/"Outside current scope" before isInScope() was fixed to
 // match on the trailing campaign segment instead of exact equality.
 { name: 'Oscar Scully (brand-prefixed campaign)', date: '29/09/2026', comments: '-', campaign: 'Citroen - Enquiry - New', expect: 'DATE ONLY' },
-// Test Drive Request tier: no date/time required, Source isn't
-// "Customer First", and Campaign is only loosely matched - all per
-// instruction, since this tier will be sent non-Customer-First leads
-// too and Campaign/Source are a routing hint here, not a hard gate.
-{ name: 'Stephen Dracup (Test Drive Request, no date, answered)', date: null, comments: 'Would like to test drive the new C4 this weekend', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'BOOKING (TEST DRIVE)' },
-{ name: 'Test Drive Request, blank comments', date: null, comments: '-', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' },
-{ name: 'Test Drive Request, finance override', date: null, comments: 'Can I get a PCH quote as well as a test drive', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' }
+// Test Drive Request CAMPAIGN tier: no date/time required, Source
+// isn't "Customer First", and Campaign is only loosely matched - all
+// per instruction, since this tier will be sent non-Customer-First
+// leads too and Campaign/Source are a routing hint here, not a hard
+// gate.
+{ name: 'Test Drive Request campaign, no date, answered', date: null, comments: 'Would like to test drive the new C4 this weekend', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'BOOKING (TEST DRIVE)' },
+{ name: 'Test Drive Request campaign, blank comments', date: null, comments: '-', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' },
+{ name: 'Test Drive Request campaign, finance override', date: null, comments: 'Can I get a PCH quote as well as a test drive', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' },
+// Stephen Dracup's REAL lead: Campaign is genuinely "Citroen - Enquiry
+// - New" / Customer First (in Tier 2, not a Test Drive Request
+// campaign at all) - isTestDriveRequestCampaign() never applies here.
+// He had no date field, and was still coming back NON-BOOKING despite
+// mentioning "test drive", because the !hasDateField branch used to
+// bail before ever looking at the comments. This is the case that
+// exposed that gap.
+{ name: 'Stephen Dracup (real: Enquiry - New, no date, mentions test drive)', date: null, comments: 'Would like to book a test drive when convenient', campaign: 'Citroen - Enquiry - New', source: 'Customer First', expect: 'BOOKING (TEST DRIVE)' }
 ];
 
 const failures = [];
