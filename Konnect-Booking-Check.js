@@ -45,27 +45,49 @@ window.__konnectBookingCheck.focus();
 return;
 }
 
-// Confirmed Initial Notes structure for this lead type:
-//   Lead ID: [ID]
-//   Marketing Code: [CODE]
-//   First Appointment Date Desired: [DD/MM/YYYY]   (optional line)
-//   Customer Comments: [TEXT or "-"]
-// Split on the field's own label rather than a fixed line count, since
-// Marketing Code (and the whole block) may or may not include the date
-// line, and Customer Comments is always the last field so it's safe to
-// capture everything after its label through to the end of the notes,
-// including any internal line breaks.
+// Two distinct real Initial Notes shapes confirmed live/verbatim - no
+// third shape assumed beyond these two plus a raw-text fallback:
+//
+//   Customer First / Konnect CRM structured fields:
+//     Lead ID: [ID]
+//     Marketing Code: [CODE]
+//     First Appointment Date Desired: [DD/MM/YYYY]   (optional line)
+//     Customer Comments: [TEXT or "-"]
+//
+//   Robins & Day Website form fields - no Lead ID/Marketing Code lines
+//   and no "Customer Comments" label at all; confirmed real examples
+//   include a plain free-text line, a "Source: <form name>" pass-
+//   through label, website/valuation tracking prose, or (Test Drive
+//   Request forms specifically) a structured sub-form:
+//     Comment Line #1: Preferred Date/Time: [date], [time] Fuel Choice:
+//       [x] Transmission Choice: [y] Notes: [TEXT]
+//
+// Split on each shape's own label rather than a fixed line count, same
+// reasoning as before. If neither labelled shape is found (confirmed
+// real example: an unlabelled prose blob logged from a phone call), the
+// whole raw text is treated as the comments/free-text itself rather
+// than silently discarded as blank - every tier's keyword matching can
+// still run against it even without a recognized field structure.
 function parseInitialNotesFields(notes) {
 const text = String(notes || '');
+
 const dateMatch = text.match(/First Appointment Date Desired:\s*([^\r\n]*)/i);
 const commentsMatch = text.match(/Customer Comments:\s*([\s\S]*)$/i);
+if (dateMatch || commentsMatch) {
 const dateValue = dateMatch ? dateMatch[1].trim() : '';
 const comments = commentsMatch ? commentsMatch[1].trim() : '';
-return {
-hasDateField: dateValue.length > 0,
-dateValue,
-comments
-};
+return { hasDateField: dateValue.length > 0, dateValue, comments };
+}
+
+const commentLineMatch = text.match(/Comment Line #1:\s*([\s\S]*?)(?:\r?\nComment Line #2:|$)/i);
+if (commentLineMatch) {
+const line = commentLineMatch[1].trim();
+const preferredMatch = line.match(/Preferred Date\/Time:\s*([^\r\n]*?)(?:\s+Fuel Choice:|\s+Transmission Choice:|\s+Notes:|$)/i);
+const dateValue = preferredMatch ? preferredMatch[1].trim() : '';
+return { hasDateField: dateValue.length > 0, dateValue, comments: line };
+}
+
+return { hasDateField: false, dateValue: '', comments: text.trim() };
 }
 
 // "-" is the only confirmed "nothing here" marker across every example
@@ -122,7 +144,19 @@ function isInScope(campaign, source) {
 // exact-equality check against the bare "enquiry - new" never matches
 // any real row, so match the campaign *category* by its trailing
 // segment instead.
-const normalizedCampaign = String(campaign || '').trim().toLowerCase().replace(/\s+/g, ' ');
+//
+// Checked against the campaign's PRIMARY segment (before any
+// parenthetical), not the raw full string - confirmed real bug: every
+// actual Customer First campaign carries a parenthetical marketing-form
+// suffix ("Citroen - Enquiry - New (Test drive request)", "... (Information
+// request)", etc), which never literally ends with "enquiry - new" once
+// the parenthetical is included. Checking the raw string meant this,
+// the original "battle-tested" Tier 2 tier, could never actually match
+// a single real lead - only the parenthetical-free strings used in this
+// file's own self-tests - and every real Customer First Enquiry-New
+// lead was instead falling all the way through to the final low-
+// confidence "unmatched campaign" catch-all.
+const normalizedCampaign = campaignPrimaryPart(campaign).trim().replace(/\s+/g, ' ');
 const normalizedSource = String(source || '').trim().toLowerCase();
 return normalizedCampaign.endsWith('enquiry - new') && normalizedSource === 'customer first';
 }
@@ -146,13 +180,33 @@ const TEST_DRIVE_INTENT_KEYWORDS = ['test drive', 'drive', 'look at', 'view', 's
 // First-pass phrase list, not an exhaustive confirmed set.
 const POTENTIAL_INTEREST_PHRASES = ['potentially be interested in', 'potentially interested in', 'possibly interested in'];
 
-// Deliberately a loose substring check, not the strict brand-prefix
-// suffix match isInScope() uses for Enquiry-New - per instruction, this
-// tier will also be sent leads whose Source isn't "Customer First" and
-// whose Campaign wording may vary, so Campaign here is a routing hint
-// ("sorting help"), not a hard gate that can reject a real lead.
+// Checked against the campaign's own primary segment only (the part
+// before any parenthetical), not the full string - confirmed real
+// collision: Customer First's "Citroen - Enquiry - New (Test drive
+// request)" mentions "test drive" only inside a parenthetical
+// marketing-form label; the campaign itself is "Enquiry - New", the
+// exact same field shape/rules as every other Customer First lead
+// (Tier 2), not a dedicated Test Drive Request form like Robins & Day
+// Website's "Peugeot - Test Drive Request - New (...)" (Tier 1), where
+// "test drive" IS the campaign category. Matching the full string
+// previously promoted this real lead ("Test drive 1.2 manual C3 early
+// appointment please", confirmed DATE ONLY under Tier 2's own time-
+// preference rule) to Tier 1's more generous "time preference =
+// confirmed" treatment instead - the wrong category for a real lead.
+// Still a loose substring check within that primary segment, not the
+// strict brand-prefix suffix match isInScope() uses for Enquiry-New -
+// per instruction, this tier will also be sent leads whose Source isn't
+// "Customer First" and whose Campaign wording may vary, so Campaign
+// here is a routing hint ("sorting help"), not a hard gate that can
+// reject a real lead.
+function campaignPrimaryPart(campaign) {
+const c = String(campaign || '').trim();
+const parenIndex = c.indexOf('(');
+return (parenIndex === -1 ? c : c.slice(0, parenIndex)).toLowerCase();
+}
+
 function isTestDriveRequestCampaign(campaign) {
-return String(campaign || '').trim().toLowerCase().includes('test drive');
+return campaignPrimaryPart(campaign).includes('test drive');
 }
 
 // ===================================================================
@@ -171,8 +225,14 @@ return String(campaign || '').trim().toLowerCase().includes('test drive');
 // deliberately as lenient as that fix.
 // ===================================================================
 
+// Real collision confirmed: "Citroen - Register Interest (Electric
+// Vehicles Register Your Interest)" contains "electric" but is a
+// research/interest-capture campaign (Tier 4), not a "Brand - Electric"
+// booking campaign - excluded explicitly so it falls through to the
+// Register Interest tier instead of being force-confirmed here.
 function isElectricCampaign(campaign) {
-return String(campaign || '').toLowerCase().includes('electric');
+const c = String(campaign || '').toLowerCase();
+return c.includes('electric') && !c.includes('register interest');
 }
 
 function isReserveUsedCampaign(campaign) {
@@ -1664,6 +1724,7 @@ const cases = [
 // ===== Tier 4: General/Register Interest/Brochure/Inbound - research
 // or interest capture, never a booking. =====
 { name: 'General campaign (research/interest capture)', date: null, comments: 'Sourced from mobility scheme enquiry', campaign: 'General', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
+{ name: 'Register Interest campaign containing "Electric" (must not hit the Electric tier)', date: null, comments: '-', campaign: 'Citroen - Register Interest (Electric Vehicles Register Your Interest)', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
 
 // ===== Tier 4: Cargurus, standalone (not also an Enquiry - Used
 // campaign) - still catches via the dedicated Cargurus check. =====
@@ -1682,6 +1743,108 @@ if (failures.length > 0) {
 console.error('KonnectBookingCheck classifyInitialNotes self-test FAILED:\n' + failures.join('\n'));
 } else {
 console.info(`KonnectBookingCheck classifyInitialNotes self-test passed (${cases.length}/${cases.length})`);
+}
+})();
+
+// ===================================================================
+// Self-test against REAL verbatim Initial Notes text (not the synthetic
+// notesFor() shape every case above uses) - confirms parseInitialNotesFields
+// actually handles both real raw-text shapes (Customer First's labelled
+// fields, and Robins & Day Website's "Comment Line #1:" shape, including
+// its Preferred Date/Time sub-form) and that isInScope/isTestDriveRequestCampaign
+// correctly route a real parenthetical-suffixed campaign string, not just
+// the parenthetical-free strings the cases above construct.
+// ===================================================================
+(function realRawNotesSelfTest() {
+const realCases = [
+// Real Customer First "(Test drive request)" lead, WITH a date field -
+// confirmed DATE ONLY (Tier 2's own time-preference rule), not
+// CONFIRMED DATE & TIME - this is the exact real lead that exposed both
+// the isTestDriveRequestCampaign parenthetical bug and the isInScope
+// parenthetical bug: before both fixes, this fell through every real
+// Tier 2 check and the wrong tier ended up deciding its category.
+{
+name: 'Real: Customer First Enquiry-New (Test drive request), with date, "early appointment"',
+notes: 'Lead ID: 00Qa200000cUYZREA4\nMarketing Code: BrandSite-Test_Drive\nFirst Appointment Date Desired: 06/08/2026\nCustomer Comments: Test drive 1.2 manual C3 early appointment please',
+campaign: 'Citroen - Enquiry - New (Test drive request)',
+source: 'Customer First',
+expect: 'DATE ONLY'
+},
+// Same real campaign shape, no date field, blank comments.
+{
+name: 'Real: Customer First Enquiry-New (Test drive request), no date, blank comments',
+notes: 'Lead ID: 00Qa200000cUYXrEAO\nMarketing Code: Affiliates-TLA-Greencar-Q3-26\nCustomer Comments: -',
+campaign: 'Citroen - Enquiry - New (Test drive request)',
+source: 'Customer First',
+expect: 'NON-BOOKING'
+},
+// Real Customer First "(Information request)" lead with business
+// wording - overrides to Non-Booking regardless of the parenthetical.
+{
+name: 'Real: Customer First Enquiry-New (Information request), business wording',
+notes: 'Lead ID: 00Qa200000cVs34EAC\nMarketing Code: BrandSite-Enquiry\nCustomer Comments: Dear CITROEN Team, I am contacting you on behalf of our business as we are currently exploring options to lease a CITROEN vehicle for company use.',
+campaign: 'Citroen - Enquiry - New (Information request)',
+source: 'Customer First',
+expect: 'NON-BOOKING'
+},
+// Real Robins & Day Website Test Drive Request form - "Comment Line #1:"
+// shape with a structured Preferred Date/Time sub-form, no "Customer
+// Comments" label at all. Confirms the new comment-line parser and its
+// date/time extraction.
+{
+name: 'Real: Robins & Day Website Test Drive Request, Preferred Date/Time',
+notes: 'Comment Line #1: Preferred Date/Time: 2026-08-10, 5:00 PM Fuel Choice: Petrol Transmission Choice: AUTO Notes:',
+campaign: 'Peugeot - Test Drive Request - New (pcr_new_test_drive)',
+source: 'Robins & Day Website',
+expect: 'CONFIRMED DATE & TIME'
+},
+// Real Robins & Day Website PX Valuation lead - "possibly interested in"
+// phrasing inside the comment line, previously unreachable since the
+// old parser never recognized "Comment Line #1:" at all (comments
+// always came back blank for every Robins & Day Website lead).
+{
+name: 'Real: Robins & Day Website PX Valuation, "possibly interested in"',
+notes: 'Comment Line #1: The customer is possibly interested in the following vehicle Citroen Citroen Holidays Estate 2.2 D Max M 5dr Auto Link to vehicle: https://example/vehicle The customer was on the following website page, before completing the valuation: https://example/page',
+campaign: 'Citroen - PX Valuation - New (pcr_valuation_success)',
+source: 'Robins & Day Website',
+expect: 'NON-BOOKING'
+},
+// Real unlabelled phone-call Enquiry-Used lead - no "Customer Comments"
+// or "Comment Line #1:" label at all, just a raw prose blob. Confirms
+// the raw-text fallback (whole text used as comments) rather than the
+// old silent-blank behaviour.
+{
+name: 'Real: Phone call Enquiry-Used, unlabelled prose blob with embedded time',
+notes: 'CUSTOMER REQUIRES FURTHER COMMUNICATION - Thursday 05/08 12:00 - wants test drive in C4 X Max to get a feel for vehicle before discussing transfer - wants to know if vehicle can be purchased on Thursday - Customer Interested in - Citroen c4 x - EA25JFF - Located in Chingford Quote - Bank Loan PX - No#',
+campaign: 'Citroen - Enquiry - Used (Citroen - Enquiry - Used)',
+source: 'Phone call',
+expect: 'CONFIRMED DATE & TIME'
+},
+// Real Register Interest campaign containing "Electric" in its own
+// parenthetical - must not hit the Electric tier (already covered via
+// the synthetic cases array too; repeated here against the real full
+// campaign string verbatim for extra confidence).
+{
+name: 'Real: Register Interest campaign containing "Electric"',
+notes: 'Sourced from Robins & Day Website.',
+campaign: 'Citroen - Register Interest (Electric Vehicles Register Your Interest)',
+source: 'Robins & Day Website',
+expect: 'NON-BOOKING'
+}
+];
+
+const failures = [];
+realCases.forEach((c) => {
+const result = classifyInitialNotes(c.notes, { campaign: c.campaign, source: c.source });
+if (result.category !== c.expect) {
+failures.push(`${c.name}: expected ${c.expect}, got ${result.category} (${result.reason})`);
+}
+});
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck real-raw-notes self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info(`KonnectBookingCheck real-raw-notes self-test passed (${realCases.length}/${realCases.length})`);
 }
 })();
 
@@ -2268,11 +2431,11 @@ function categorizeTier(campaign, source) {
 const camp = String(campaign || '').toLowerCase();
 const src = String(source || '').toLowerCase();
 
-if (camp.includes('electric'))
+if (camp.includes('electric') && !camp.includes('register interest'))
 return { tier: 1, reason: 'Brand - Electric' };
 if (camp.includes('reserve') && camp.includes('used'))
 return { tier: 1, reason: 'Reserve - Used' };
-if (camp.includes('test drive'))
+if (campaignPrimaryPart(campaign).includes('test drive'))
 return { tier: 1, reason: 'Test Drive Request' };
 
 if (camp.includes('enquiry') && camp.includes('new') && src.includes('customer first'))
