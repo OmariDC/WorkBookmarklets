@@ -111,7 +111,51 @@ const normalizedSource = String(source || '').trim().toLowerCase();
 return normalizedCampaign.endsWith('enquiry - new') && normalizedSource === 'customer first';
 }
 
+// Wording that shows genuine intent to come to the dealership (test
+// drive / view the car) - first-pass list per instruction, not an
+// exhaustive confirmed set like OVERRIDE_KEYWORDS; expect to extend as
+// more real Test Drive Request leads are seen.
+const TEST_DRIVE_INTENT_KEYWORDS = ['test drive', 'drive', 'look at', 'view', 'see the car', 'come in', 'visit', 'pop in'];
+
+// Deliberately a loose substring check, not the strict brand-prefix
+// suffix match isInScope() uses for Enquiry-New - per instruction, this
+// tier will also be sent leads whose Source isn't "Customer First" and
+// whose Campaign wording may vary, so Campaign here is a routing hint
+// ("sorting help"), not a hard gate that can reject a real lead.
+function isTestDriveRequestCampaign(campaign) {
+return String(campaign || '').trim().toLowerCase().includes('test drive');
+}
+
 function classifyInitialNotes(initialNotes, { campaign, source } = {}) {
+const { hasDateField, comments } = parseInitialNotesFields(initialNotes);
+const lower = comments.toLowerCase();
+
+// Test Drive Request tier: no date/time requirement - a booking here
+// is just a genuine answer showing dealership-visit intent. Checked
+// before the Enquiry-New isInScope() gate since Source/Campaign aren't
+// hard requirements for this tier.
+if (isTestDriveRequestCampaign(campaign)) {
+if (containsAny(lower, OVERRIDE_KEYWORDS)) {
+return {
+category: 'NON-BOOKING',
+reason: 'Comments mention finance/business/technical-support wording, which overrides to Non-Booking regardless of tier.',
+confidence: 'high'
+};
+}
+if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
+return {
+category: 'BOOKING (TEST DRIVE)',
+reason: 'Test Drive Request lead with a genuine answer mentioning a dealership visit/test drive - no date/time required for this tier.',
+confidence: 'medium'
+};
+}
+return {
+category: 'NON-BOOKING',
+reason: 'Test Drive Request lead but Customer Comments is blank or does not mention any dealership-visit/test-drive wording.',
+confidence: 'medium'
+};
+}
+
 if (!isInScope(campaign, source)) {
 return {
 category: 'NON-BOOKING',
@@ -119,9 +163,6 @@ reason: `Outside current scope (Campaign="${campaign || ''}", Source="${source |
 confidence: 'high'
 };
 }
-
-const { hasDateField, comments } = parseInitialNotesFields(initialNotes);
-const lower = comments.toLowerCase();
 
 if (containsAny(lower, OVERRIDE_KEYWORDS)) {
 return {
@@ -1227,12 +1268,19 @@ const cases = [
 // live via Oscar Scully's row, which was wrongly falling into
 // NON-BOOKING/"Outside current scope" before isInScope() was fixed to
 // match on the trailing campaign segment instead of exact equality.
-{ name: 'Oscar Scully (brand-prefixed campaign)', date: '29/09/2026', comments: '-', campaign: 'Citroen - Enquiry - New', expect: 'DATE ONLY' }
+{ name: 'Oscar Scully (brand-prefixed campaign)', date: '29/09/2026', comments: '-', campaign: 'Citroen - Enquiry - New', expect: 'DATE ONLY' },
+// Test Drive Request tier: no date/time required, Source isn't
+// "Customer First", and Campaign is only loosely matched - all per
+// instruction, since this tier will be sent non-Customer-First leads
+// too and Campaign/Source are a routing hint here, not a hard gate.
+{ name: 'Stephen Dracup (Test Drive Request, no date, answered)', date: null, comments: 'Would like to test drive the new C4 this weekend', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'BOOKING (TEST DRIVE)' },
+{ name: 'Test Drive Request, blank comments', date: null, comments: '-', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' },
+{ name: 'Test Drive Request, finance override', date: null, comments: 'Can I get a PCH quote as well as a test drive', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' }
 ];
 
 const failures = [];
 cases.forEach((c) => {
-const result = classifyInitialNotes(notesFor(c.date, c.comments), { campaign: c.campaign || CAMPAIGN, source: SOURCE });
+const result = classifyInitialNotes(notesFor(c.date, c.comments), { campaign: c.campaign || CAMPAIGN, source: c.source || SOURCE });
 if (result.category !== c.expect) {
 failures.push(`${c.name}: expected ${c.expect}, got ${result.category} (${result.reason})`);
 }
