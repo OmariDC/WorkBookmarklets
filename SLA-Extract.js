@@ -2884,12 +2884,18 @@ return { category: 'NON-BOOKING', reason: 'Motability lead: no explicit booking/
 // warm signal, just browsing/valuation-checking. WARM ENQUIRY requires
 // the same "genuine answer showing visit intent" wording every other
 // tier uses, not merely having looked at one particular model's page.
+// No OVERRIDE_KEYWORDS check here, unlike every other tier - PX
+// Valuation's comments are a tracked URL, not the customer's own
+// words (the framework never specified a finance-override for this
+// tier either). A real bug this exposed: 'pch' (a FINANCE_KEYWORDS
+// entry) matches as a bare substring anywhere, including inside a URL
+// slug like ".../citroen-c5-aircross-pch" - a very common real
+// dealer-site pattern for a PCH/finance vehicle listing, not the
+// customer discussing finance at all. Didn't change the final
+// category here (both branches land on NON-BOOKING), but mislabelled
+// the reason and was one visit-intent-keyword collision away from
+// mislabelling the category too.
 function classifyPxValuationTier(comments, lower) {
-// Finance/business/technical wording only overrides to Non-Booking
-// when there's NO genuine visit-intent wording alongside it.
-if (containsAny(lower, OVERRIDE_KEYWORDS) && !containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return { category: 'NON-BOOKING', reason: 'PX Valuation lead, but comments mention finance/business/technical-support wording with no visit-intent wording alongside it, which overrides to Non-Booking.', confidence: 'high' };
-}
 if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
 return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead with a genuine answer showing dealership-visit intent.', confidence: 'medium' };
 }
