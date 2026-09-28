@@ -2494,7 +2494,12 @@ return finalizeResult(result, { status: 'EXCEPTION', exception: 'INITIAL_NOTES_E
 // categorization, a wrong value, not a missing one.
 const classification = classifyInitialNotes(initialNotes, { campaign: row.campaign, source: row.source || panelFields.source });
 if (classification.confidence === 'low') {
-return finalizeResult(result, { status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', initialNotes, ...auditPatch });
+// category/reason/confidence are stored even though status stays
+// EXCEPTION (never auto-trusted/applied) - previously these all came
+// back null here, so neither a human reviewing it in the Needs Review
+// section nor anyone diagnosing it afterward could see the
+// classifier's own tentative reasoning without re-deriving it by hand.
+return finalizeResult(result, { status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', initialNotes, category: classification.category, reason: classification.reason, confidence: classification.confidence, ...auditPatch });
 }
 
 return finalizeResult(result, {
@@ -3378,6 +3383,7 @@ const rowsHtml = needsReview.map((r) => `
 <div class="review-row" data-key="${r.inputIndex}">
 <div class="review-name">${escapeHtmlForUi(r.name)}</div>
 <div class="notes-block review-notes">${escapeHtmlForUi(r.initialNotes || '')}</div>
+${r.category ? `<div class="reason">Classifier's best guess (not trusted): ${escapeHtmlForUi(r.category)} - ${escapeHtmlForUi(r.reason || '')}</div>` : ''}
 <div class="review-actions">
 ${REVIEW_CATEGORY_OPTIONS.map((cat) => `<button data-category="${escapeHtmlForUi(cat)}" style="background: ${categoryColor({ category: cat })}1a; color: ${categoryColor({ category: cat })};">${escapeHtmlForUi(cat)}</button>`).join('')}
 </div>
