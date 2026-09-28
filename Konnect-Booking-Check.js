@@ -2211,6 +2211,19 @@ session.cancelled = false;
 try {
 while (!session.done && !session.cancelled) {
 if (session.paused) { await sleep(200); continue; }
+// Browsers throttle setTimeout-based waits heavily in a backgrounded
+// tab - reported live as modals freezing and pages changing slower/
+// failing to collect info while a different browser tab was active.
+// Every DOM wait a step depends on (waitForModal, waitForTimelineReady,
+// etc) is setTimeout/MutationObserver-based, so a throttled tab risks
+// a wait timing out and misreading a lead as failed purely because of
+// throttling, not a real automation problem. Pausing here - before
+// starting a NEW step, same cooperative-checkpoint pattern as the
+// session.paused check just above (there's no way to abort a step
+// already in flight either way) - avoids compounding that risk for
+// every lead not yet started, and resumes automatically the moment the
+// tab is foregrounded again.
+if (document.hidden) { uiHandle.setState('Paused - tab is in the background'); await sleep(200); continue; }
 // Same "(N left)" countdown SLA-Extract.js's own overlay shows during
 // batch ingestion (setBadgeProgress there) - showPageFlashOverlay just
 // updates the existing overlay's text when already showing, so this
