@@ -1141,6 +1141,125 @@ return { row, rawTimestamp, parsed, leadId: extractVisibleLeadId(row) };
 return { target, candidates };
 }
 
+// ===================================================================
+// CALL-ENTRY FALLBACK - for Pending Customers leads specifically, which
+// (unlike SLA rows) have no lead-creation timestamp to export at all
+// (see SLA-Extract.js's own buildPendingBookingCheckTsv) and instead
+// export their Last Actioned date/time. Confirmed live via direct DOM
+// inspection of real customer timelines: Last Actioned matches a blue
+// "call" entry (a.connected-customer-timeline-centre-lightblue >
+// i.fa.fa-phone) to the minute - the same precision as a pink lead
+// entry's own timestamp - not the lead's own pink entry directly.
+//
+// Confirmed NOT reliable: matching by DOM order/proximity to the
+// nearest pink entry. A real example had an unrelated second lead
+// logged between a call and the lead it actually belonged to, which a
+// "nearest entry" heuristic would have matched to the wrong lead - and
+// blue rows never show a visible Lead ID the way pink rows do
+// (extractVisibleLeadId's own selector is pink-only), so there's no
+// DOM-visible link at all. The only reliable link confirmed live is
+// Angular's own underlying scope data (angular.element(row).scope().item.LeadID) -
+// a call entry carries the exact same LeadID as its corresponding
+// lead's own pink row. Used here only to pick WHICH already-detected
+// lead entry (getLoadedLeadEntries already reliably narrows to genuine
+// leads via LEAD_HEADING_PREFIXES) a given call belongs to - not to
+// detect lead-ness itself, since it's unconfirmed whether LeadID is
+// exclusive to lead entries (an "Email sent" entry about the same lead
+// might plausibly carry it too).
+// ===================================================================
+
+function getLoadedCallEntries() {
+const icons = [...document.querySelectorAll('a.connected-customer-timeline-centre-lightblue > i.fa.fa-phone')];
+return [...new Set(icons
+.map((icon) => icon.closest('div.row.ng-scope[ng-repeat*="customerTimeLine"]'))
+.filter(Boolean))];
+}
+
+function extractCallTimestamp(row) {
+const heading = row.querySelector('.connected-customer-timeline-heading-left-lightblue, .connected-customer-timeline-heading-right-lightblue');
+return heading ? heading.textContent.replace(/\s+/g, ' ').trim() : null;
+}
+
+// Wrapped defensively, not assumed to always succeed - confirmed live
+// that angular.element(row).scope().item carries LeadID, but there's no
+// guarantee `angular` stays reachable as a global exactly where/when
+// this runs every time, or that a row's own scope digest has settled
+// the instant this reads it.
+function readTimelineItemScope(row) {
+try {
+if (typeof angular === 'undefined') return null;
+const scope = angular.element(row).scope();
+return (scope && scope.item) || null;
+} catch (error) {
+return null;
+}
+}
+
+// Deliberately as strict as findMatchingLeadCandidates itself about
+// what counts as a match: exactly one call at the target minute, with
+// a readable LeadID. Anything else (none found, more than one at the
+// same minute, or a LeadID that couldn't be read) is reported back
+// distinctly rather than guessed at - the caller turns each of these
+// into its own specific exception code instead of collapsing them into
+// one generic failure, the same "don't guess, tell me which specific
+// thing didn't work" approach every other exception code in this file
+// already follows.
+function findMatchingCallLeadId(targetCreatedText, referenceDate) {
+const target = parseSlaCreated(targetCreatedText);
+if (!target) return { target: null, status: 'NO_TARGET', leadId: null };
+const referenceNow = referenceDate || new Date();
+const matches = getLoadedCallEntries()
+.map((row) => {
+const rawTimestamp = extractCallTimestamp(row);
+const parsed = rawTimestamp ? parseTimelineTimestamp(rawTimestamp, referenceNow) : null;
+return { row, parsed, item: readTimelineItemScope(row) };
+})
+.filter((c) => datetimesMatchAtMinute(c.parsed, target));
+
+if (matches.length === 0) return { target, status: 'NO_CALL_MATCH', leadId: null };
+if (matches.length > 1) return { target, status: 'AMBIGUOUS_CALL_MATCH', leadId: null };
+
+const item = matches[0].item;
+const leadId = item && item.LeadID != null ? String(item.LeadID) : null;
+return { target, status: leadId ? 'OK' : 'LEAD_ID_UNREADABLE', leadId };
+}
+
+// extractVisibleLeadId is the same DOM-visible field already confirmed
+// and used (for audit/logging only, until now) on the pink side - no
+// Angular scope reading needed here, unlike the call side, since pink
+// rows do show this directly.
+function findLeadEntryByLeadId(leadId) {
+if (!leadId) return null;
+return getLoadedLeadEntries().find((row) => extractVisibleLeadId(row) === leadId) || null;
+}
+
+// Bounded scroll-and-retry, mirroring processLeadRow's own existing
+// loop for the direct pink-match path - a call from before the
+// timeline's initial load window needs the same "load older entries
+// and rescan" treatment a lead's own entry would.
+async function findLeadCandidateViaCallFallback(targetCreatedText, session, referenceDate) {
+const referenceNow = referenceDate || new Date();
+let callMatch = findMatchingCallLeadId(targetCreatedText, referenceNow);
+if (callMatch.status === 'NO_CALL_MATCH') {
+for (let attempt = 0; attempt < 5; attempt++) {
+if (isCancelled(session)) return { status: 'CANCELLED' };
+const scrollResult = await loadOlderTimelineEntries();
+if (scrollResult.status === 'TIMELINE_SCROLL_CONTAINER_UNKNOWN') break;
+const rescan = findMatchingCallLeadId(targetCreatedText, referenceNow);
+if (rescan.status !== 'NO_CALL_MATCH') { callMatch = rescan; break; }
+if (!scrollResult.loadedNewEntries) break;
+}
+}
+if (callMatch.status !== 'OK') return { status: callMatch.status };
+
+const leadRow = findLeadEntryByLeadId(callMatch.leadId);
+if (!leadRow) return { status: 'LEAD_ENTRY_NOT_FOUND_FOR_CALL' };
+
+const rawTimestamp = extractTimelineTimestamp(leadRow);
+const parsed = rawTimestamp ? parseTimelineTimestamp(rawTimestamp, referenceNow) : null;
+return { status: 'OK', candidate: { row: leadRow, rawTimestamp, parsed, leadId: callMatch.leadId } };
+}
+
 // Confirmed live: the functional click handler (ng-click="showDetails(...)")
 // is on the inner <i> icon, not the wrapping <a> (whose href is empty) -
 // clicking the anchor alone would never fire it, since the event's
@@ -2093,6 +2212,30 @@ if (!scrollResult.loadedNewEntries) break;
 }
 
 if (isCancelled(session)) return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
+if (workingCandidates.length === 0) {
+// Direct match against row.created as a lead's own Created timestamp
+// failed - try it as a Last Actioned value instead, matching a blue
+// call entry first and following that call's own LeadID to its lead's
+// pink entry (see the CALL-ENTRY FALLBACK section above). This is
+// deliberately a fallback, not a separate up-front branch chosen by
+// row type - SLA rows always match directly above and never reach
+// here, so Booking Check never needs the batch input to declare in
+// advance which kind of row it's looking at.
+const callFallback = await findLeadCandidateViaCallFallback(row.created, session, referenceNow);
+if (callFallback.status === 'CANCELLED') return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
+if (callFallback.status === 'OK') {
+workingCandidates = [callFallback.candidate];
+} else if (callFallback.status !== 'NO_CALL_MATCH') {
+// A call WAS found at the target minute, but something past that
+// point didn't work out - reported as its own specific exception
+// rather than falling through to the generic
+// TARGET_CREATED_DATETIME_NOT_FOUND below, which would wrongly imply
+// nothing matched the target time at all.
+console.warn('[KonnectBookingCheck] Call-entry fallback did not resolve to a lead for row.created=', JSON.stringify(row.created), '- status:', callFallback.status);
+return finalizeResult(result, { status: 'EXCEPTION', exception: `CALL_FALLBACK_${callFallback.status}` });
+}
+}
+
 if (workingCandidates.length === 0) {
 // findMatchingLeadCandidates only ever logs a candidate COUNT, never
 // why a specific entry didn't match - parseTimelineTimestamp's regex
