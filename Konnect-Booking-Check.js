@@ -1092,15 +1092,40 @@ return null;
 }
 
 // SLA-Extract.js's own Created column format, confirmed live:
-// "Sat, 26 Sep 2026 17:48" - weekday+comma prefix, ignored (not
-// anchored, so the regex just skips past it).
-function parseSlaCreated(text) {
+// "Sat, 26 Sep 2026 17:48" - weekday+comma prefix, ignored (the
+// with-year branch below is deliberately not anchored, so the regex
+// just skips past it). Pending Customers' Last Actioned field (fed into
+// this same column for the call-entry fallback above - see
+// buildPendingBookingCheckTsv/findMatchingCallLeadId) follows a
+// different, Konnect-wide convention instead - the same one
+// parseTimelineTimestamp already handles for timeline entries
+// themselves: no year shown at all for the current calendar year
+// ("26 Sep 14:18", no weekday prefix either), only shown for older ones
+// ("30 Jan 2025 12:26"). Without this second branch, every Pending
+// Customers lead actioned this year - the common case - would silently
+// fail to parse at all, before the call-entry match ever gets a chance
+// to run. referenceDate supplies the implicit year for the shorter
+// shape, exactly like parseTimelineTimestamp's own without-year branch -
+// never assumed, taken from whatever "now" actually is at match time.
+function parseSlaCreated(text, referenceDate) {
 const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
-const match = cleaned.match(/(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})\s+(\d{1,2}):(\d{2})/);
-if (!match) return null;
-const month = parseNamedMonth(match[2]);
+
+const withYear = cleaned.match(/(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{4})\s+(\d{1,2}):(\d{2})/);
+if (withYear) {
+const month = parseNamedMonth(withYear[2]);
 if (month === null) return null;
-return { year: Number(match[3]), month, day: Number(match[1]), hour: Number(match[4]), minute: Number(match[5]) };
+return { year: Number(withYear[3]), month, day: Number(withYear[1]), hour: Number(withYear[4]), minute: Number(withYear[5]) };
+}
+
+const withoutYear = cleaned.match(/^(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{1,2}):(\d{2})$/);
+if (withoutYear) {
+const month = parseNamedMonth(withoutYear[2]);
+if (month === null) return null;
+const ref = referenceDate || new Date();
+return { year: ref.getFullYear(), month, day: Number(withoutYear[1]), hour: Number(withoutYear[3]), minute: Number(withoutYear[4]) };
+}
+
+return null;
 }
 
 // Confirmed modal Date shape: "Fri 5th May 2023 07:02" - weekday plus
@@ -1127,9 +1152,9 @@ return a.year === b.year && a.month === b.month && a.day === b.day && a.hour ===
 // the caller to validate individually through their modals (see
 // VALIDATE_LEAD) rather than picked between at this stage.
 function findMatchingLeadCandidates(targetCreatedText, referenceDate) {
-const target = parseSlaCreated(targetCreatedText);
-if (!target) return { target: null, candidates: [] };
 const referenceNow = referenceDate || new Date();
+const target = parseSlaCreated(targetCreatedText, referenceNow);
+if (!target) return { target: null, candidates: [] };
 const entries = getLoadedLeadEntries();
 const candidates = entries
 .map((row) => {
@@ -1205,9 +1230,9 @@ return null;
 // thing didn't work" approach every other exception code in this file
 // already follows.
 function findMatchingCallLeadId(targetCreatedText, referenceDate) {
-const target = parseSlaCreated(targetCreatedText);
-if (!target) return { target: null, status: 'NO_TARGET', leadId: null };
 const referenceNow = referenceDate || new Date();
+const target = parseSlaCreated(targetCreatedText, referenceNow);
+if (!target) return { target: null, status: 'NO_TARGET', leadId: null };
 const matches = getLoadedCallEntries()
 .map((row) => {
 const rawTimestamp = extractCallTimestamp(row);
@@ -1690,6 +1715,13 @@ const now2026 = new Date(2026, 8, 27); // 27 Sep 2026, matches "today" at time o
 check('parseTimelineTimestamp with year', parseTimelineTimestamp('5 May 2023 07:02'), { year: 2023, month: 4, day: 5, hour: 7, minute: 2, yearWasImplicit: false });
 check('parseTimelineTimestamp without year', parseTimelineTimestamp('26 Sep 22:10', now2026), { year: 2026, month: 8, day: 26, hour: 22, minute: 10, yearWasImplicit: true });
 check('parseSlaCreated', parseSlaCreated('Sat, 26 Sep 2026 17:48'), { year: 2026, month: 8, day: 26, hour: 17, minute: 48 });
+// Pending Customers' Last Actioned field (fed into this same column for
+// the call-entry fallback) omits the year for the current calendar
+// year, the same convention timeline entries themselves use - without
+// this branch, every such lead would fail to parse at all before ever
+// reaching the call-entry match.
+check('parseSlaCreated without year (Last Actioned format)', parseSlaCreated('26 Sep 14:18', now2026), { year: 2026, month: 8, day: 26, hour: 14, minute: 18 });
+check('parseSlaCreated with year still wins even when a referenceDate is also given', parseSlaCreated('Sat, 26 Sep 2020 17:48', now2026), { year: 2020, month: 8, day: 26, hour: 17, minute: 48 });
 check('parseModalDate', parseModalDate('Fri 5th May 2023 07:02'), { year: 2023, month: 4, day: 5, hour: 7, minute: 2, yearWasImplicit: false });
 
 check('datetimesMatchAtMinute true', datetimesMatchAtMinute(parseModalDate('Fri 5th May 2023 07:02'), parseTimelineTimestamp('5 May 2023 07:02')), true);
@@ -1707,7 +1739,7 @@ check('implicit-year entry does not match a different-year target', datetimesMat
 if (failures.length > 0) {
 console.error('KonnectBookingCheck timeline self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck timeline self-test passed (8/8)');
+console.info('KonnectBookingCheck timeline self-test passed (10/10)');
 }
 })();
 
