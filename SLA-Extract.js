@@ -3024,624 +3024,30 @@ localStorage.setItem(ASSIGN_SETTINGS_KEY, JSON.stringify({ ...loadAssignSettings
 }
 
 // ===================================================================
-// KONNECT BOOKING CHECK CLASSIFIER - ported verbatim from
-// Konnect-Booking-Check.js so large batches can be classified right
-// here, next to the assign-criteria/tier features that already exist
-// in this panel, instead of round-tripping every result back through
-// that separate tool's own UI. Bookmarklets can't share a module, so
-// this is a genuine duplicate, not a reference - any future rule
-// change made in Konnect-Booking-Check.js's classifier needs to be
-// applied here too, and vice versa, or the two tools will silently
-// disagree on the same lead. Do not edit one without the other.
-// ===================================================================
-
-// Confirmed Initial Notes structure for this lead type:
-//   Lead ID: [ID]
-//   Marketing Code: [CODE]
-//   First Appointment Date Desired: [DD/MM/YYYY]   (optional line)
-//   Customer Comments: [TEXT or "-"]
-// Split on the field's own label rather than a fixed line count, since
-// Marketing Code (and the whole block) may or may not include the date
-// line, and Customer Comments is always the last field so it's safe to
-// capture everything after its label through to the end of the notes,
-// including any internal line breaks.
-function parseInitialNotesFields(notes) {
-const text = String(notes || '');
-const dateMatch = text.match(/First Appointment Date Desired:\s*([^\r\n]*)/i);
-const commentsMatch = text.match(/Customer Comments:\s*([\s\S]*)$/i);
-const dateValue = dateMatch ? dateMatch[1].trim() : '';
-const comments = commentsMatch ? commentsMatch[1].trim() : '';
-return {
-hasDateField: dateValue.length > 0,
-dateValue,
-comments
-};
-}
-
-// "-" is the only confirmed "nothing here" marker across every example
-// given - not extended to n/a, none, etc. since those weren't actually
-// observed, matching this project's established "don't guess beyond
-// what's confirmed" rule.
-function isBlankComments(comments) {
-return comments === '' || comments === '-';
-}
-
-// These three groups always override to NON-BOOKING regardless of any
-// date field (Edge Cases 3/4/5 in the confirmed rules) - checked before
-// anything else, since a date field present alongside finance/business/
-// technical wording is still NON-BOOKING, not DATE ONLY or CONFIRMED.
-const FINANCE_KEYWORDS = ['quote', 'quotes', 'leasing', 'pch', '0%', 'offer', 'best price', 'purchase price', 'finance', 'details'];
-const BUSINESS_KEYWORDS = ['behalf of our business', 'company use', 'hardware', 'control systems', 'business', 'company'];
-const TECHNICAL_KEYWORDS = ['android auto', 'connectivity', 'support', 'tech', 'system'];
-const OVERRIDE_KEYWORDS = [...FINANCE_KEYWORDS, ...BUSINESS_KEYWORDS, ...TECHNICAL_KEYWORDS];
-
-// Confirmed: a time PREFERENCE word (morning/afternoon/early/slot) is
-// DATE ONLY, not CONFIRMED DATE & TIME - explicitly resolved this way
-// even though a date field is present, since it's a preference, not an
-// actual time.
-const TIME_PREFERENCE_WORDS = ['morning', 'afternoon', 'evening', 'early', 'earliest slot', 'slot'];
-
-// A specific day/relative-date mention in free text ("Monday",
-// "tomorrow") even when the structured date field itself is blank -
-// per instruction, this still gives enough to reference in a
-// voicemail ("classified the date way"), so it's treated as
-// equivalent to having a date rather than falling through to
-// NON-BOOKING. First-pass list, not an exhaustive confirmed set.
-const RELATIVE_DATE_WORDS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'tomorrow', 'today', 'tonight', 'next week', 'this week'];
-
-// An actual clock time - 24h (17:48) or 12h with am/pm (5:00 pm, 3pm).
-// Confirmed rare for this lead type specifically (unlike Test Drive
-// Request campaigns' "Preferred Date/Time: ..., HH:MM"), but still
-// checked for robustness rather than assumed never to occur.
-const EXACT_TIME_PATTERN = /\b([01]?\d|2[0-3]):[0-5]\d\b|\b\d{1,2}(:\d{2})?\s?(am|pm)\b/i;
-
-function containsAny(haystackLower, needles) {
-return needles.some((n) => haystackLower.includes(n));
-}
-
-// campaign/source are passed in (already available on every exported
-// row) so leads outside this tool's actual scope get a clearly-labeled
-// NON-BOOKING rather than running Tier 2-specific wording rules against
-// content they were never designed for - per instruction, other tiers'
-// real rules are deliberately deferred until this scope is confirmed
-// working.
-function isInScope(campaign, source) {
-// Real SLA export campaign values are always brand-prefixed
-// ("Citroen - Enquiry - New", "Alfa Romeo - Enquiry - New", etc.) -
-// confirmed live across every real Customer First lead tested. An
-// exact-equality check against the bare "enquiry - new" never matches
-// any real row, so match the campaign *category* by its trailing
-// segment instead.
-const normalizedCampaign = String(campaign || '').trim().toLowerCase().replace(/\s+/g, ' ');
-const normalizedSource = String(source || '').trim().toLowerCase();
-return normalizedCampaign.endsWith('enquiry - new') && normalizedSource === 'customer first';
-}
-
-// Wording that shows genuine intent to come to the dealership (test
-// drive / view the car) - first-pass list per instruction, not an
-// exhaustive confirmed set like OVERRIDE_KEYWORDS; expect to extend as
-// more real Test Drive Request leads are seen.
-const TEST_DRIVE_INTENT_KEYWORDS = ['test drive', 'drive', 'look at', 'view', 'see the car', 'come in', 'visit', 'pop in'];
-
-// Genuine expressed interest in a vehicle that stops short of visit
-// intent (no "test drive"/"come in"/etc) - real example: "Hi I would
-// potentially be interested in this vehicle, and trading in my..."
-// "possibly interested in" is the same signal in the framework
-// document's own wording ("possibly interested in the following
-// vehicle [MODEL]") - both forms recognized. Per instruction, this
-// stays NON-BOOKING (no date, no visit intent - still requires a live
-// call to get anywhere), but is more contactable than a blank/generic
-// answer, so it ranks higher within NON-BOOKING (see
-// bookingPriorityRank) rather than becoming its own category.
-// First-pass phrase list, not an exhaustive confirmed set.
-const POTENTIAL_INTEREST_PHRASES = ['potentially be interested in', 'potentially interested in', 'possibly interested in'];
-
-// Deliberately a loose substring check, not the strict brand-prefix
-// suffix match isInScope() uses for Enquiry-New - per instruction, this
-// tier will also be sent leads whose Source isn't "Customer First" and
-// whose Campaign wording may vary, so Campaign here is a routing hint
-// ("sorting help"), not a hard gate that can reject a real lead.
-function isTestDriveRequestCampaign(campaign) {
-return String(campaign || '').trim().toLowerCase().includes('test drive');
-}
-
-// ===================================================================
-// FULL MULTI-TIER FRAMEWORK - per the confirmed lead-filtering
-// framework document (all 4 tiers), extending beyond the original
-// Tier 2 Enquiry - New / Customer First-only scope. Dispatch order
-// below follows the framework's own stated priority (Electric first,
-// since it overrides regardless of any other campaign wording; the
-// rest in the order its own "FILTERING ALGORITHM" summary gives),
-// with Reserve - Used and Leapmotor (prose-only, not in that summary)
-// inserted where they don't collide with anything else. All campaign/
-// source matching stays a loose, lowercased substring check rather
-// than the framework's own "(exact)" wording - an exact-match check
-// already broke once in this file against real brand-prefixed
-// campaign values (see isInScope's history), so every tier here is
-// deliberately as lenient as that fix.
-// ===================================================================
-
-function isElectricCampaign(campaign) {
-return String(campaign || '').toLowerCase().includes('electric');
-}
-
-function isReserveUsedCampaign(campaign) {
-const c = String(campaign || '').toLowerCase();
-return c.includes('reserve') && c.includes('used');
-}
-
-function isMotabilityCampaign(campaign) {
-return String(campaign || '').toLowerCase().includes('motability');
-}
-
-function isLeapmotorSource(source) {
-return String(source || '').toLowerCase().includes('leapmotor');
-}
-
-function isOfferRequestNewCampaign(campaign) {
-const c = String(campaign || '').toLowerCase();
-return c.includes('offer request') && c.includes('new');
-}
-
-function isPxValuationNewCampaign(campaign) {
-const c = String(campaign || '').toLowerCase();
-return (c.includes('px valuation') || c.includes('p/x valuation')) && c.includes('new');
-}
-
-function isEnquiryUsedCampaign(campaign) {
-const c = String(campaign || '').toLowerCase();
-return c.includes('enquiry') && c.includes('used');
-}
-
-function isRobinsDayEnquiryNew(campaign, source) {
-const c = String(campaign || '').toLowerCase();
-const s = String(source || '').toLowerCase();
-return c.includes('enquiry') && c.includes('new') && s.includes('robins');
-}
-
-function isGeneralInterestCampaign(campaign, source) {
-const c = String(campaign || '').toLowerCase();
-const s = String(source || '').toLowerCase();
-return c.includes('general') || c.includes('register interest') || c.includes('brochure download') || c.includes('inbound') || s.includes('inbound');
-}
-
-function isCargurusLead(campaign, source) {
-const c = String(campaign || '').toLowerCase();
-const s = String(source || '').toLowerCase();
-return c.includes('cargurus') || s.includes('cargurus');
-}
-
-const MOTABILITY_BOOKING_WORDS = ['priority', 'booked', 'confirmation needed'];
-
-const ENQUIRY_USED_SHOPPING_WORDS = ['imv', 'deal rating', 'email preferred', 'call preferred', 'text preferred', 'delivery cost'];
-
-// Tier 1: Test Drive Request - New/Used. Per the framework, time-of-day
-// preference words count as full DATE+TIME confirmation for THIS tier
-// specifically (unlike Tier 2 Enquiry-New, where the same wording only
-// reaches DATE ONLY) - the vehicle/date are already locked in via this
-// campaign's own dropdown/field structure, so a time preference is
-// enough to call it confirmed.
-function classifyTestDriveRequestTier(hasDateField, comments, lower) {
-// Finance/business/technical wording only overrides to Non-Booking
-// when there's NO genuine visit-intent wording alongside it - per
-// instruction, a lead that also shows real interest in coming in
-// shouldn't be suppressed just because it mentions a quote too.
-if (containsAny(lower, OVERRIDE_KEYWORDS) && !containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return { category: 'NON-BOOKING', reason: 'Test Drive Request lead, but comments mention finance/business/technical-support wording with no visit-intent wording alongside it, which overrides to Non-Booking.', confidence: 'high' };
-}
-if (hasDateField) {
-if (isBlankComments(comments)) {
-return { category: 'DATE ONLY', reason: 'Test Drive Request lead: date field present, Customer Comments is blank.', confidence: 'high' };
-}
-if (containsAny(lower, TIME_PREFERENCE_WORDS) || EXACT_TIME_PATTERN.test(comments)) {
-return { category: 'CONFIRMED DATE & TIME', reason: 'Test Drive Request lead: date field present with a time preference or exact time in comments.', confidence: 'high' };
-}
-return { category: 'DATE ONLY', reason: 'Test Drive Request lead: date field present, no time indication in comments.', confidence: 'medium' };
-}
-if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return { category: 'WARM ENQUIRY', reason: 'Test Drive Request lead with a genuine answer mentioning a dealership visit/test drive - no date field present for this tier.', confidence: 'medium' };
-}
-return { category: 'NON-BOOKING', reason: 'Test Drive Request lead with no date field and no dealership-visit wording in comments.', confidence: 'medium' };
-}
-
-// Tier 2: Enquiry - New / Customer First - the original, battle-tested
-// scope, unchanged from its own iteration (Oscar Scully's brand-prefix
-// fix, Stephen Dracup's no-date-but-test-drive-mention carve-out, and
-// relative-date-in-comments detection all still apply exactly as
-// before).
-function classifyEnquiryNewCustomerFirstTier(hasDateField, comments, lower) {
-// Finance/business/technical wording only overrides to Non-Booking
-// when there's NO genuine visit-intent wording alongside it - per
-// instruction, a lead that also shows real interest in coming in
-// shouldn't be suppressed just because it mentions a quote too.
-if (containsAny(lower, OVERRIDE_KEYWORDS) && !containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return {
-category: 'NON-BOOKING',
-reason: 'Comments mention finance/business/technical-support wording with no visit-intent wording alongside it, which overrides to Non-Booking regardless of any date field.',
-confidence: 'high'
-};
-}
-
-if (!hasDateField) {
-if (containsAny(lower, RELATIVE_DATE_WORDS)) {
-if (EXACT_TIME_PATTERN.test(comments)) {
-return {
-category: 'CONFIRMED DATE & TIME',
-reason: 'No structured date field, but comments state a specific day/date together with an exact time - as concrete as a confirmed booking.',
-confidence: 'medium'
-};
-}
-return {
-category: 'DATE ONLY',
-reason: 'No structured date field, but comments mention a specific day/relative date - still enough to reference in a voicemail.',
-confidence: 'medium'
-};
-}
-if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return {
-category: 'WARM ENQUIRY',
-reason: 'No date field, but comments show genuine dealership-visit/test-drive intent - counts as a booking regardless of date.',
-confidence: 'medium'
-};
-}
-return {
-category: 'NON-BOOKING',
-reason: 'No "First Appointment Date Desired" field present.',
-confidence: 'high'
-};
-}
-
-if (isBlankComments(comments)) {
-return {
-category: 'DATE ONLY',
-reason: 'Date field present but Customer Comments is blank ("-").',
-confidence: 'high'
-};
-}
-
-if (containsAny(lower, TIME_PREFERENCE_WORDS)) {
-return {
-category: 'DATE ONLY',
-reason: 'Date field present; comments only state a time preference (e.g. "morning"/"early"/"slot"), not an exact time.',
-confidence: 'high'
-};
-}
-
-if (EXACT_TIME_PATTERN.test(comments)) {
-return {
-category: 'CONFIRMED DATE & TIME',
-reason: 'Date field present and comments contain an exact time.',
-confidence: 'high'
-};
-}
-
-return {
-category: 'CONFIRMED DATE & TIME',
-reason: 'Date field present and comments contain genuine context beyond a blank or time-preference-only response.',
-confidence: 'high'
-};
-}
-
-function classifyMotabilityTier(comments, lower) {
-if (containsAny(lower, MOTABILITY_BOOKING_WORDS) && EXACT_TIME_PATTERN.test(comments)) {
-return { category: 'CONFIRMED DATE & TIME', reason: 'Motability lead: comments explicitly state booking language with a specific time.', confidence: 'high' };
-}
-return { category: 'NON-BOOKING', reason: 'Motability lead: no explicit booking/priority language with a specific time - most Motability leads have no date confirmed initially.', confidence: 'medium' };
-}
-
-// The framework's own vocabulary calls this "WARM ENQUIRY" too - same
-// real-world shape as the dedicated test-drive/visit-intent case:
-// no date anywhere, but a genuine signal of interest, so it requires
-// reaching the customer live rather than being actionable by voicemail
-// alone.
-// Which specific vehicle page they visited is tracked behavior, not
-// anything the customer said - per instruction, that's not a real
-// warm signal, just browsing/valuation-checking. WARM ENQUIRY requires
-// the same "genuine answer showing visit intent" wording every other
-// tier uses, not merely having looked at one particular model's page.
-// No OVERRIDE_KEYWORDS check here, unlike every other tier - PX
-// Valuation's comments are a tracked URL, not the customer's own
-// words (the framework never specified a finance-override for this
-// tier either). A real bug this exposed: 'pch' (a FINANCE_KEYWORDS
-// entry) matches as a bare substring anywhere, including inside a URL
-// slug like ".../citroen-c5-aircross-pch" - a very common real
-// dealer-site pattern for a PCH/finance vehicle listing, not the
-// customer discussing finance at all. Didn't change the final
-// category here (both branches land on NON-BOOKING), but mislabelled
-// the reason and was one visit-intent-keyword collision away from
-// mislabelling the category too.
-function classifyPxValuationTier(comments, lower) {
-if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead with a genuine answer showing dealership-visit intent.', confidence: 'medium' };
-}
-if (containsAny(lower, POTENTIAL_INTEREST_PHRASES)) {
-return { category: 'NON-BOOKING', reason: 'PX Valuation lead: comments express genuine interest in a vehicle, but no visit intent - still Non-Booking, but more contactable than a generic page visit.', confidence: 'medium' };
-}
-return { category: 'NON-BOOKING', reason: 'PX Valuation lead: a specific vehicle page visit alone is tracked behavior, not something the customer said - not a real warm signal.', confidence: 'medium' };
-}
-
-function classifyEnquiryUsedTier(source, comments, lower) {
-const sourceLower = String(source || '').toLowerCase();
-if (sourceLower.includes('phone') && EXACT_TIME_PATTERN.test(comments)) {
-return { category: 'CONFIRMED DATE & TIME', reason: 'Enquiry - Used lead: phone source with a specific date and time in comments.', confidence: 'high' };
-}
-if (containsAny(lower, ENQUIRY_USED_SHOPPING_WORDS) || sourceLower.includes('cargurus')) {
-return { category: 'NON-BOOKING', reason: 'Enquiry - Used lead: comments show price-comparison/shopping language (IMV, deal rating, etc), not booking intent.', confidence: 'high' };
-}
-// A registration/model mention or a vague phrase like "requests call"
-// isn't enough on its own - per instruction, that doesn't actually
-// show they want to visit, same as PX Valuation's page-visit-alone
-// issue. WARM ENQUIRY requires the same genuine visit-intent wording
-// every other tier uses.
-if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return { category: 'WARM ENQUIRY', reason: 'Enquiry - Used lead with a genuine answer showing dealership-visit intent, but no date confirmed - worth calling on.', confidence: 'medium' };
-}
-return { category: 'NON-BOOKING', reason: 'Enquiry - Used lead: no genuine visit-intent wording identified.', confidence: 'medium' };
-}
-
-function classifyInitialNotes(initialNotes, { campaign, source } = {}) {
-const { hasDateField, comments } = parseInitialNotesFields(initialNotes);
-const lower = comments.toLowerCase();
-
-// Tier 1: Electric - checked first since it overrides regardless of
-// any other campaign wording, per the framework's explicit rule.
-if (isElectricCampaign(campaign)) {
-return { category: 'CONFIRMED DATE & TIME', reason: 'Brand - Electric campaign: treated as confirmed date & time per the framework\'s stated rule for this campaign type.', confidence: 'medium' };
-}
-
-// Tier 1: Reserve - Used - already actioned online, nothing for this
-// tool to book. Mapped to NON-BOOKING (no separate "already actioned"
-// category) - there's no live-contact follow-up needed here either,
-// unlike a genuine NON-BOOKING enquiry, but it's the closest of the
-// four agreed categories and keeps the vocabulary from growing.
-if (isReserveUsedCampaign(campaign)) {
-return { category: 'NON-BOOKING', reason: 'Reserve - Used campaign: vehicle already reserved online, not applicable to booking tiers.', confidence: 'high' };
-}
-
-// Tier 1: Test Drive Request - New/Used.
-if (isTestDriveRequestCampaign(campaign)) {
-return classifyTestDriveRequestTier(hasDateField, comments, lower);
-}
-
-// Tier 2: Enquiry - New / Customer First - original scope, unchanged.
-if (isInScope(campaign, source)) {
-return classifyEnquiryNewCustomerFirstTier(hasDateField, comments, lower);
-}
-
-// Tier 2: Motability.
-if (isMotabilityCampaign(campaign)) {
-return classifyMotabilityTier(comments, lower);
-}
-
-// Tier 2: Leapmotor - deliberately always Non-Booking per the
-// framework's own explicit choice, despite noting high conversion
-// potential, pending its own rules being confirmed.
-if (isLeapmotorSource(source)) {
-return { category: 'NON-BOOKING', reason: 'Leapmotor source: requires call confirmation despite high conversion potential - flagged Non-Booking pending its own rules.', confidence: 'medium' };
-}
-
-// Tier 3: Offer Request - New - always Non-Booking by definition.
-if (isOfferRequestNewCampaign(campaign)) {
-return { category: 'NON-BOOKING', reason: 'Offer Request - New campaign: 100% quote/offer interest by definition, never a booking.', confidence: 'high' };
-}
-
-// Tier 3: PX Valuation - New.
-if (isPxValuationNewCampaign(campaign)) {
-return classifyPxValuationTier(comments, lower);
-}
-
-// Tier 3: Enquiry - Used.
-if (isEnquiryUsedCampaign(campaign)) {
-return classifyEnquiryUsedTier(source, comments, lower);
-}
-
-// Tier 4: Enquiry - New (Robins & Day Website) - always Non-Booking by
-// definition (a plain campaign-form completion, not this dealership's
-// own Customer First enquiry).
-if (isRobinsDayEnquiryNew(campaign, source)) {
-return { category: 'NON-BOOKING', reason: 'Enquiry - New from Robins & Day Website: 100% campaign form completion by definition, never a booking.', confidence: 'high' };
-}
-
-// Tier 4: General / Register Interest / Brochure Download / Inbound.
-if (isGeneralInterestCampaign(campaign, source)) {
-return { category: 'NON-BOOKING', reason: 'General/register-interest/brochure/inbound campaign: research or interest capture, not a booking.', confidence: 'high' };
-}
-
-// Tier 4: Cargurus (catch-all if not already caught under Enquiry -
-// Used above).
-if (isCargurusLead(campaign, source)) {
-return { category: 'NON-BOOKING', reason: 'Cargurus lead: third-party price-comparison platform, not a direct booking.', confidence: 'high' };
-}
-
-// Final catch-all shared across every tier: finance/business/
-// technical wording overrides to Non-Booking regardless of tier.
-if (containsAny(lower, OVERRIDE_KEYWORDS)) {
-return {
-category: 'NON-BOOKING',
-reason: 'Comments mention finance/business/technical-support wording, which overrides to Non-Booking regardless of tier.',
-confidence: 'high'
-};
-}
-
-// Unmatched by any confirmed tier rule - safe default rather than
-// guessing at a campaign/source combination the framework never
-// described.
-return {
-category: 'NON-BOOKING',
-reason: `Campaign="${campaign || ''}" / Source="${source || ''}" doesn't match any confirmed tier rule - defaulting to Non-Booking rather than guessing.`,
-confidence: 'low'
-};
-}
-
-// Lower = more valuable/urgent. Per instruction, the real axis isn't
-// "how good is this booking" but "can this be actioned via a voicemail
-// alone, or does it require actually reaching the customer live" -
-// every voicemail-actionable category (any real date signal) ranks
-// above every requires-pickup category. Within "requires pickup", a
-// lead with expressed visit/test-drive intent is more likely to
-// convert than one that was merely answered with no real signal, so
-// WARM ENQUIRY ranks above plain NON-BOOKING rather than beside it.
-function bookingPriorityRank(result) {
-if (!result || result.status !== 'CLASSIFIED') return 7;
-if (result.category === 'CONFIRMED DATE & TIME') return 1;
-if (result.category === 'DATE ONLY') {
-const { comments } = parseInitialNotesFields(result.initialNotes);
-return containsAny(comments.toLowerCase(), TIME_PREFERENCE_WORDS) ? 2 : 3;
-}
-if (result.category === 'WARM ENQUIRY') return 4;
-if (result.category === 'NON-BOOKING') {
-// A genuine "potentially interested in..." answer, though not visit
-// intent, is still more contactable than a blank/generic one - ranks
-// above plain NON-BOOKING without becoming its own category.
-const { comments } = parseInitialNotesFields(result.initialNotes);
-return containsAny(comments.toLowerCase(), POTENTIAL_INTEREST_PHRASES) ? 5 : 6;
-}
-return 7;
-}
-
-// Scope for the "Copy for Booking Check" export (feeds a separate,
-// external bookmarklet on a different site - see the header popover
-// below) - kept entirely separate from ASSIGN_SETTINGS_KEY since this
-// is a one-off export scope, not part of the assign filters, and
-// deliberately not surfaced anywhere in the main Assign flow at all.
-const BOOKING_CHECK_EXPORT_KEY = '_slaBookingCheckExportSettings';
-
-function loadBookingCheckExportSettings() {
-try {
-const raw = JSON.parse(localStorage.getItem(BOOKING_CHECK_EXPORT_KEY));
-if (raw && Array.isArray(raw.tiers)) return raw;
-} catch (error) {
-// ignore
-}
-return { tiers: [2], customerFirstOnly: true };
-}
-
-function saveBookingCheckExportSettings(settings) {
-try {
-localStorage.setItem(BOOKING_CHECK_EXPORT_KEY, JSON.stringify(settings));
-} catch (error) {
-// ignore
-}
-}
-
-// Tabs/newlines within a field would corrupt the TSV structure the
-// receiving bookmarklet parses by splitting on tabs - stripped rather
-// than escaped, since none of these fields should ever legitimately
-// contain one.
-function tsvSafe(value) {
-return String(value || '').replace(/[\t\r\n]+/g, ' ').trim();
-}
-
-// Reads from currentCustomers (the same cache the panel itself is
-// already showing) rather than re-scanning the table - this is a
-// point-in-time snapshot of whatever's already been ingested, not a
-// fresh extraction. Name is stripped of its title (Mr./Mrs./etc,
-// same as the existing copy-to-clipboard fields elsewhere in this
-// panel) since the receiving tool only uses it as supporting
-// confirmation, not as a search key.
-function buildBookingCheckTsv(tiers, customerFirstOnly) {
-const tierSet = new Set(tiers);
-const rows = currentCustomers.filter((c) => {
-if (!tierSet.has(c.tier)) return false;
-if (customerFirstOnly && !(c.source || '').toLowerCase().includes('customer first')) return false;
-return true;
-});
-// Registration dropped per instruction - not something that needs
-// copying, and not something the receiving tool can reliably search by
-// either (it's often a SALESLEAD-style placeholder rather than a real
-// plate, not present on Konnect Live's own customer records to match
-// against).
-const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'].join('\t');
-const lines = rows.map((c) => [
-tsvSafe(stripTitle(c.name)), tsvSafe(c.phone), tsvSafe(c.email), tsvSafe(c.source), tsvSafe(c.campaign), tsvSafe(c.createdText)
-].join('\t'));
-return { tsv: [header, ...lines].join('\n'), count: rows.length };
-}
-
-// Deliberately a small popover toggled from a single header icon, not a
-// permanent section in the main Assign flow - this only matters
-// occasionally (feeding a separate bookmarklet on another site), so it
-// shouldn't cost any visible space the rest of the time. Positioned
-// absolutely against PANEL_BOX_ID (the nearest positioned ancestor,
-// since that box itself is position:fixed) rather than pushing any
-// other content down when open.
-function renderBookingCheckExportPopover() {
-const settings = loadBookingCheckExportSettings();
-const selectedTiers = new Set(settings.tiers);
-const { count } = buildBookingCheckTsv(settings.tiers, settings.customerFirstOnly);
-
-const tierCheckboxes = [1, 2, 3, 4].map(t => `
-<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;">
-<input type="checkbox" class="booking-export-tier" value="${t}" ${selectedTiers.has(t) ? 'checked' : ''} onchange="window._updateBookingCheckExportPreview()">
-Tier ${t}
-</label>`).join('');
-
-return `
-<div id="bookingCheckExportPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 200px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
-<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">COPY FOR BOOKING CHECK</div>
-<div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${tierCheckboxes}</div>
-<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b; margin-bottom: 10px;">
-<input type="checkbox" id="bookingExportCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateBookingCheckExportPreview()">
-Customer First only
-</label>
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-<span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}</span>
-<button onclick="window._copyBookingCheckExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
-</div>
-</div>`;
-}
-
-window._toggleBookingCheckExportPopover = function() {
-const popover = document.getElementById('bookingCheckExportPopover');
-if (!popover) return;
-const importPopover = document.getElementById('bookingCheckImportPopover');
-if (importPopover) importPopover.style.display = 'none';
-popover.style.display = popover.style.display === 'none' ? 'block' : 'none';
-};
-
-window._updateBookingCheckExportPreview = function() {
-const tiers = Array.from(document.querySelectorAll('.booking-export-tier:checked')).map(el => Number(el.value));
-const customerFirstOnly = document.getElementById('bookingExportCustomerFirstOnly')?.checked || false;
-saveBookingCheckExportSettings({ tiers, customerFirstOnly });
-const { count } = buildBookingCheckTsv(tiers, customerFirstOnly);
-const countEl = document.getElementById('bookingExportRowCount');
-if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}`;
-};
-
-window._copyBookingCheckExport = function(buttonEl) {
-const settings = loadBookingCheckExportSettings();
-const { tsv, count } = buildBookingCheckTsv(settings.tiers, settings.customerFirstOnly);
-const original = buttonEl.textContent;
-if (count === 0) {
-buttonEl.textContent = 'No leads';
-setTimeout(() => { buttonEl.textContent = original; }, 1200);
-return;
-}
-navigator.clipboard.writeText(tsv).then(() => {
-buttonEl.textContent = `✓ Copied ${count}`;
-setTimeout(() => { buttonEl.textContent = original; }, 1500);
-}).catch(() => {
-buttonEl.textContent = '✗ Failed';
-setTimeout(() => { buttonEl.textContent = original; }, 1500);
-});
-};
-
-// ===================================================================
 // CLASSIFY BOOKING CHECK RESULTS - the reverse handoff. Konnect
 // Booking Check's own "Copy raw for Extract" button copies this exact
-// column shape to the clipboard; pasted here, it's classified with
-// the same ported classifier above and shown right next to the
-// assign-criteria/tier features, instead of round-tripping back
+// column shape to the clipboard; pasted here, it's shown right next to
+// the assign-criteria/tier features, instead of round-tripping back
 // through Booking Check's own UI for every batch. Deliberately a
 // small popover like the export one above, not a permanent section -
 // this is an occasional batch operation, not part of the main Assign
 // flow. State (raw paste + last results) is persisted so an in-
 // progress paste survives a panel rebuild (the same reason the export
 // popover's own settings are persisted, not just kept in the DOM).
+//
+// This used to re-classify every row here too, from a second, ~600-line
+// copy of Konnect-Booking-Check.js's own classifier (parseInitialNotes
+// Fields, the keyword lists, classifyInitialNotes, bookingPriorityRank -
+// "ported verbatim... do not edit one without the other"). That's a real
+// drift risk, not a hypothetical one - this copy never got that file's
+// later dual-raw-notes-format parser fix before being deleted in favor
+// of this. Booking Check now exports its own already-computed Category/
+// Reason/PriorityRank columns directly (see its own buildRawNotesTsv
+// ForExtract) - trusted as-is below, no second classifier needed.
 // ===================================================================
 
 const BOOKING_CHECK_IMPORT_KEY = '_slaBookingCheckImportState';
-const BOOKING_CHECK_IMPORT_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes'];
+const BOOKING_CHECK_IMPORT_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Category', 'Reason', 'PriorityRank'];
 
 function loadBookingCheckImportState() {
 try {
@@ -3663,9 +3069,10 @@ localStorage.setItem(BOOKING_CHECK_IMPORT_KEY, JSON.stringify(state));
 }
 }
 
-// Booking Check's own export sanitizes Initial Notes (tabs -> spaces,
-// newlines -> " | ") before copying, so a plain split on tab always
-// yields exactly 7 cells here - no special last-column joining needed.
+// Booking Check's own export sanitizes Initial Notes and Reason (tabs ->
+// spaces, newlines -> " | ") before copying, so a plain split on tab
+// always yields exactly 10 cells here - no special last-column joining
+// needed.
 function parseBookingCheckImportTsv(rawText) {
 const lines = String(rawText || '').split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0);
 if (lines.length === 0) return { rows: [], headerOk: false, error: 'No input.' };
@@ -3678,6 +3085,12 @@ return { rows: [], headerOk: false, error: `Header does not match expected colum
 
 const rows = lines.slice(1).map((line) => {
 const cells = line.split('\t');
+// Number('') is 0, not NaN - a blank/malformed rank must NOT silently
+// become top priority, so blankness is checked before parsing, not
+// left to Number.isFinite alone (confirmed by this file's own self-
+// test below, which caught exactly this on the first pass).
+const rawRank = (cells[9] || '').trim();
+const parsedRank = rawRank === '' ? NaN : Number(rawRank);
 return {
 name: (cells[0] || '').trim(),
 phone: (cells[1] || '').trim(),
@@ -3685,20 +3098,62 @@ email: (cells[2] || '').trim(),
 source: (cells[3] || '').trim(),
 campaign: (cells[4] || '').trim(),
 created: (cells[5] || '').trim(),
-initialNotes: (cells[6] || '').trim()
+initialNotes: (cells[6] || '').trim(),
+category: (cells[7] || '').trim(),
+reason: (cells[8] || '').trim(),
+priorityRank: Number.isFinite(parsedRank) ? parsedRank : 7
 };
 });
 return { rows, headerOk: true, error: null };
 }
 
+// Booking Check has already classified and ranked every row before
+// exporting - this just orders by the rank it computed, no
+// classification of its own left to do.
 function classifyBookingCheckImportRows(rows) {
-return rows
-.map((row) => {
-const classification = classifyInitialNotes(row.initialNotes, { campaign: row.campaign, source: row.source });
-return { ...row, ...classification, status: 'CLASSIFIED' };
-})
-.sort((a, b) => bookingPriorityRank(a) - bookingPriorityRank(b));
+return [...rows].sort((a, b) => a.priorityRank - b.priorityRank);
 }
+
+// Confirms the header contract and the trust-not-reclassify behavior -
+// this file no longer has a classifier of its own to get out of sync,
+// so what's actually worth guarding here is that parsing reads the
+// right columns and that sort order follows the imported rank exactly,
+// not any re-derivation from category/notes.
+(function bookingCheckImportSelfTest() {
+const failures = [];
+const sampleTsv = [
+BOOKING_CHECK_IMPORT_HEADER.join('\t'),
+['Amy Adams', '07700900001', 'amy@example.com', 'Customer First', 'Citroen - Enquiry - New', '01/09/2026', 'Customer Comments: -', 'NON-BOOKING', 'No date field present.', '7'].join('\t'),
+['Ben Brown', '07700900002', 'ben@example.com', 'Customer First', 'Citroen - Enquiry - New', '02/09/2026', 'Customer Comments: See you at 3pm', 'CONFIRMED DATE & TIME', 'Exact time in comments.', '1'].join('\t'),
+['Cara Chen', '07700900003', 'cara@example.com', 'Customer First', 'Citroen - Enquiry - New', '03/09/2026', 'Customer Comments: possibly interested in a C3', 'NON-BOOKING', 'Genuine interest, no visit intent.', '5'].join('\t')
+].join('\n');
+
+const parsed = parseBookingCheckImportTsv(sampleTsv);
+if (!parsed.headerOk) failures.push(`Expected the real export header to parse OK, got error: ${parsed.error}`);
+if (parsed.rows.length !== 3) failures.push(`Expected 3 parsed rows, got ${parsed.rows.length}`);
+if (parsed.rows[1] && parsed.rows[1].category !== 'CONFIRMED DATE & TIME') failures.push(`Expected row 2's category to be read straight from the Category column, got "${parsed.rows[1].category}"`);
+if (parsed.rows[1] && parsed.rows[1].priorityRank !== 1) failures.push(`Expected row 2's priorityRank to be read straight from the PriorityRank column, got ${parsed.rows[1].priorityRank}`);
+
+const ordered = classifyBookingCheckImportRows(parsed.rows);
+if (!(ordered[0] && ordered[0].name === 'Ben Brown')) failures.push(`Expected Ben Brown (rank 1) to sort first, got "${ordered[0] && ordered[0].name}"`);
+if (!(ordered[1] && ordered[1].name === 'Cara Chen')) failures.push(`Expected Cara Chen (rank 5) to sort second, got "${ordered[1] && ordered[1].name}"`);
+if (!(ordered[2] && ordered[2].name === 'Amy Adams')) failures.push(`Expected Amy Adams (rank 7) to sort third, got "${ordered[2] && ordered[2].name}"`);
+
+const badHeader = parseBookingCheckImportTsv('Name\tPhone\tEmail');
+if (badHeader.headerOk) failures.push('Expected a mismatched/old-shape header to be rejected, not accepted');
+
+const missingRank = parseBookingCheckImportTsv([
+BOOKING_CHECK_IMPORT_HEADER.join('\t'),
+['Dee Dixon', '07700900004', 'dee@example.com', 'Customer First', 'Citroen - Enquiry - New', '04/09/2026', '-', 'NON-BOOKING', '', ''].join('\t')
+].join('\n'));
+if (!(missingRank.rows[0] && missingRank.rows[0].priorityRank === 7)) failures.push(`Expected a blank/malformed PriorityRank to default to 7 (lowest priority), got ${missingRank.rows[0] && missingRank.rows[0].priorityRank}`);
+
+if (failures.length > 0) {
+console.error('SLA Extract booking-check-import self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract booking-check-import self-test passed (9/9)');
+}
+})();
 
 function bookingCheckImportCategoryColor(category) {
 if (category === 'CONFIRMED DATE & TIME') return '#059669';
