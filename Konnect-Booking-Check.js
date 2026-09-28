@@ -2206,7 +2206,20 @@ if (initialNotes === '') {
 return finalizeResult(result, { status: 'EXCEPTION', exception: 'INITIAL_NOTES_EMPTY', ...auditPatch });
 }
 
-const classification = classifyInitialNotes(initialNotes, { campaign: row.campaign, source: row.source });
+// source falls back to the modal's own confirmed value (panelFields.source)
+// when the batch didn't supply one - Pending Customers leads have no
+// Source column at all to export (unlike SLA rows, which always do), so
+// without this they'd default through the classifier with no source
+// context at all. Safe for existing SLA rows: row.source is already
+// reliable there, so this only ever changes behavior when it was
+// otherwise going to classify against nothing. campaign deliberately
+// does NOT get the same fallback - panelFields.campaign (extractCampaignField)
+// is a completely different concept from row.campaign, not just a
+// different format of the same value (see validateLeadCandidate's own
+// comment on this) - falling back to it would feed the classifier the
+// lead's marketing form name where it expects Konnect's SLA-queue
+// categorization, a wrong value, not a missing one.
+const classification = classifyInitialNotes(initialNotes, { campaign: row.campaign, source: row.source || panelFields.source });
 if (classification.confidence === 'low') {
 return finalizeResult(result, { status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', initialNotes, ...auditPatch });
 }

@@ -3182,7 +3182,92 @@ return { tsv: [header, ...lines].join('\n'), count: rows.length };
 // absolutely against PANEL_BOX_ID (the nearest positioned ancestor,
 // since that box itself is position:fixed) rather than pushing any
 // other content down when open.
+// Pending Customers has no Tier 1-4 concept (that's an SLA-queue-only
+// categorization - collectPendingCustomers never computes one) and no
+// Source column at all, so its own export settings/filter/TSV-builder
+// are genuinely different shapes, not just a different filter value -
+// kept as their own functions rather than forcing collectAssignableLeads'
+// SLA-specific shape to fit. 'New' is deliberately excluded from the
+// selectable callback types - per instruction, a callback type of 'New'
+// means never actioned yet, so it has no lastActionText (see
+// buildPendingBookingCheckTsv) and is already covered by the SLA page's
+// own export anyway.
+const PENDING_BOOKING_CHECK_CALLBACK_TYPES = ['Auto Rescheduled', 'Manual Rescheduled', 'Post Closure'];
+const BOOKING_CHECK_EXPORT_PENDING_KEY = '_slaBookingCheckExportSettingsPending';
+
+function loadPendingBookingCheckExportSettings() {
+try {
+const raw = JSON.parse(localStorage.getItem(BOOKING_CHECK_EXPORT_PENDING_KEY));
+if (raw && Array.isArray(raw.callbackTypes)) return raw;
+} catch (error) {
+// ignore
+}
+return { callbackTypes: PENDING_BOOKING_CHECK_CALLBACK_TYPES.slice() };
+}
+
+function savePendingBookingCheckExportSettings(settings) {
+try {
+localStorage.setItem(BOOKING_CHECK_EXPORT_PENDING_KEY, JSON.stringify(settings));
+} catch (error) {
+// ignore
+}
+}
+
+// Source is left blank - Pending Customers' own table has no Source
+// column to draw a real value from (unlike the SLA queue), and
+// Konnect-Booking-Check.js's own classifier now falls back to the lead
+// modal's own confirmed Source once it finds the right lead (see its
+// processLeadRow comment on this exact handoff) - this is the intended
+// design, not a gap to paper over with a guessed value. Created uses
+// lastActionText (the RAW cell text, not the parsed Date - Booking
+// Check's own parseSlaCreated needs the same "D Mon YYYY HH:mm" shaped
+// string every other Created value already is, not a reformatted one)
+// - confirmed live: for a lead that's been actioned before, this
+// matches the timestamp on its own pink timeline entry on Konnect Live
+// to the minute, the same precision the SLA queue's Created column
+// already provides.
+function buildPendingBookingCheckTsv(callbackTypes) {
+const typeSet = new Set(callbackTypes);
+const rows = currentPendingCustomers.filter((c) => {
+if (!typeSet.has(c.callbackType)) return false;
+if (!c.lastActionText) return false;
+return true;
+});
+const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'].join('\t');
+const lines = rows.map((c) => [
+tsvSafe(stripTitle(c.name)), tsvSafe(c.mobile || c.landline), tsvSafe(c.email), '', tsvSafe(c.campaign), tsvSafe(c.lastActionText)
+].join('\t'));
+return { tsv: [header, ...lines].join('\n'), count: rows.length };
+}
+
+// Shared shell (same popover DOM id/position/Copy button) between the
+// SLA and Pending pages - genuinely just different filter checkboxes
+// and a different TSV builder underneath, not different enough to
+// justify a second copy of the popover chrome itself the way the
+// Assign section's own SLA/Pending split is (that one's internal
+// filtering logic is far more involved on both sides).
 function renderBookingCheckExportPopover() {
+if (currentPageType === PAGE_PENDING) {
+const settings = loadPendingBookingCheckExportSettings();
+const selectedTypes = new Set(settings.callbackTypes);
+const { count } = buildPendingBookingCheckTsv(settings.callbackTypes);
+const typeCheckboxes = PENDING_BOOKING_CHECK_CALLBACK_TYPES.map(t => `
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;">
+<input type="checkbox" class="booking-export-callback-type" value="${escapeHtml(t)}" ${selectedTypes.has(t) ? 'checked' : ''} onchange="window._updateBookingCheckExportPreview()">
+${escapeHtml(t)}
+</label>`).join('');
+return `
+<div id="bookingCheckExportPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 220px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
+<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">COPY FOR BOOKING CHECK</div>
+<div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${typeCheckboxes}</div>
+<div style="font-size: 10.5px; color: #94a3b8; margin-bottom: 10px;">New (never-actioned) leads are excluded - check the SLA queue for those.</div>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+<span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}</span>
+<button onclick="window._copyBookingCheckExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
+</div>
+</div>`;
+}
+
 const settings = loadBookingCheckExportSettings();
 const selectedTiers = new Set(settings.tiers);
 const { count } = buildBookingCheckTsv(settings.tiers, settings.customerFirstOnly);
@@ -3217,6 +3302,14 @@ popover.style.display = popover.style.display === 'none' ? 'block' : 'none';
 };
 
 window._updateBookingCheckExportPreview = function() {
+if (currentPageType === PAGE_PENDING) {
+const callbackTypes = Array.from(document.querySelectorAll('.booking-export-callback-type:checked')).map(el => el.value);
+savePendingBookingCheckExportSettings({ callbackTypes });
+const { count } = buildPendingBookingCheckTsv(callbackTypes);
+const countEl = document.getElementById('bookingExportRowCount');
+if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}`;
+return;
+}
 const tiers = Array.from(document.querySelectorAll('.booking-export-tier:checked')).map(el => Number(el.value));
 const customerFirstOnly = document.getElementById('bookingExportCustomerFirstOnly')?.checked || false;
 saveBookingCheckExportSettings({ tiers, customerFirstOnly });
@@ -3226,9 +3319,10 @@ if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}`;
 };
 
 window._copyBookingCheckExport = function(buttonEl) {
-const settings = loadBookingCheckExportSettings();
-const { tsv, count } = buildBookingCheckTsv(settings.tiers, settings.customerFirstOnly);
 const original = buttonEl.textContent;
+const { tsv, count } = currentPageType === PAGE_PENDING
+? buildPendingBookingCheckTsv(loadPendingBookingCheckExportSettings().callbackTypes)
+: (() => { const s = loadBookingCheckExportSettings(); return buildBookingCheckTsv(s.tiers, s.customerFirstOnly); })();
 if (count === 0) {
 buttonEl.textContent = 'No leads';
 setTimeout(() => { buttonEl.textContent = original; }, 1200);
@@ -3372,6 +3466,48 @@ if (failures.length > 0) {
 console.error('SLA Extract booking-check-import self-test FAILED:\n' + failures.join('\n'));
 } else {
 console.info('SLA Extract booking-check-import self-test passed (9/9)');
+}
+})();
+
+(function pendingBookingCheckExportSelfTest() {
+const failures = [];
+const originalPendingCustomers = currentPendingCustomers;
+currentPendingCustomers = [
+// Never actioned - callbackType 'New', no lastActionText. Must be
+// excluded even if 'New' were ever passed in as a selected type,
+// since the actual filter is the real data (has this lead been
+// actioned before), not just the label.
+{ name: 'Amy Adams', mobile: '07700900001', landline: '', email: 'amy@example.com', campaign: 'Citroen - Enquiry - New', callbackType: 'New', lastActionText: '' },
+// Actioned before, matching callback type, real lastActionText -
+// should be included.
+{ name: 'Ben Brown', mobile: '', landline: '01234567890', email: '', campaign: 'Citroen - Enquiry - New', callbackType: 'Auto Rescheduled', lastActionText: 'Sat, 26 Sep 2026 18:05' },
+// Actioned before but a callback type not in the selected set -
+// should be excluded.
+{ name: 'Cara Chen', mobile: '07700900003', landline: '', email: 'cara@example.com', campaign: 'Citroen - Enquiry - New', callbackType: 'Post Closure', lastActionText: 'Sat, 26 Sep 2026 19:05' }
+];
+
+const { tsv, count } = buildPendingBookingCheckTsv(['Auto Rescheduled', 'Manual Rescheduled']);
+const lines = tsv.split('\n');
+if (count !== 1) failures.push(`Expected exactly 1 matching lead (Ben Brown), got ${count}`);
+if (lines[0] !== 'Name\tPhone\tEmail\tSource\tCampaign\tCreated') failures.push(`Unexpected header shape: ${lines[0]}`);
+if (lines.length !== 2) failures.push(`Expected exactly 1 data row, got ${lines.length - 1}`);
+else {
+const cells = lines[1].split('\t');
+if (cells[0] !== 'Ben Brown') failures.push(`Expected Ben Brown, got "${cells[0]}"`);
+if (cells[1] !== '01234567890') failures.push(`Expected mobile-or-landline fallback to use landline when mobile is blank, got "${cells[1]}"`);
+if (cells[3] !== '') failures.push(`Expected Source to be deliberately blank (no Source data exists on this page), got "${cells[3]}"`);
+if (cells[5] !== 'Sat, 26 Sep 2026 18:05') failures.push(`Expected Created to be the raw lastActionText verbatim, got "${cells[5]}"`);
+}
+
+const neverActionedResult = buildPendingBookingCheckTsv(['New', 'Auto Rescheduled', 'Manual Rescheduled', 'Post Closure']);
+if (neverActionedResult.count !== 2) failures.push(`Expected never-actioned leads to stay excluded even if their callback type were selectable, got count ${neverActionedResult.count}`);
+
+currentPendingCustomers = originalPendingCustomers;
+
+if (failures.length > 0) {
+console.error('SLA Extract pending-booking-check-export self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract pending-booking-check-export self-test passed (8/8)');
 }
 })();
 
@@ -3746,14 +3882,15 @@ const landline = cells[PC_COL_LANDLINE]?.textContent?.trim();
 const campaign = cells[PC_COL_CAMPAIGN]?.textContent?.trim();
 const callbackType = cells[PC_COL_CALLBACK_TYPE]?.textContent?.trim();
 const nextActionText = cells[PC_COL_NEXT_ACTION]?.textContent?.trim() || '';
-const lastActionDate = parseKonnectDate(cells[PC_COL_LAST_ACTION]?.textContent?.trim() || '');
+const lastActionText = cells[PC_COL_LAST_ACTION]?.textContent?.trim() || '';
+const lastActionDate = parseKonnectDate(lastActionText);
 const nextActionDate = parseKonnectDate(nextActionText);
 const assignState = getAssignCellState(cells[PC_COL_ASSIGN]);
 
 leads.push({
 key: `${name}||${reg}||${campaign}||${callbackType}||${nextActionText}`,
 name, dealer, brand, reg, email, mobile, landline, campaign,
-callbackType, lastActionDate, nextActionDate,
+callbackType, lastActionText, lastActionDate, nextActionDate,
 assigned: assignState.assigned,
 agentName: assignState.agentName
 });
@@ -4226,6 +4363,7 @@ summaryHtml: renderPendingDueSummary(),
 assignSectionHtml: renderPendingAssignSection(),
 bodyHtml,
 onTitleClick: 'window._refreshLeadsAndPanel()',
+showBookingCheckExport: true,
 showBookingCheckImport: true
 }));
 }
