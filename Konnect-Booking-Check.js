@@ -2265,17 +2265,22 @@ const lines = orderedResults(session).map((r) => [r.name, r.phone, r.email, r.ca
 return [header, ...lines].join('\n');
 }
 
-// Feeds the reverse handoff into SLA-Extract.js: for large batches,
-// classification runs there instead (right next to the assign-
-// criteria/tier features), using its own ported copy of this same
-// classifier - this just hands back the raw fields, no classification
-// columns, matching exactly the column shape SLA-Extract.js's
-// "Classify Booking Check results" panel expects to parse.
+// Feeds the reverse handoff into SLA-Extract.js. Used to hand back only
+// the raw fields and let Extract re-classify from a second, separately-
+// maintained copy of this exact classifier - a real drift risk that
+// already happened (that copy never got this file's later dual-raw-
+// notes-format parser fix before it was deleted in favor of trusting
+// this export directly). Now exports the already-computed Category/
+// Reason/PriorityRank too, so Extract just uses them - one classifier,
+// not two that can quietly disagree on the same lead.
 function buildRawNotesTsvForExtract(session) {
-const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes'];
+const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Category', 'Reason', 'PriorityRank'];
 const lines = orderedResults(session).map((r) => [
 r.name, r.phone, r.email, r.source, r.campaign, r.created,
-(r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | ')
+(r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
+r.category || '',
+(r.reason || r.exception || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
+String(bookingPriorityRank(r))
 ].join('\t'));
 return [header.join('\t'), ...lines].join('\n');
 }
@@ -2348,9 +2353,16 @@ bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNote
 // results" panel parses (BOOKING_CHECK_IMPORT_HEADER there) - pinned
 // down explicitly since the two files can't share a module and would
 // otherwise only find out they'd drifted apart by failing silently on
-// a real paste.
+// a real paste. Extract now trusts these columns directly instead of
+// re-classifying (see its own booking-check-import self-test), so this
+// check also confirms the actual computed category/rank land in the
+// right columns, not just that the header row's shape is right.
 const rawExtractTsv = buildRawNotesTsvForExtract(fakeSession);
-check('raw Extract export header shape', rawExtractTsv.split('\n')[0], 'Name\tPhone\tEmail\tSource\tCampaign\tCreated\tInitialNotes');
+const rawExtractLines = rawExtractTsv.split('\n');
+check('raw Extract export header shape', rawExtractLines[0], 'Name\tPhone\tEmail\tSource\tCampaign\tCreated\tInitialNotes\tCategory\tReason\tPriorityRank');
+const aliceAgainCells = rawExtractLines[2].split('\t');
+check('raw Extract export: Category column carries the computed category', aliceAgainCells[7], 'CONFIRMED DATE & TIME');
+check('raw Extract export: PriorityRank column carries a real numeric rank', aliceAgainCells[9], String(bookingPriorityRank(fakeSession.results[1])));
 
 if (failures.length > 0) {
 console.error('KonnectBookingCheck orchestration self-test FAILED:\n' + failures.join('\n'));
