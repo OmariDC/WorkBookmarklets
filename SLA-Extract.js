@@ -1994,6 +1994,58 @@ cachedLeadsSnapshot = { pageType: PAGE_PENDING, leads: collectPendingCustomers()
 return cachedLeadsSnapshot.leads;
 }
 
+// Directly tests the actual mechanism displayPanel/displayPendingPanel's
+// invalidateCache=false argument depends on (see their own comments) -
+// that repeated getCached*() calls do NOT touch the live DOM again
+// unless invalidateLeadsCache() ran in between. This is the part of the
+// queue-refresh-race fix that's genuinely testable without a live
+// browser: whether the cache-skip mechanism itself works. It does NOT
+// (and can't, from here) verify the other half - that
+// waitForLeadsTableRows' MutationObserver-based wait actually resolves
+// at the right moment against Konnect's real Angular re-render timing.
+// That half only a live re-test can confirm.
+(function leadsCacheSelfTest() {
+const originalQuerySelector = document.querySelector.bind(document);
+let scrapeCount = 0;
+document.querySelector = function(selector) {
+if (selector === 'table') {
+scrapeCount++;
+return { querySelectorAll: () => [] };
+}
+return originalQuerySelector(selector);
+};
+try {
+const failures = [];
+
+invalidateLeadsCache();
+getCachedAssignableLeads();
+getCachedAssignableLeads();
+getCachedAssignableLeads();
+if (scrapeCount !== 1) failures.push(`getCachedAssignableLeads: expected exactly 1 DOM scrape across 3 uninvalidated calls, got ${scrapeCount}`);
+
+scrapeCount = 0;
+invalidateLeadsCache();
+getCachedPendingCustomers();
+getCachedPendingCustomers();
+if (scrapeCount !== 1) failures.push(`getCachedPendingCustomers: expected exactly 1 DOM scrape across 2 uninvalidated calls, got ${scrapeCount}`);
+
+scrapeCount = 0;
+invalidateLeadsCache();
+getCachedAssignableLeads();
+invalidateLeadsCache();
+getCachedAssignableLeads();
+if (scrapeCount !== 2) failures.push(`invalidateLeadsCache: expected a fresh scrape after each explicit invalidation (2 calls), got ${scrapeCount}`);
+
+if (failures.length > 0) {
+console.error('SLA Extract leads-cache self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract leads-cache self-test passed (3/3)');
+}
+} finally {
+document.querySelector = originalQuerySelector;
+}
+})();
+
 // Static "last scanned at HH:MM" rather than a live-ticking "Xm ago" -
 // deliberately not using an interval to keep this updating, given
 // tonight's zombie-interval lesson (every past bookmarklet invocation
