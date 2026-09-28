@@ -2417,6 +2417,44 @@ kbcPageFlashOverlayPrevOverflow = null;
 }
 
 // ===================================================================
+// ICONS - ported verbatim from SLA-Extract.js's own redesign (small
+// inline-SVG line icons, Lucide/Feather-style: 24x24 viewBox, stroke-
+// based, currentColor) so this panel matches the rest of the toolset
+// instead of the plain-text/emoji buttons it had before. Only the icons
+// this panel actually uses are included, not the full set - extend as
+// needed rather than porting everything preemptively.
+// ===================================================================
+
+const ICONS = {
+clipboard: '<rect x="5" y="3" width="14" height="18" rx="2"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="12" y2="16"/>',
+copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+warning: '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>',
+minimize: '<line x1="5" y1="12" x2="19" y2="12"/>',
+restore: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
+chevron: '<polyline points="6 9 12 15 18 9"/>',
+search: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+pause: '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
+x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'
+};
+
+function svgIcon(name, size, extraStyle) {
+return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;${extraStyle || ''}">${ICONS[name]}</svg>`;
+}
+
+// A ".chev"-classed chevron for the <details> summary rows below - kept
+// separate from svgIcon (whose third argument is raw CSS text appended
+// to its own style attribute, not a class) since the rotation here is
+// driven by a plain CSS "parent:not([open]) .chev" rule, not a JS-
+// computed transform - these are native <details> elements with no
+// toggle listener/re-render of their own, so there's no "collapsed"
+// boolean to pass in the way SLA-Extract.js's own chevronIcon needs one.
+function detailsChevronIcon() {
+return `<svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;">${ICONS.chevron}</svg>`;
+}
+
+// ===================================================================
 // UI PANEL - Shadow DOM, draggable, per the spec's interface list.
 // Only initializes in a real browser (guarded below) so the self-tests
 // above still run cleanly under a plain Node harness.
@@ -2484,46 +2522,57 @@ document.documentElement.appendChild(host);
 const root = host.attachShadow({ mode: 'open' });
 root.innerHTML = `
 <style>
-.panel { width: 440px; max-height: 90vh; display: flex; flex-direction: column; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.35); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #1e293b; overflow: hidden; }
-.header { flex-shrink: 0; background: #1e293b; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; border-radius: 10px 10px 0 0; cursor: move; user-select: none; }
-.header button { background: transparent; border: none; color: #94a3b8; cursor: pointer; font-size: 14px; }
+.panel { width: 460px; max-height: 90vh; display: flex; flex-direction: column; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.35); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #1e293b; overflow: hidden; }
+.header { flex-shrink: 0; background: #1e293b; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-radius: 10px 10px 0 0; cursor: move; user-select: none; }
+.header-title { display: flex; align-items: center; gap: 6px; font-weight: 600; overflow: hidden; }
+.header-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.header-mini-progress { font-size: 11px; color: #cbd5e1; white-space: nowrap; }
+.header button { background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 2px; display: flex; align-items: center; }
+.header button:hover { color: white; }
 .bodyEl { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 12px; }
 textarea { width: 100%; height: 70px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px; }
 .row-count { color: #64748b; margin: 4px 0 8px; }
 .section-label { color: #94a3b8; text-transform: uppercase; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; margin: 10px 0 4px; }
 .section-label:first-child { margin-top: 0; }
 .buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
-button.action { padding: 5px 8px; border: 1px solid #cbd5e1; background: white; border-radius: 6px; cursor: pointer; font-size: 11px; }
+button.action { padding: 5px 8px; border: 1px solid #cbd5e1; background: white; border-radius: 6px; cursor: pointer; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
 button.action:hover { background: #eef2ff; }
+button.action:disabled { opacity: 0.45; cursor: default; }
+button.action:disabled:hover { background: white; }
 button.primary { background: #1e293b; color: white; border-color: #1e293b; }
+button.primary:hover { background: #334155; }
 .status { background: white; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
 .status div { margin-bottom: 2px; }
-.exception { color: #dc2626; }
-.confirmed { color: #059669; font-weight: 600; }
-.dateonly { color: #d97706; }
-.warm { color: #2563eb; }
-.nonbooking { color: #64748b; }
+.progress-track { height: 5px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
+.progress-fill { height: 100%; background: #1e293b; transition: width 0.2s ease; border-radius: 3px; }
 .hidden { display: none; }
 .footer { flex-shrink: 0; border-top: 1px solid #cbd5e1; padding: 8px 12px; background: white; display: flex; justify-content: flex-end; border-radius: 0 0 10px 10px; }
-.footer button { padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; }
+.footer button { padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
 .topSection { flex-shrink: 0; border: 1px solid #e2e8f0; border-radius: 6px; background: white; margin-bottom: 8px; }
-.topSection > summary { padding: 6px 8px; cursor: pointer; font-weight: 600; color: #475569; list-style: none; }
+.topSection > summary { padding: 6px 8px; cursor: pointer; font-weight: 600; color: #475569; list-style: none; display: flex; align-items: center; gap: 6px; }
 .topSection > summary::-webkit-details-marker { display: none; }
-.topSection > summary::before { content: '\\25B8'; margin-right: 6px; color: #94a3b8; }
-.topSection[open] > summary::before { content: '\\25BE'; }
+.topSection > summary .chev { transition: transform 0.15s ease; color: #94a3b8; }
+.topSection:not([open]) > summary .chev { transform: rotate(-90deg); }
 .topSection-content { padding: 0 8px 8px; }
 .exportBar { flex-shrink: 0; }
+.stats-bar { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.stat-pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 5px; font-size: 10.5px; font-weight: 700; cursor: pointer; user-select: none; border: 1px solid transparent; transition: opacity 0.1s ease; }
+.stat-pill.inactive { opacity: 0.35; }
+.filter-bar { display: flex; gap: 6px; margin-bottom: 8px; }
+.search-input { flex: 1; padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 11px; box-sizing: border-box; font-family: inherit; }
+.category-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 10.5px; font-weight: 700; white-space: nowrap; }
 .tier { border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 6px; background: white; }
-.tier > summary { padding: 5px 8px; cursor: pointer; font-weight: 600; list-style: none; display: flex; justify-content: space-between; }
+.tier > summary { padding: 5px 8px; cursor: pointer; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 6px; justify-content: space-between; }
 .tier > summary::-webkit-details-marker { display: none; }
-.tier > summary::before { content: '\\25B8'; margin-right: 6px; color: #94a3b8; }
-.tier[open] > summary::before { content: '\\25BE'; }
+.tier > summary .chev { transition: transform 0.15s ease; color: #94a3b8; }
+.tier:not([open]) > summary .chev { transform: rotate(-90deg); }
+.tier-left { display: flex; align-items: center; gap: 6px; }
 .tier-count { color: #94a3b8; font-weight: 400; }
 .customer { border-top: 1px solid #f1f5f9; }
-.customer > summary { padding: 5px 8px 5px 20px; cursor: pointer; list-style: none; display: flex; justify-content: space-between; gap: 6px; }
+.customer > summary { padding: 5px 8px 5px 20px; cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
 .customer > summary::-webkit-details-marker { display: none; }
-.customer > summary::before { content: '\\25B8'; margin-right: 6px; color: #cbd5e1; }
-.customer[open] > summary::before { content: '\\25BE'; }
+.customer > summary .chev { transition: transform 0.15s ease; color: #cbd5e1; flex-shrink: 0; }
+.customer:not([open]) > summary .chev { transform: rotate(-90deg); }
 .customer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .customer-body { padding: 4px 8px 8px 28px; background: #f8fafc; }
 .customer-body .field { margin-bottom: 3px; }
@@ -2535,41 +2584,47 @@ button.primary { background: #1e293b; color: white; border-color: #1e293b; }
 </style>
 <div class="panel">
 <div class="header" id="headerEl">
-<span>Konnect Booking Check</span>
-<button id="minBtn" title="Minimize">_</button>
+<div class="header-title">${svgIcon('clipboard', 15)}<span>Konnect Booking Check</span></div>
+<span class="header-mini-progress hidden" id="headerMiniProgress"></span>
+<button id="minBtn" title="Minimize">${svgIcon('minimize', 14)}</button>
 </div>
 <div class="bodyEl" id="bodyEl">
 <details class="topSection" id="topSection" open>
-<summary>Batch input</summary>
+<summary>${detailsChevronIcon()}Batch input</summary>
 <div class="topSection-content">
 <textarea id="pasteBox" placeholder="Paste TSV: Name  Phone  Email  Source  Campaign  Created"></textarea>
 <div class="row-count" id="rowCount">0 rows parsed</div>
 <div class="buttons">
-<button class="action primary" id="btnStart">Start</button>
-<button class="action primary" id="btnPauseResume">Pause</button>
+<button class="action primary" id="btnStart">${svgIcon('play', 11)}Start</button>
+<button class="action primary" id="btnPauseResume">${svgIcon('pause', 11)}Pause</button>
 <button class="action" id="btnProcessNext">Process next</button>
-<button class="action" id="btnCancel">Cancel</button>
+<button class="action" id="btnCancel">${svgIcon('x', 11)}Cancel</button>
 </div>
 <div class="status">
 <div>Customer: <span id="curCustomer">-</span></div>
 <div>Target Created: <span id="curTarget">-</span></div>
 <div>State: <span id="curState">Idle</span></div>
 <div>Completed: <span id="completedCount">0</span> &middot; Exceptions: <span id="exceptionCount">0</span> &middot; Total: <span id="totalCount">0</span></div>
+<div class="progress-track"><div class="progress-fill" id="progressFill" style="width: 0%;"></div></div>
 </div>
 </div>
 </details>
+<div class="stats-bar hidden" id="statsBar"></div>
+<div class="filter-bar hidden" id="filterBar">
+<input type="text" class="search-input" id="searchInput" placeholder="Filter by name...">
+</div>
 <div id="resultsBody"></div>
 <div class="exportBar">
 <div class="section-label">Export</div>
 <div class="buttons">
-<button class="action" id="btnCopy">Copy results</button>
-<button class="action" id="btnCopyRawForExtract">Copy raw for Extract</button>
+<button class="action" id="btnCopy">${svgIcon('copy', 11)}Copy results</button>
+<button class="action" id="btnCopyRawForExtract">${svgIcon('copy', 11)}Copy raw for Extract</button>
 <button class="action" id="btnClear">Clear session</button>
 </div>
 </div>
 </div>
 <div class="footer">
-<button id="btnClearStop">Clear & Stop</button>
+<button id="btnClearStop">${svgIcon('trash', 11)}Clear & Stop</button>
 </div>
 </div>
 `;
@@ -2613,12 +2668,17 @@ return navigator.clipboard && navigator.clipboard.writeText
 
 function showButtonFeedback(button, text, isError) {
 if (!button) return;
-const original = button.textContent;
+// innerHTML, not textContent - several of these buttons carry an icon
+// (svgIcon output) alongside their label; textContent would silently
+// strip it out permanently the first time feedback fires, since
+// setting .textContent replaces ALL child content, icon included, not
+// just the text.
+const original = button.innerHTML;
 const originalColor = button.style.color;
 button.textContent = text;
 button.style.color = isError ? '#dc2626' : '#059669';
 setTimeout(() => {
-button.textContent = original;
+button.innerHTML = original;
 button.style.color = originalColor;
 }, 1500);
 }
@@ -2634,10 +2694,25 @@ const curStateEl = root.getElementById('curState');
 const completedCountEl = root.getElementById('completedCount');
 const exceptionCountEl = root.getElementById('exceptionCount');
 const totalCountEl = root.getElementById('totalCount');
+const progressFillEl = root.getElementById('progressFill');
+const statsBarEl = root.getElementById('statsBar');
+const filterBarEl = root.getElementById('filterBar');
+const searchInputEl = root.getElementById('searchInput');
+const headerMiniProgressEl = root.getElementById('headerMiniProgress');
 const resultsBody = root.getElementById('resultsBody');
 const bodyEl = root.getElementById('bodyEl');
 const minBtn = root.getElementById('minBtn');
 const headerEl = root.getElementById('headerEl');
+
+// Category filter toggled by clicking a stat pill - empty set means "no
+// filter, show everything" (also true again once every category has
+// been individually re-toggled back on, per containsAny-style set
+// semantics below), not "show nothing". Name filter is plain live text
+// match, kept as a local variable rather than in `session`/localStorage
+// since it's a transient view concern, not something worth persisting
+// across a panel reopen.
+const activeCategoryFilters = new Set();
+let nameFilterText = '';
 
 let session = loadStoredSession();
 if (session) pasteBox.value = session.rawInput || '';
@@ -2651,18 +2726,34 @@ if (session) pasteBox.value = session.rawInput || '';
 // contact details").
 const detailsState = { tiers: new Set([1, 2, 3, 4]), customers: new Set() };
 
-function categoryClass(r) {
-if (!r) return '';
-if (r.exception) return 'exception';
-// WARM ENQUIRY is NOT the same tier of value as an actual
-// confirmed date/time - it requires reaching the customer live, no
-// voicemail can act on it alone - so it gets its own distinct color
-// rather than sharing "confirmed"'s green/bold styling.
-if (r.category === 'CONFIRMED DATE & TIME') return 'confirmed';
-if (r.category === 'DATE ONLY') return 'dateonly';
-if (r.category === 'WARM ENQUIRY') return 'warm';
-if (r.category === 'NON-BOOKING') return 'nonbooking';
-return '';
+// Same palette SLA-Extract.js's own bookingCheckImportCategoryColor
+// uses for these exact category strings, so a lead reads the same
+// color whichever tool it's looked at in.
+function categoryColor(r) {
+if (!r) return '#1e293b';
+if (r.exception) return '#dc2626';
+if (r.category === 'CONFIRMED DATE & TIME') return '#059669';
+if (r.category === 'DATE ONLY') return '#d97706';
+if (r.category === 'WARM ENQUIRY') return '#2563eb';
+if (r.category === 'NON-BOOKING') return '#64748b';
+return '#1e293b';
+}
+
+// Stable key for both the stats bar and the category filter - EXCEPTION
+// rows have no r.category at all (they have r.exception instead), so
+// this gives them one consistent key rather than leaving them grouped
+// under whatever raw exception code happens to be on each one.
+function categoryKey(r) {
+if (!r) return 'PENDING';
+if (r.exception) return 'EXCEPTION';
+return r.category || 'PENDING';
+}
+
+function categoryBadge(r) {
+const color = categoryColor(r);
+const label = escapeHtmlForUi(r.category || r.exception || 'Pending');
+const icon = r.exception ? svgIcon('warning', 10, ' margin-right: 3px;') : '';
+return `<span class="category-badge" style="background: ${color}1a; color: ${color};">${icon}${label}</span>`;
 }
 
 // Same click-to-copy visual pattern as SLA-Extract.js's .sla-copyable
@@ -2691,6 +2782,22 @@ else if (r.status === 'EXCEPTION') parts.push(`<div class="reason">No Initial No
 return parts.join('');
 }
 
+// Ordered by the same priority scale as the category pills, so both
+// the stats bar and its column-selection filtering behavior read
+// top-to-bottom as "most to least actionable" consistently.
+const STATS_BAR_CATEGORY_ORDER = ['CONFIRMED DATE & TIME', 'DATE ONLY', 'WARM ENQUIRY', 'NON-BOOKING', 'EXCEPTION'];
+
+function updateHeaderMiniProgress(ordered) {
+const minimized = bodyEl.classList.contains('hidden');
+if (!minimized || !session || ordered.length === 0) {
+headerMiniProgressEl.classList.add('hidden');
+return;
+}
+const exceptions = ordered.filter((r) => r.status === 'EXCEPTION').length;
+headerMiniProgressEl.textContent = `${ordered.length}/${session.rows.length}${exceptions > 0 ? ` · ${exceptions} exc.` : ''}`;
+headerMiniProgressEl.classList.remove('hidden');
+}
+
 function render() {
 if (!session) {
 rowCountEl.textContent = '0 rows parsed';
@@ -2698,16 +2805,61 @@ resultsBody.innerHTML = '<div class="empty-state">Paste a batch above to begin.<
 completedCountEl.textContent = '0';
 exceptionCountEl.textContent = '0';
 totalCountEl.textContent = '0';
+progressFillEl.style.width = '0%';
+statsBarEl.classList.add('hidden');
+filterBarEl.classList.add('hidden');
+updateHeaderMiniProgress([]);
 return;
 }
 rowCountEl.textContent = `${session.rows.length} rows parsed` + (session.headerOk ? '' : ` - ${session.headerError}`);
 const ordered = orderedResults(session);
+const percent = session.rows.length > 0 ? Math.round((100 * ordered.length) / session.rows.length) : 0;
+progressFillEl.style.width = `${percent}%`;
+updateHeaderMiniProgress(ordered);
 
 if (ordered.length === 0) {
 resultsBody.innerHTML = '<div class="empty-state">No results yet - press Start or Process next.</div>';
+statsBarEl.classList.add('hidden');
+filterBarEl.classList.add('hidden');
+} else {
+statsBarEl.classList.remove('hidden');
+filterBarEl.classList.remove('hidden');
+
+// Stats bar is built from the FULL unfiltered set - it's the stable
+// overview a filter selection narrows FROM, not a count of what's
+// currently showing (which would shrink to match itself the moment
+// any filter is active, defeating the point of showing it).
+const countsByKey = new Map();
+ordered.forEach((r) => {
+const key = categoryKey(r);
+countsByKey.set(key, (countsByKey.get(key) || 0) + 1);
+});
+statsBarEl.innerHTML = STATS_BAR_CATEGORY_ORDER.filter((key) => countsByKey.has(key)).map((key) => {
+const sample = ordered.find((r) => categoryKey(r) === key);
+const color = categoryColor(sample);
+const isActive = activeCategoryFilters.size === 0 || activeCategoryFilters.has(key);
+return `<span class="stat-pill${isActive ? '' : ' inactive'}" data-key="${escapeHtmlForUi(key)}" style="background: ${color}1a; color: ${color};">${escapeHtmlForUi(key)}<span style="opacity: 0.7;">${countsByKey.get(key)}</span></span>`;
+}).join('');
+statsBarEl.querySelectorAll('.stat-pill').forEach((el) => {
+el.addEventListener('click', () => {
+const key = el.dataset.key;
+if (activeCategoryFilters.has(key)) activeCategoryFilters.delete(key);
+else activeCategoryFilters.add(key);
+render();
+});
+});
+
+const filtered = ordered.filter((r) => {
+if (!(activeCategoryFilters.size === 0 || activeCategoryFilters.has(categoryKey(r)))) return false;
+if (nameFilterText && !r.name.toLowerCase().includes(nameFilterText)) return false;
+return true;
+});
+
+if (filtered.length === 0) {
+resultsBody.innerHTML = '<div class="empty-state">No results match the current filters.</div>';
 } else {
 const byTier = new Map();
-ordered.forEach((r) => {
+filtered.forEach((r) => {
 const tier = categorizeTier(r.campaign, r.source).tier;
 if (!byTier.has(tier)) byTier.set(tier, []);
 byTier.get(tier).push(r);
@@ -2719,17 +2871,18 @@ resultsBody.innerHTML = Array.from(byTier.keys()).sort((a, b) => a - b).map((tie
 const rows = [...byTier.get(tier)].sort((a, b) => bookingPriorityRank(a) - bookingPriorityRank(b));
 const customersHtml = rows.map((r) => `
 <details class="customer" data-key="${r.inputIndex}" ${detailsState.customers.has(r.inputIndex) ? 'open' : ''}>
-<summary><span class="customer-name" title="${escapeHtmlForUi(r.initialNotes || 'No Initial Notes read yet.')}">${escapeHtmlForUi(r.name)}</span><span class="${categoryClass(r)}">${escapeHtmlForUi(r.category || r.exception || 'Pending')}</span></summary>
+<summary><span style="display: flex; align-items: center; gap: 6px; overflow: hidden;">${detailsChevronIcon()}<span class="customer-name" title="${escapeHtmlForUi(r.initialNotes || 'No Initial Notes read yet.')}">${escapeHtmlForUi(r.name)}</span></span>${categoryBadge(r)}</summary>
 <div class="customer-body">${customerBodyHtml(r)}</div>
 </details>
 `).join('');
 return `
 <details class="tier" data-key="${tier}" ${detailsState.tiers.has(tier) ? 'open' : ''}>
-<summary><span>Tier ${tier}</span><span class="tier-count">${rows.length}</span></summary>
+<summary><span class="tier-left">${detailsChevronIcon()}<span>Tier ${tier}</span></span><span class="tier-count">${rows.length}</span></summary>
 ${customersHtml}
 </details>
 `;
 }).join('');
+}
 }
 
 resultsBody.querySelectorAll('details.tier').forEach((el) => {
@@ -2794,12 +2947,21 @@ hidePageFlashOverlay();
 uiHandle.setState(s.done ? 'Done' : 'Paused after one row');
 });
 
+// pauseResumeBtn.textContent alone would wipe out its icon (textContent
+// replaces ALL child content, SVG included, not just the label text) -
+// this keeps both in sync instead, swapping the icon to match (pause
+// icon while running/offering to pause, play icon while paused/offering
+// to resume).
+function setPauseResumeLabel(text) {
+pauseResumeBtn.innerHTML = svgIcon(text === 'Pause' ? 'pause' : 'play', 11) + text;
+}
+
 root.getElementById('btnStart').addEventListener('click', () => {
 const s = ensureSessionFromPasteBox();
 if (!s.headerOk) { uiHandle.setState(`Header error: ${s.headerError}`); return; }
 s.paused = false;
 s.cancelled = false;
-pauseResumeBtn.textContent = 'Pause';
+setPauseResumeLabel('Pause');
 showPageFlashOverlay('Checking leads…');
 runLoop(s, uiHandle);
 });
@@ -2816,13 +2978,13 @@ pauseResumeBtn.addEventListener('click', () => {
 if (!session) return;
 if (session.paused) {
 session.paused = false;
-pauseResumeBtn.textContent = 'Pause';
+setPauseResumeLabel('Pause');
 uiHandle.setState('Resuming...');
 showPageFlashOverlay('Checking leads…');
 runLoop(session, uiHandle);
 } else {
 session.paused = true;
-pauseResumeBtn.textContent = 'Resume';
+setPauseResumeLabel('Resume');
 uiHandle.setState('Paused');
 hidePageFlashOverlay();
 }
@@ -2844,7 +3006,7 @@ if (session) session.cancelled = true;
 clearStoredSession();
 session = null;
 pasteBox.value = '';
-pauseResumeBtn.textContent = 'Pause';
+setPauseResumeLabel('Pause');
 hidePageFlashOverlay();
 uiHandle.setState('Idle', '-', '-');
 });
@@ -2886,7 +3048,22 @@ copyTextToClipboard(buildRawNotesTsvForExtract(s))
 .catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
 });
 
-minBtn.addEventListener('click', () => { bodyEl.classList.toggle('hidden'); });
+minBtn.addEventListener('click', () => {
+bodyEl.classList.toggle('hidden');
+const minimized = bodyEl.classList.contains('hidden');
+minBtn.innerHTML = svgIcon(minimized ? 'restore' : 'minimize', 14);
+minBtn.title = minimized ? 'Restore' : 'Minimize';
+render();
+});
+
+// Live filter-as-you-type, not rebuilt by render() itself (searchInputEl
+// is part of the static panel shell, not resultsBody's rebuilt innerHTML)
+// so typing never loses focus/cursor position mid-batch-run the way
+// resetting .value on every render would.
+searchInputEl.addEventListener('input', () => {
+nameFilterText = searchInputEl.value.trim().toLowerCase();
+render();
+});
 
 let dragState = null;
 headerEl.addEventListener('mousedown', (event) => {
