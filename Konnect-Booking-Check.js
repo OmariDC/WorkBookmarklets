@@ -1876,6 +1876,26 @@ function clearStoredSession() {
 try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (error) { /* ignore */ }
 }
 
+// Opt-in, not default - per instruction, starting a real batch of
+// automated clicking/searching on Konnect Live should stay a deliberate
+// choice unless the user has explicitly asked to skip that
+// confirmation step.
+const SETTINGS_STORAGE_KEY = 'konnectBookingCheck:settings:v1';
+
+function loadSettings() {
+try {
+const raw = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY));
+if (raw && typeof raw === 'object') return { autoStart: !!raw.autoStart };
+} catch (error) {
+// ignore
+}
+return { autoStart: false };
+}
+
+function saveSettings(partial) {
+try { localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ ...loadSettings(), ...partial })); } catch (error) { /* ignore */ }
+}
+
 // Groups preserve first-occurrence order of each groupKey - processing
 // walks grouped-by-customer (search once, do every lead for that
 // customer), while output ordering (see orderedResults) always follows
@@ -2327,6 +2347,63 @@ const lines = orderedResults(session).map((r) => [r.name, r.phone, r.email, r.ca
 return [header, ...lines].join('\n');
 }
 
+// ===================================================================
+// NEEDS REVIEW - manual triage for low-confidence classifications
+// (classifyInitialNotes' own confidence:'low' already refuses to guess
+// rather than risk a wrong auto-classification - see its dispatch
+// comments - and processLeadRow turns that into this one specific
+// EXCEPTION rather than genuinely failing, since the Initial Notes
+// WERE read successfully; there's just no confident rule for them yet).
+// Per instruction: an easier way to confirm, across many leads at once,
+// which of the 4 real categories one of these should actually go into,
+// with an optional reason - captured specifically so those decisions
+// can be handed back as real examples to extend classifyInitialNotes'
+// own rules with, the same way every other rule in this file originated
+// from a real reported lead.
+// ===================================================================
+
+const REVIEW_CATEGORY_OPTIONS = ['CONFIRMED DATE & TIME', 'DATE ONLY', 'WARM ENQUIRY', 'NON-BOOKING'];
+
+function isNeedsReview(r) {
+return !!(r && r.status === 'EXCEPTION' && r.exception === 'CLASSIFICATION_REVIEW_REQUIRED');
+}
+
+// Pure - takes the existing result and returns the patched one, same
+// finalizeResult shape processLeadRow itself produces, so a manually-
+// confirmed row is indistinguishable downstream (tier grouping, the
+// Extract handoff, bookingPriorityRank) from one the classifier was
+// simply confident about. confidence:'manual' and manualOverride:true
+// are the only markers distinguishing it, kept for the review-decisions
+// export below - nothing else reads them.
+function applyManualReviewDecision(result, category, note) {
+return finalizeResult(result, {
+status: 'CLASSIFIED',
+category,
+reason: note ? `Manually confirmed - ${note}` : 'Manually confirmed (no reason given).',
+confidence: 'manual',
+manualOverride: true,
+manualNote: note || '',
+exception: null
+});
+}
+
+// No name/phone/email - deliberately just the content that's actually
+// useful for extending the classifier's rules (the real notes text,
+// what a human decided it meant, and the campaign/source context those
+// rules dispatch on), not the customer's personal details, which have
+// no bearing on what a future rule should match against.
+function buildManualReviewDecisionsExport(session) {
+const rows = orderedResults(session).filter((r) => r.manualOverride);
+const header = ['InitialNotes', 'Category', 'Reason', 'Campaign', 'Source'].join('\t');
+const lines = rows.map((r) => [
+(r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
+r.category || '',
+(r.manualNote || '').replace(/\t/g, ' '),
+r.campaign || '', r.source || ''
+].join('\t'));
+return [header, ...lines].join('\n');
+}
+
 // Feeds the reverse handoff into SLA-Extract.js. Used to hand back only
 // the raw fields and let Extract re-classify from a second, separately-
 // maintained copy of this exact classifier - a real drift risk that
@@ -2350,6 +2427,9 @@ return [header.join('\t'), ...lines].join('\n');
 window.KonnectBookingCheck.buildProcessingGroups = buildProcessingGroups;
 window.KonnectBookingCheck.newSession = newSession;
 window.KonnectBookingCheck.rowIdentityKey = rowIdentityKey;
+window.KonnectBookingCheck.isNeedsReview = isNeedsReview;
+window.KonnectBookingCheck.applyManualReviewDecision = applyManualReviewDecision;
+window.KonnectBookingCheck.buildManualReviewDecisionsExport = buildManualReviewDecisionsExport;
 window.KonnectBookingCheck.stepOnce = stepOnce;
 window.KonnectBookingCheck.runLoop = runLoop;
 window.KonnectBookingCheck.orderedResults = orderedResults;
@@ -2497,6 +2577,60 @@ if (failures.length > 0) {
 console.error('KonnectBookingCheck session-merge self-test FAILED:\n' + failures.join('\n'));
 } else {
 console.info('KonnectBookingCheck session-merge self-test passed (8/8)');
+}
+})();
+
+(function needsReviewSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+
+const lowConfidenceResult = finalizeResult(
+{ inputIndex: 0, name: 'Fran Foster', phone: '', email: 'fran@example.com', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 18:05' },
+{ status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', initialNotes: 'Customer Comments: maybe next month if the price is right' }
+);
+check('Low-confidence review-required row is flagged needs-review', isNeedsReview(lowConfidenceResult), true);
+
+const genuineException = finalizeResult(
+{ inputIndex: 1, name: 'Gus Grant', phone: '07000000001', email: '', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 19:05' },
+{ status: 'EXCEPTION', exception: 'SEARCH_NO_RESULTS' }
+);
+check('A genuine automation failure is NOT needs-review (nothing to triage)', isNeedsReview(genuineException), false);
+
+const classified = finalizeResult(
+{ inputIndex: 2, name: 'Hana Hill', phone: '', email: 'hana@example.com', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 20:05' },
+{ status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: 'Customer Comments: -' }
+);
+check('An already-classified row is not needs-review', isNeedsReview(classified), false);
+
+const decided = applyManualReviewDecision(lowConfidenceResult, 'WARM ENQUIRY', 'mentions price but no visit intent yet - still worth a call');
+check('Manual decision applies the chosen category', decided.category, 'WARM ENQUIRY');
+check('Manual decision clears the exception/moves to CLASSIFIED', [decided.status, decided.exception], ['CLASSIFIED', null]);
+check('Manual decision is no longer needs-review', isNeedsReview(decided), false);
+check('Manual decision preserves the original Initial Notes untouched', decided.initialNotes, lowConfidenceResult.initialNotes);
+check('Manual decision records the reason given', decided.manualNote, 'mentions price but no visit intent yet - still worth a call');
+check('Manual decision is marked as a manual override', decided.manualOverride, true);
+
+const decidedNoReason = applyManualReviewDecision(lowConfidenceResult, 'NON-BOOKING', '');
+check('A blank reason still produces a sensible default, not an empty string reason', decidedNoReason.reason, 'Manually confirmed (no reason given).');
+
+const fakeSessionForExport = {
+rows: [{ inputIndex: 0 }, { inputIndex: 1 }],
+results: { 0: decided, 1: classified }
+};
+const exportTsv = buildManualReviewDecisionsExport(fakeSessionForExport);
+const exportLines = exportTsv.split('\n');
+check('Review-decisions export header has no name/phone/email columns', exportLines[0], 'InitialNotes\tCategory\tReason\tCampaign\tSource');
+check('Review-decisions export includes only the manually-overridden row', exportLines.length, 2);
+check('Review-decisions export row carries the chosen category', exportLines[1].split('\t')[1], 'WARM ENQUIRY');
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck needs-review self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck needs-review self-test passed (13/13)');
 }
 })();
 
@@ -2709,6 +2843,18 @@ button.primary:hover { background: #334155; }
 .notes-block { white-space: pre-wrap; background: white; border: 1px solid #e2e8f0; border-radius: 4px; padding: 6px; margin-top: 4px; font-family: monospace; font-size: 10.5px; }
 .reason { color: #64748b; font-style: italic; margin-top: 3px; }
 .empty-state { color: #94a3b8; padding: 8px 4px; }
+.review-section { flex-shrink: 0; border: 1px solid #fbbf24; border-radius: 6px; background: #fffbeb; margin-bottom: 8px; }
+.review-section > summary { padding: 6px 8px; cursor: pointer; font-weight: 600; color: #92400e; list-style: none; display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+.review-section > summary::-webkit-details-marker { display: none; }
+.review-section > summary .chev { transition: transform 0.15s ease; }
+.review-section:not([open]) > summary .chev { transform: rotate(-90deg); }
+.review-section-left { display: flex; align-items: center; gap: 6px; }
+.review-row { border-top: 1px solid #fde68a; padding: 8px; }
+.review-name { font-weight: 600; margin-bottom: 2px; }
+.review-notes { white-space: pre-wrap; background: white; border: 1px solid #fde68a; border-radius: 4px; padding: 6px; margin: 4px 0 6px; font-family: monospace; font-size: 10.5px; }
+.review-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
+.review-actions button { padding: 4px 8px; border-radius: 4px; border: 1px solid transparent; cursor: pointer; font-size: 10.5px; font-weight: 700; }
+.review-reason { width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 11px; font-family: inherit; }
 #resultsBody { flex: 1; min-height: 40px; overflow-y: auto; }
 </style>
 <div class="panel">
@@ -2723,6 +2869,10 @@ button.primary:hover { background: #334155; }
 <div class="topSection-content">
 <textarea id="pasteBox" placeholder="Paste TSV: Name  Phone  Email  Source  Campaign  Created"></textarea>
 <div class="row-count" id="rowCount">0 rows parsed</div>
+<label style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; margin-bottom: 6px; cursor: pointer;">
+<input type="checkbox" id="autoStartToggle">
+Auto-start on paste
+</label>
 <div class="buttons">
 <button class="action primary" id="btnStart">${svgIcon('play', 11)}Start</button>
 <button class="action primary" id="btnPauseResume">${svgIcon('pause', 11)}Pause</button>
@@ -2738,6 +2888,7 @@ button.primary:hover { background: #334155; }
 </div>
 </div>
 </details>
+<div id="needsReviewSection"></div>
 <div class="stats-bar hidden" id="statsBar"></div>
 <div class="filter-bar hidden" id="filterBar">
 <input type="text" class="search-input" id="searchInput" placeholder="Filter by name...">
@@ -2748,6 +2899,7 @@ button.primary:hover { background: #334155; }
 <div class="buttons">
 <button class="action" id="btnCopy">${svgIcon('copy', 11)}Copy results</button>
 <button class="action" id="btnCopyRawForExtract">${svgIcon('copy', 11)}Copy raw for Extract</button>
+<button class="action" id="btnCopyReviewDecisions">${svgIcon('copy', 11)}Copy review decisions</button>
 <button class="action" id="btnClear">Clear session</button>
 </div>
 </div>
@@ -2829,6 +2981,7 @@ const filterBarEl = root.getElementById('filterBar');
 const searchInputEl = root.getElementById('searchInput');
 const headerMiniProgressEl = root.getElementById('headerMiniProgress');
 const resultsBody = root.getElementById('resultsBody');
+const needsReviewSectionEl = root.getElementById('needsReviewSection');
 const bodyEl = root.getElementById('bodyEl');
 const minBtn = root.getElementById('minBtn');
 const headerEl = root.getElementById('headerEl');
@@ -2854,6 +3007,9 @@ if (session) pasteBox.value = session.rawInput || '';
 // closed, per instruction ("collapsed under the customer's name x
 // contact details").
 const detailsState = { tiers: new Set([1, 2, 3, 4]), customers: new Set() };
+// Defaults open, unlike tiers/customers - these need a decision, not
+// just a glance at a count, so they shouldn't start collapsed away.
+let reviewSectionOpen = true;
 
 // Same palette SLA-Extract.js's own bookingCheckImportCategoryColor
 // uses for these exact category strings, so a lead reads the same
@@ -2927,6 +3083,44 @@ headerMiniProgressEl.textContent = `${ordered.length}/${session.rows.length}${ex
 headerMiniProgressEl.classList.remove('hidden');
 }
 
+function renderNeedsReviewSection(needsReview) {
+if (needsReview.length === 0) {
+needsReviewSectionEl.innerHTML = '';
+return;
+}
+const rowsHtml = needsReview.map((r) => `
+<div class="review-row" data-key="${r.inputIndex}">
+<div class="review-name">${escapeHtmlForUi(r.name)}</div>
+<div class="notes-block review-notes">${escapeHtmlForUi(r.initialNotes || '')}</div>
+<div class="review-actions">
+${REVIEW_CATEGORY_OPTIONS.map((cat) => `<button data-category="${escapeHtmlForUi(cat)}" style="background: ${categoryColor({ category: cat })}1a; color: ${categoryColor({ category: cat })};">${escapeHtmlForUi(cat)}</button>`).join('')}
+</div>
+<input type="text" class="review-reason" placeholder="Why (optional) - helps refine the rules later...">
+</div>
+`).join('');
+needsReviewSectionEl.innerHTML = `
+<details class="review-section" ${reviewSectionOpen ? 'open' : ''}>
+<summary><span class="review-section-left">${detailsChevronIcon()}<span>Needs Review</span></span><span>${needsReview.length}</span></summary>
+${rowsHtml}
+</details>
+`;
+const detailsEl = needsReviewSectionEl.querySelector('details.review-section');
+if (detailsEl) detailsEl.addEventListener('toggle', () => { reviewSectionOpen = detailsEl.open; });
+needsReviewSectionEl.querySelectorAll('.review-row').forEach((rowEl) => {
+const key = Number(rowEl.dataset.key);
+const reasonInput = rowEl.querySelector('.review-reason');
+rowEl.querySelectorAll('.review-actions button').forEach((btn) => {
+btn.addEventListener('click', () => {
+const result = session.results[key];
+if (!result) return;
+session.results[key] = applyManualReviewDecision(result, btn.dataset.category, reasonInput.value.trim());
+saveSession(session);
+render();
+});
+});
+});
+}
+
 function render() {
 if (!session) {
 rowCountEl.textContent = '0 rows parsed';
@@ -2937,17 +3131,26 @@ totalCountEl.textContent = '0';
 progressFillEl.style.width = '0%';
 statsBarEl.classList.add('hidden');
 filterBarEl.classList.add('hidden');
+needsReviewSectionEl.innerHTML = '';
 updateHeaderMiniProgress([]);
 return;
 }
 rowCountEl.textContent = `${session.rows.length} rows parsed` + (session.headerOk ? '' : ` - ${session.headerError}`);
-const ordered = orderedResults(session);
-const percent = session.rows.length > 0 ? Math.round((100 * ordered.length) / session.rows.length) : 0;
+const orderedAll = orderedResults(session);
+const needsReview = orderedAll.filter(isNeedsReview);
+const ordered = orderedAll.filter((r) => !isNeedsReview(r));
+renderNeedsReviewSection(needsReview);
+const percent = session.rows.length > 0 ? Math.round((100 * orderedAll.length) / session.rows.length) : 0;
 progressFillEl.style.width = `${percent}%`;
-updateHeaderMiniProgress(ordered);
+updateHeaderMiniProgress(orderedAll);
 
 if (ordered.length === 0) {
-resultsBody.innerHTML = '<div class="empty-state">No results yet - press Start or Process next.</div>';
+// Distinct from "nothing processed at all" - if every processed row
+// so far is sitting in the Needs Review section above, saying "no
+// results yet" here would read as wrong/contradictory.
+resultsBody.innerHTML = needsReview.length > 0
+? '<div class="empty-state">All results so far need review - see above.</div>'
+: '<div class="empty-state">No results yet - press Start or Process next.</div>';
 statsBarEl.classList.add('hidden');
 filterBarEl.classList.add('hidden');
 } else {
@@ -3041,8 +3244,12 @@ setTimeout(() => { el.textContent = original; el.style.background = ''; el.style
 });
 });
 
-completedCountEl.textContent = String(ordered.filter((r) => r.status === 'CLASSIFIED').length);
-exceptionCountEl.textContent = String(ordered.filter((r) => r.status === 'EXCEPTION').length);
+// orderedAll here, not the reduced `ordered` - needs-review rows are
+// real EXCEPTION-status results too (just pulled into their own
+// section above instead of the tier list), so using the reduced set
+// would silently undercount them out of this summary.
+completedCountEl.textContent = String(orderedAll.filter((r) => r.status === 'CLASSIFIED').length);
+exceptionCountEl.textContent = String(orderedAll.filter((r) => r.status === 'EXCEPTION').length);
 totalCountEl.textContent = String(session.rows.length);
 }
 
@@ -3090,7 +3297,7 @@ function setPauseResumeLabel(text) {
 pauseResumeBtn.innerHTML = svgIcon(text === 'Pause' ? 'pause' : 'play', 11) + text;
 }
 
-root.getElementById('btnStart').addEventListener('click', () => {
+function startProcessing() {
 const s = ensureSessionFromPasteBox();
 if (!s.headerOk) { uiHandle.setState(`Header error: ${s.headerError}`); return; }
 s.paused = false;
@@ -3098,6 +3305,33 @@ s.cancelled = false;
 setPauseResumeLabel('Pause');
 showPageFlashOverlay('Checking leads…');
 runLoop(s, uiHandle);
+}
+
+root.getElementById('btnStart').addEventListener('click', startProcessing);
+
+const autoStartToggle = root.getElementById('autoStartToggle');
+autoStartToggle.checked = loadSettings().autoStart;
+autoStartToggle.addEventListener('change', () => {
+saveSettings({ autoStart: autoStartToggle.checked });
+});
+
+// Deferred with setTimeout(0), not read directly in the paste handler -
+// confirmed the standard cross-browser way to do this: the 'paste'
+// event fires BEFORE the browser has actually applied the pasted text
+// to the textarea's own value, so reading pasteBox.value synchronously
+// here would still see whatever was there beforehand (typically empty).
+// Only triggers on an actual paste, not on manual typing - the
+// checkbox's own opt-in nature already limits this to users who
+// explicitly want it, but distinguishing paste from typing still
+// matters so autofilling one character at a time doesn't repeatedly
+// try to start a run against an incomplete/invalid batch.
+pasteBox.addEventListener('paste', () => {
+if (!autoStartToggle.checked) return;
+setTimeout(() => {
+if (isRunning) return;
+const s = ensureSessionFromPasteBox();
+if (s.headerOk && s.rows.length > 0 && !s.done) startProcessing();
+}, 0);
 });
 
 // Pausing doesn't actually exit runLoop's while-loop (it just idles on
@@ -3178,6 +3412,18 @@ root.getElementById('btnCopyRawForExtract').addEventListener('click', (event) =>
 const s = ensureSessionFromPasteBox();
 const count = orderedResults(s).length;
 copyTextToClipboard(buildRawNotesTsvForExtract(s))
+.then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count}`, false))
+.catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
+});
+
+root.getElementById('btnCopyReviewDecisions').addEventListener('click', (event) => {
+const s = ensureSessionFromPasteBox();
+const count = orderedResults(s).filter((r) => r.manualOverride).length;
+if (count === 0) {
+showButtonFeedback(event.currentTarget, 'No manual reviews yet', true);
+return;
+}
+copyTextToClipboard(buildManualReviewDecisionsExport(s))
 .then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count}`, false))
 .catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
 });
