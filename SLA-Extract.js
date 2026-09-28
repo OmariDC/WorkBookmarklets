@@ -410,6 +410,56 @@ observer.observe(table, { childList: true, subtree: true });
 });
 }
 
+// Stricter settle-based variant, used only by waitForLeadsTableReady
+// (the four queue-check re-render call sites), not a replacement for
+// waitForLeadsTableRows everywhere - that one's "resolve on the very
+// first row" behaviour is proven fine for the main extraction flow
+// (extractAndExportSla/Pending, a same-page native-icon refresh), which
+// has never been reported as racy, and adding a settle window there too
+// would cost every already-fast, all-cached extraction a fixed chunk of
+// pure added latency for no benefit. The queue-check paths are the ones
+// actually reported live as still intermittently reading a partial/
+// empty table even with waitForLeadsTableRows in place - those involve
+// a full route change (navigating to Queue by Agent and back), not the
+// same-page refresh this function's sibling was built and confirmed
+// against, so its "loads in one batch, not progressively" assumption
+// (see its own comment) may simply not hold for a route change. Same
+// "wait for the DOM to actually go quiet" signal already confirmed live
+// for the Inbound API page's own progressive loading (see
+// waitForInboundRowsSettled) - the row count must stay unchanged for a
+// full quiet window before this trusts it, not just become non-zero
+// once. quietMs is a reasonable-guess default, not a confirmed-live
+// value the way waitForInboundRowsSettled's 1500ms is - this table is a
+// much smaller, one-shot dataset than Inbound's continuously-arriving
+// feed, so a shorter window was chosen, but only a live re-test can
+// confirm it's actually long enough.
+function waitForLeadsTableRowsSettled(table, timeout = 8000, quietMs = 400) {
+return new Promise((resolve) => {
+let settleTimer = null;
+let hardTimer = null;
+
+function finish() {
+clearTimeout(settleTimer);
+clearTimeout(hardTimer);
+observer.disconnect();
+resolve(table.querySelectorAll('tbody tr').length > 0);
+}
+
+function armSettleTimer() {
+clearTimeout(settleTimer);
+settleTimer = setTimeout(finish, quietMs);
+}
+
+const observer = new MutationObserver(armSettleTimer);
+observer.observe(table, { childList: true, subtree: true });
+
+// Armed immediately too, in case rows already existed and settled
+// before this even started watching (no further mutations coming).
+armSettleTimer();
+hardTimer = setTimeout(finish, timeout);
+});
+}
+
 // Shared by every flow that navigates away (Queue by Agent) and back
 // before re-rendering the SLA/Pending panel - handleBadgeClick, the
 // post-successful-assign auto re-scan, window._checkAgentQueuePositions,
@@ -425,7 +475,7 @@ observer.observe(table, { childList: true, subtree: true });
 // until an unrelated manual refresh fixed it.
 async function waitForLeadsTableReady() {
 const table = await waitForElement('table');
-if (table) await waitForLeadsTableRows(table);
+if (table) await waitForLeadsTableRowsSettled(table);
 }
 
 // Shared by anything that causes a real Konnect page navigation/re-
