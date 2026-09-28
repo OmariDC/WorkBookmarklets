@@ -3217,6 +3217,8 @@ const summary = state.results.length === 0
 return `
 <div id="bookingCheckImportPopover" style="display: none; position: absolute; top: 46px; right: 46px; z-index: 5; width: 320px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">CLASSIFY BOOKING CHECK RESULTS</div>
+<button onclick="window._pasteAndClassifyBookingCheck(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 8px;">${svgIcon('copy', 13)}Paste from clipboard & Classify</button>
+<div style="font-size: 10px; color: #94a3b8; text-align: center; margin-bottom: 8px;">or paste manually below</div>
 <textarea id="bookingCheckImportBox" placeholder="Paste TSV from Konnect Booking Check" oninput="window._updateBookingCheckImportInput(this.value)" style="width: 100%; height: 60px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px;">${escapeHtml(state.rawInput)}</textarea>
 <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
 <button onclick="window._classifyBookingCheckImport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Classify</button>
@@ -3238,20 +3240,24 @@ const state = loadBookingCheckImportState();
 saveBookingCheckImportState({ rawInput: value, results: state.results });
 };
 
-window._classifyBookingCheckImport = function(buttonEl) {
-const box = document.getElementById('bookingCheckImportBox');
-const rawInput = box ? box.value : '';
-const original = buttonEl.textContent;
+// Shared by the manual textarea+Classify button and the one-click
+// Paste-from-clipboard button - both end up needing the exact same
+// parse/classify/save/re-render sequence, just sourced from a
+// different place (the textarea's current value vs a fresh clipboard
+// read). buttonEl's feedback text is restored via a caller-supplied
+// label so each entry point's own idle state (a plain icon+label
+// button in one case) survives round-tripping through this.
+function runBookingCheckClassification(rawInput, buttonEl, originalLabel) {
 const parsed = parseBookingCheckImportTsv(rawInput);
 if (!parsed.headerOk) {
 buttonEl.textContent = 'Bad header';
-setTimeout(() => { buttonEl.textContent = original; }, 1500);
-return;
+setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 1500);
+return false;
 }
 if (parsed.rows.length === 0) {
 buttonEl.textContent = 'No rows';
-setTimeout(() => { buttonEl.textContent = original; }, 1200);
-return;
+setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 1200);
+return false;
 }
 const results = classifyBookingCheckImportRows(parsed.rows);
 saveBookingCheckImportState({ rawInput, results });
@@ -3264,6 +3270,43 @@ saveBookingCheckImportState({ rawInput, results });
 displayPanel(currentCustomers);
 const reopened = document.getElementById('bookingCheckImportPopover');
 if (reopened) reopened.style.display = 'block';
+return true;
+}
+
+window._classifyBookingCheckImport = function(buttonEl) {
+const box = document.getElementById('bookingCheckImportBox');
+const rawInput = box ? box.value : '';
+runBookingCheckClassification(rawInput, buttonEl, buttonEl.textContent);
+};
+
+// One click instead of three (switch to the other tab/window, copy,
+// switch back, paste into the textarea, click Classify) - reads the
+// clipboard directly via the async Clipboard API. That API requires
+// clipboard-read permission and can be blocked entirely in some
+// contexts (exactly the kind of restricted, third-party-injected-
+// iframe context copyTextToClipboard's own history in this file's
+// sibling already flagged as real for the WRITE side) - falls back to
+// telling the user to paste manually rather than failing silently, so
+// the existing textarea+Classify path always still works regardless.
+window._pasteAndClassifyBookingCheck = async function(buttonEl) {
+const originalLabel = buttonEl.innerHTML;
+if (!navigator.clipboard || !navigator.clipboard.readText) {
+buttonEl.textContent = 'Paste manually below';
+setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 1800);
+return;
+}
+buttonEl.textContent = 'Reading…';
+try {
+const rawInput = await navigator.clipboard.readText();
+const box = document.getElementById('bookingCheckImportBox');
+if (box) box.value = rawInput;
+saveBookingCheckImportState({ rawInput, results: loadBookingCheckImportState().results });
+const ok = runBookingCheckClassification(rawInput, buttonEl, originalLabel);
+if (ok) return; // displayPanel already rebuilt this button with a fresh label
+} catch (error) {
+buttonEl.textContent = 'Clipboard blocked - paste manually';
+setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 2000);
+}
 };
 
 // Tier/callback-type section open-closed state used to live only in the
