@@ -475,7 +475,21 @@ hardTimer = setTimeout(finish, timeout);
 // until an unrelated manual refresh fixed it.
 async function waitForLeadsTableReady() {
 const table = await waitForElement('table');
-if (table) await waitForLeadsTableRowsSettled(table);
+// A much tighter hard cap than waitForLeadsTableRowsSettled's own
+// 8000ms default - this call site is a secondary refresh (the leads
+// data itself is already correct from the extraction that just ran;
+// this is only trying to avoid reading the table in the split-second
+// it's empty right after navigating back from Queue by Agent), not a
+// primary data load worth waiting a long time for. If this page's
+// table rows get torn down and rebuilt on every Angular digest cycle
+// rather than only when data genuinely changes, the settle timer would
+// keep getting reset indefinitely and this would silently eat the
+// full hard cap every single time - reported live as "not loading up
+// the UI" after the queue check, which a long cap makes look identical
+// to a real hang even though it would eventually resolve. 2.5s is
+// enough to ride out the ordinary post-navigation gap without making a
+// worse-case run feel stuck.
+if (table) await waitForLeadsTableRowsSettled(table, 2500);
 }
 
 // Shared by anything that causes a real Konnect page navigation/re-
@@ -718,8 +732,13 @@ window.location.hash = originalHash;
 // Pending table yet - same gap waitForLeadsTableRows exists for
 // elsewhere in this file - so a wait for real rows is needed here too,
 // not just moving the render after the hash restore.
+try {
 if (cleared) {
+try {
 await waitForLeadsTableReady();
+} catch (error) {
+console.warn('[SLA Extract] Wait for table after clearing the queue failed - showing the panel anyway:', error);
+}
 if (originatingPageType === PAGE_PENDING) {
 currentPendingCustomers = currentPendingCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
 displayPendingPanel(currentPendingCustomers, 0, 0, false);
@@ -728,7 +747,13 @@ currentCustomers = currentCustomers.map((c) => ({ ...c, assigned: false, agentNa
 displayPanel(currentCustomers, 0, 0, false);
 }
 }
+} finally {
+// Always runs now, even if the render itself threw - previously this
+// sat after an un-guarded await, so any failure in that wait left the
+// "Clearing the queue…" overlay stuck on screen forever, on top of
+// the panel never appearing.
 hidePageFlashOverlay();
+}
 };
 
 // ===================================================================
@@ -862,21 +887,32 @@ const originalText = buttonEl ? buttonEl.textContent : null;
 if (buttonEl) buttonEl.textContent = 'Checking…';
 showPageFlashOverlay('Checking agent queues…');
 try {
+// refreshAgentQueueSnapshot/waitForLeadsTableReady's own failure is
+// not a reason to also withhold the panel re-render below - reported
+// live as leads ingesting fine, the queue check running, but the
+// panel then never loading at all, which fits an uncaught rejection
+// here previously skipping straight past the render calls entirely
+// (this whole function is a plain click handler - nothing awaits it,
+// so that rejection would surface nowhere visible).
+try {
 const ok = await refreshAgentQueueSnapshot();
 if (!ok) alert('Could not check agent queues - see console for details.');
-// refreshAgentQueueSnapshot navigates to Queue by Agent and back - its
-// own finally block resets window.location.hash, but that's just the
-// route changing, not the SLA/Pending table having actually
-// re-rendered yet (same gap documented above waitForLeadsTableRows for
-// the auto-detect poll). Re-rendering the panel immediately here was
-// reading a table that Angular hadn't repopulated after the navigation
-// back, so renderAssignSection's "due this hour/next hour" tiles
-// (fed by collectAssignableLeads' own unguarded, synchronous scrape)
-// briefly went from correct counts to "0 leads due" until the next
-// manual refresh fixed it. extractAndExportSla/Pending already wait
-// here; this path went straight through displayPanel/displayPendingPanel
-// and never did.
+// refreshAgentQueueSnapshot navigates to Queue by Agent and back -
+// its own finally block resets window.location.hash, but that's just
+// the route changing, not the SLA/Pending table having actually
+// re-rendered yet (same gap documented above waitForLeadsTableRows
+// for the auto-detect poll). Re-rendering the panel immediately here
+// was reading a table that Angular hadn't repopulated after the
+// navigation back, so renderAssignSection's "due this hour/next
+// hour" tiles (fed by collectAssignableLeads' own unguarded,
+// synchronous scrape) briefly went from correct counts to "0 leads
+// due" until the next manual refresh fixed it. extractAndExportSla/
+// Pending already wait here; this path went straight through
+// displayPanel/displayPendingPanel and never did.
 await waitForLeadsTableReady();
+} catch (error) {
+console.warn('[SLA Extract] Queue check failed - showing the panel anyway:', error);
+}
 if (originatingPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, 0, 0, false);
 else displayPanel(currentCustomers, 0, 0, false);
 } finally {
@@ -4235,6 +4271,21 @@ await refreshAgentQueueSnapshot();
 // Customers - this function has its own inline render call, so it
 // never went through the fix already made in the other two functions.
 await waitForLeadsTableReady();
+} catch (error) {
+// Reported live: leads ingest fine, the queue check runs, but the
+// panel then never appears at all - not the "0 leads" race this same
+// block already fixed twice, a different failure. The likely cause:
+// something in refreshAgentQueueSnapshot/waitForLeadsTableReady threw
+// (Konnect's own DOM shape changing mid-navigation, a genuinely absent
+// element, anything not anticipated) and that rejection propagated out
+// of this whole async handler uncaught - handleBadgeClick is wired as
+// a plain click handler, so nothing awaits it or ever surfaces that
+// rejection, leaving the panel in whatever state it was in before
+// (still hidden behind the overlay) with no visible error at all. The
+// queue check is a nice-to-have layered on top of an otherwise-good
+// leads refresh; it failing outright is not a reason to also withhold
+// the panel the user actually asked to see.
+console.warn('[SLA Extract] Queue check failed during badge activation - showing the panel anyway:', error);
 } finally {
 hidePageFlashOverlay();
 }
@@ -4633,6 +4684,15 @@ await refreshAgentQueueSnapshot();
 // below) briefly showed "0 leads due"/"No leads match the current
 // filters" right after every successful assign run, on both pages.
 await waitForLeadsTableReady();
+} catch (error) {
+// A failure here previously skipped the render/renderAssignResultsSummary/
+// return below entirely (this whole function's caller doesn't handle a
+// rejection either) - a successful assign run's own results would just
+// vanish along with the panel, with nothing visible showing why. The
+// queue-position rescan is a nice-to-have layered on top of an assign
+// run that already genuinely succeeded; it failing is not a reason to
+// also withhold that assign run's own results.
+console.warn('[SLA Extract] Queue check failed after assign run - showing results anyway:', error);
 } finally {
 hidePageFlashOverlay();
 }
