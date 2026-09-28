@@ -1170,11 +1170,20 @@ return { target, candidates };
 // CALL-ENTRY FALLBACK - for Pending Customers leads specifically, which
 // (unlike SLA rows) have no lead-creation timestamp to export at all
 // (see SLA-Extract.js's own buildPendingBookingCheckTsv) and instead
-// export their Last Actioned date/time. Confirmed live via direct DOM
-// inspection of real customer timelines: Last Actioned matches a blue
-// "call" entry (a.connected-customer-timeline-centre-lightblue >
-// i.fa.fa-phone) to the minute - the same precision as a pink lead
-// entry's own timestamp - not the lead's own pink entry directly.
+// export their Last Actioned date/time, as shown on Konnect Manager's
+// own Pending Customers table. That value is NOT an exact-minute match
+// against the blue "call" entry (a.connected-customer-timeline-centre-lightblue
+// > i.fa.fa-phone) on Konnect Live's own timeline for the same event -
+// confirmed live via 14 real paired examples that Konnect Manager's
+// displayed time runs AT OR AFTER Konnect Live's own timestamp for the
+// same call, never earlier, by a variable amount (0 to 3 minutes
+// observed, most commonly 1). That range rules out a simple rounding/
+// truncation difference (which could only ever produce 0 or ±1 minute,
+// never +2/+3) - this is a genuine processing/sync delay between the
+// two systems, Manager apparently showing when IT recorded the update
+// rather than when the call itself happened. So the match below is a
+// bounded, one-directional window (see CALL_MATCH_TOLERANCE_MINUTES),
+// not equality.
 //
 // Confirmed NOT reliable: matching by DOM order/proximity to the
 // nearest pink entry. A real example had an unrelated second lead
@@ -1229,24 +1238,57 @@ return null;
 // one generic failure, the same "don't guess, tell me which specific
 // thing didn't work" approach every other exception code in this file
 // already follows.
+// Generous but bounded on a small (14-example) sample, not a confirmed
+// hard limit - real delays this sample didn't happen to capture could
+// run longer. Deliberately erring toward "wide enough to actually catch
+// real matches" over "tight enough to never need the ambiguity check" -
+// widening this risks more AMBIGUOUS_CALL_MATCH results (safe: nothing
+// gets guessed), not wrong matches, since every candidate found within
+// the window still has to resolve to a lead before anything's trusted.
+const CALL_MATCH_TOLERANCE_MINUTES = 5;
+
+function minutesSinceEpoch(parsed) {
+if (!parsed) return null;
+return Math.floor(new Date(parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute).getTime() / 60000);
+}
+
+// Window is one-directional (call at or BEFORE target, never after) and
+// bounded to CALL_MATCH_TOLERANCE_MINUTES - matching the confirmed live
+// direction and rough size of the Manager/Live delay, not a symmetric
+// guess. Multiple calls can legitimately fall inside that window (the
+// delay isn't exact, and a customer can have several close-together
+// calls) - what actually matters is whether they agree on WHICH lead,
+// not how many rows matched. Every candidate is resolved to its own
+// LeadID independently; this only reports ambiguous if two candidates
+// genuinely disagree on the lead, not merely because more than one
+// timeline row fell in the window. A candidate whose scope couldn't be
+// read is dropped rather than treated as a hard failure, as long as at
+// least one other candidate in the window did resolve.
 function findMatchingCallLeadId(targetCreatedText, referenceDate) {
 const referenceNow = referenceDate || new Date();
 const target = parseSlaCreated(targetCreatedText, referenceNow);
 if (!target) return { target: null, status: 'NO_TARGET', leadId: null };
-const matches = getLoadedCallEntries()
+const targetMinutes = minutesSinceEpoch(target);
+
+const withinWindow = getLoadedCallEntries()
 .map((row) => {
 const rawTimestamp = extractCallTimestamp(row);
 const parsed = rawTimestamp ? parseTimelineTimestamp(rawTimestamp, referenceNow) : null;
-return { row, parsed, item: readTimelineItemScope(row) };
+return { row, parsed, minutes: minutesSinceEpoch(parsed), item: readTimelineItemScope(row) };
 })
-.filter((c) => datetimesMatchAtMinute(c.parsed, target));
+.filter((c) => c.minutes !== null && c.minutes <= targetMinutes && targetMinutes - c.minutes <= CALL_MATCH_TOLERANCE_MINUTES);
 
-if (matches.length === 0) return { target, status: 'NO_CALL_MATCH', leadId: null };
-if (matches.length > 1) return { target, status: 'AMBIGUOUS_CALL_MATCH', leadId: null };
+if (withinWindow.length === 0) return { target, status: 'NO_CALL_MATCH', leadId: null };
 
-const item = matches[0].item;
-const leadId = item && item.LeadID != null ? String(item.LeadID) : null;
-return { target, status: leadId ? 'OK' : 'LEAD_ID_UNREADABLE', leadId };
+const resolvedLeadIds = withinWindow
+.map((c) => (c.item && c.item.LeadID != null ? String(c.item.LeadID) : null))
+.filter(Boolean);
+if (resolvedLeadIds.length === 0) return { target, status: 'LEAD_ID_UNREADABLE', leadId: null };
+
+const distinctLeadIds = [...new Set(resolvedLeadIds)];
+if (distinctLeadIds.length > 1) return { target, status: 'AMBIGUOUS_CALL_MATCH', leadId: null };
+
+return { target, status: 'OK', leadId: distinctLeadIds[0] };
 }
 
 // extractVisibleLeadId is the same DOM-visible field already confirmed
@@ -1486,6 +1528,7 @@ window.KonnectBookingCheck.extractTimelineTimestamp = extractTimelineTimestamp;
 window.KonnectBookingCheck.extractVisibleLeadId = extractVisibleLeadId;
 window.KonnectBookingCheck.parseTimelineTimestamp = parseTimelineTimestamp;
 window.KonnectBookingCheck.parseSlaCreated = parseSlaCreated;
+window.KonnectBookingCheck.minutesSinceEpoch = minutesSinceEpoch;
 window.KonnectBookingCheck.parseModalDate = parseModalDate;
 window.KonnectBookingCheck.datetimesMatchAtMinute = datetimesMatchAtMinute;
 window.KonnectBookingCheck.findMatchingLeadCandidates = findMatchingLeadCandidates;
@@ -1736,10 +1779,40 @@ const targetDifferentYear = parseSlaCreated('Thu, 26 Sep 2024 22:10');
 check('implicit-year entry matches same-year target', datetimesMatchAtMinute(impliedThisYear, targetSameYear), true);
 check('implicit-year entry does not match a different-year target', datetimesMatchAtMinute(impliedThisYear, targetDifferentYear), false);
 
+// Real paired examples (Konnect Manager's "Last Actioned" vs Konnect
+// Live's own blue call timestamp for the same event, confirmed live) -
+// locks in both the observed direction (Manager's time is always at or
+// after Live's, never earlier) and that CALL_MATCH_TOLERANCE_MINUTES
+// actually covers the full observed range (up to 3 minutes), not just
+// the common 1-minute case.
+const REAL_MANAGER_VS_LIVE_PAIRS = [
+['Mon, 28 Sep 2026 09:06', '28 Sep 09:05'],
+['Mon, 28 Sep 2026 09:10', '28 Sep 09:09'],
+['Mon, 28 Sep 2026 09:10', '28 Sep 09:09'],
+['Mon, 28 Sep 2026 09:13', '28 Sep 09:12'],
+['Mon, 28 Sep 2026 09:27', '28 Sep 09:26'],
+['Mon, 28 Sep 2026 09:38', '28 Sep 09:37'],
+['Mon, 28 Sep 2026 09:45', '28 Sep 09:45'],
+['Mon, 28 Sep 2026 09:48', '28 Sep 09:45'],
+['Mon, 28 Sep 2026 09:50', '28 Sep 09:48'],
+['Mon, 28 Sep 2026 09:51', '28 Sep 09:50'],
+['Mon, 28 Sep 2026 09:55', '28 Sep 09:53'],
+['Mon, 28 Sep 2026 11:04', '28 Sep 11:03'],
+['Mon, 28 Sep 2026 10:06', '28 Sep 10:05'],
+['Mon, 28 Sep 2026 10:11', '28 Sep 10:10']
+];
+REAL_MANAGER_VS_LIVE_PAIRS.forEach(([managerText, liveText], i) => {
+const managerMinutes = minutesSinceEpoch(parseSlaCreated(managerText, now2026));
+const liveMinutes = minutesSinceEpoch(parseTimelineTimestamp(liveText, now2026));
+const diff = managerMinutes - liveMinutes;
+check(`real pair ${i + 1}: Live is at or before Manager`, diff >= 0, true);
+check(`real pair ${i + 1}: gap is within CALL_MATCH_TOLERANCE_MINUTES`, diff <= CALL_MATCH_TOLERANCE_MINUTES, true);
+});
+
 if (failures.length > 0) {
 console.error('KonnectBookingCheck timeline self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck timeline self-test passed (10/10)');
+console.info(`KonnectBookingCheck timeline self-test passed (${10 + REAL_MANAGER_VS_LIVE_PAIRS.length * 2}/${10 + REAL_MANAGER_VS_LIVE_PAIRS.length * 2})`);
 }
 })();
 
