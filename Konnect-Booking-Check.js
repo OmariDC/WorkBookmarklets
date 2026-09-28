@@ -995,12 +995,19 @@ console.info('KonnectBookingCheck timeline-readiness self-test passed (3/3)');
 // Customer First lead's actual heading is "New Sales Lead from Customer
 // First", a different (and equally genuine - automatically created
 // from an online enquiry rather than entered by staff) prefix the
-// original scan's single test customer never happened to have. Both
-// are accepted; the 4th, still-unidentified non-lead pink entry from
-// that original scan is presumed to be neither (its own heading text
-// was never captured), so this may still need widening again if a
-// third genuine prefix turns up.
-const LEAD_HEADING_PREFIXES = ['Manually Created Sales Lead from', 'New Sales Lead from'];
+// original scan's single test customer never happened to have. A third
+// genuine prefix has since turned up, confirmed via live DOM
+// inspection of a real customer timeline (not this file's own testing -
+// a separate investigation into timeline entry structure surfaced it):
+// a lead with no identifiable source is headed just "Source Unknown",
+// not "New Sales Lead from...". That same investigation found the pink
+// styling itself is nowhere near specific to leads either - on one real
+// customer, 144 entries were pink, nearly all "Email sent"
+// (rss icon) or "New Sales Event Opportunity Added" (ticket icon) - so
+// this heading-prefix allowlist is still the only thing distinguishing
+// a genuine lead entry from those, and may need widening again if a
+// fourth genuine prefix turns up.
+const LEAD_HEADING_PREFIXES = ['Manually Created Sales Lead from', 'New Sales Lead from', 'Source Unknown'];
 
 function getLoadedLeadEntries() {
 const icons = [...document.querySelectorAll('a.connected-customer-timeline-centre-pink')];
