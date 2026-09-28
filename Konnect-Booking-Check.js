@@ -1913,21 +1913,70 @@ function finalizeResult(result, patch) {
 return Object.assign({}, result, patch, { processingTimestamp: new Date().toISOString() });
 }
 
-function newSession(rawInput) {
+// Identifies the same LEAD (not just the same customer - groupKey alone
+// would conflate two different leads from one customer) across two
+// separate pastes, so a genuinely-completed result can be carried over
+// rather than reprocessed. campaign/source/created together are the
+// same real-world fields Extract's own "Copy for Booking Check" export
+// draws from a specific SLA row - two rows sharing all of these really
+// are the same lead, not a coincidence.
+function rowIdentityKey(row) {
+return [row.groupKey, row.campaign, row.source, row.created].join('||');
+}
+
+// previousSession is optional - when given (the panel's own workflow:
+// pasting a grown batch over a session already in progress, per
+// instruction to improve this handoff so new leads streaming in don't
+// force redoing already-completed work), any row in the new paste that
+// exactly matches a row from the old one (see rowIdentityKey) carries
+// its already-computed result over instead of being reprocessed from
+// scratch. This is a pure starting-state computation - it does not
+// change stepOnce/runLoop's own per-step behavior at all, which is
+// deliberate: the live DOM automation those drive can't be verified
+// without a live browser, so nothing about how a row actually gets
+// processed changes here, only which rows still need to be.
+function newSession(rawInput, previousSession) {
 const parsed = parseBatchInput(rawInput);
 const rows = parsed.rows;
 const results = {};
+
+const carriedResultsByIdentity = new Map();
+if (previousSession) {
+previousSession.rows.forEach((prevRow) => {
+const prevResult = previousSession.results[prevRow.inputIndex];
+if (prevResult) carriedResultsByIdentity.set(rowIdentityKey(prevRow), prevResult);
+});
+}
+
 rows.forEach((row) => {
 if (row.status === 'INVALID_INPUT') {
 results[row.inputIndex] = finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception: row.exception });
+return;
 }
+const carried = carriedResultsByIdentity.get(rowIdentityKey(row));
+if (carried) results[row.inputIndex] = carried;
 });
+
 const groups = buildProcessingGroups(rows);
+
+// Skip past whole groups that are already fully resolved (every row
+// in them has a carried-over result) - resuming from here behaves
+// identically to having genuinely just finished processing them.
+// Never skips a PARTIAL group (even one unresolved row leaves the
+// whole group as the resume point, reprocessed in full, including its
+// already-resolved rows) - a customer's rows are searched/opened
+// together in one pass, so there's no meaningful way to resume
+// mid-group without redoing that shared search-and-open step anyway.
+let groupIndex = 0;
+while (groupIndex < groups.length && groups[groupIndex].rows.every((r) => results[r.inputIndex])) {
+groupIndex++;
+}
+
 return {
 rawInput, headerOk: parsed.headerOk, headerError: parsed.error,
-rows, groups, groupIndex: 0, rowInGroupIndex: 0,
+rows, groups, groupIndex, rowInGroupIndex: 0,
 results, paused: false, cancelled: false,
-done: !parsed.headerOk || groups.length === 0
+done: !parsed.headerOk || groupIndex >= groups.length
 };
 }
 
@@ -2300,6 +2349,7 @@ return [header.join('\t'), ...lines].join('\n');
 
 window.KonnectBookingCheck.buildProcessingGroups = buildProcessingGroups;
 window.KonnectBookingCheck.newSession = newSession;
+window.KonnectBookingCheck.rowIdentityKey = rowIdentityKey;
 window.KonnectBookingCheck.stepOnce = stepOnce;
 window.KonnectBookingCheck.runLoop = runLoop;
 window.KonnectBookingCheck.orderedResults = orderedResults;
@@ -2381,6 +2431,72 @@ if (failures.length > 0) {
 console.error('KonnectBookingCheck orchestration self-test FAILED:\n' + failures.join('\n'));
 } else {
 console.info('KonnectBookingCheck orchestration self-test passed (10/10)');
+}
+})();
+
+// ===================================================================
+// Self-test for newSession's merge behavior (pasting a grown batch over
+// a session already in progress) - the actual improvement this was
+// added for: new leads streaming in from Extract shouldn't force
+// redoing already-completed work. Kept separate from the orchestration
+// self-test above since this is specifically about session-merge
+// semantics, not the search/classify pipeline itself.
+// ===================================================================
+(function sessionMergeSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+
+const batch1 = [
+'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
+'Alice\t\talice@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 18:05',
+'Bob\t07000000000\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 20:05'
+].join('\n');
+const session1 = newSession(batch1);
+// Simulate both rows having genuinely finished processing, same shape
+// stepOnce itself produces.
+session1.results[0] = finalizeResult(makeResultBase(session1.rows[0]), { status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: 'Customer Comments: -' });
+session1.results[1] = finalizeResult(makeResultBase(session1.rows[1]), { status: 'CLASSIFIED', category: 'CONFIRMED DATE & TIME', initialNotes: 'Customer Comments: 3pm works' });
+
+// batch2 = the exact same two rows (as a real re-export from Extract
+// would produce, byte-for-byte) plus one genuinely new one.
+const batch2 = [
+'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
+'Alice\t\talice@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 18:05',
+'Bob\t07000000000\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 20:05',
+'Carol\t\tcarol@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 21:05'
+].join('\n');
+const session2 = newSession(batch2, session1);
+
+check('Alice\'s already-completed result is carried over verbatim', session2.results[0], session1.results[0]);
+check('Bob\'s already-completed result is carried over verbatim', session2.results[1], session1.results[1]);
+check('Carol (genuinely new) has no result yet', session2.results[2], undefined);
+check('Cursor resumes past both fully-resolved groups, landing on Carol\'s', session2.groups[session2.groupIndex].rows[0].name, 'Carol');
+check('Session is not marked done - Carol still needs processing', session2.done, false);
+
+// A paste with NOTHING carried over (genuinely unrelated batch) must
+// still behave exactly like the pre-merge newSession(rawInput) always
+// did - groupIndex 0, nothing pre-resolved.
+const unrelatedBatch = [
+'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
+'Dee\t\tdee@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 22:05'
+].join('\n');
+const session3 = newSession(unrelatedBatch, session1);
+check('Unrelated batch: no carried-over results', session3.results[0], undefined);
+check('Unrelated batch: cursor starts at the beginning as normal', session3.groupIndex, 0);
+
+// Re-pasting the exact same fully-completed batch (nothing new at all)
+// must mark the session done immediately, not require a wasted step.
+const session4 = newSession(batch1, session1);
+check('Re-pasting a fully-completed batch is immediately done', session4.done, true);
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck session-merge self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck session-merge self-test passed (8/8)');
 }
 })();
 
@@ -2942,7 +3058,12 @@ render
 
 function ensureSessionFromPasteBox() {
 if (session && session.rawInput === pasteBox.value) return session;
-session = newSession(pasteBox.value);
+// Passes the outgoing session so newSession can carry over already-
+// completed results for any row that's still present (same lead) in
+// the new paste - the common real case being a grown batch (previous
+// leads + new ones just exported from Extract), not a genuinely
+// unrelated one.
+session = newSession(pasteBox.value, session);
 saveSession(session);
 return session;
 }
