@@ -739,12 +739,17 @@ await waitForLeadsTableReady();
 } catch (error) {
 console.warn('[SLA Extract] Wait for table after clearing the queue failed - showing the panel anyway:', error);
 }
+try {
 if (originatingPageType === PAGE_PENDING) {
 currentPendingCustomers = currentPendingCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
 displayPendingPanel(currentPendingCustomers, 0, 0, false);
 } else {
 currentCustomers = currentCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
 displayPanel(currentCustomers, 0, 0, false);
+}
+} catch (error) {
+console.error('[SLA Extract] Panel failed to render after clearing the queue:', error);
+alert('SLA Manager: the queue was cleared, but the panel failed to reload.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
 }
 }
 } finally {
@@ -913,8 +918,20 @@ await waitForLeadsTableReady();
 } catch (error) {
 console.warn('[SLA Extract] Queue check failed - showing the panel anyway:', error);
 }
+// The catch above only covers the queue check - if displayPanel/
+// displayPendingPanel itself throws (renderAssignSection, mountPanel,
+// anything inside them), that propagates out uncaught exactly the
+// same way and the panel still never appears, just one step later
+// than what that catch actually guards. Surfaced visibly (an alert)
+// rather than only to console, which this session has had no way to
+// see after two rounds of this same report.
+try {
 if (originatingPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, 0, 0, false);
 else displayPanel(currentCustomers, 0, 0, false);
+} catch (error) {
+console.error('[SLA Extract] Panel failed to render after queue check:', error);
+alert('SLA Manager: the panel failed to load after checking the queue.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
+}
 } finally {
 hidePageFlashOverlay();
 if (buttonEl) buttonEl.textContent = originalText;
@@ -4261,6 +4278,7 @@ await window._refreshLeadsAndPanel();
 // page - running them concurrently would race.
 showPageFlashOverlay('Checking agent queues…');
 try {
+try {
 await refreshAgentQueueSnapshot();
 // Same gap as window._checkAgentQueuePositions/_clearWholeQueue: the
 // navigate-away-and-back this just did only changes the route -
@@ -4272,25 +4290,29 @@ await refreshAgentQueueSnapshot();
 // never went through the fix already made in the other two functions.
 await waitForLeadsTableReady();
 } catch (error) {
-// Reported live: leads ingest fine, the queue check runs, but the
-// panel then never appears at all - not the "0 leads" race this same
-// block already fixed twice, a different failure. The likely cause:
-// something in refreshAgentQueueSnapshot/waitForLeadsTableReady threw
-// (Konnect's own DOM shape changing mid-navigation, a genuinely absent
-// element, anything not anticipated) and that rejection propagated out
-// of this whole async handler uncaught - handleBadgeClick is wired as
-// a plain click handler, so nothing awaits it or ever surfaces that
-// rejection, leaving the panel in whatever state it was in before
-// (still hidden behind the overlay) with no visible error at all. The
-// queue check is a nice-to-have layered on top of an otherwise-good
-// leads refresh; it failing outright is not a reason to also withhold
-// the panel the user actually asked to see.
+// The queue check is a nice-to-have layered on top of an otherwise-
+// good leads refresh; it failing outright is not a reason to also
+// withhold the panel the user actually asked to see.
 console.warn('[SLA Extract] Queue check failed during badge activation - showing the panel anyway:', error);
+}
+// This previous try/catch only covered the queue check above - it
+// did NOT cover the render calls themselves, so if displayPanel/
+// displayPendingPanel (or anything inside them - renderAssignSection,
+// mountPanel, etc) throws, that would propagate out uncaught exactly
+// the same way and the panel would still never appear, just one step
+// later than what the last fix actually guarded. Reported live as
+// still happening after that fix, which is what exposed this gap -
+// wrapping the actual render too, and surfacing the error visibly
+// (an alert, not just a console message this session hasn't been able
+// to see) rather than guessing blind a third time.
+if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, 0, 0, false);
+else displayPanel(currentCustomers, 0, 0, false);
+} catch (error) {
+console.error('[SLA Extract] Panel failed to render after badge activation:', error);
+alert('SLA Manager: the panel failed to load after activating.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
 } finally {
 hidePageFlashOverlay();
 }
-if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, 0, 0, false);
-else displayPanel(currentCustomers, 0, 0, false);
 }
 
 function attachBadgeHoverEffects() {
@@ -4696,6 +4718,11 @@ console.warn('[SLA Extract] Queue check failed after assign run - showing result
 } finally {
 hidePageFlashOverlay();
 }
+// Not wrapped in anything before this fix - if this render threw, it
+// propagated out uncaught (nothing here awaits/reports it either), and
+// renderAssignResultsSummary/the assign run's own return value below
+// never happened, on top of the panel never appearing.
+try {
 const successByKey = new Map(results.filter(r => r.ok).map(r => [r.lead.key, r.agent.name]));
 if (pageType === PAGE_PENDING) {
 currentPendingCustomers = currentPendingCustomers.map((c) => successByKey.has(c.key) ? { ...c, assigned: true, agentName: successByKey.get(c.key) } : c);
@@ -4703,6 +4730,10 @@ displayPendingPanel(currentPendingCustomers, 0, 0, false);
 } else {
 currentCustomers = currentCustomers.map((c) => successByKey.has(c.key) ? { ...c, assigned: true, agentName: successByKey.get(c.key) } : c);
 displayPanel(currentCustomers, 0, 0, false);
+}
+} catch (error) {
+console.error('[SLA Extract] Panel failed to render after assign run:', error);
+alert('SLA Manager: leads were assigned, but the panel failed to reload.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
 }
 }
 renderAssignResultsSummary(results);
