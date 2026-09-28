@@ -2430,6 +2430,31 @@ function sleep(ms) {
 return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Browsers throttle setTimeout-based waits heavily in a backgrounded
+// tab - reported live as detail-modal scraping (extractCustomerDetails,
+// below) becoming slower and unreliable while a different browser tab
+// was active. waitForModal and every other wait this touches is
+// setTimeout/MutationObserver-based, so a throttled tab risks reading a
+// modal as never having opened purely because of throttling, not a
+// real failure. Resolves immediately if already visible (the common
+// case costs nothing); otherwise waits for the tab to actually become
+// the active one again before letting a new modal-open attempt start -
+// same cooperative-checkpoint idea as the extracting/assigning/
+// runningMorningChecks/refreshingLeads guards already used throughout
+// this file, just for a condition none of those cover.
+function waitForTabVisible() {
+if (!document.hidden) return Promise.resolve();
+return new Promise((resolve) => {
+function onVisible() {
+if (!document.hidden) {
+document.removeEventListener('visibilitychange', onVisible);
+resolve();
+}
+}
+document.addEventListener('visibilitychange', onVisible);
+});
+}
+
 // Waiting for each lead's confirmation before clicking the next one made
 // the whole run strictly sequential - slower than doing it by hand, since
 // a person just fires off click after click without watching each row
@@ -4281,6 +4306,7 @@ continue;
 }
 
 try {
+await waitForTabVisible();
 const tierInfo = categorizeTier(d.campaign, d.source);
 const details = await extractCustomerDetails(d.cells[0]);
 
