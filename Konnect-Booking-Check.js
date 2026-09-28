@@ -1482,19 +1482,32 @@ function normalizeForCompare(value) {
 return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-// Created date/time remains the decisive key (already matched before
-// a modal was ever opened, via findMatchingLeadCandidates) - this
+// Created date/time remains the decisive key (already matched before a
+// modal was ever opened, via findMatchingLeadCandidates or, for a
+// Pending Customers lead, findLeadCandidateViaCallFallback) - this
 // re-confirms it against the modal's own Date, then treats Source and
 // Campaign as confirmation fields that can REJECT a clearly
 // contradictory candidate but never redirect to a different lead.
 // Registration is deliberately not checked here - confirmed absent
 // from the inspected Initial Call panel, so it stays optional per
 // instruction rather than required.
-function validateLeadCandidate(panelFields, slaRow) {
+//
+// Validates against the CANDIDATE's own already-parsed timestamp
+// (candidateParsed), not slaRow.created re-parsed here - confirmed live
+// as a real failure otherwise: for a direct match these are identical
+// by construction (a candidate only exists because its own parsed
+// timestamp already matched target, in findMatchingLeadCandidates), so
+// this changes nothing for that path. For a call-fallback match they
+// are NOT the same value - slaRow.created is the CALL's own timestamp
+// (e.g. "26 Sep 14:18"), not the matched lead's (e.g. "26 Sep 13:05") -
+// a live test found the correct lead and opened it, then rejected it
+// here for comparing the modal's genuine date against the wrong target
+// entirely. Comparing against the candidate's own confirmed timestamp
+// is correct for both paths, not a special case for either.
+function validateLeadCandidate(panelFields, candidateParsed, slaRow) {
 const modalDateParsed = panelFields.date ? parseModalDate(panelFields.date) : null;
-const targetParsed = parseSlaCreated(slaRow.created);
-if (!datetimesMatchAtMinute(modalDateParsed, targetParsed)) {
-return { ok: false, reason: 'Modal Date does not match the target Created minute.' };
+if (!datetimesMatchAtMinute(modalDateParsed, candidateParsed)) {
+return { ok: false, reason: 'Modal Date does not match the candidate\'s own timeline minute.' };
 }
 
 if (slaRow.source && panelFields.source && normalizeForCompare(slaRow.source) !== normalizeForCompare(panelFields.source)) {
@@ -2421,14 +2434,19 @@ console.info('[KonnectBookingCheck] modal element matched:', modalState.modal.cl
 console.info('[KonnectBookingCheck] modal panel outerHTML (first 1500 chars):', modalState.panel.outerHTML.slice(0, 1500));
 const panelFields = extractLeadPanelFields(modalState.panel);
 console.info('[KonnectBookingCheck] modal opened - extracted fields:', JSON.stringify(panelFields));
-const validation = validateLeadCandidate(panelFields, row);
+const validation = validateLeadCandidate(panelFields, candidate.parsed, row);
 if (validation.ok) {
 const initialNotes = extractInitialNotes(modalState.panel);
 validated.push({ candidate, panelFields, initialNotes, warnings: validation.warnings || [] });
 } else {
 console.warn('[KonnectBookingCheck] validation rejected candidate:', validation.reason);
 candidateFailures.push('LEAD_VALIDATION_FAILED');
-candidateFailureDetails.push(`${validation.reason} (modal Date="${panelFields.date || ''}", modal Source="${panelFields.source || ''}", SLA Created="${row.created}", SLA Source="${row.source}")`);
+// Both the candidate's own timestamp and the row's original Created/
+// Last-Actioned value are shown, not just one - a call-fallback match
+// legitimately has different values for each (the lead's own time vs
+// the call's), and collapsing them to one label would hide exactly the
+// distinction that matters when diagnosing a rejection.
+candidateFailureDetails.push(`${validation.reason} (modal Date="${panelFields.date || ''}", candidate timeline entry="${candidate.rawTimestamp || ''}", modal Source="${panelFields.source || ''}", SLA/input Created="${row.created}", SLA Source="${row.source}")`);
 }
 await closeLeadModal();
 }
@@ -3600,6 +3618,23 @@ if (isRunning) return;
 const s = ensureSessionFromPasteBox();
 if (s.headerOk && s.rows.length > 0 && !s.done) startProcessing();
 }, 0);
+});
+
+// Reported live: the row count only ever updated on clicking Start/
+// Process next, so a real paste left "0 rows parsed" showing with no
+// visible sign anything happened, confusing enough that live testing
+// worked around it by typing and deleting a character first. Debounced
+// rather than reparsing on every keystroke - ensureSessionFromPasteBox
+// re-parses the whole batch AND writes it to localStorage (saveSession),
+// which for a large pasted batch would otherwise mean doing both on
+// every single keystroke while still mid-paste/mid-edit.
+let pasteBoxInputDebounce = null;
+pasteBox.addEventListener('input', () => {
+clearTimeout(pasteBoxInputDebounce);
+pasteBoxInputDebounce = setTimeout(() => {
+ensureSessionFromPasteBox();
+render();
+}, 300);
 });
 
 // Pausing doesn't actually exit runLoop's while-loop (it just idles on
