@@ -3076,6 +3076,148 @@ function saveAssignSettings(partial) {
 localStorage.setItem(ASSIGN_SETTINGS_KEY, JSON.stringify({ ...loadAssignSettings(), ...partial }));
 }
 
+// Scope for the "Copy for Booking Check" export (feeds a separate,
+// external bookmarklet on a different site - see the header popover
+// below) - kept entirely separate from ASSIGN_SETTINGS_KEY since this
+// is a one-off export scope, not part of the assign filters, and
+// deliberately not surfaced anywhere in the main Assign flow at all.
+//
+// Restored here - this was accidentally deleted along with the
+// duplicate Booking Check classifier (a separate, unrelated feature
+// that happened to sit inside the same line range removed for that
+// cleanup, past where the classifier itself actually ended). Its
+// absence broke renderPanelShell unconditionally: every single panel
+// render (not just the queue-check-triggered ones this was chased
+// through several rounds of live reports for) called the now-missing
+// renderBookingCheckExportPopover and threw a ReferenceError, caught
+// silently inside extractAndExportSla's own try/catch (logged as "SLA
+// Export Error", never surfaced) - and completely uncaught in the
+// handful of call sites that render a second time after a Queue by
+// Agent check, which is what actually made this visible as "leads
+// ingest fine, the queue check runs, then nothing loads." Confirmed
+// via a live console/error capture, not guessed.
+const BOOKING_CHECK_EXPORT_KEY = '_slaBookingCheckExportSettings';
+
+function loadBookingCheckExportSettings() {
+try {
+const raw = JSON.parse(localStorage.getItem(BOOKING_CHECK_EXPORT_KEY));
+if (raw && Array.isArray(raw.tiers)) return raw;
+} catch (error) {
+// ignore
+}
+return { tiers: [2], customerFirstOnly: true };
+}
+
+function saveBookingCheckExportSettings(settings) {
+try {
+localStorage.setItem(BOOKING_CHECK_EXPORT_KEY, JSON.stringify(settings));
+} catch (error) {
+// ignore
+}
+}
+
+// Tabs/newlines within a field would corrupt the TSV structure the
+// receiving bookmarklet parses by splitting on tabs - stripped rather
+// than escaped, since none of these fields should ever legitimately
+// contain one.
+function tsvSafe(value) {
+return String(value || '').replace(/[\t\r\n]+/g, ' ').trim();
+}
+
+// Reads from currentCustomers (the same cache the panel itself is
+// already showing) rather than re-scanning the table - this is a
+// point-in-time snapshot of whatever's already been ingested, not a
+// fresh extraction. Name is stripped of its title (Mr./Mrs./etc,
+// same as the existing copy-to-clipboard fields elsewhere in this
+// panel) since the receiving tool only uses it as supporting
+// confirmation, not as a search key.
+function buildBookingCheckTsv(tiers, customerFirstOnly) {
+const tierSet = new Set(tiers);
+const rows = currentCustomers.filter((c) => {
+if (!tierSet.has(c.tier)) return false;
+if (customerFirstOnly && !(c.source || '').toLowerCase().includes('customer first')) return false;
+return true;
+});
+// Registration dropped per instruction - not something that needs
+// copying, and not something the receiving tool can reliably search by
+// either (it's often a SALESLEAD-style placeholder rather than a real
+// plate, not present on Konnect Live's own customer records to match
+// against).
+const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'].join('\t');
+const lines = rows.map((c) => [
+tsvSafe(stripTitle(c.name)), tsvSafe(c.phone), tsvSafe(c.email), tsvSafe(c.source), tsvSafe(c.campaign), tsvSafe(c.createdText)
+].join('\t'));
+return { tsv: [header, ...lines].join('\n'), count: rows.length };
+}
+
+// Deliberately a small popover toggled from a single header icon, not a
+// permanent section in the main Assign flow - this only matters
+// occasionally (feeding a separate bookmarklet on another site), so it
+// shouldn't cost any visible space the rest of the time. Positioned
+// absolutely against PANEL_BOX_ID (the nearest positioned ancestor,
+// since that box itself is position:fixed) rather than pushing any
+// other content down when open.
+function renderBookingCheckExportPopover() {
+const settings = loadBookingCheckExportSettings();
+const selectedTiers = new Set(settings.tiers);
+const { count } = buildBookingCheckTsv(settings.tiers, settings.customerFirstOnly);
+
+const tierCheckboxes = [1, 2, 3, 4].map(t => `
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;">
+<input type="checkbox" class="booking-export-tier" value="${t}" ${selectedTiers.has(t) ? 'checked' : ''} onchange="window._updateBookingCheckExportPreview()">
+Tier ${t}
+</label>`).join('');
+
+return `
+<div id="bookingCheckExportPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 200px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
+<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">COPY FOR BOOKING CHECK</div>
+<div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${tierCheckboxes}</div>
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b; margin-bottom: 10px;">
+<input type="checkbox" id="bookingExportCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateBookingCheckExportPreview()">
+Customer First only
+</label>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+<span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}</span>
+<button onclick="window._copyBookingCheckExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
+</div>
+</div>`;
+}
+
+window._toggleBookingCheckExportPopover = function() {
+const popover = document.getElementById('bookingCheckExportPopover');
+if (!popover) return;
+const importPopover = document.getElementById('bookingCheckImportPopover');
+if (importPopover) importPopover.style.display = 'none';
+popover.style.display = popover.style.display === 'none' ? 'block' : 'none';
+};
+
+window._updateBookingCheckExportPreview = function() {
+const tiers = Array.from(document.querySelectorAll('.booking-export-tier:checked')).map(el => Number(el.value));
+const customerFirstOnly = document.getElementById('bookingExportCustomerFirstOnly')?.checked || false;
+saveBookingCheckExportSettings({ tiers, customerFirstOnly });
+const { count } = buildBookingCheckTsv(tiers, customerFirstOnly);
+const countEl = document.getElementById('bookingExportRowCount');
+if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}`;
+};
+
+window._copyBookingCheckExport = function(buttonEl) {
+const settings = loadBookingCheckExportSettings();
+const { tsv, count } = buildBookingCheckTsv(settings.tiers, settings.customerFirstOnly);
+const original = buttonEl.textContent;
+if (count === 0) {
+buttonEl.textContent = 'No leads';
+setTimeout(() => { buttonEl.textContent = original; }, 1200);
+return;
+}
+navigator.clipboard.writeText(tsv).then(() => {
+buttonEl.textContent = `✓ Copied ${count}`;
+setTimeout(() => { buttonEl.textContent = original; }, 1500);
+}).catch(() => {
+buttonEl.textContent = '✗ Failed';
+setTimeout(() => { buttonEl.textContent = original; }, 1500);
+});
+};
+
 // ===================================================================
 // CLASSIFY BOOKING CHECK RESULTS - the reverse handoff. Konnect
 // Booking Check's own "Copy raw for Extract" button copies this exact
