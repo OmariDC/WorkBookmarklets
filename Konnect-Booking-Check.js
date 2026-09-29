@@ -2825,6 +2825,69 @@ String(bookingPriorityRank(r))
 return [header.join('\t'), ...lines].join('\n');
 }
 
+// ===================================================================
+// BULK PATTERN-ANALYSIS EXPORT (temporary) - not part of the actual
+// classifier pipeline. Per instruction that the rule system currently
+// feels "too rigid" (fixed rules dispatching to 4 fixed categories),
+// this hands every processed lead's classification-relevant fields to
+// a *separate* Claude chat so the user can ask it to look for
+// recurring templates (e.g. PX leads that always read the same way)
+// across a much larger batch than could be eyeballed by hand, then
+// decide from that analysis whether new categories/filters are
+// warranted. It does not feed back into this file automatically -
+// same "real reported lead" discipline as REVIEW_DECISIONS above, just
+// upstream of a rule existing yet. No name/phone/email, for the same
+// reason as that export: none of it bears on classification.
+function buildBulkAnalysisExport(session) {
+// initialNotes presence, not status - a genuine automation failure
+// (e.g. SEARCH_NO_RESULTS) never got as far as reading the notes, so
+// it has nothing to contribute to pattern-finding and would just be a
+// blank-text row; CLASSIFIED and CLASSIFICATION_REVIEW_REQUIRED rows
+// both have notes regardless of which way they ended up.
+const rows = orderedResults(session).filter((r) => r.initialNotes);
+const header = ['InitialNotes', 'Category', 'Confidence', 'Reason', 'Campaign', 'Source'].join('\t');
+const lines = rows.map((r) => [
+(r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
+r.category || '',
+r.confidence || '',
+(r.reason || r.exception || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
+r.campaign || '', r.source || ''
+].join('\t'));
+return [header, ...lines].join('\n');
+}
+
+// Sent alongside buildBulkAnalysisExport's data so the other Claude
+// chat knows what it's looking at and what kind of answer is useful,
+// without the user having to re-explain the whole system from scratch
+// each time they run this.
+const BULK_ANALYSIS_PROMPT = `I'm analysing a batch of car-dealership leads that have already been auto-classified by a rules-based system into one of 4 categories, based on their "Initial Notes" text (what the customer wrote/said) plus Campaign/Source context:
+- CONFIRMED DATE & TIME - customer has a specific booked date and time
+- DATE ONLY - a date is set but no specific time
+- WARM ENQUIRY - interested but nothing booked yet
+- NON-BOOKING - not a booking at all (e.g. a valuation/PX enquiry, a general question, already actioned elsewhere)
+
+Confidence is "high"/"medium"/"low" - "low" means the existing rules didn't confidently match and a human had to decide manually.
+
+The data below is tab-separated: InitialNotes | Category | Confidence | Reason | Campaign | Source.
+
+What I want from you:
+1. Group leads that share a recognisable "template" - i.e. Initial Notes text (or Campaign/Source combos) that reliably means the same thing every time, especially ones the existing rules currently get wrong, mark "low" confidence, or lump into a category that's too broad for what's actually happening (e.g. certain kinds of PX/valuation leads).
+2. For each group you find, show 2-3 representative examples and describe the pattern in plain terms.
+3. Suggest whether it deserves its own new category/rule, or a refinement of an existing one - and if so, propose a name and a short description of what should trigger it.
+4. Flag anything that looks miscategorised under the current 4-category system, even if it's a one-off, so I can decide whether it's worth a rule.
+
+Don't invent categories that only fit one example - I want genuine recurring templates, backed by the examples in this data.
+
+Here's the data:
+`;
+
+function buildBulkAnalysisClipboardPayload(session) {
+return BULK_ANALYSIS_PROMPT + '\n' + buildBulkAnalysisExport(session);
+}
+
+window.KonnectBookingCheck.buildBulkAnalysisExport = buildBulkAnalysisExport;
+window.KonnectBookingCheck.buildBulkAnalysisClipboardPayload = buildBulkAnalysisClipboardPayload;
+
 window.KonnectBookingCheck.buildProcessingGroups = buildProcessingGroups;
 window.KonnectBookingCheck.newSession = newSession;
 window.KonnectBookingCheck.rowIdentityKey = rowIdentityKey;
@@ -3035,6 +3098,50 @@ console.info('KonnectBookingCheck needs-review self-test passed (13/13)');
 }
 })();
 
+(function bulkAnalysisExportSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+
+const classifiedRow = finalizeResult(
+{ inputIndex: 0, name: 'Ivy Irwin', phone: '', email: 'ivy@example.com', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 20:05' },
+{ status: 'CLASSIFIED', category: 'DATE ONLY', confidence: 'high', reason: 'Explicit date, no time given.', initialNotes: 'Customer Comments: Tuesday works' }
+);
+const needsReviewRow = finalizeResult(
+{ inputIndex: 1, name: 'Jack Jones', phone: '07000000002', email: '', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 21:05' },
+{ status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', confidence: 'low', initialNotes: 'Customer Comments: maybe, will call back' }
+);
+const automationFailureRow = finalizeResult(
+{ inputIndex: 2, name: 'Kim King', phone: '', email: 'kim@example.com', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 22:05' },
+{ status: 'EXCEPTION', exception: 'SEARCH_NO_RESULTS' }
+);
+const fakeSession = {
+rows: [{ inputIndex: 0 }, { inputIndex: 1 }, { inputIndex: 2 }],
+results: { 0: classifiedRow, 1: needsReviewRow, 2: automationFailureRow }
+};
+
+const exportTsv = buildBulkAnalysisExport(fakeSession);
+const exportLines = exportTsv.split('\n');
+check('Bulk-analysis export header has no name/phone/email columns', exportLines[0], 'InitialNotes\tCategory\tConfidence\tReason\tCampaign\tSource');
+check('Bulk-analysis export includes classified and needs-review rows, excludes the automation failure with no notes', exportLines.length, 3);
+check('Bulk-analysis export carries the classified row\'s category', exportLines[1].split('\t')[1], 'DATE ONLY');
+check('Bulk-analysis export carries the needs-review row\'s low confidence', exportLines[2].split('\t')[2], 'low');
+check('Bulk-analysis export carries the needs-review row\'s exception as its reason column', exportLines[2].split('\t')[3], 'CLASSIFICATION_REVIEW_REQUIRED');
+
+const payload = buildBulkAnalysisClipboardPayload(fakeSession);
+check('Clipboard payload leads with the explanatory prompt text', payload.startsWith(BULK_ANALYSIS_PROMPT), true);
+check('Clipboard payload includes the export data after the prompt', payload.includes(exportTsv), true);
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck bulk-analysis-export self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck bulk-analysis-export self-test passed (7/7)');
+}
+})();
+
 // ===================================================================
 // PAGE FLASH OVERLAY - same pattern as SLA-Extract.js's own
 // showPageFlashOverlay/hidePageFlashOverlay (Refreshing leads/Clearing
@@ -3181,6 +3288,19 @@ return { tier: 4, reason: 'Uncategorized' };
 }
 
 function buildPanelMarkup() {
+// Same zombie-instance class of bug confirmed live in SLA-Extract.js's
+// own panel: the window.__konnectBookingCheck guard at the top of this
+// file is meant to stop a second panel ever being created while one
+// already exists, but per instruction ("refresh the bookmarklet so the
+// next click starts anew"), that guard alone wasn't reliably enough -
+// clicking again after Clear & Stop (or any other path that leaves the
+// guard and the real DOM state disagreeing) could still end up with two
+// #_kbcPanelHost trees, the newer one silently fighting the older one
+// for duplicate-ID elements the exact same way. Removing any existing
+// host by ID unconditionally, right before creating a fresh one, makes
+// this correct regardless of why the guard might be wrong, not just
+// when it happens to be right.
+document.getElementById('_kbcPanelHost')?.remove();
 const host = document.createElement('div');
 host.id = '_kbcPanelHost';
 Object.assign(host.style, { all: 'initial', position: 'fixed', top: '16px', right: '16px', zIndex: 2147483000 });
@@ -3205,6 +3325,8 @@ button.action { padding: 5px 8px; border: 1px solid #cbd5e1; background: white; 
 button.action:hover { background: #eef2ff; }
 button.action:disabled { opacity: 0.45; cursor: default; }
 button.action:disabled:hover { background: white; }
+button.action.temp { border-style: dashed; border-color: #f59e0b; color: #92400e; }
+button.action.temp:hover { background: #fffbeb; }
 button.primary { background: #1e293b; color: white; border-color: #1e293b; }
 button.primary:hover { background: #334155; }
 .status { background: white; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
@@ -3281,6 +3403,7 @@ Auto-start on paste
 <button class="action primary" id="btnPauseResume">${svgIcon('pause', 11)}Pause</button>
 <button class="action" id="btnProcessNext">Process next</button>
 <button class="action" id="btnCancel">${svgIcon('x', 11)}Cancel</button>
+<button class="action" id="btnClear">Clear session</button>
 </div>
 <div class="status">
 <div>Customer: <span id="curCustomer">-</span></div>
@@ -3303,7 +3426,7 @@ Auto-start on paste
 <button class="action" id="btnCopy">${svgIcon('copy', 11)}Copy results</button>
 <button class="action" id="btnCopyRawForExtract">${svgIcon('copy', 11)}Copy raw for Extract</button>
 <button class="action" id="btnCopyReviewDecisions">${svgIcon('copy', 11)}Copy review decisions</button>
-<button class="action" id="btnClear">Clear session</button>
+<button class="action temp" id="btnCopyBulkAnalysis" title="Temporary: copies all processed leads plus an explanatory prompt, for pasting into a separate Claude chat to look for recurring patterns.">${svgIcon('copy', 11)}Copy for pattern analysis (temp)</button>
 </div>
 </div>
 </div>
@@ -3410,9 +3533,7 @@ if (session) pasteBox.value = session.rawInput || '';
 // closed, per instruction ("collapsed under the customer's name x
 // contact details").
 const detailsState = { tiers: new Set([1, 2, 3, 4]), customers: new Set() };
-// Defaults open, unlike tiers/customers - these need a decision, not
-// just a glance at a count, so they shouldn't start collapsed away.
-let reviewSectionOpen = true;
+let reviewSectionOpen = false;
 
 // Same palette SLA-Extract.js's own bookingCheckImportCategoryColor
 // uses for these exact category strings, so a lead reads the same
@@ -3846,6 +3967,18 @@ return;
 }
 copyTextToClipboard(buildManualReviewDecisionsExport(s))
 .then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count}`, false))
+.catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
+});
+
+root.getElementById('btnCopyBulkAnalysis').addEventListener('click', (event) => {
+const s = ensureSessionFromPasteBox();
+const count = buildBulkAnalysisExport(s).split('\n').length - 1;
+if (count <= 0) {
+showButtonFeedback(event.currentTarget, 'Nothing processed yet', true);
+return;
+}
+copyTextToClipboard(buildBulkAnalysisClipboardPayload(s))
+.then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count} + prompt`, false))
 .catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
 });
 
