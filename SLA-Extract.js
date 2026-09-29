@@ -213,6 +213,8 @@ if (camp.includes('offer request') && camp.includes('new'))
 return { tier: 3, reason: 'Offer Request - New' };
 if ((camp.includes('px valuation') || camp.includes('p/x valuation')) && camp.includes('new'))
 return { tier: 3, reason: 'PX Valuation - New' };
+if ((camp.includes('px valuation') || camp.includes('p/x valuation')) && camp.includes('used'))
+return { tier: 3, reason: 'PX Valuation - Used' };
 
 if (camp.includes('enquiry') && camp.includes('new') && src.includes('robins'))
 return { tier: 4, reason: 'Enquiry - New (Robins & Day)' };
@@ -237,7 +239,8 @@ const cases = [
 { name: 'A genuine Brand - Electric campaign is still Tier 1', campaign: 'Citroen - Electric', source: 'Website', expectTier: 1 },
 { name: 'Reserve - Used is Tier 1', campaign: 'Citroen - Reserve - Used', source: 'Robins & Day Website', expectTier: 1 },
 { name: 'Motability is Tier 2', campaign: 'Motability', source: 'Motability', expectTier: 2 },
-{ name: 'Offer Request - New is Tier 3', campaign: 'Citroen - Offer Request - New (Quote request)', source: 'Customer First', expectTier: 3 }
+{ name: 'Offer Request - New is Tier 3', campaign: 'Citroen - Offer Request - New (Quote request)', source: 'Customer First', expectTier: 3 },
+{ name: 'PX Valuation - Used is Tier 3, same as PX Valuation - New', campaign: 'PX Valuation - Used', source: 'Robins & Day Website', expectTier: 3 }
 ];
 const failures = [];
 cases.forEach((c) => {
