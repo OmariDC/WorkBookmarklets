@@ -258,6 +258,18 @@ const c = String(campaign || '').toLowerCase();
 return (c.includes('px valuation') || c.includes('p/x valuation')) && c.includes('new');
 }
 
+// A genuinely different campaign from PX Valuation - New (the check
+// above specifically requires "new") that previously had no tier rule
+// of its own at all - any such lead fell through every dispatch to the
+// final low-confidence "unmatched campaign" default, landing in
+// CLASSIFICATION_REVIEW_REQUIRED regardless of content. See
+// classifyPxValuationUsedTier for the real examples this was built
+// from.
+function isPxValuationUsedCampaign(campaign) {
+const c = String(campaign || '').toLowerCase();
+return (c.includes('px valuation') || c.includes('p/x valuation')) && c.includes('used');
+}
+
 function isEnquiryUsedCampaign(campaign) {
 const c = String(campaign || '').toLowerCase();
 return c.includes('enquiry') && c.includes('used');
@@ -430,6 +442,40 @@ return { category: 'NON-BOOKING', reason: 'PX Valuation lead: comments express g
 return { category: 'NON-BOOKING', reason: 'PX Valuation lead: a specific vehicle page visit alone is tracked behavior, not something the customer said - not a real warm signal.', confidence: 'medium' };
 }
 
+// Built from 9 real manually-reviewed examples (via the Needs Review
+// "Copy review decisions" export this exact feature exists for).
+//
+// Deliberately DIFFERENT from PX Valuation - New's own handling of a
+// "possibly/potentially interested in [vehicle]" mention just above:
+// New ranks that as NON-BOOKING (more contactable than a blank page
+// visit, but still not a booking). A real reviewed example here
+// explicitly recategorized the same kind of phrase as WARM ENQUIRY
+// instead - the reviewer's own reason: "vehicle listed in the px so
+// potential interest... not as high priority as other warm leads".
+// NOT applied back to PX Valuation - New - there's no new evidence
+// contradicting that tier's own prior confirmation, only Used has been
+// re-examined.
+//
+// Real examples confirming NON-BOOKING: a generic tracked page-visit
+// alone (same signal PX Valuation - New already treats this way, x5 in
+// the reviewed batch); "Sourced from Robins & Day Website." with
+// nothing else (a blank/generic marker); a genuine customer question
+// about delivery logistics for someone else buying the car, with no
+// visit intent; a raw "Misc: field=value | field=value" data dump with
+// no customer wording of its own at all (parseInitialNotesFields' raw-
+// text fallback handles this correctly already - no visit-intent/
+// potential-interest phrase in it either way, so no parser change
+// needed for this tier).
+function classifyPxValuationUsedTier(comments, lower) {
+if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
+return { category: 'WARM ENQUIRY', reason: 'PX Valuation (Used) lead with a genuine answer showing dealership-visit intent.', confidence: 'medium' };
+}
+if (containsAny(lower, POTENTIAL_INTEREST_PHRASES)) {
+return { category: 'WARM ENQUIRY', reason: 'PX Valuation (Used) lead: comments express genuine interest in a specific vehicle - confirmed real examples treat this as warm, not just "more contactable than blank" the way PX Valuation - New\'s own rule does.', confidence: 'medium' };
+}
+return { category: 'NON-BOOKING', reason: 'PX Valuation (Used) lead: a specific vehicle page visit (or no real customer content at all) alone is not a real warm signal.', confidence: 'medium' };
+}
+
 function classifyEnquiryUsedTier(source, comments, lower) {
 const sourceLower = String(source || '').toLowerCase();
 if (sourceLower.includes('phone') && EXACT_TIME_PATTERN.test(comments)) {
@@ -498,6 +544,13 @@ return { category: 'NON-BOOKING', reason: 'Offer Request - New campaign: 100% qu
 // Tier 3: PX Valuation - New.
 if (isPxValuationNewCampaign(campaign)) {
 return classifyPxValuationTier(comments, lower);
+}
+
+// Tier 3: PX Valuation - Used - see classifyPxValuationUsedTier's own
+// comment for why a "possibly/potentially interested" mention is
+// deliberately NOT treated the same way here as it is for New.
+if (isPxValuationUsedCampaign(campaign)) {
+return classifyPxValuationUsedTier(comments, lower);
 }
 
 // Tier 3: Enquiry - Used.
@@ -2074,6 +2127,51 @@ notes: 'Sourced from Robins & Day Website.',
 campaign: 'Citroen - Register Interest (Electric Vehicles Register Your Interest)',
 source: 'Robins & Day Website',
 expect: 'NON-BOOKING'
+},
+// Real PX Valuation - Used examples, from a batch of 9 manually
+// reviewed via the Needs Review "Copy review decisions" export - this
+// campaign previously had no tier rule at all (isPxValuationNewCampaign
+// specifically requires "new"), so every one of these was landing in
+// CLASSIFICATION_REVIEW_REQUIRED regardless of content.
+{
+name: 'Real: PX Valuation - Used, generic tracked page-visit alone',
+notes: 'Comment Line #1: The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/car-valuation',
+campaign: 'PX Valuation - Used',
+source: 'Robins & Day Website',
+expect: 'NON-BOOKING'
+},
+{
+name: 'Real: PX Valuation - Used, genuine customer text but no visit intent (SPOTICAR)',
+notes: 'Lead ID: 00Qa200000gBCC9EAO | Marketing Code: SP-SPOTICAR | Customer Comments: Hi, my daughter is looking at this car to purchase. If she is wanting to proceed is there anyway the car can be delivered to a dealership local to Shrewsbury (where we live). She is in full time employment (although only a couple of months) so we would n...',
+campaign: 'PX Valuation - Used',
+source: 'Robins & Day Website',
+expect: 'NON-BOOKING'
+},
+{
+name: 'Real: PX Valuation - Used, raw field-dump with no customer wording',
+notes: 'Misc: The following information was present in the lead: | Brand Location = Vauxhall Birmingham South | Franchise = Vauxhall | Int5 = A | Mobile = 07830646111 | Desc1 = Astra 1.2 Turbo 130 GS 5Dr Hatchback | Konnect CKID Code = GBW423 | UniqueID = qf7hn5 | EmailLink = https://vauxhall.stellantisandyou.co.uk/?id=qf7hn5&Tle=Mr&Snme=Jamshidi | LeadID = UMJNhBCV5ICtsTKrJwn5 | Batch = 929875',
+campaign: 'PX Valuation - Used',
+source: 'Robins & Day Website',
+expect: 'NON-BOOKING'
+},
+{
+name: 'Real: PX Valuation - Used, blank generic marker',
+notes: 'Sourced from Robins & Day Website.',
+campaign: 'PX Valuation - Used',
+source: 'Robins & Day Website',
+expect: 'NON-BOOKING'
+},
+// The one deliberate difference from PX Valuation - New: a "possibly
+// interested in [specific vehicle]" mention is WARM ENQUIRY here, not
+// NON-BOOKING - the reviewer's own reason was "vehicle listed in the
+// px so potential interest... not as high priority as other warm
+// leads".
+{
+name: 'Real: PX Valuation - Used, "possibly interested in" a specific vehicle',
+notes: 'Comment Line #1: The customer is possibly interested in the following vehicle Vauxhall Corsa Hatchback 1.2 Turbo GS Hatchback 5dr Petrol Auto Euro 6 (s/s) (100 ps) | Link to vehicle: https://www.stellantisandyou.co.uk/used-vehicles/202608225348223/vauxhall-corsa-hatchback-12-turbo-gs-hatchback-5dr-petrol-auto-euro-6-ss-100-ps-ba25vde | The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/',
+campaign: 'PX Valuation - Used',
+source: 'Robins & Day Website',
+expect: 'WARM ENQUIRY'
 }
 ];
 
@@ -3055,6 +3153,8 @@ if (camp.includes('offer request') && camp.includes('new'))
 return { tier: 3, reason: 'Offer Request - New' };
 if ((camp.includes('px valuation') || camp.includes('p/x valuation')) && camp.includes('new'))
 return { tier: 3, reason: 'PX Valuation - New' };
+if ((camp.includes('px valuation') || camp.includes('p/x valuation')) && camp.includes('used'))
+return { tier: 3, reason: 'PX Valuation - Used' };
 
 if (camp.includes('enquiry') && camp.includes('new') && src.includes('robins'))
 return { tier: 4, reason: 'Enquiry - New (Robins & Day)' };
