@@ -3335,14 +3335,12 @@ a.appendChild(icon);
 a.appendChild(label);
 li.appendChild(a);
 ul.appendChild(li);
-// Inserted before the first existing navbar-right <ul>, not appended
-// after the last one - Bootstrap's .navbar-right:last-child rule
-// gives the true last item a -15px margin to sit flush with the edge;
-// appending ours would silently steal that :last-child match from
-// whichever item actually was last, widening the whole row just
-// enough to wrap onto its own line underneath (confirmed live).
-const firstRightUl = nav.querySelector('ul.navbar-right');
-if (firstRightUl) nav.insertBefore(ul, firstRightUl); else nav.appendChild(ul);
+// float:right siblings stack right-to-left in DOM order - the first
+// one in source order renders flush against the right edge, and each
+// later one takes the next slot to ITS left. Appending here (last in
+// DOM order) is what puts this on the left of Live/Feedback/etc, per
+// instruction, rather than out past all of them on the right.
+nav.appendChild(ul);
 return {
 clickTarget: a,
 show() { ul.style.display = ''; },
