@@ -3471,7 +3471,9 @@ clickTarget: a,
 show() { ul.style.display = ''; },
 hide() { ul.style.display = 'none'; },
 remove() { ul.remove(); },
-setProgress(remaining) { label.textContent = remaining != null ? `Check (${remaining})` : 'Check'; }
+// No remaining-count next to the label, per instruction - just the
+// plain "Check" text regardless of what's processing.
+setProgress() {}
 };
 }
 
