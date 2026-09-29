@@ -3283,6 +3283,7 @@ return { tier: 4, reason: 'Uncategorized' };
 // Off (panel visible) unless the user has explicitly minimized before -
 // same default-visible-until-minimized semantics as SLA-Extract.js's
 // own PANEL_STATE_KEY, so the two tools behave consistently.
+const KBC_NAV_ITEM_ID = '_kbcNavItem';
 const KBC_BADGE_ID = '_kbcBadge';
 const KBC_PANEL_VISIBLE_KEY = '_kbcPanelVisible';
 
@@ -3290,61 +3291,106 @@ function isPanelHiddenByDefault() {
 return localStorage.getItem(KBC_PANEL_VISIBLE_KEY) === '0';
 }
 
-// Small fixed circular badge, the same fallback pattern SLA-Extract.js
-// uses when it can't dock into a navbar - Konnect Live's own navbar
-// structure has never been confirmed live, so this always uses that
-// pattern rather than guessing at a dock point that might not exist on
-// every page this can run on. Lives in the exact same corner the panel
-// itself opens in (top:16px; right:16px): the two are mutually
-// exclusive (see the visibility toggling in initKonnectBookingCheckUI),
-// so there's never a moment both are on-screen fighting for that spot -
-// this replaces the old "minimize just hides the body, leaving the
-// 460px header bar sitting there" behavior, which read as not actually
-// minimized at all.
+// Docks into Konnect Live's own top nav rather than floating a colored
+// circle over the page - confirmed live via a real DOM scan: the right
+// side of nav.navbar.navbar-inverse.navbar-fixed-top is built from
+// sibling <ul class="nav navbar-right top-nav"><li class="dropdown
+// hidden-sm"><a><i class="fa ... text-konnect-live"></i>Label</a></li>
+// </ul> blocks (one per module - Live/Feedback/Care/Pricing/user menu).
+// Reusing that exact shape, plus the page's own text-konnect-live
+// class for the icon color (rather than hardcoding its hex), is what
+// makes this actually blend in as "one more of the page's own nav
+// items" instead of a generic badge that happens to sit nearby - same
+// intent as SLA-Extract.js's own createBadge() docking into Konnect
+// Manager's navbar, just matched to Konnect Live's real markup.
+// Falls back to a small fixed circular badge - recolored to this
+// page's own confirmed palette (#222222 nav background, white,
+// #C2CB42 the "Live" accent) rather than a generic scheme - only if
+// that nav structure isn't there (a page this was never confirmed
+// against, or a future Konnect Live redesign).
 function buildBadge() {
+document.getElementById(KBC_NAV_ITEM_ID)?.remove();
 document.getElementById(KBC_BADGE_ID)?.remove();
+
+const nav = document.querySelector('nav.navbar.navbar-inverse.navbar-fixed-top');
+if (nav) {
+const ul = document.createElement('ul');
+ul.id = KBC_NAV_ITEM_ID;
+ul.className = 'nav navbar-right top-nav';
+ul.style.cssText = 'padding-right:3px;padding-left:3px';
+const li = document.createElement('li');
+li.className = 'dropdown hidden-sm';
+const a = document.createElement('a');
+a.href = 'javascript:void(0)';
+a.title = 'Konnect Booking Check';
+const icon = document.createElement('i');
+icon.className = 'fa fa-clipboard fa-fw text-konnect-live';
+const label = document.createElement('span');
+label.textContent = 'Check';
+a.appendChild(icon);
+a.appendChild(label);
+li.appendChild(a);
+ul.appendChild(li);
+nav.appendChild(ul);
+return {
+clickTarget: a,
+show() { ul.style.display = ''; },
+hide() { ul.style.display = 'none'; },
+remove() { ul.remove(); },
+setProgress(remaining) { label.textContent = remaining != null ? `Check (${remaining})` : 'Check'; }
+};
+}
+
+console.warn('KonnectBookingCheck: navbar not found, falling back to a fixed badge');
 const badge = document.createElement('div');
 badge.id = KBC_BADGE_ID;
 Object.assign(badge.style, {
 position: 'fixed', top: '16px', right: '16px', width: '48px', height: '48px',
-background: '#1e293b', border: '2px solid #059669', borderRadius: '50%',
-boxShadow: '0 4px 12px rgba(5,150,105,0.35)', zIndex: 2147483000, cursor: 'pointer',
+background: '#222222', border: '2px solid #C2CB42', borderRadius: '50%',
+boxShadow: '0 4px 12px rgba(194,203,66,0.35)', zIndex: 2147483000, cursor: 'pointer',
 display: 'none', alignItems: 'center', justifyContent: 'center', fontSize: '18px',
-fontWeight: 'bold', color: '#059669', transition: 'transform 0.15s ease, box-shadow 0.15s ease',
+fontWeight: 'bold', color: '#C2CB42', transition: 'transform 0.15s ease, box-shadow 0.15s ease',
 fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
 });
 badge.innerHTML = svgIcon('clipboard', 22);
 badge.title = 'Konnect Booking Check';
 badge.addEventListener('mouseenter', () => {
 badge.style.transform = 'scale(1.12)';
-badge.style.boxShadow = '0 6px 16px rgba(5,150,105,0.5)';
+badge.style.boxShadow = '0 6px 16px rgba(194,203,66,0.5)';
 });
 badge.addEventListener('mouseleave', () => {
 badge.style.transform = 'scale(1)';
-badge.style.boxShadow = '0 4px 12px rgba(5,150,105,0.35)';
+badge.style.boxShadow = '0 4px 12px rgba(194,203,66,0.35)';
 });
 document.documentElement.appendChild(badge);
-return badge;
+return {
+clickTarget: badge,
+show() { badge.style.display = 'flex'; },
+hide() { badge.style.display = 'none'; },
+remove() { badge.remove(); },
+setProgress(remaining) {
+if (remaining != null) {
+badge.textContent = String(remaining);
+badge.style.fontSize = '16px';
+} else {
+badge.innerHTML = svgIcon('clipboard', 22);
+badge.style.fontSize = '18px';
+}
+}
+};
 }
 
 // Idle (no session, or a finished one) always falls back to the plain
-// icon - the number only means something while there's still work
-// left, same as SLA-Extract.js's own setBadgeProgress.
+// idle label/icon - the number only means something while there's
+// still work left, same as SLA-Extract.js's own setBadgeProgress.
 function updateBadgeProgress(badge, ordered, session) {
 if (!badge) return;
 if (!session || ordered.length === 0 || session.done) {
-badge.innerHTML = svgIcon('clipboard', 22);
-badge.style.fontSize = '18px';
+badge.setProgress(null);
 return;
 }
 const remaining = session.rows.length - ordered.length;
-if (remaining <= 0) {
-badge.innerHTML = svgIcon('clipboard', 22);
-badge.style.fontSize = '18px';
-return;
-}
-badge.textContent = String(remaining);
-badge.style.fontSize = '16px';
+badge.setProgress(remaining > 0 ? remaining : null);
 }
 
 function buildPanelMarkup() {
@@ -3569,10 +3615,10 @@ const minBtn = root.getElementById('minBtn');
 const headerEl = root.getElementById('headerEl');
 
 const badge = buildBadge();
-badge.style.display = isPanelHiddenByDefault() ? 'flex' : 'none';
-badge.addEventListener('click', () => {
+if (isPanelHiddenByDefault()) badge.show(); else badge.hide();
+badge.clickTarget.addEventListener('click', () => {
 host.style.display = 'block';
-badge.style.display = 'none';
+badge.hide();
 localStorage.setItem(KBC_PANEL_VISIBLE_KEY, '1');
 });
 
@@ -4061,7 +4107,7 @@ copyTextToClipboard(buildBulkAnalysisClipboardPayload(s))
 // own click handler above) is the only way back once hidden.
 minBtn.addEventListener('click', () => {
 host.style.display = 'none';
-badge.style.display = 'flex';
+badge.show();
 localStorage.setItem(KBC_PANEL_VISIBLE_KEY, '0');
 });
 
@@ -4094,7 +4140,7 @@ render();
 window.__konnectBookingCheck = {
 focus() {
 host.style.display = 'block';
-badge.style.display = 'none';
+badge.hide();
 localStorage.setItem(KBC_PANEL_VISIBLE_KEY, '1');
 },
 getSession: () => session

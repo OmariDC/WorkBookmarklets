@@ -1,7 +1,11 @@
 (function() {
 const BADGE_ID = '_slaBadge';
-const BADGE_COLOR = '#1e293b';
-const BADGE_BORDER_COLOR = '#059669';
+// Konnect CJM Manager's own confirmed navbar colors (background
+// #22365D, white text/icons - live DOM scan), not a generic scheme, so
+// the badge reads as belonging to this page rather than a floating
+// element that happens to sit near it.
+const BADGE_COLOR = '#22365D';
+const BADGE_BORDER_COLOR = '#FFFFFF';
 const PANEL_ID = '_slaPanel';
 const PANEL_BOX_ID = '_slaPanelBox';
 const PANEL_STATE_KEY = '_slaPanelState';
@@ -4714,11 +4718,11 @@ hidePageFlashOverlay();
 function attachBadgeHoverEffects() {
 badge.addEventListener('mouseenter', () => {
 badge.style.transform = 'scale(1.15)';
-badge.style.boxShadow = '0 6px 16px rgba(39, 174, 96, 0.5)';
+badge.style.boxShadow = '0 6px 16px rgba(34, 54, 93, 0.55)';
 });
 badge.addEventListener('mouseleave', () => {
 badge.style.transform = 'scale(1)';
-badge.style.boxShadow = '0 4px 12px rgba(39, 174, 96, 0.3)';
+badge.style.boxShadow = '0 4px 12px rgba(34, 54, 93, 0.35)';
 });
 }
 
@@ -4743,7 +4747,7 @@ document.documentElement.appendChild(badge);
 Object.assign(badge.style, {
 position: 'fixed', right: '12px', top: '12px', width: '48px', height: '48px',
 background: BADGE_COLOR, border: `2px solid ${BADGE_BORDER_COLOR}`, borderRadius: '50%',
-boxShadow: '0 4px 12px rgba(39, 174, 96, 0.3)', zIndex: 99999, cursor: 'pointer',
+boxShadow: '0 4px 12px rgba(34, 54, 93, 0.35)', zIndex: 99999, cursor: 'pointer',
 display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px',
 fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
@@ -4766,7 +4770,7 @@ badge.id = BADGE_ID;
 Object.assign(badge.style, {
 boxSizing: 'border-box', width: '48px', height: '48px',
 background: BADGE_COLOR, border: `2px solid ${BADGE_BORDER_COLOR}`, borderRadius: '50%',
-boxShadow: '0 4px 12px rgba(39, 174, 96, 0.3)', cursor: 'pointer',
+boxShadow: '0 4px 12px rgba(34, 54, 93, 0.35)', cursor: 'pointer',
 display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px',
 fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
