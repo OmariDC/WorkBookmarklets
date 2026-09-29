@@ -432,12 +432,20 @@ return { category: 'NON-BOOKING', reason: 'Motability lead: no explicit booking/
 // category here (both branches land on NON-BOOKING), but mislabelled
 // the reason and was one visit-intent-keyword collision away from
 // mislabelling the category too.
+//
+// A "possibly/potentially interested in [vehicle]" mention is WARM
+// ENQUIRY, not NON-BOOKING - per instruction, once PX Valuation - Used
+// was re-examined with real reviewed examples and reclassified this
+// same phrase as WARM ENQUIRY (see classifyPxValuationUsedTier), the
+// same notes pattern and reasoning applies equally here: New and Used
+// share the identical website form/notes structure for this phrase, so
+// there's no reason for the two tiers to disagree on it.
 function classifyPxValuationTier(comments, lower) {
 if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
 return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead with a genuine answer showing dealership-visit intent.', confidence: 'medium' };
 }
 if (containsAny(lower, POTENTIAL_INTEREST_PHRASES)) {
-return { category: 'NON-BOOKING', reason: 'PX Valuation lead: comments express genuine interest in a vehicle, but no visit intent - still Non-Booking, but more contactable than a generic page visit.', confidence: 'medium' };
+return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead: comments express genuine interest in a specific vehicle - treated as warm, same as PX Valuation - Used.', confidence: 'medium' };
 }
 return { category: 'NON-BOOKING', reason: 'PX Valuation lead: a specific vehicle page visit alone is tracked behavior, not something the customer said - not a real warm signal.', confidence: 'medium' };
 }
@@ -445,16 +453,15 @@ return { category: 'NON-BOOKING', reason: 'PX Valuation lead: a specific vehicle
 // Built from 9 real manually-reviewed examples (via the Needs Review
 // "Copy review decisions" export this exact feature exists for).
 //
-// Deliberately DIFFERENT from PX Valuation - New's own handling of a
-// "possibly/potentially interested in [vehicle]" mention just above:
-// New ranks that as NON-BOOKING (more contactable than a blank page
-// visit, but still not a booking). A real reviewed example here
-// explicitly recategorized the same kind of phrase as WARM ENQUIRY
-// instead - the reviewer's own reason: "vehicle listed in the px so
-// potential interest... not as high priority as other warm leads".
-// NOT applied back to PX Valuation - New - there's no new evidence
-// contradicting that tier's own prior confirmation, only Used has been
-// re-examined.
+// A "possibly/potentially interested in [vehicle]" mention is WARM
+// ENQUIRY here, matching PX Valuation - New's own handling just above -
+// a real reviewed example here explicitly recategorized this phrase as
+// WARM ENQUIRY (reviewer's own reason: "vehicle listed in the px so
+// potential interest... not as high priority as other warm leads"), and
+// per instruction that same reclassification was applied back to PX
+// Valuation - New too once it was clear both tiers share the identical
+// notes pattern for this phrase - not a case for either tier to
+// disagree with the other on.
 //
 // Real examples confirming NON-BOOKING: a generic tracked page-visit
 // alone (same signal PX Valuation - New already treats this way, x5 in
@@ -546,9 +553,10 @@ if (isPxValuationNewCampaign(campaign)) {
 return classifyPxValuationTier(comments, lower);
 }
 
-// Tier 3: PX Valuation - Used - see classifyPxValuationUsedTier's own
-// comment for why a "possibly/potentially interested" mention is
-// deliberately NOT treated the same way here as it is for New.
+// Tier 3: PX Valuation - Used - shares New's own handling of a
+// "possibly/potentially interested" mention (both WARM ENQUIRY), see
+// classifyPxValuationUsedTier's own comment for the real examples this
+// was built from.
 if (isPxValuationUsedCampaign(campaign)) {
 return classifyPxValuationUsedTier(comments, lower);
 }
@@ -1995,13 +2003,15 @@ const cases = [
 // FINANCE_KEYWORDS 'pch' entry matching inside a URL slug doesn't
 // hijack this into the (now-removed) override branch.
 { name: 'PX Valuation + "website page, before completing the valuation" phrasing with -pch URL', date: null, comments: 'The customer was on the following website page, before completing the valuation: https://example.com/citroen-c5-aircross-pch', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
-// Genuine interest short of visit intent - still Non-Booking (no
-// separate category), but ranks higher within it (see the priority-
-// rank check below).
-{ name: 'PX Valuation + "potentially interested in" (still non-booking, more contactable)', date: null, comments: 'Hi I would potentially be interested in this vehicle, and trading in my 2010 hyundai santa fe. Could i speak to someone about this, i am based in Cornwall.', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
+// Genuine interest short of visit intent, once WARM ENQUIRY, not
+// NON-BOOKING - per instruction, once PX Valuation - Used was
+// reclassified this way from real reviewed examples, the same
+// reasoning applies equally to New (identical notes pattern, same
+// underlying website form).
+{ name: 'PX Valuation + "potentially interested in" (warm, same as PX Valuation - Used)', date: null, comments: 'Hi I would potentially be interested in this vehicle, and trading in my 2010 hyundai santa fe. Could i speak to someone about this, i am based in Cornwall.', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
 // Framework document's own wording for this same signal ("possibly"
 // rather than "potentially") - both forms recognized.
-{ name: 'PX Valuation + "possibly interested in" (framework doc wording)', date: null, comments: 'The customer said they were possibly interested in the following vehicle: Citroen C5 Aircross', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
+{ name: 'PX Valuation + "possibly interested in" (framework doc wording, warm)', date: null, comments: 'The customer said they were possibly interested in the following vehicle: Citroen C5 Aircross', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
 { name: 'PX Valuation + genuine visit-intent wording (warm)', date: null, comments: 'Would like to come in and view the C5 Aircross in person', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
 
 // ===== Tier 3: Enquiry - Used - phone+time is confirmed. A vague
@@ -2098,13 +2108,15 @@ expect: 'CONFIRMED DATE & TIME'
 // Real Robins & Day Website PX Valuation lead - "possibly interested in"
 // phrasing inside the comment line, previously unreachable since the
 // old parser never recognized "Comment Line #1:" at all (comments
-// always came back blank for every Robins & Day Website lead).
+// always came back blank for every Robins & Day Website lead). Warm,
+// not Non-Booking - reclassified per instruction, same as PX Valuation
+// - Used's own real reviewed examples below.
 {
 name: 'Real: Robins & Day Website PX Valuation, "possibly interested in"',
 notes: 'Comment Line #1: The customer is possibly interested in the following vehicle Citroen Citroen Holidays Estate 2.2 D Max M 5dr Auto Link to vehicle: https://example/vehicle The customer was on the following website page, before completing the valuation: https://example/page',
 campaign: 'Citroen - PX Valuation - New (pcr_valuation_success)',
 source: 'Robins & Day Website',
-expect: 'NON-BOOKING'
+expect: 'WARM ENQUIRY'
 },
 // Real unlabelled phone-call Enquiry-Used lead - no "Customer Comments"
 // or "Comment Line #1:" label at all, just a raw prose blob. Confirms
