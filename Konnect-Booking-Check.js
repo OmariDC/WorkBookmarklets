@@ -3280,16 +3280,16 @@ return { tier: 4, reason: 'Cargurus' };
 return { tier: 4, reason: 'Uncategorized' };
 }
 
-// Off (panel visible) unless the user has explicitly minimized before -
-// same default-visible-until-minimized semantics as SLA-Extract.js's
-// own PANEL_STATE_KEY, so the two tools behave consistently.
+// Every fresh bookmarklet click always starts minimized to just the
+// nav item/badge, per instruction - unlike SLA-Extract.js (a
+// persistent auto-detect script that rebuilds its panel across route
+// changes, where remembering "was open" matters), this only ever
+// initializes once per click, so there's no reload-continuity case
+// worth a persisted flag for - it would only ever get read once, right
+// after being set false at the very same startup it's supposedly
+// remembering.
 const KBC_NAV_ITEM_ID = '_kbcNavItem';
 const KBC_BADGE_ID = '_kbcBadge';
-const KBC_PANEL_VISIBLE_KEY = '_kbcPanelVisible';
-
-function isPanelHiddenByDefault() {
-return localStorage.getItem(KBC_PANEL_VISIBLE_KEY) === '0';
-}
 
 // Docks into Konnect Live's own top nav rather than floating a colored
 // circle over the page - confirmed live via a real DOM scan: the right
@@ -3418,7 +3418,7 @@ function buildPanelMarkup() {
 document.getElementById('_kbcPanelHost')?.remove();
 const host = document.createElement('div');
 host.id = '_kbcPanelHost';
-Object.assign(host.style, { all: 'initial', position: 'fixed', top: '16px', right: '16px', zIndex: 2147483000, display: isPanelHiddenByDefault() ? 'none' : 'block' });
+Object.assign(host.style, { all: 'initial', position: 'fixed', top: '16px', right: '16px', zIndex: 2147483000, display: 'none' });
 document.documentElement.appendChild(host);
 const root = host.attachShadow({ mode: 'open' });
 root.innerHTML = `
@@ -3624,11 +3624,10 @@ const minBtn = root.getElementById('minBtn');
 const headerEl = root.getElementById('headerEl');
 
 const badge = buildBadge();
-if (isPanelHiddenByDefault()) badge.show(); else badge.hide();
+badge.show();
 badge.clickTarget.addEventListener('click', () => {
 host.style.display = 'block';
 badge.hide();
-localStorage.setItem(KBC_PANEL_VISIBLE_KEY, '1');
 });
 
 // Category filter toggled by clicking a stat pill - empty set means "no
@@ -4117,7 +4116,6 @@ copyTextToClipboard(buildBulkAnalysisClipboardPayload(s))
 minBtn.addEventListener('click', () => {
 host.style.display = 'none';
 badge.show();
-localStorage.setItem(KBC_PANEL_VISIBLE_KEY, '0');
 });
 
 // Live filter-as-you-type, not rebuilt by render() itself (searchInputEl
@@ -4150,7 +4148,6 @@ window.__konnectBookingCheck = {
 focus() {
 host.style.display = 'block';
 badge.hide();
-localStorage.setItem(KBC_PANEL_VISIBLE_KEY, '1');
 },
 getSession: () => session
 };
