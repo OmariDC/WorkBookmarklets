@@ -4336,7 +4336,7 @@ ${bodyHtml}
 </div>
 
 <div style="border-top: 1px solid #cbd5e1; padding: 8px 14px; background: white; flex-shrink: 0; display: flex; justify-content: flex-end; align-items: center; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
-<button onclick="(function() { if (confirm('Clear all data and stop?')) { window._slaResetBookmarklet(); } })();"
+<button onclick="window._slaResetBookmarklet();"
 style="padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
 </div>
 </div>

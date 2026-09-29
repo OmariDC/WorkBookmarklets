@@ -3952,8 +3952,6 @@ uiHandle.setState('Idle', '-', '-');
 // full reset - stops whatever's running, wipes the stored session, and
 // tears down the panel - so reopening always starts from a clean slate.
 root.getElementById('btnClearStop').addEventListener('click', () => {
-const ok = window.confirm('Clear all data and stop?');
-if (!ok) return;
 if (session) session.cancelled = true;
 isRunning = false;
 hidePageFlashOverlay();
