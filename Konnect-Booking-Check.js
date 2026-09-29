@@ -3328,7 +3328,8 @@ button.primary:hover { background: #334155; }
 .progress-fill { height: 100%; background: #1e293b; transition: width 0.2s ease; border-radius: 3px; }
 .hidden { display: none; }
 .footer { flex-shrink: 0; border-top: 1px solid #cbd5e1; padding: 8px 12px; background: white; display: flex; justify-content: flex-end; border-radius: 0 0 10px 10px; }
-.footer button { padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+.footer button { padding: 5px 10px; background: transparent; color: #94a3b8; border: 1px solid #e2e8f0; border-radius: 6px; cursor: pointer; font-size: 10px; font-weight: 500; display: inline-flex; align-items: center; gap: 4px; transition: color 0.15s, border-color 0.15s; }
+.footer button:hover { color: #dc2626; border-color: #dc2626; }
 .topSection { flex-shrink: 0; border: 1px solid #e2e8f0; border-radius: 6px; background: white; margin-bottom: 8px; }
 .topSection > summary { padding: 6px 8px; cursor: pointer; font-weight: 600; color: #475569; list-style: none; display: flex; align-items: center; gap: 6px; }
 .topSection > summary::-webkit-details-marker { display: none; }
