@@ -2657,27 +2657,34 @@ if (session.groupIndex >= session.groups.length) session.done = true;
 // earliest group with any unresolved row) rather than a separate
 // mechanism, since "some rows in an already-processed group need
 // reprocessing" is exactly what that logic already handles correctly.
+//
+// Mutates session in place, deliberately NOT returning a new object the
+// way newSession does - a PAUSED runLoop is still alive (its own while
+// loop just idling on session.paused, see runLoop's own comment on
+// that), holding its own reference to this exact session object.
+// Reassigning the caller's `session` variable to a fresh object would
+// silently orphan that still-running loop, which would keep polling
+// the stale original forever and never see any of this. Mutating the
+// shared object is what lets an already-paused run pick this up
+// correctly the moment it's resumed.
 function retryExceptions(session) {
-const results = { ...session.results };
 session.rows.forEach((row) => {
 if (row.status === 'INVALID_INPUT') return;
-const result = results[row.inputIndex];
+const result = session.results[row.inputIndex];
 if (result && result.status === 'EXCEPTION' && result.exception !== 'CLASSIFICATION_REVIEW_REQUIRED') {
-delete results[row.inputIndex];
+delete session.results[row.inputIndex];
 }
 });
 
 let groupIndex = 0;
-while (groupIndex < session.groups.length && session.groups[groupIndex].rows.every((r) => results[r.inputIndex])) {
+while (groupIndex < session.groups.length && session.groups[groupIndex].rows.every((r) => session.results[r.inputIndex])) {
 groupIndex++;
 }
 
-return {
-...session,
-results, groupIndex, rowInGroupIndex: 0,
-cancelled: false,
-done: groupIndex >= session.groups.length
-};
+session.groupIndex = groupIndex;
+session.rowInGroupIndex = 0;
+session.cancelled = false;
+session.done = groupIndex >= session.groups.length;
 }
 
 // Advances exactly one input row (per instruction: "Process next must
@@ -3043,32 +3050,40 @@ const parsed = parseBatchInput(batch);
 const groups = buildProcessingGroups(parsed.rows);
 check('Dee (no phone/email) is excluded from processing groups', groups.length, 3);
 
+const originalAlice = { name: 'Alice', status: 'CLASSIFIED', category: 'DATE ONLY' };
+const originalCarol = { name: 'Carol', status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED' };
+const originalDee = { name: 'Dee', status: 'EXCEPTION', exception: 'NO_SEARCH_IDENTIFIER' };
 const fakeSession = {
 rows: parsed.rows,
 groups,
-groupIndex: 3, done: true, cancelled: false,
+// isRunning-but-paused is the real scenario this has to work
+// correctly under (a live runLoop idling on session.paused, still
+// holding this exact object) - included here so mutating in place,
+// not returning a new object, is actually exercised.
+groupIndex: 3, done: true, cancelled: false, paused: true,
 results: {
-0: { name: 'Alice', status: 'CLASSIFIED', category: 'DATE ONLY' },
+0: originalAlice,
 1: { name: 'Bob', status: 'EXCEPTION', exception: 'TIMELINE_TIMEOUT' },
-2: { name: 'Carol', status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED' },
-3: { name: 'Dee', status: 'EXCEPTION', exception: 'NO_SEARCH_IDENTIFIER' }
+2: originalCarol,
+3: originalDee
 }
 };
 
-const retried = retryExceptions(fakeSession);
-check('A genuine processing failure (Bob) is cleared for retry', retried.results[1], undefined);
-check('An already-classified row (Alice) is left untouched', retried.results[0], fakeSession.results[0]);
-check('CLASSIFICATION_REVIEW_REQUIRED (Carol) is NOT retried - not a failure, has its own resolution flow', retried.results[2], fakeSession.results[2]);
-check('INVALID_INPUT (Dee) is left untouched - excluded from groups entirely, retrying would strand it with no result', retried.results[3], fakeSession.results[3]);
-check('groupIndex rewinds to the earliest group with a cleared result (Bob\'s, index 1)', retried.groupIndex, 1);
-check('rowInGroupIndex resets', retried.rowInGroupIndex, 0);
-check('done recalculated as false - there is work left', retried.done, false);
-check('cancelled reset to false', retried.cancelled, false);
+retryExceptions(fakeSession);
+check('A genuine processing failure (Bob) is cleared for retry', fakeSession.results[1], undefined);
+check('An already-classified row (Alice) is left untouched', fakeSession.results[0], originalAlice);
+check('CLASSIFICATION_REVIEW_REQUIRED (Carol) is NOT retried - not a failure, has its own resolution flow', fakeSession.results[2], originalCarol);
+check('INVALID_INPUT (Dee) is left untouched - excluded from groups entirely, retrying would strand it with no result', fakeSession.results[3], originalDee);
+check('groupIndex rewinds to the earliest group with a cleared result (Bob\'s, index 1)', fakeSession.groupIndex, 1);
+check('rowInGroupIndex resets', fakeSession.rowInGroupIndex, 0);
+check('done recalculated as false - there is work left', fakeSession.done, false);
+check('cancelled reset to false', fakeSession.cancelled, false);
+check('paused is left alone - retrying doesn\'t itself resume a paused run', fakeSession.paused, true);
 
 if (failures.length > 0) {
 console.error('KonnectBookingCheck retryExceptions self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck retryExceptions self-test passed (8/8)');
+console.info('KonnectBookingCheck retryExceptions self-test passed (9/9)');
 }
 })();
 
@@ -4162,14 +4177,24 @@ root.getElementById('btnCancel').addEventListener('click', () => {
 if (session) { session.cancelled = true; uiHandle.setState('Cancelling...'); }
 });
 
-// Guarded on isRunning (not just session presence) - mutating
-// session.results/groupIndex out from under an in-flight runLoop's own
-// closure over the previous session would leave things inconsistent;
-// Cancel/Pause first, then retry, same as Clear session already
-// expects.
+// Guarded on isRunning && !session.paused, not isRunning alone -
+// isRunning stays true for the entire time a run is PAUSED too (the
+// loop is still alive, just idling in its own sleep-and-recheck poll -
+// see runLoop's own comment on that), so isRunning alone would wrongly
+// block retrying a paused run, which is actually the safe/expected
+// case (confirmed live: reported as blocking even after pausing). Only
+// genuinely mid-loop-and-unpaused is unsafe to mutate into - a step
+// could be actively in flight, and stepOnce reads session.groupIndex/
+// rowInGroupIndex at its own start, writing back based on whatever
+// they are when it finishes; racing that with a concurrent rewind here
+// could advance against the wrong group. retryExceptions mutates
+// session in place (not a reassignment) specifically so a currently-
+// paused runLoop - still holding this exact object - picks the change
+// up correctly the moment it's resumed, rather than being silently
+// orphaned on a stale session.
 root.getElementById('btnRetryExceptions').addEventListener('click', (event) => {
 if (!session) return;
-if (isRunning) {
+if (isRunning && !session.paused) {
 showButtonFeedback(event.currentTarget, 'Pause/stop first', true);
 return;
 }
@@ -4182,7 +4207,7 @@ if (retryCount === 0) {
 showButtonFeedback(event.currentTarget, 'No exceptions to retry', true);
 return;
 }
-session = retryExceptions(session);
+retryExceptions(session);
 saveSession(session);
 render();
 showButtonFeedback(event.currentTarget, `✓ Queued ${retryCount}`, false);
