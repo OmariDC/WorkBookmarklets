@@ -5361,6 +5361,23 @@ initAssignSectionWheels();
 if (window._slaAutoDetectInterval) {
 clearInterval(window._slaAutoDetectInterval);
 }
+
+// Same zombie-instance problem, a different symptom: a previous
+// instance's own mountPanel() guard (`if (panelElement) panelElement.
+// remove();`) only knows about ITS OWN panelElement variable - a fresh
+// instance's panelElement starts as null, with no way to know a
+// completely separate previous instance ever created one. Confirmed
+// live: this left two #_slaPanel trees mounted simultaneously, each
+// with their own duplicate-ID children (two "Classify Booking Check
+// results" buttons, two #bookingCheckImportPopover elements) -
+// getElementById always resolves the FIRST one in DOM order, so a click
+// on the current, visible panel's own button toggled the OLD, off-
+// screen instance's popover instead, with no visible effect at all.
+// createBadge() already does this exact same explicit ID-based cleanup
+// for the badge itself (removing any existing #_slaBadgeNavItem/
+// #_slaBadge before creating its own) - this is that same pattern,
+// applied to the panel, which had no equivalent.
+document.getElementById(PANEL_ID)?.remove();
 let lastKnownPageType = detectPageType();
 window._slaAutoDetectInterval = setInterval(() => {
 if (extracting || assigning || runningMorningChecks || refreshingLeads || currentPanelMode === 'morningChecks') return;
