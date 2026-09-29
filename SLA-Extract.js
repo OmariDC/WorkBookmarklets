@@ -3697,6 +3697,77 @@ function isSectionCollapsed(sectionId) {
 return loadCollapsedSections().has(sectionId);
 }
 
+// Off by default, per instruction that this shouldn't clutter the
+// screen or disrupt the existing tier/callback-type layout unless
+// explicitly turned on - a fresh page load (or a Clear & Stop) always
+// starts with today's default order, and the toggle only changes the
+// order of cards already visible within their existing sections, never
+// adds new ones.
+const BOOKING_CHECK_PRIORITY_SORT_KEY = '_slaBookingCheckPrioritySort';
+
+function isBookingCheckPrioritySortEnabled() {
+return localStorage.getItem(BOOKING_CHECK_PRIORITY_SORT_KEY) === '1';
+}
+
+// CONFIRMED DATE & TIME first, then WARM ENQUIRY, everything else
+// (including customers with no Booking Check result at all) keeping
+// its existing relative order - a stable sort on a 0/1/2 rank, not a
+// full re-sort, so within "everything else" the section's own
+// existing order (urgency for SLA, current order for Pending) is left
+// exactly as-is. Array.prototype.sort has been a stable sort in every
+// engine this bookmarklet runs in for years, so this rank-only
+// comparator is enough on its own.
+function bookingCheckPriorityRank(customer, bookingCheckResults) {
+const result = findBookingCheckResultForCustomer(customer, bookingCheckResults);
+if (!result) return 2;
+if (result.category === 'CONFIRMED DATE & TIME') return 0;
+if (result.category === 'WARM ENQUIRY') return 1;
+return 2;
+}
+
+function sortByBookingCheckPriority(customers, bookingCheckResults) {
+return customers
+.map((c, index) => ({ c, index, rank: bookingCheckPriorityRank(c, bookingCheckResults) }))
+.sort((a, b) => a.rank - b.rank || a.index - b.index)
+.map((entry) => entry.c);
+}
+
+(function sortByBookingCheckPrioritySelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
+}
+
+const customers = [
+{ name: 'Alice (no result)', email: 'alice@example.com', phone: '' },
+{ name: 'Bob (WARM)', email: 'bob@example.com', phone: '' },
+{ name: 'Carol (no result)', email: 'carol@example.com', phone: '' },
+{ name: 'Dee (CONFIRMED)', email: 'dee@example.com', phone: '' },
+{ name: 'Eve (NON-BOOKING)', email: 'eve@example.com', phone: '' }
+];
+const bookingCheckResults = [
+{ email: 'bob@example.com', phone: '', category: 'WARM ENQUIRY' },
+{ email: 'dee@example.com', phone: '', category: 'CONFIRMED DATE & TIME' },
+{ email: 'eve@example.com', phone: '', category: 'NON-BOOKING' }
+];
+
+const sorted = sortByBookingCheckPriority(customers, bookingCheckResults).map((c) => c.name);
+check('CONFIRMED comes first', sorted[0], 'Dee (CONFIRMED)');
+check('WARM comes second', sorted[1], 'Bob (WARM)');
+check('No-result and NON-BOOKING keep their original relative order (Alice before Carol before Eve)', sorted.slice(2).join(', '), 'Alice (no result), Carol (no result), Eve (NON-BOOKING)');
+
+const untouched = sortByBookingCheckPriority(customers, []);
+check('With no Booking Check results at all, original order is preserved entirely', untouched.map((c) => c.name).join(', '), customers.map((c) => c.name).join(', '));
+
+check('Disabled by default (BOOKING_CHECK_PRIORITY_SORT_KEY unset)', isBookingCheckPrioritySortEnabled(), false);
+
+if (failures.length > 0) {
+console.error('SLA Extract sortByBookingCheckPriority self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract sortByBookingCheckPriority self-test passed (5/5)');
+}
+})();
+
 function setSectionCollapsed(sectionId, collapsed) {
 const set = loadCollapsedSections();
 if (collapsed) set.add(sectionId); else set.delete(sectionId);
@@ -4076,6 +4147,9 @@ const collapsed = isSectionCollapsed(sectionId);
 // Loaded once per section (not per card) - same pattern as
 // renderTierSection's own bookingCheckResults.
 const bookingCheckResults = loadBookingCheckImportState().results;
+const orderedCustomers = isBookingCheckPrioritySortEnabled()
+? sortByBookingCheckPriority(customers, bookingCheckResults)
+: customers;
 return `<div style="margin-bottom: 16px;">
 <div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 10px 4px;
 display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
@@ -4086,7 +4160,7 @@ display: flex; justify-content: space-between; align-items: center; border-botto
 <span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + sectionId)}</span>
 </div>
 <div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
-${customers.map(c => {
+${orderedCustomers.map(c => {
 const queuePosition = findAgentQueuePositionForLead({ email: c.email, phone: c.mobile });
 // c directly, not a remapped {email, phone: c.mobile} object - that
 // remapping predates findBookingCheckResultForCustomer's own mobile/
@@ -4143,6 +4217,9 @@ const collapsed = isSectionCollapsed(tierId);
 // UI is to see the result on this exact card, next to Assign/contact
 // details, instead of a second disconnected list.
 const bookingCheckResults = loadBookingCheckImportState().results;
+const orderedCustomers = isBookingCheckPrioritySortEnabled()
+? sortByBookingCheckPriority(customers, bookingCheckResults)
+: customers;
 return `<div style="margin-bottom: 16px;">
 <div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 10px 4px;
 display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
@@ -4153,7 +4230,7 @@ display: flex; justify-content: space-between; align-items: center; border-botto
 <span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + tierId)}</span>
 </div>
 <div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
-${customers.map(c => {
+${orderedCustomers.map(c => {
 const urgency = slaUrgencyInfo(c);
 const bookingCheck = findBookingCheckResultForCustomer(c, bookingCheckResults);
 const bookingCheckTitle = bookingCheck ? [bookingCheck.reason, bookingCheck.initialNotes].filter(Boolean).join('\n\n') : '';
@@ -4222,6 +4299,10 @@ ${showBookingCheck ? `<button onclick="window._toggleBookingCheckPopover();"
 style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
 title="Booking Check - copy leads out, classify results back in">${svgIcon('inbox', 14)}</button>` : ''}
+${showBookingCheck ? `<button id="_slaPrioritySortBtn" onclick="window._toggleBookingCheckPrioritySort();"
+style="background: ${isBookingCheckPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isBookingCheckPrioritySortEnabled() ? '#fbbf24' : '#94a3b8'}; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isBookingCheckPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isBookingCheckPrioritySortEnabled() ? '#fbbf24' : '#94a3b8'}';"
+title="${isBookingCheckPrioritySortEnabled() ? 'Booking Check priority sort: ON - click to turn off' : 'Booking Check priority sort: OFF - click to bring Confirmed/Warm leads to the top of each section'}">${svgIcon('bolt', 14)}</button>` : ''}
 <button onclick="window._toggleMorningChecks();"
 style="background: ${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='#94a3b8';"
@@ -4734,6 +4815,23 @@ window._slaResetBookmarklet = resetBookmarklet;
 // other state doesn't use, e.g. `top`) rather than only setting what
 // changes, since compact and full use different property sets to
 // position the box.
+// Full displayPanel/displayPendingPanel rebuild, not a DOM-only tweak
+// like _togglePanelSize above - this changes which cards appear where
+// within each section's bodyHtml, not just a style property, so the
+// section markup itself has to be regenerated. invalidateCache: false
+// throughout - nothing about the underlying table data changed, only
+// the display order, so there's no reason to force a fresh live-DOM
+// scrape (see displayPanel's own comment on that flag).
+window._toggleBookingCheckPrioritySort = function() {
+const next = !isBookingCheckPrioritySortEnabled();
+localStorage.setItem(BOOKING_CHECK_PRIORITY_SORT_KEY, next ? '1' : '0');
+if (currentPageType === PAGE_PENDING) {
+displayPendingPanel(currentPendingCustomers, 0, 0, false);
+} else if (currentPageType === PAGE_SLA) {
+displayPanel(currentCustomers, 0, 0, false);
+}
+};
+
 window._togglePanelSize = function() {
 const panel = document.getElementById(PANEL_BOX_ID);
 const btn = document.getElementById('_slaSizeBtn');
