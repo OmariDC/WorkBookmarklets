@@ -4636,10 +4636,10 @@ function setBadgeProgress(remaining) {
 if (!badge) return;
 if (remaining > 0) {
 badge.textContent = String(remaining);
-badge.style.fontSize = '18px';
+badge.style.fontSize = '13px';
 } else {
-badge.innerHTML = svgIcon('clipboard', 22);
-badge.style.fontSize = '22px';
+badge.innerHTML = svgIcon('clipboard', 14);
+badge.style.fontSize = '14px';
 }
 }
 
@@ -4717,12 +4717,12 @@ hidePageFlashOverlay();
 
 function attachBadgeHoverEffects() {
 badge.addEventListener('mouseenter', () => {
-badge.style.transform = 'scale(1.15)';
-badge.style.boxShadow = '0 6px 16px rgba(34, 54, 93, 0.55)';
+badge.style.transform = 'scale(1.12)';
+badge.style.boxShadow = '0 3px 8px rgba(34, 54, 93, 0.45)';
 });
 badge.addEventListener('mouseleave', () => {
 badge.style.transform = 'scale(1)';
-badge.style.boxShadow = '0 4px 12px rgba(34, 54, 93, 0.35)';
+badge.style.boxShadow = '0 2px 6px rgba(34, 54, 93, 0.3)';
 });
 }
 
@@ -4745,13 +4745,13 @@ badge.id = BADGE_ID;
 badge.onclick = handleBadgeClick;
 document.documentElement.appendChild(badge);
 Object.assign(badge.style, {
-position: 'fixed', right: '12px', top: '12px', width: '48px', height: '48px',
-background: BADGE_COLOR, border: `2px solid ${BADGE_BORDER_COLOR}`, borderRadius: '50%',
-boxShadow: '0 4px 12px rgba(34, 54, 93, 0.35)', zIndex: 99999, cursor: 'pointer',
-display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px',
+position: 'fixed', right: '12px', top: '12px', width: '32px', height: '32px',
+background: BADGE_COLOR, border: `1px solid ${BADGE_BORDER_COLOR}`, borderRadius: '50%',
+boxShadow: '0 2px 6px rgba(34, 54, 93, 0.3)', zIndex: 99999, cursor: 'pointer',
+display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px',
 fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
-badge.innerHTML = svgIcon('clipboard', 22);
+badge.innerHTML = svgIcon('clipboard', 14);
 badge.title = 'Extract leads (SLA queue or Pending Customers)';
 attachBadgeHoverEffects();
 return;
@@ -4768,13 +4768,13 @@ display: 'flex', alignItems: 'center', height: '50px', padding: '0 8px'
 badge = document.createElement('div');
 badge.id = BADGE_ID;
 Object.assign(badge.style, {
-boxSizing: 'border-box', width: '48px', height: '48px',
-background: BADGE_COLOR, border: `2px solid ${BADGE_BORDER_COLOR}`, borderRadius: '50%',
-boxShadow: '0 4px 12px rgba(34, 54, 93, 0.35)', cursor: 'pointer',
-display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px',
+boxSizing: 'border-box', width: '32px', height: '32px',
+background: BADGE_COLOR, border: `1px solid ${BADGE_BORDER_COLOR}`, borderRadius: '50%',
+boxShadow: '0 2px 6px rgba(34, 54, 93, 0.3)', cursor: 'pointer',
+display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px',
 fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
-badge.innerHTML = svgIcon('clipboard', 22);
+badge.innerHTML = svgIcon('clipboard', 14);
 badge.title = 'Extract leads (SLA queue or Pending Customers)';
 badge.onclick = handleBadgeClick;
 attachBadgeHoverEffects();
