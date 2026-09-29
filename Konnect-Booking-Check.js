@@ -2642,6 +2642,44 @@ session.rowInGroupIndex = 0;
 if (session.groupIndex >= session.groups.length) session.done = true;
 }
 
+// "Retry exceptions" - clears every EXCEPTION-status result except
+// CLASSIFICATION_REVIEW_REQUIRED (not a failure at all - that's the
+// Needs Review flow's own resolution path, not something to blindly
+// reprocess) and rows whose own INPUT was INVALID_INPUT (excluded from
+// processing groups entirely by buildProcessingGroups - clearing their
+// result would leave them with none at all forever, since nothing in
+// group-based processing ever revisits them). Everything else genuinely
+// failed a live DOM step (timeout, page not finished loading, no match
+// found) and, per instruction ("the page doesn't load the details
+// straight away sometimes... no way of easily having the exceptions
+// retried"), deserves a fresh attempt rather than staying stuck. Reuses
+// newSession's own group-resume-skip logic (rewind groupIndex to the
+// earliest group with any unresolved row) rather than a separate
+// mechanism, since "some rows in an already-processed group need
+// reprocessing" is exactly what that logic already handles correctly.
+function retryExceptions(session) {
+const results = { ...session.results };
+session.rows.forEach((row) => {
+if (row.status === 'INVALID_INPUT') return;
+const result = results[row.inputIndex];
+if (result && result.status === 'EXCEPTION' && result.exception !== 'CLASSIFICATION_REVIEW_REQUIRED') {
+delete results[row.inputIndex];
+}
+});
+
+let groupIndex = 0;
+while (groupIndex < session.groups.length && session.groups[groupIndex].rows.every((r) => results[r.inputIndex])) {
+groupIndex++;
+}
+
+return {
+...session,
+results, groupIndex, rowInGroupIndex: 0,
+cancelled: false,
+done: groupIndex >= session.groups.length
+};
+}
+
 // Advances exactly one input row (per instruction: "Process next must
 // process exactly one row") - opening/searching for a new customer
 // when needed counts as part of reaching that one row, not a separate
@@ -2898,6 +2936,7 @@ window.KonnectBookingCheck.buildBulkAnalysisClipboardPayload = buildBulkAnalysis
 
 window.KonnectBookingCheck.buildProcessingGroups = buildProcessingGroups;
 window.KonnectBookingCheck.newSession = newSession;
+window.KonnectBookingCheck.retryExceptions = retryExceptions;
 window.KonnectBookingCheck.rowIdentityKey = rowIdentityKey;
 window.KonnectBookingCheck.isNeedsReview = isNeedsReview;
 window.KonnectBookingCheck.applyManualReviewDecision = applyManualReviewDecision;
@@ -2982,6 +3021,54 @@ if (failures.length > 0) {
 console.error('KonnectBookingCheck orchestration self-test FAILED:\n' + failures.join('\n'));
 } else {
 console.info('KonnectBookingCheck orchestration self-test passed (10/10)');
+}
+})();
+
+(function retryExceptionsSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+
+const batch = [
+'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
+'Alice\t\talice@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 18:05',
+'Bob\t07000000000\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 19:05',
+'Carol\t\tcarol@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 20:05',
+'Dee\t\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 21:05'
+].join('\n');
+const parsed = parseBatchInput(batch);
+const groups = buildProcessingGroups(parsed.rows);
+check('Dee (no phone/email) is excluded from processing groups', groups.length, 3);
+
+const fakeSession = {
+rows: parsed.rows,
+groups,
+groupIndex: 3, done: true, cancelled: false,
+results: {
+0: { name: 'Alice', status: 'CLASSIFIED', category: 'DATE ONLY' },
+1: { name: 'Bob', status: 'EXCEPTION', exception: 'TIMELINE_TIMEOUT' },
+2: { name: 'Carol', status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED' },
+3: { name: 'Dee', status: 'EXCEPTION', exception: 'NO_SEARCH_IDENTIFIER' }
+}
+};
+
+const retried = retryExceptions(fakeSession);
+check('A genuine processing failure (Bob) is cleared for retry', retried.results[1], undefined);
+check('An already-classified row (Alice) is left untouched', retried.results[0], fakeSession.results[0]);
+check('CLASSIFICATION_REVIEW_REQUIRED (Carol) is NOT retried - not a failure, has its own resolution flow', retried.results[2], fakeSession.results[2]);
+check('INVALID_INPUT (Dee) is left untouched - excluded from groups entirely, retrying would strand it with no result', retried.results[3], fakeSession.results[3]);
+check('groupIndex rewinds to the earliest group with a cleared result (Bob\'s, index 1)', retried.groupIndex, 1);
+check('rowInGroupIndex resets', retried.rowInGroupIndex, 0);
+check('done recalculated as false - there is work left', retried.done, false);
+check('cancelled reset to false', retried.cancelled, false);
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck retryExceptions self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck retryExceptions self-test passed (8/8)');
 }
 })();
 
@@ -3205,6 +3292,7 @@ kbcPageFlashOverlayPrevOverflow = null;
 
 const ICONS = {
 clipboard: '<rect x="5" y="3" width="14" height="18" rx="2"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="12" y2="16"/>',
+refresh: '<path d="M21 12a9 9 0 1 1-3.2-6.9"/><path d="M21 3v6h-6"/>',
 copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
 warning: '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>',
 minimize: '<line x1="5" y1="12" x2="19" y2="12"/>',
@@ -3546,6 +3634,7 @@ Auto-start on paste
 <button class="action primary" id="btnPauseResume">${svgIcon('pause', 11)}Pause</button>
 <button class="action" id="btnProcessNext">Process next</button>
 <button class="action" id="btnCancel">${svgIcon('x', 11)}Cancel</button>
+<button class="action" id="btnRetryExceptions">${svgIcon('refresh', 11)}Retry exceptions</button>
 <button class="action" id="btnClear">Clear session</button>
 <button class="action" id="btnCopyRawForExtract">${svgIcon('copy', 11)}Copy raw for Extract</button>
 </div>
@@ -4071,6 +4160,32 @@ hidePageFlashOverlay();
 
 root.getElementById('btnCancel').addEventListener('click', () => {
 if (session) { session.cancelled = true; uiHandle.setState('Cancelling...'); }
+});
+
+// Guarded on isRunning (not just session presence) - mutating
+// session.results/groupIndex out from under an in-flight runLoop's own
+// closure over the previous session would leave things inconsistent;
+// Cancel/Pause first, then retry, same as Clear session already
+// expects.
+root.getElementById('btnRetryExceptions').addEventListener('click', (event) => {
+if (!session) return;
+if (isRunning) {
+showButtonFeedback(event.currentTarget, 'Pause/stop first', true);
+return;
+}
+const retryCount = session.rows.filter((row) => {
+if (row.status === 'INVALID_INPUT') return false;
+const result = session.results[row.inputIndex];
+return result && result.status === 'EXCEPTION' && result.exception !== 'CLASSIFICATION_REVIEW_REQUIRED';
+}).length;
+if (retryCount === 0) {
+showButtonFeedback(event.currentTarget, 'No exceptions to retry', true);
+return;
+}
+session = retryExceptions(session);
+saveSession(session);
+render();
+showButtonFeedback(event.currentTarget, `✓ Queued ${retryCount}`, false);
 });
 
 root.getElementById('btnClear').addEventListener('click', () => {
