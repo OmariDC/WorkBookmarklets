@@ -3317,7 +3317,11 @@ if (nav) {
 const ul = document.createElement('ul');
 ul.id = KBC_NAV_ITEM_ID;
 ul.className = 'nav navbar-right top-nav';
-ul.style.cssText = 'padding-right:3px;padding-left:3px';
+// Explicit float, not just the class - a dynamically-injected element
+// shouldn't depend on cascade/load-order luck for something this
+// structural. padding-right/left matches the confirmed 3px gap the
+// existing sibling <ul>s use between each other.
+ul.style.cssText = 'float:right;padding-right:3px;padding-left:3px';
 const li = document.createElement('li');
 li.className = 'dropdown hidden-sm';
 const a = document.createElement('a');
@@ -3331,7 +3335,14 @@ a.appendChild(icon);
 a.appendChild(label);
 li.appendChild(a);
 ul.appendChild(li);
-nav.appendChild(ul);
+// Inserted before the first existing navbar-right <ul>, not appended
+// after the last one - Bootstrap's .navbar-right:last-child rule
+// gives the true last item a -15px margin to sit flush with the edge;
+// appending ours would silently steal that :last-child match from
+// whichever item actually was last, widening the whole row just
+// enough to wrap onto its own line underneath (confirmed live).
+const firstRightUl = nav.querySelector('ul.navbar-right');
+if (firstRightUl) nav.insertBefore(ul, firstRightUl); else nav.appendChild(ul);
 return {
 clickTarget: a,
 show() { ul.style.display = ''; },
