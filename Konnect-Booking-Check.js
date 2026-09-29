@@ -3335,12 +3335,20 @@ a.appendChild(icon);
 a.appendChild(label);
 li.appendChild(a);
 ul.appendChild(li);
-// float:right siblings stack right-to-left in DOM order - the first
-// one in source order renders flush against the right edge, and each
-// later one takes the next slot to ITS left. Appending here (last in
-// DOM order) is what puts this on the left of Live/Feedback/etc, per
-// instruction, rather than out past all of them on the right.
-nav.appendChild(ul);
+// Confirmed live via a real DOM scan: nav's own children are the
+// existing navbar-right <ul>s FIRST, then a full-width, 50px-tall
+// <div class="collapse navbar-collapse"> AFTER them, then nothing else
+// - appendChild put this new <ul> after that div. A float can't rise
+// above a preceding block-level box, only avoid content that comes
+// after it, so appending there put this on its own row starting below
+// that div's full height, instead of alongside the other icons at
+// all. Inserting before that div instead keeps this in the same
+// contiguous floated run as Live/Feedback/etc - and since float:right
+// siblings stack right-to-left in DOM order (first in source = flush
+// right, each later one takes the next slot to its left), being last
+// among THAT run still puts it on their left, per instruction.
+const collapseDiv = nav.querySelector('.navbar-collapse');
+if (collapseDiv) nav.insertBefore(ul, collapseDiv); else nav.appendChild(ul);
 return {
 clickTarget: a,
 show() { ul.style.display = ''; },
@@ -3423,8 +3431,13 @@ document.documentElement.appendChild(host);
 const root = host.attachShadow({ mode: 'open' });
 root.innerHTML = `
 <style>
+/* Header background (#222222) and the primary-action/progress accent
+(#C2CB42) are Konnect Live's own confirmed navbar/branding colors
+(live DOM scan), not a generic scheme - only the chrome/branding
+surfaces use them; category/warning/error colors elsewhere stay as
+their own semantic colors regardless of page theme. */
 .panel { width: 460px; max-height: 90vh; display: flex; flex-direction: column; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.35); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #1e293b; overflow: hidden; }
-.header { flex-shrink: 0; background: #1e293b; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-radius: 10px 10px 0 0; cursor: move; user-select: none; }
+.header { flex-shrink: 0; background: #222222; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-radius: 10px 10px 0 0; cursor: move; user-select: none; }
 .header-title { display: flex; align-items: center; gap: 6px; font-weight: 600; overflow: hidden; }
 .header-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .header button { background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 2px; display: flex; align-items: center; }
@@ -3436,17 +3449,17 @@ textarea { width: 100%; height: 70px; box-sizing: border-box; font-family: monos
 .section-label:first-child { margin-top: 0; }
 .buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
 button.action { padding: 5px 8px; border: 1px solid #cbd5e1; background: white; border-radius: 6px; cursor: pointer; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
-button.action:hover { background: #eef2ff; }
+button.action:hover { background: #f6f7e4; }
 button.action:disabled { opacity: 0.45; cursor: default; }
 button.action:disabled:hover { background: white; }
 button.action.temp { border-style: dashed; border-color: #f59e0b; color: #92400e; }
 button.action.temp:hover { background: #fffbeb; }
-button.primary { background: #1e293b; color: white; border-color: #1e293b; }
-button.primary:hover { background: #334155; }
+button.primary { background: #C2CB42; color: #1e293b; border-color: #C2CB42; }
+button.primary:hover { background: #aab238; }
 .status { background: white; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
 .status div { margin-bottom: 2px; }
 .progress-track { height: 5px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
-.progress-fill { height: 100%; background: #1e293b; transition: width 0.2s ease; border-radius: 3px; }
+.progress-fill { height: 100%; background: #C2CB42; transition: width 0.2s ease; border-radius: 3px; }
 .hidden { display: none; }
 .footer { flex-shrink: 0; border-top: 1px solid #cbd5e1; padding: 8px 12px; background: white; display: flex; justify-content: flex-end; border-radius: 0 0 10px 10px; }
 .footer button { padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
