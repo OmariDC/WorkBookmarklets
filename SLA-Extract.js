@@ -3249,7 +3249,16 @@ return { tsv: [header, ...lines].join('\n'), count: rows.length };
 // justify a second copy of the popover chrome itself the way the
 // Assign section's own SLA/Pending split is (that one's internal
 // filtering logic is far more involved on both sides).
-function renderBookingCheckExportPopover() {
+// Combined into one popover, one icon, one toggle (previously two
+// separate icons/popovers, Copy and Classify) - per instruction, this
+// is one round-trip workflow with Konnect Booking Check (send leads
+// out, get results back), not two unrelated features, so it doesn't
+// need two separate entry points in the panel header. The underlying
+// settings/state stay genuinely separate (export filter settings vs.
+// import paste state - different data, different purposes), only the
+// two are now presented together in one place.
+function renderBookingCheckPopover() {
+const exportSectionHtml = (() => {
 if (currentPageType === PAGE_PENDING) {
 const settings = loadPendingBookingCheckExportSettings();
 const selectedTypes = new Set(settings.callbackTypes);
@@ -3260,30 +3269,22 @@ const typeCheckboxes = PENDING_BOOKING_CHECK_CALLBACK_TYPES.map(t => `
 ${escapeHtml(t)}
 </label>`).join('');
 return `
-<div id="bookingCheckExportPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 220px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
-<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">COPY FOR BOOKING CHECK</div>
 <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${typeCheckboxes}</div>
 <div style="font-size: 10.5px; color: #94a3b8; margin-bottom: 10px;">New (never-actioned) leads are excluded - check the SLA queue for those.</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}</span>
 <button onclick="window._copyBookingCheckExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
-</div>
 </div>`;
 }
-
 const settings = loadBookingCheckExportSettings();
 const selectedTiers = new Set(settings.tiers);
 const { count } = buildBookingCheckTsv(settings.tiers, settings.customerFirstOnly);
-
 const tierCheckboxes = [1, 2, 3, 4].map(t => `
 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;">
 <input type="checkbox" class="booking-export-tier" value="${t}" ${selectedTiers.has(t) ? 'checked' : ''} onchange="window._updateBookingCheckExportPreview()">
 Tier ${t}
 </label>`).join('');
-
 return `
-<div id="bookingCheckExportPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 200px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
-<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">COPY FOR BOOKING CHECK</div>
 <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${tierCheckboxes}</div>
 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b; margin-bottom: 10px;">
 <input type="checkbox" id="bookingExportCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateBookingCheckExportPreview()">
@@ -3292,15 +3293,38 @@ Customer First only
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}</span>
 <button onclick="window._copyBookingCheckExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
+</div>`;
+})();
+
+const importState = loadBookingCheckImportState();
+// currentPendingCustomers, not currentCustomers, while on the Pending
+// page - this popover is now shown on both pages, and the matched-count
+// summary was always checking against the SLA list regardless.
+const customersForMatching = currentPageType === PAGE_PENDING ? currentPendingCustomers : currentCustomers;
+const matchedCount = importState.results.filter((r) => customersForMatching.some((c) => findBookingCheckResultForCustomer(c, [r]))).length;
+const importSummary = importState.results.length === 0
+? `<div style="font-size: 12px; color: #94a3b8; padding: 8px 0 0;">Paste results from Konnect Booking Check's "Copy raw for Extract" button, then press Classify - they'll show up as a badge on the matching lead card below.</div>`
+: `<div style="font-size: 12px; color: #64748b; padding: 8px 0 0;">${importState.results.length} classified, ${matchedCount} matched to a lead in the current list below.${importState.results.length !== matchedCount ? ' The rest aren\'t in the current SLA list (already assigned, expired, or a different queue).' : ''}</div>`;
+
+return `
+<div id="bookingCheckPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 280px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
+<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">COPY LEADS TO BOOKING CHECK</div>
+${exportSectionHtml}
+<hr style="border: none; border-top: 1px solid #e2e8f0; margin: 14px 0;">
+<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">CLASSIFY RESULTS BACK IN</div>
+<button onclick="window._pasteAndClassifyBookingCheck(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 8px;">${svgIcon('copy', 13)}Paste from clipboard & Classify</button>
+<div style="font-size: 10px; color: #94a3b8; text-align: center; margin-bottom: 8px;">or paste manually below</div>
+<textarea id="bookingCheckImportBox" placeholder="Paste TSV from Konnect Booking Check" oninput="window._updateBookingCheckImportInput(this.value)" style="width: 100%; height: 60px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px;">${escapeHtml(importState.rawInput)}</textarea>
+<div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+<button onclick="window._classifyBookingCheckImport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Classify</button>
 </div>
+${importSummary}
 </div>`;
 }
 
-window._toggleBookingCheckExportPopover = function() {
-const popover = document.getElementById('bookingCheckExportPopover');
+window._toggleBookingCheckPopover = function() {
+const popover = document.getElementById('bookingCheckPopover');
 if (!popover) return;
-const importPopover = document.getElementById('bookingCheckImportPopover');
-if (importPopover) importPopover.style.display = 'none';
 popover.style.display = popover.style.display === 'none' ? 'block' : 'none';
 };
 
@@ -3543,10 +3567,16 @@ return digits;
 // never carries Registration or this panel's own `key`; Created
 // disambiguates the rare case of multiple rows sharing one contact
 // (the same customer with two separate leads).
+// c.phone falls back to c.mobile/c.landline - SLA rows have a single
+// unified phone field, but Pending Customers rows (collectPendingCustomers)
+// have separate mobile/landline fields instead and no .phone at all, so
+// without this fallback every phone-only Pending Customers lead (no
+// email) would never match a Booking Check result here, even though
+// this same popover is now shown on both pages.
 function findBookingCheckResultForCustomer(c, results) {
 if (!results || results.length === 0) return null;
 const emailKey = normalizeEmailForBookingCheckMatch(c.email);
-const phoneKey = normalizePhoneForBookingCheckMatch(c.phone);
+const phoneKey = normalizePhoneForBookingCheckMatch(c.phone || c.mobile || c.landline);
 const candidates = results.filter((r) => {
 const rEmailKey = normalizeEmailForBookingCheckMatch(r.email);
 if (emailKey && rEmailKey) return emailKey === rEmailKey;
@@ -3562,37 +3592,11 @@ return candidates.find((r) => r.created === c.createdText) || candidates[0];
 // Konnect Booking Check's own UI) is to see them on the real lead
 // cards below - alongside Assign, contact details, everything already
 // built for that - not a second flat list duplicating what Booking
-// Check already shows. This popover is just the input mechanism
-// (paste + Classify); the actual results render as a badge on each
+// Check already shows. The actual results render as a badge on each
 // matching card via findBookingCheckResultForCustomer, and the panel
 // re-renders immediately after classifying so they show up right away.
-function renderBookingCheckImportPopover() {
-const state = loadBookingCheckImportState();
-const matchedCount = state.results.filter((r) => currentCustomers.some((c) => findBookingCheckResultForCustomer(c, [r]))).length;
-const summary = state.results.length === 0
-? `<div style="font-size: 12px; color: #94a3b8; padding: 8px 0 0;">Paste results from Konnect Booking Check's "Copy raw for Extract" button, then press Classify - they'll show up as a badge on the matching lead card below.</div>`
-: `<div style="font-size: 12px; color: #64748b; padding: 8px 0 0;">${state.results.length} classified, ${matchedCount} matched to a lead in the current list below.${state.results.length !== matchedCount ? ' The rest aren\'t in the current SLA list (already assigned, expired, or a different queue).' : ''}</div>`;
-
-return `
-<div id="bookingCheckImportPopover" style="display: none; position: absolute; top: 46px; right: 46px; z-index: 5; width: 320px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
-<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">CLASSIFY BOOKING CHECK RESULTS</div>
-<button onclick="window._pasteAndClassifyBookingCheck(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 8px;">${svgIcon('copy', 13)}Paste from clipboard & Classify</button>
-<div style="font-size: 10px; color: #94a3b8; text-align: center; margin-bottom: 8px;">or paste manually below</div>
-<textarea id="bookingCheckImportBox" placeholder="Paste TSV from Konnect Booking Check" oninput="window._updateBookingCheckImportInput(this.value)" style="width: 100%; height: 60px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px;">${escapeHtml(state.rawInput)}</textarea>
-<div style="display: flex; justify-content: flex-end; margin-top: 8px;">
-<button onclick="window._classifyBookingCheckImport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Classify</button>
-</div>
-${summary}
-</div>`;
-}
-
-window._toggleBookingCheckImportPopover = function() {
-const popover = document.getElementById('bookingCheckImportPopover');
-if (!popover) return;
-const exportPopover = document.getElementById('bookingCheckExportPopover');
-if (exportPopover) exportPopover.style.display = 'none';
-popover.style.display = popover.style.display === 'none' ? 'block' : 'none';
-};
+// (Rendering itself now lives in renderBookingCheckPopover, combined
+// with the export/Copy section into one popover.)
 
 window._updateBookingCheckImportInput = function(value) {
 const state = loadBookingCheckImportState();
@@ -3626,8 +3630,13 @@ saveBookingCheckImportState({ rawInput, results });
 // this popover's own summary text. buttonEl itself is about to be
 // replaced along with the rest of the panel, so nothing below
 // references it again.
-displayPanel(currentCustomers);
-const reopened = document.getElementById('bookingCheckImportPopover');
+//
+// displayPendingPanel, not always displayPanel - this popover is shown
+// on both the SLA and Pending pages now; calling displayPanel while on
+// Pending would re-render the wrong page's panel entirely.
+if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers);
+else displayPanel(currentCustomers);
+const reopened = document.getElementById('bookingCheckPopover');
 if (reopened) reopened.style.display = 'block';
 return true;
 }
@@ -4079,7 +4088,11 @@ display: flex; justify-content: space-between; align-items: center; border-botto
 <div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
 ${customers.map(c => {
 const queuePosition = findAgentQueuePositionForLead({ email: c.email, phone: c.mobile });
-const bookingCheck = findBookingCheckResultForCustomer({ email: c.email, phone: c.mobile }, bookingCheckResults);
+// c directly, not a remapped {email, phone: c.mobile} object - that
+// remapping predates findBookingCheckResultForCustomer's own mobile/
+// landline fallback and was incomplete anyway (dropped landline
+// entirely). The function now handles both fields itself.
+const bookingCheck = findBookingCheckResultForCustomer(c, bookingCheckResults);
 const bookingCheckTitle = bookingCheck ? [bookingCheck.reason, bookingCheck.initialNotes].filter(Boolean).join('\n\n') : '';
 return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px; border-bottom: 1px solid #e2e8f0;">
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
@@ -4173,7 +4186,7 @@ ${renderCopyableField(c.email)}
 </div>`;
 }
 
-function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml, hideSearch, onTitleClick, showBookingCheckExport, showBookingCheckImport }) {
+function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml, hideSearch, onTitleClick, showBookingCheck }) {
 const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 const isFull = panelSize === 'full';
 const positionStyle = isFull
@@ -4205,14 +4218,10 @@ ${newCount > 0 ? `<span style="color: #d97706; font-size: 13px; font-weight: 600
 ${removedCount > 0 ? `<span style="color: #94a3b8; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
 </div>
 <div style="display: flex; gap: 2px;">
-${showBookingCheckExport ? `<button onclick="window._toggleBookingCheckExportPopover();"
+${showBookingCheck ? `<button onclick="window._toggleBookingCheckPopover();"
 style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
-title="Copy for Booking Check">${svgIcon('copy', 14)}</button>` : ''}
-${showBookingCheckImport ? `<button onclick="window._toggleBookingCheckImportPopover();"
-style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
-title="Classify Booking Check results">${svgIcon('inbox', 14)}</button>` : ''}
+title="Booking Check - copy leads out, classify results back in">${svgIcon('inbox', 14)}</button>` : ''}
 <button onclick="window._toggleMorningChecks();"
 style="background: ${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='#94a3b8';"
@@ -4232,8 +4241,7 @@ title="Minimize">${svgIcon(isMinimized ? 'restore' : 'minimize', 14)}</button>
 </div>
 </div>
 
-${showBookingCheckExport ? renderBookingCheckExportPopover() : ''}
-${showBookingCheckImport ? renderBookingCheckImportPopover() : ''}
+${showBookingCheck ? renderBookingCheckPopover() : ''}
 ${summaryHtml || ''}
 ${assignSectionHtml}
 
@@ -4332,8 +4340,7 @@ summaryHtml: renderSlaDueSummary(),
 assignSectionHtml: renderAssignSection(),
 bodyHtml,
 onTitleClick: 'window._refreshLeadsAndPanel()',
-showBookingCheckExport: true,
-showBookingCheckImport: true
+showBookingCheck: true
 }));
 }
 
@@ -4366,8 +4373,7 @@ summaryHtml: renderPendingDueSummary(),
 assignSectionHtml: renderPendingAssignSection(),
 bodyHtml,
 onTitleClick: 'window._refreshLeadsAndPanel()',
-showBookingCheckExport: true,
-showBookingCheckImport: true
+showBookingCheck: true
 }));
 }
 
