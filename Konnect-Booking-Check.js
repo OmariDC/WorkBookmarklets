@@ -3474,6 +3474,8 @@ button.primary:hover { background: #aab238; }
 .status div { margin-bottom: 2px; }
 .progress-track { height: 5px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
 .progress-fill { height: 100%; background: #C2CB42; transition: width 0.2s ease; border-radius: 3px; }
+.progress-fill.active { background-image: linear-gradient(135deg, rgba(255,255,255,0.4) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.4) 75%, transparent 75%, transparent); background-size: 14px 14px; animation: kbcProgressStripes 0.6s linear infinite; }
+@keyframes kbcProgressStripes { from { background-position: 0 0; } to { background-position: 14px 0; } }
 .hidden { display: none; }
 .footer { flex-shrink: 0; border-top: 1px solid #cbd5e1; padding: 8px 12px; background: white; display: flex; justify-content: flex-end; border-radius: 0 0 10px 10px; }
 .footer button { padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
@@ -3545,6 +3547,7 @@ Auto-start on paste
 <button class="action" id="btnProcessNext">Process next</button>
 <button class="action" id="btnCancel">${svgIcon('x', 11)}Cancel</button>
 <button class="action" id="btnClear">Clear session</button>
+<button class="action" id="btnCopyRawForExtract">${svgIcon('copy', 11)}Copy raw for Extract</button>
 </div>
 <div class="status">
 <div>Customer: <span id="curCustomer">-</span></div>
@@ -3564,7 +3567,6 @@ Auto-start on paste
 <div class="exportBar">
 <div class="section-label">Export</div>
 <div class="buttons">
-<button class="action" id="btnCopyRawForExtract">${svgIcon('copy', 11)}Copy raw for Extract</button>
 <button class="action" id="btnCopyReviewDecisions">${svgIcon('copy', 11)}Copy review decisions</button>
 <button class="action temp" id="btnCopyBulkAnalysis" title="Temporary: copies all processed leads plus an explanatory prompt, for pasting into a separate Claude chat to look for recurring patterns.">${svgIcon('copy', 11)}Copy for pattern analysis (temp)</button>
 </div>
@@ -3801,6 +3803,10 @@ const ordered = orderedAll.filter((r) => !isNeedsReview(r));
 renderNeedsReviewSection(needsReview);
 const percent = session.rows.length > 0 ? Math.round((100 * orderedAll.length) / session.rows.length) : 0;
 progressFillEl.style.width = `${percent}%`;
+// Animated only while actual work is happening - at rest (idle,
+// paused, or done) a moving stripe would read as "still working" when
+// it isn't.
+progressFillEl.classList.toggle('active', isRunning && !session.done);
 updateBadgeProgress(badge, orderedAll, session);
 
 if (ordered.length === 0) {
