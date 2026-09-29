@@ -3021,11 +3021,17 @@ ${escapeHtml(a.name)}${queueBadge}
 // leads a run actually touches, applied via applyAssignLimit() right
 // before roundRobinAssign() in every entry point. Blank means no cap.
 function renderAssignLimitControl(settings) {
-return `<label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;">
+return `<div style="display: flex; align-items: center; gap: 10px;">
+<label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;">
 LIMIT
 <input type="number" id="assignLimitInput" min="1" placeholder="all" value="${settings.assignLimit || ''}" oninput="window._updateAssignPreview()"
 style="width: 48px; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; font-weight: 400; color: #1e293b;">
-</label>`;
+</label>
+<label for="assignLimitPerAgent" title="When on, LIMIT is the number of leads EACH selected agent gets, not the total across all of them" style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #64748b; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap; cursor: pointer;">
+<input type="checkbox" id="assignLimitPerAgent" ${settings.assignLimitPerAgent ? 'checked' : ''} onchange="window._updateAssignPreview()">
+per agent
+</label>
+</div>`;
 }
 
 // `accent` can be a boolean (true -> the standard red urgency accent, for
@@ -3627,7 +3633,12 @@ setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 1200);
 return false;
 }
 const results = classifyBookingCheckImportRows(parsed.rows);
-saveBookingCheckImportState({ rawInput, results });
+// rawInput cleared, not saved back - once a batch has been classified,
+// its results already live in `results` and show up on the real lead
+// cards; leaving the just-used text sitting in the box just reads as
+// stale/already-handled the next time this popover is opened, per
+// instruction that it should go blank automatically.
+saveBookingCheckImportState({ rawInput: '', results });
 // Full panel re-render, not just this popover - the whole point is
 // getting results onto the real lead cards (findBookingCheckResultFor
 // Customer, rendered per-card in renderTierSection), not just updating
@@ -3794,6 +3805,7 @@ const windowMinutes = document.getElementById('assignWindowMinutes')?.value ?? n
 const cutoffTime = document.getElementById('assignCutoffTime')?.value ?? null;
 const advancedOpen = document.getElementById('advancedCallbackTypes')?.style.display === 'flex';
 const assignLimit = document.getElementById('assignLimitInput')?.value || null;
+const assignLimitPerAgent = document.getElementById('assignLimitPerAgent')?.checked || false;
 
 // Primary callback types default ON (opt-out, mirrors tiers); Advanced
 // ones default OFF (opt-in) - so unlike everything else here, "excluded"
@@ -3808,7 +3820,7 @@ const includedAdvancedCallbackTypes = allCallbackCheckboxes
 
 saveAssignSettings({
 excludedTiers, excludedCallbackTypes, includedAdvancedCallbackTypes, excludedAgentIds,
-customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen, assignLimit
+customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen, assignLimit, assignLimitPerAgent
 });
 }
 
@@ -3818,11 +3830,20 @@ customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen, assignLim
 // and drops the rest for this run, rather than an arbitrary subset. Used
 // by every run-building entry point (manual button, Quick Assign, tile
 // clicks) so "just do 10 of these" works no matter which one is used.
-function applyAssignLimit(prioritized) {
-const raw = loadAssignSettings().assignLimit;
+// agents is required, not optional - every call site already knows its
+// agent list by this point (all four guard "select at least one agent"
+// beforehand), and it's what makes the "per agent" mode possible: with
+// it checked, LIMIT means "this many EACH", so the actual cap is
+// LIMIT * agents.length rather than LIMIT itself - per instruction,
+// so assigning a fixed count per agent doesn't require doing that
+// multiplication by hand first.
+function applyAssignLimit(prioritized, agents) {
+const settings = loadAssignSettings();
+const raw = settings.assignLimit;
 const limit = raw ? Number(raw) : null;
 if (!limit || limit <= 0) return prioritized;
-return prioritized.slice(0, limit);
+const effectiveLimit = settings.assignLimitPerAgent ? limit * agents.length : limit;
+return prioritized.slice(0, effectiveLimit);
 }
 
 // Shared by renderAssignSection/renderPendingAssignSection - the two
@@ -5007,7 +5028,7 @@ emailOnly: false,
 missedOnly: !!missedOnly
 });
 const prioritized = prioritizeLeads(eligible);
-const limited = applyAssignLimit(prioritized);
+const limited = applyAssignLimit(prioritized, agents);
 const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locateAssignCell, PAGE_SLA);
 };
@@ -5029,7 +5050,7 @@ const cutoffDate = new Date(defaultHourCutoff().getTime() + hoursAhead * 60 * 60
 const leads = collectPendingCustomers();
 const eligible = filterPendingLeads(leads, { callbackTypes: new Set(CALLBACK_TYPE_ORDER), cutoffDate });
 const prioritized = prioritizePendingLeads(eligible);
-const limited = applyAssignLimit(prioritized);
+const limited = applyAssignLimit(prioritized, agents);
 const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locatePendingAssignCell, PAGE_PENDING);
 };
@@ -5196,7 +5217,7 @@ log.textContent = 'No unassigned leads match the selected tiers/filters/timefram
 return;
 }
 
-const limited = applyAssignLimit(prioritized);
+const limited = applyAssignLimit(prioritized, agents);
 const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locateAssignCell, PAGE_SLA);
 };
@@ -5238,7 +5259,7 @@ log.textContent = 'No unassigned leads match the selected callback types/timefra
 return;
 }
 
-const limited = applyAssignLimit(prioritized);
+const limited = applyAssignLimit(prioritized, agents);
 const plan = roundRobinAssign(limited, agents);
 await executeAssignmentRun(plan, locatePendingAssignCell, PAGE_PENDING);
 };
@@ -5378,7 +5399,8 @@ const agentCount = document.querySelectorAll('.assign-agent-checkbox:checked').l
 const rawCount = count;
 const limitRaw = document.getElementById('assignLimitInput')?.value;
 const limit = limitRaw ? Number(limitRaw) : null;
-if (limit && limit > 0) count = Math.min(count, limit);
+const limitPerAgent = document.getElementById('assignLimitPerAgent')?.checked || false;
+if (limit && limit > 0) count = Math.min(count, limitPerAgent ? limit * agentCount : limit);
 const cappedSuffix = count < rawCount ? ` (capped from ${rawCount})` : '';
 
 if (agentCount === 0) {
