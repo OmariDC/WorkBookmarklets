@@ -1186,6 +1186,16 @@ const ref = referenceDate || new Date();
 return { year: ref.getFullYear(), month, day: Number(withoutYear[1]), hour: Number(withoutYear[3]), minute: Number(withoutYear[4]) };
 }
 
+// "Created Date" as exported by Konnect's own reporting tool (not the
+// Manager/Live UI's own displayed format) - "YYYY-MM-DD HH:MM:SS" or
+// "YYYY-MM-DDTHH:MM" (seconds ignored, matching only ever happens at
+// minute precision anyway - see datetimesMatchAtMinute). Confirmed
+// live from a real exported row: "2026-09-01 15:20:35".
+const isoLike = cleaned.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::\d{2})?$/);
+if (isoLike) {
+return { year: Number(isoLike[1]), month: Number(isoLike[2]) - 1, day: Number(isoLike[3]), hour: Number(isoLike[4]), minute: Number(isoLike[5]) };
+}
+
 return null;
 }
 
@@ -1839,6 +1849,10 @@ check('parseSlaCreated', parseSlaCreated('Sat, 26 Sep 2026 17:48'), { year: 2026
 // reaching the call-entry match.
 check('parseSlaCreated without year (Last Actioned format)', parseSlaCreated('26 Sep 14:18', now2026), { year: 2026, month: 8, day: 26, hour: 14, minute: 18 });
 check('parseSlaCreated with year still wins even when a referenceDate is also given', parseSlaCreated('Sat, 26 Sep 2020 17:48', now2026), { year: 2020, month: 8, day: 26, hour: 17, minute: 48 });
+// Real "Created Date" value from Konnect's own reporting export (not
+// the Manager/Live UI's displayed format) - confirmed live.
+check('parseSlaCreated accepts the reporting export\'s ISO-like format', parseSlaCreated('2026-09-01 15:20:35'), { year: 2026, month: 8, day: 1, hour: 15, minute: 20 });
+check('parseSlaCreated accepts the same format with a T separator, no seconds', parseSlaCreated('2026-09-01T15:20'), { year: 2026, month: 8, day: 1, hour: 15, minute: 20 });
 check('parseModalDate', parseModalDate('Fri 5th May 2023 07:02'), { year: 2023, month: 4, day: 5, hour: 7, minute: 2, yearWasImplicit: false });
 
 check('datetimesMatchAtMinute true', datetimesMatchAtMinute(parseModalDate('Fri 5th May 2023 07:02'), parseTimelineTimestamp('5 May 2023 07:02')), true);
@@ -1886,7 +1900,7 @@ check(`real pair ${i + 1}: gap is within CALL_MATCH_TOLERANCE_MINUTES`, diff <= 
 if (failures.length > 0) {
 console.error('KonnectBookingCheck timeline self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info(`KonnectBookingCheck timeline self-test passed (${10 + REAL_MANAGER_VS_LIVE_PAIRS.length * 2}/${10 + REAL_MANAGER_VS_LIVE_PAIRS.length * 2})`);
+console.info(`KonnectBookingCheck timeline self-test passed (${12 + REAL_MANAGER_VS_LIVE_PAIRS.length * 2}/${12 + REAL_MANAGER_VS_LIVE_PAIRS.length * 2})`);
 }
 })();
 
