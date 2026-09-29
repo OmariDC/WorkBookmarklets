@@ -3280,6 +3280,73 @@ return { tier: 4, reason: 'Cargurus' };
 return { tier: 4, reason: 'Uncategorized' };
 }
 
+// Off (panel visible) unless the user has explicitly minimized before -
+// same default-visible-until-minimized semantics as SLA-Extract.js's
+// own PANEL_STATE_KEY, so the two tools behave consistently.
+const KBC_BADGE_ID = '_kbcBadge';
+const KBC_PANEL_VISIBLE_KEY = '_kbcPanelVisible';
+
+function isPanelHiddenByDefault() {
+return localStorage.getItem(KBC_PANEL_VISIBLE_KEY) === '0';
+}
+
+// Small fixed circular badge, the same fallback pattern SLA-Extract.js
+// uses when it can't dock into a navbar - Konnect Live's own navbar
+// structure has never been confirmed live, so this always uses that
+// pattern rather than guessing at a dock point that might not exist on
+// every page this can run on. Lives in the exact same corner the panel
+// itself opens in (top:16px; right:16px): the two are mutually
+// exclusive (see the visibility toggling in initKonnectBookingCheckUI),
+// so there's never a moment both are on-screen fighting for that spot -
+// this replaces the old "minimize just hides the body, leaving the
+// 460px header bar sitting there" behavior, which read as not actually
+// minimized at all.
+function buildBadge() {
+document.getElementById(KBC_BADGE_ID)?.remove();
+const badge = document.createElement('div');
+badge.id = KBC_BADGE_ID;
+Object.assign(badge.style, {
+position: 'fixed', top: '16px', right: '16px', width: '48px', height: '48px',
+background: '#1e293b', border: '2px solid #059669', borderRadius: '50%',
+boxShadow: '0 4px 12px rgba(5,150,105,0.35)', zIndex: 2147483000, cursor: 'pointer',
+display: 'none', alignItems: 'center', justifyContent: 'center', fontSize: '18px',
+fontWeight: 'bold', color: '#059669', transition: 'transform 0.15s ease, box-shadow 0.15s ease',
+fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+});
+badge.innerHTML = svgIcon('clipboard', 22);
+badge.title = 'Konnect Booking Check';
+badge.addEventListener('mouseenter', () => {
+badge.style.transform = 'scale(1.12)';
+badge.style.boxShadow = '0 6px 16px rgba(5,150,105,0.5)';
+});
+badge.addEventListener('mouseleave', () => {
+badge.style.transform = 'scale(1)';
+badge.style.boxShadow = '0 4px 12px rgba(5,150,105,0.35)';
+});
+document.documentElement.appendChild(badge);
+return badge;
+}
+
+// Idle (no session, or a finished one) always falls back to the plain
+// icon - the number only means something while there's still work
+// left, same as SLA-Extract.js's own setBadgeProgress.
+function updateBadgeProgress(badge, ordered, session) {
+if (!badge) return;
+if (!session || ordered.length === 0 || session.done) {
+badge.innerHTML = svgIcon('clipboard', 22);
+badge.style.fontSize = '18px';
+return;
+}
+const remaining = session.rows.length - ordered.length;
+if (remaining <= 0) {
+badge.innerHTML = svgIcon('clipboard', 22);
+badge.style.fontSize = '18px';
+return;
+}
+badge.textContent = String(remaining);
+badge.style.fontSize = '16px';
+}
+
 function buildPanelMarkup() {
 // Same zombie-instance class of bug confirmed live in SLA-Extract.js's
 // own panel: the window.__konnectBookingCheck guard at the top of this
@@ -3296,7 +3363,7 @@ function buildPanelMarkup() {
 document.getElementById('_kbcPanelHost')?.remove();
 const host = document.createElement('div');
 host.id = '_kbcPanelHost';
-Object.assign(host.style, { all: 'initial', position: 'fixed', top: '16px', right: '16px', zIndex: 2147483000 });
+Object.assign(host.style, { all: 'initial', position: 'fixed', top: '16px', right: '16px', zIndex: 2147483000, display: isPanelHiddenByDefault() ? 'none' : 'block' });
 document.documentElement.appendChild(host);
 const root = host.attachShadow({ mode: 'open' });
 root.innerHTML = `
@@ -3305,7 +3372,6 @@ root.innerHTML = `
 .header { flex-shrink: 0; background: #1e293b; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-radius: 10px 10px 0 0; cursor: move; user-select: none; }
 .header-title { display: flex; align-items: center; gap: 6px; font-weight: 600; overflow: hidden; }
 .header-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.header-mini-progress { font-size: 11px; color: #cbd5e1; white-space: nowrap; }
 .header button { background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 2px; display: flex; align-items: center; }
 .header button:hover { color: white; }
 .bodyEl { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 12px; }
@@ -3378,7 +3444,6 @@ button.primary:hover { background: #334155; }
 <div class="panel">
 <div class="header" id="headerEl">
 <div class="header-title">${svgIcon('clipboard', 15)}<span>Konnect Booking Check</span></div>
-<span class="header-mini-progress hidden" id="headerMiniProgress"></span>
 <button id="minBtn" title="Minimize">${svgIcon('minimize', 14)}</button>
 </div>
 <div class="bodyEl" id="bodyEl">
@@ -3498,12 +3563,18 @@ const progressFillEl = root.getElementById('progressFill');
 const statsBarEl = root.getElementById('statsBar');
 const filterBarEl = root.getElementById('filterBar');
 const searchInputEl = root.getElementById('searchInput');
-const headerMiniProgressEl = root.getElementById('headerMiniProgress');
 const resultsBody = root.getElementById('resultsBody');
 const needsReviewSectionEl = root.getElementById('needsReviewSection');
-const bodyEl = root.getElementById('bodyEl');
 const minBtn = root.getElementById('minBtn');
 const headerEl = root.getElementById('headerEl');
+
+const badge = buildBadge();
+badge.style.display = isPanelHiddenByDefault() ? 'flex' : 'none';
+badge.addEventListener('click', () => {
+host.style.display = 'block';
+badge.style.display = 'none';
+localStorage.setItem(KBC_PANEL_VISIBLE_KEY, '1');
+});
 
 // Category filter toggled by clicking a stat pill - empty set means "no
 // filter, show everything" (also true again once every category has
@@ -3589,17 +3660,6 @@ return parts.join('');
 // top-to-bottom as "most to least actionable" consistently.
 const STATS_BAR_CATEGORY_ORDER = ['CONFIRMED DATE & TIME', 'DATE ONLY', 'WARM ENQUIRY', 'NON-BOOKING', 'EXCEPTION'];
 
-function updateHeaderMiniProgress(ordered) {
-const minimized = bodyEl.classList.contains('hidden');
-if (!minimized || !session || ordered.length === 0) {
-headerMiniProgressEl.classList.add('hidden');
-return;
-}
-const exceptions = ordered.filter((r) => r.status === 'EXCEPTION').length;
-headerMiniProgressEl.textContent = `${ordered.length}/${session.rows.length}${exceptions > 0 ? ` · ${exceptions} exc.` : ''}`;
-headerMiniProgressEl.classList.remove('hidden');
-}
-
 function renderNeedsReviewSection(needsReview) {
 if (needsReview.length === 0) {
 needsReviewSectionEl.innerHTML = '';
@@ -3650,7 +3710,7 @@ progressFillEl.style.width = '0%';
 statsBarEl.classList.add('hidden');
 filterBarEl.classList.add('hidden');
 needsReviewSectionEl.innerHTML = '';
-updateHeaderMiniProgress([]);
+updateBadgeProgress(badge, [], session);
 return;
 }
 rowCountEl.textContent = `${session.rows.length} rows parsed` + (session.headerOk ? '' : ` - ${session.headerError}`);
@@ -3660,7 +3720,7 @@ const ordered = orderedAll.filter((r) => !isNeedsReview(r));
 renderNeedsReviewSection(needsReview);
 const percent = session.rows.length > 0 ? Math.round((100 * orderedAll.length) / session.rows.length) : 0;
 progressFillEl.style.width = `${percent}%`;
-updateHeaderMiniProgress(orderedAll);
+updateBadgeProgress(badge, orderedAll, session);
 
 if (ordered.length === 0) {
 // Distinct from "nothing processed at all" - if every processed row
@@ -3958,6 +4018,7 @@ hidePageFlashOverlay();
 clearStoredSession();
 session = null;
 host.remove();
+badge.remove();
 window.__konnectBookingCheck = null;
 console.info('Konnect Booking Check stopped and cleared - click the bookmarklet again to start fresh');
 });
@@ -3994,12 +4055,14 @@ copyTextToClipboard(buildBulkAnalysisClipboardPayload(s))
 .catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
 });
 
+// Hides the whole host, not just bodyEl - leaving the 460px header bar
+// on screen (the old behavior) wasn't actually minimized, just a
+// shorter panel. The badge (mutually exclusive with the host, see its
+// own click handler above) is the only way back once hidden.
 minBtn.addEventListener('click', () => {
-bodyEl.classList.toggle('hidden');
-const minimized = bodyEl.classList.contains('hidden');
-minBtn.innerHTML = svgIcon(minimized ? 'restore' : 'minimize', 14);
-minBtn.title = minimized ? 'Restore' : 'Minimize';
-render();
+host.style.display = 'none';
+badge.style.display = 'flex';
+localStorage.setItem(KBC_PANEL_VISIBLE_KEY, '0');
 });
 
 // Live filter-as-you-type, not rebuilt by render() itself (searchInputEl
@@ -4031,7 +4094,8 @@ render();
 window.__konnectBookingCheck = {
 focus() {
 host.style.display = 'block';
-bodyEl.classList.remove('hidden');
+badge.style.display = 'none';
+localStorage.setItem(KBC_PANEL_VISIBLE_KEY, '1');
 },
 getSession: () => session
 };
