@@ -4337,7 +4337,8 @@ ${bodyHtml}
 
 <div style="border-top: 1px solid #cbd5e1; padding: 8px 14px; background: white; flex-shrink: 0; display: flex; justify-content: flex-end; align-items: center; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
 <button onclick="window._slaResetBookmarklet();"
-style="padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
+style="padding: 5px 10px; background: transparent; color: #94a3b8; border: 1px solid #e2e8f0; border-radius: 6px; cursor: pointer; font-size: 10px; font-weight: 500; transition: color 0.15s, border-color 0.15s;"
+onmouseover="this.style.color='#dc2626'; this.style.borderColor='#dc2626';" onmouseout="this.style.color='#94a3b8'; this.style.borderColor='#e2e8f0';">Clear & Stop</button>
 </div>
 </div>
 `;
