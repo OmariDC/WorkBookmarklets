@@ -2742,12 +2742,6 @@ return containsAny(comments.toLowerCase(), POTENTIAL_INTEREST_PHRASES) ? 5 : 6;
 return 7;
 }
 
-function buildDefaultCopyText(session) {
-const header = ['Name', 'Phone', 'Email', 'Booking classification'].join('\t');
-const lines = orderedResults(session).map((r) => [r.name, r.phone, r.email, r.category || r.exception || 'PENDING'].join('\t'));
-return [header, ...lines].join('\n');
-}
-
 // ===================================================================
 // NEEDS REVIEW - manual triage for low-confidence classifications
 // (classifyInitialNotes' own confidence:'low' already refuses to guess
@@ -2897,7 +2891,6 @@ window.KonnectBookingCheck.buildManualReviewDecisionsExport = buildManualReviewD
 window.KonnectBookingCheck.stepOnce = stepOnce;
 window.KonnectBookingCheck.runLoop = runLoop;
 window.KonnectBookingCheck.orderedResults = orderedResults;
-window.KonnectBookingCheck.buildDefaultCopyText = buildDefaultCopyText;
 window.KonnectBookingCheck.bookingPriorityRank = bookingPriorityRank;
 window.KonnectBookingCheck.buildRawNotesTsvForExtract = buildRawNotesTsvForExtract;
 
@@ -3393,6 +3386,7 @@ button.primary:hover { background: #334155; }
 <summary>${detailsChevronIcon()}Batch input</summary>
 <div class="topSection-content">
 <textarea id="pasteBox" placeholder="Paste TSV: Name  Phone  Email  Source  Campaign  Created"></textarea>
+<button class="action" id="btnPasteClipboard" style="margin-bottom: 6px;">${svgIcon('copy', 11)}Paste from clipboard</button>
 <div class="row-count" id="rowCount">0 rows parsed</div>
 <label style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; margin-bottom: 6px; cursor: pointer;">
 <input type="checkbox" id="autoStartToggle">
@@ -3423,7 +3417,6 @@ Auto-start on paste
 <div class="exportBar">
 <div class="section-label">Export</div>
 <div class="buttons">
-<button class="action" id="btnCopy">${svgIcon('copy', 11)}Copy results</button>
 <button class="action" id="btnCopyRawForExtract">${svgIcon('copy', 11)}Copy raw for Extract</button>
 <button class="action" id="btnCopyReviewDecisions">${svgIcon('copy', 11)}Copy review decisions</button>
 <button class="action temp" id="btnCopyBulkAnalysis" title="Temporary: copies all processed leads plus an explanatory prompt, for pasting into a separate Claude chat to look for recurring patterns.">${svgIcon('copy', 11)}Copy for pattern analysis (temp)</button>
@@ -3876,6 +3869,35 @@ render();
 }, 300);
 });
 
+// One click instead of switching windows/tabs, copying, switching
+// back, clicking into the textarea, and pasting - reads the clipboard
+// directly via the async Clipboard API, same approach and same
+// fallback (that API needs clipboard-read permission and can be
+// blocked entirely in some contexts) already proven out in
+// SLA-Extract.js's own "Paste from clipboard & Classify" button.
+// Setting pasteBox.value directly does NOT fire its 'paste' event, so
+// ensureSessionFromPasteBox/render/auto-start are called explicitly
+// here rather than relying on the listeners above.
+root.getElementById('btnPasteClipboard').addEventListener('click', async (event) => {
+if (!navigator.clipboard || !navigator.clipboard.readText) {
+showButtonFeedback(event.currentTarget, 'Clipboard blocked - paste manually', true);
+return;
+}
+try {
+const text = await navigator.clipboard.readText();
+pasteBox.value = text;
+const s = ensureSessionFromPasteBox();
+render();
+if (autoStartToggle.checked && !isRunning && s.headerOk && s.rows.length > 0 && !s.done) {
+startProcessing();
+} else {
+showButtonFeedback(event.currentTarget, `✓ Pasted ${s.rows.length}`, false);
+}
+} catch (error) {
+showButtonFeedback(event.currentTarget, 'Clipboard blocked - paste manually', true);
+}
+});
+
 // Pausing doesn't actually exit runLoop's while-loop (it just idles on
 // a 200ms poll internally, waiting for session.paused to clear) - the
 // overlay is shown/hidden here, at the actual user action, rather than
@@ -3940,14 +3962,6 @@ session = null;
 host.remove();
 window.__konnectBookingCheck = null;
 console.info('Konnect Booking Check stopped and cleared - click the bookmarklet again to start fresh');
-});
-
-root.getElementById('btnCopy').addEventListener('click', (event) => {
-const s = ensureSessionFromPasteBox();
-const count = orderedResults(s).length;
-copyTextToClipboard(buildDefaultCopyText(s))
-.then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count}`, false))
-.catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
 });
 
 root.getElementById('btnCopyRawForExtract').addEventListener('click', (event) => {
