@@ -269,7 +269,7 @@ return /\bfinance\b|\bpcp\b|\bhp\b|\bquote\b|\bquotes\b|\bleasing\b|\b0%\b|\bbes
 // either returns a result (stop) or null (continue to the next step).
 function classifyLead(initialNotesRaw, opts) {
 opts = opts || {};
-let { campaign, source, created, referenceDate } = opts;
+let { campaign, source, created, referenceDate, hasScheduledCallEntry } = opts;
 referenceDate = referenceDate || new Date();
 
 // inferSource runs against the RAW text, before stripSystemSuffixes -
@@ -332,11 +332,19 @@ if (!result) result = R(5, 'Enquiry: Blank', 9, 'low', 'Nothing matched - fallba
 // Step 12: flags.
 const flags = computeFlags(text0, campaign, source, flagCtx);
 
-// Step 13: Post Closure Processing - always the spec's own documented
-// fallback ("check: send back?") for now, since neither this tool nor
-// Extract has dealer-action-status or call-history data to determine
-// the real "work it / send back to dealer" split.
-const postClosureAction = src === 'post closure processing' ? 'check: send back?' : null;
+// Step 13: Post Closure Processing. Being carved out incrementally as
+// real criteria are confirmed (per instruction) rather than replaced in
+// one go - "Scheduled a call" anywhere in the customer's timeline is
+// the first confirmed signal (see hasScheduledCallEntry/
+// anyCallEntryIsScheduledCall), meaning it's already been engaged and
+// should go straight back rather than being worked again. Everything
+// else still falls to the "check" bucket - not yet known whether a
+// dealer already contacted the customer or the lead was rejected,
+// which would also mean "send back", just not detectable yet. "check:"
+// drops once those are carved out too and this stops being a guess.
+const postClosureAction = src === 'post closure processing'
+? (hasScheduledCallEntry ? 'send back through' : 'check: needs contact?')
+: null;
 
 return Object.assign({}, result, { flags, dedupeKey: computeDedupeKey(text0, campaign, source), postClosureAction, source });
 }
@@ -1636,6 +1644,91 @@ const heading = row.querySelector('.connected-customer-timeline-heading-left-lig
 return heading ? heading.textContent.replace(/\s+/g, ' ').trim() : null;
 }
 
+// Confirmed live via a real DOM dump: a call entry's own text ("Amy
+// Agent called the customer with an outcome of No Answer Message
+// Left" / "Amy Agent Scheduled a call") lives in .connected-customer-
+// title-lightblue - a different element from extractCallTimestamp's
+// heading-lightblue (that one only holds the date/time). No Lead-ID-
+// span contamination to strip here (unlike extractTimelineTimestamp's
+// pink equivalent) - the only other child is an <img> badge with no
+// text content of its own.
+function extractCallHeadingText(row) {
+const title = row.querySelector('.connected-customer-title-lightblue');
+return title ? title.textContent.replace(/\s+/g, ' ').trim() : null;
+}
+
+// Post Closure Processing Step 13 (see classifyLead) - a "Scheduled a
+// call" entry anywhere in the customer's currently-loaded timeline
+// means the lead should be sent straight back through rather than
+// worked again, per real reviewed examples: one customer had voicemail-
+// only calls both before AND after a "Scheduled a call" entry, and was
+// still confirmed as a "do not contact again" case - the entry itself
+// is the signal, regardless of what (if anything) happens around it.
+// Pure/testable half split out from the real DOM read below it, same
+// pattern as the rest of this file's DOM-touching functions.
+function anyCallEntryIsScheduledCall(callEntryRows) {
+return callEntryRows.some((row) => {
+const heading = extractCallHeadingText(row);
+return heading != null && /\bscheduled a call\b/i.test(heading);
+});
+}
+
+function hasScheduledCallEntry() {
+return anyCallEntryIsScheduledCall(getLoadedCallEntries());
+}
+
+// ===================================================================
+// Self-test for the Scheduled-call detection - real row text pulled
+// directly from a live DOM dump of two actual customers (one voicemail-
+// only "needs contact" case, one with a "Scheduled a call" entry mixed
+// in among voicemail-only calls on either side, confirmed as a "do not
+// contact again" case regardless of what's around it).
+// ===================================================================
+(function scheduledCallDetectionSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
+}
+function fakeCallRow(headingText) {
+return { querySelector: (sel) => sel === '.connected-customer-title-lightblue' ? { textContent: headingText } : null };
+}
+
+check('extractCallHeadingText reads the real heading text, whitespace collapsed',
+extractCallHeadingText(fakeCallRow('\n                            Charles Harvey called the customer with an outcome of No Answer Message Left\n                            ')),
+'Charles Harvey called the customer with an outcome of No Answer Message Left');
+check('extractCallHeadingText on a genuine Scheduled a call row',
+extractCallHeadingText(fakeCallRow('\n                            Amanullah Mirlashari Scheduled a call\n                        ')),
+'Amanullah Mirlashari Scheduled a call');
+check('extractCallHeadingText returns null when the title element is missing', extractCallHeadingText({ querySelector: () => null }), null);
+
+const voicemailOnlyRows = [
+fakeCallRow('Charles Harvey called the customer with an outcome of No Answer Message Left'),
+fakeCallRow('Wajih Jamil called the customer with an outcome of No Answer Message Left'),
+fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left'),
+fakeCallRow('Adam Ali called the customer with an outcome of No Answer Message Left')
+];
+check('Real "needs contact" example (Sylvia Lyddy) - voicemail only, no Scheduled a call entry', anyCallEntryIsScheduledCall(voicemailOnlyRows), false);
+
+// Real "do not contact again" example (Kevin Hu) - voicemail calls both
+// BEFORE and AFTER the Scheduled a call entry. The entry itself is what
+// matters, not its position relative to the other calls.
+const scheduledCallMixedIn = [
+fakeCallRow('Darryl Nwafor called the customer with an outcome of No Answer Message Left'),
+fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left'),
+fakeCallRow('Wajih Jamil called the customer with an outcome of No Answer Message Left'),
+fakeCallRow('Amanullah Mirlashari Scheduled a call'),
+fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left')
+];
+check('Real "do not contact again" example (Kevin Hu) - Scheduled a call mixed in among voicemail-only calls', anyCallEntryIsScheduledCall(scheduledCallMixedIn), true);
+check('Empty call history', anyCallEntryIsScheduledCall([]), false);
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck scheduled-call-detection self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck scheduled-call-detection self-test passed (7/7)');
+}
+})();
+
 // Wrapped defensively, not assumed to always succeed - confirmed live
 // that angular.element(row).scope().item carries LeadID, but there's no
 // guarantee `angular` stays reachable as a global exactly where/when
@@ -2493,6 +2586,32 @@ console.info('KonnectBookingCheck real-reviewed-leads self-test passed (4/4)');
 })();
 
 // ===================================================================
+// Self-test for classifyLead's Step 13 postClosureAction output - being
+// carved out incrementally (per instruction) as each real criterion is
+// confirmed. Scheduled-call is the first one; everything else still
+// falls to the "check" bucket until dealer-contact/rejected signals are
+// confirmed too.
+// ===================================================================
+(function postClosureActionSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
+}
+
+const opts = { campaign: 'Citroen - Enquiry - New', source: 'Post Closure Processing', created: 'Sat, 26 Sep 2026 10:00' };
+check('No Scheduled-call signal - falls to the "check" bucket', classifyLead('Customer Comments: -', { ...opts, hasScheduledCallEntry: false }).postClosureAction, 'check: needs contact?');
+check('hasScheduledCallEntry omitted entirely - same "check" default', classifyLead('Customer Comments: -', opts).postClosureAction, 'check: needs contact?');
+check('Scheduled-call signal confirmed - sent straight back, not worked again', classifyLead('Customer Comments: -', { ...opts, hasScheduledCallEntry: true }).postClosureAction, 'send back through');
+check('Non-Post-Closure source - postClosureAction stays null regardless of the signal', classifyLead('Customer Comments: -', { campaign: 'Citroen - Enquiry - New', source: 'Customer First', hasScheduledCallEntry: true }).postClosureAction, null);
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck postClosureAction self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck postClosureAction self-test passed (4/4)');
+}
+})();
+
+// ===================================================================
 // ORCHESTRATION (the outer per-row/per-customer state machine loop)
 // and UI PANEL - the two pieces this file was still missing. Everything
 // this section calls (search, timeline, modal, classify) is already
@@ -2906,7 +3025,13 @@ return finalizeResult(result, { status: 'EXCEPTION', exception: 'INITIAL_NOTES_E
 // comment on this) - falling back to it would feed the classifier the
 // lead's marketing form name where it expects Konnect's SLA-queue
 // categorization, a wrong value, not a missing one.
-const classification = classifyLead(initialNotes, { campaign: row.campaign, source: row.source || panelFields.source, created: row.created });
+const resolvedSource = row.source || panelFields.source;
+// Only scanned for Post Closure Processing rows - classifyLead's own
+// Step 13 is the only place this matters, and getLoadedCallEntries
+// scans the customer's whole currently-loaded timeline, no reason to
+// pay for that on every other row.
+const scheduledCallEntry = String(resolvedSource || '').toLowerCase() === 'post closure processing' ? hasScheduledCallEntry() : false;
+const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasScheduledCallEntry: scheduledCallEntry });
 if (classification.confidence === 'low') {
 // tier/subCategory/flags/reason/confidence are stored even though
 // status stays EXCEPTION (never auto-trusted/applied) - so a human
@@ -4365,6 +4490,11 @@ if (r.email) parts.push(`<div class="field"><b>Email:</b> ${copyableField(r.emai
 parts.push(`<div class="field"><b>Campaign:</b> ${escapeHtmlForUi(r.campaign || '-')} &middot; <b>Source:</b> ${escapeHtmlForUi(r.source || '-')}</div>`);
 parts.push(`<div class="field"><b>Created:</b> ${escapeHtmlForUi(r.created || '-')}</div>`);
 if (r.flags && r.flags.length > 0) parts.push(`<div class="field"><b>Flags:</b> ${escapeHtmlForUi(r.flags.join(', '))}</div>`);
+if (r.postClosureAction) {
+const isSendBack = r.postClosureAction === 'send back through';
+const color = isSendBack ? '#0891b2' : '#d97706';
+parts.push(`<div class="field"><b>Post Closure:</b> <span style="color: ${color}; font-weight: 700;">${escapeHtmlForUi(r.postClosureAction)}</span></div>`);
+}
 if (r.reason) parts.push(`<div class="reason">${escapeHtmlForUi(r.reason)}</div>`);
 if (r.initialNotes) parts.push(`<div class="notes-block">${escapeHtmlForUi(r.initialNotes)}</div>`);
 else if (r.status === 'EXCEPTION') parts.push(`<div class="reason">No Initial Notes read - ${escapeHtmlForUi(r.exception || '')}</div>`);
