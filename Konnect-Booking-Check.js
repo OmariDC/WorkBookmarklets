@@ -1672,34 +1672,36 @@ return title ? title.textContent.replace(/\s+/g, ' ').trim() : null;
 //   connection is exactly the "if we spoke to the customer... we do
 //   not contact again" case from the original brief.
 //
-// sinceMinutes (minutesSinceEpoch of the target lead's own created
-// time) scopes the search to calls at or after THIS lead's own cycle -
-// confirmed live via a real customer with Scheduled-call entries left
-// over from an EARLIER, unrelated lead in the same lifetime timeline,
-// which wrongly sent a LATER Post Closure cycle - that only ever got
-// voicemails of its own - straight back through. null/undefined skips
-// the scoping entirely (matches every entry regardless of timestamp) -
-// used by the self-tests below, which don't need real dates to prove
-// the text-matching half works.
-// Pure/testable half split out from the real DOM read below it, same
-// pattern as the rest of this file's DOM-touching functions.
-function anyCallEntryIndicatesAlreadyEngaged(callEntryRows, sinceMinutes, referenceDate) {
-const refNow = referenceDate || new Date();
+// Matched by LeadID (via Angular's own scope data, see
+// readTimelineItemScope and findMatchingCallLeadId's own comment on why
+// this is the only reliable per-lead link - DOM order/proximity is
+// confirmed NOT reliable), not by time or DOM position. Per instruction:
+// one customer's single timeline can hold multiple leads (sometimes for
+// different dealerships, sometimes duplicates closed by either side)
+// with entries genuinely interleaved in time between leads, so no time-
+// based window can reliably tell which lead a given call actually
+// belongs to - confirmed live via a real customer whose current Post
+// Closure cycle only had voicemails of its own, but an EARLIER,
+// unrelated lead's Scheduled-call entry still counted under a time-
+// scoped version of this check. A call entry whose own LeadID can't be
+// read, or doesn't match the target's, is never counted; if the
+// target's own LeadID can't be read either, nothing counts at all -
+// this falls to the safer "check: needs contact?" default rather than
+// guessing which entries are actually this lead's own.
+function anyCallEntryIndicatesAlreadyEngaged(callEntryRows, targetLeadId) {
+if (!targetLeadId) return false;
 return callEntryRows.some((row) => {
-if (sinceMinutes != null) {
-const rawTimestamp = extractCallTimestamp(row);
-const parsed = rawTimestamp ? parseTimelineTimestamp(rawTimestamp, refNow) : null;
-const minutes = minutesSinceEpoch(parsed);
-if (minutes == null || minutes < sinceMinutes) return false;
-}
+const item = readTimelineItemScope(row);
+const rowLeadId = item && item.LeadID != null ? String(item.LeadID) : null;
+if (rowLeadId !== targetLeadId) return false;
 const heading = extractCallHeadingText(row);
 if (heading == null) return false;
 return /\bscheduled a call\b/i.test(heading) || /\bspoke to customer\b/i.test(heading);
 });
 }
 
-function hasAlreadyEngagedCallEntry(sinceMinutes, referenceDate) {
-return anyCallEntryIndicatesAlreadyEngaged(getLoadedCallEntries(), sinceMinutes, referenceDate);
+function hasAlreadyEngagedCallEntry(targetLeadId) {
+return anyCallEntryIndicatesAlreadyEngaged(getLoadedCallEntries(), targetLeadId);
 }
 
 // ===================================================================
@@ -1715,82 +1717,98 @@ const failures = [];
 function check(label, actual, expected) {
 if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
 }
-function fakeCallRow(headingText, timestampText) {
+// leadId undefined means "readTimelineItemScope can't resolve this row
+// at all" (the real fallback when angular.element().scope() fails) -
+// distinct from a resolvable-but-different leadId.
+function fakeCallRow(headingText, leadId) {
 return {
-querySelector: (sel) => {
-if (sel === '.connected-customer-title-lightblue') return { textContent: headingText };
-if (sel.includes('connected-customer-timeline-heading')) return timestampText ? { textContent: timestampText } : null;
-return null;
-}
+querySelector: (sel) => sel === '.connected-customer-title-lightblue' ? { textContent: headingText } : null,
+__fakeLeadId: leadId
 };
 }
+// readTimelineItemScope depends on a live Angular app (angular.element(row).
+// scope().item) that doesn't exist in this Node harness - mocked here,
+// scoped to just this self-test, so the LeadID-matching logic itself is
+// still directly verifiable rather than only checkable live (unlike
+// findMatchingCallLeadId, which uses the same mechanism with no self-
+// test coverage at all).
+const originalAngular = global.angular;
+global.angular = { element: (row) => ({ scope: () => (row.__fakeLeadId !== undefined ? { item: { LeadID: row.__fakeLeadId } } : null) }) };
 
 check('extractCallHeadingText reads the real heading text, whitespace collapsed',
-extractCallHeadingText(fakeCallRow('\n                            Charles Harvey called the customer with an outcome of No Answer Message Left\n                            ')),
+extractCallHeadingText({ querySelector: (sel) => sel === '.connected-customer-title-lightblue' ? { textContent: '\n                            Charles Harvey called the customer with an outcome of No Answer Message Left\n                            ' } : null }),
 'Charles Harvey called the customer with an outcome of No Answer Message Left');
-check('extractCallHeadingText on a genuine Scheduled a call row',
-extractCallHeadingText(fakeCallRow('\n                            Amanullah Mirlashari Scheduled a call\n                        ')),
-'Amanullah Mirlashari Scheduled a call');
 check('extractCallHeadingText returns null when the title element is missing', extractCallHeadingText({ querySelector: () => null }), null);
 
+check('No target LeadID at all - never guesses, always false regardless of what the calls say', anyCallEntryIndicatesAlreadyEngaged([fakeCallRow('Amanullah Mirlashari Scheduled a call', '123')], null), false);
+check('Empty call history', anyCallEntryIndicatesAlreadyEngaged([], '123'), false);
+
 const voicemailOnlyRows = [
-fakeCallRow('Charles Harvey called the customer with an outcome of No Answer Message Left'),
-fakeCallRow('Wajih Jamil called the customer with an outcome of No Answer Message Left'),
-fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left'),
-fakeCallRow('Adam Ali called the customer with an outcome of No Answer Message Left')
+fakeCallRow('Charles Harvey called the customer with an outcome of No Answer Message Left', '123'),
+fakeCallRow('Wajih Jamil called the customer with an outcome of No Answer Message Left', '123'),
+fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left', '123'),
+fakeCallRow('Adam Ali called the customer with an outcome of No Answer Message Left', '123')
 ];
-check('Real "needs contact" example (Sylvia Lyddy) - voicemail only, no engagement signal', anyCallEntryIndicatesAlreadyEngaged(voicemailOnlyRows), false);
+check('Real "needs contact" example (Sylvia Lyddy) - voicemail only, no engagement signal', anyCallEntryIndicatesAlreadyEngaged(voicemailOnlyRows, '123'), false);
 
 // Real "do not contact again" example (Kevin Hu) - voicemail calls both
-// BEFORE and AFTER the Scheduled a call entry. The entry itself is what
-// matters, not its position relative to the other calls.
+// BEFORE and AFTER the Scheduled a call entry, all sharing the same
+// LeadID as the target. The entry itself is what matters, not its
+// position relative to the other calls.
 const scheduledCallMixedIn = [
-fakeCallRow('Darryl Nwafor called the customer with an outcome of No Answer Message Left'),
-fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left'),
-fakeCallRow('Wajih Jamil called the customer with an outcome of No Answer Message Left'),
-fakeCallRow('Amanullah Mirlashari Scheduled a call'),
-fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left')
+fakeCallRow('Darryl Nwafor called the customer with an outcome of No Answer Message Left', '456'),
+fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left', '456'),
+fakeCallRow('Wajih Jamil called the customer with an outcome of No Answer Message Left', '456'),
+fakeCallRow('Amanullah Mirlashari Scheduled a call', '456'),
+fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left', '456')
 ];
-check('Real "do not contact again" example (Kevin Hu) - Scheduled a call mixed in among voicemail-only calls', anyCallEntryIndicatesAlreadyEngaged(scheduledCallMixedIn), true);
+check('Real "do not contact again" example (Kevin Hu) - Scheduled a call mixed in among voicemail-only calls', anyCallEntryIndicatesAlreadyEngaged(scheduledCallMixedIn, '456'), true);
 
 // Real "wrongly filtered as a warm lead" example - a genuine live
 // connection ("Spoke To Customer") appears twice in this customer's
 // history, once resulting in a Face To Face appointment, mixed among
-// otherwise voicemail-only calls.
+// otherwise voicemail-only calls, all sharing the target's LeadID.
 const spokeToCustomerMixedIn = [
-fakeCallRow('Omari Duporte- Clarke called the customer with an outcome of No Answer Message Left'),
-fakeCallRow('Jamario Belnavis called the customer with an outcome of Spoke To Customer'),
-fakeCallRow('Henry Marnell called the customer with an outcome of Spoke To Customer'),
-fakeCallRow('Lillian Ferrando Auberton called the customer with an outcome of No Answer No Message Left')
+fakeCallRow('Omari Duporte- Clarke called the customer with an outcome of No Answer Message Left', '789'),
+fakeCallRow('Jamario Belnavis called the customer with an outcome of Spoke To Customer', '789'),
+fakeCallRow('Henry Marnell called the customer with an outcome of Spoke To Customer', '789'),
+fakeCallRow('Lillian Ferrando Auberton called the customer with an outcome of No Answer No Message Left', '789')
 ];
-check('Real "wrongly filtered as a warm lead" example - Spoke To Customer is also an already-engaged signal', anyCallEntryIndicatesAlreadyEngaged(spokeToCustomerMixedIn), true);
+check('Real "wrongly filtered as a warm lead" example - Spoke To Customer is also an already-engaged signal', anyCallEntryIndicatesAlreadyEngaged(spokeToCustomerMixedIn, '789'), true);
 
-check('Empty call history', anyCallEntryIndicatesAlreadyEngaged([]), false);
-
-// Real "Mrs Brady" example - a customer with a Scheduled a call entry
-// left over from an EARLIER, unrelated lead's own history, plus a
-// current Post Closure cycle (created 30 Sep 2026 17:35) that only ever
-// got voicemails of its own. Confirmed live: without scoping to calls
-// at/after the current lead's own created time, this wrongly sent the
-// current cycle straight back through because of the unrelated older
-// entry.
-const referenceNow2026 = new Date(2026, 8, 30, 18, 0);
-const brady = [
-fakeCallRow('Some Agent Scheduled a call', '15 Sep 09:00'),
-fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left', '30 Sep 17:40'),
-fakeCallRow('Adam Ali called the customer with an outcome of No Answer Message Left', '30 Sep 18:00')
+// Real "Mrs Brady" example - one customer, two leads on the same
+// timeline: an EARLIER, unrelated lead (LeadID 111) with a genuine
+// Scheduled-call entry, and the CURRENT Post Closure lead (LeadID 222)
+// that only ever got voicemails of its own. Confirmed live: a time-
+// scoped version of this check (calls at/after the current lead's own
+// created time) still wrongly counted the unrelated entry, since
+// customers can have multiple leads - sometimes for different
+// dealerships, sometimes duplicates closed by either side - with
+// entries genuinely interleaved in time between them; only LeadID
+// reliably tells them apart.
+const bradyRows = [
+fakeCallRow('Some Agent Scheduled a call', '111'),
+fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left', '222'),
+fakeCallRow('Adam Ali called the customer with an outcome of No Answer Message Left', '222')
 ];
-const currentCycleMinutes = minutesSinceEpoch(parseTimelineTimestamp('30 Sep 17:35', referenceNow2026));
-check('Without scoping, the unrelated older Scheduled-call entry wrongly counts', anyCallEntryIndicatesAlreadyEngaged(brady, null, referenceNow2026), true);
-check('Scoped to this cycle\'s own created time, the older entry is correctly excluded - voicemail-only within this cycle', anyCallEntryIndicatesAlreadyEngaged(brady, currentCycleMinutes, referenceNow2026), false);
+check('The unrelated earlier lead\'s Scheduled-call entry (different LeadID) is correctly excluded', anyCallEntryIndicatesAlreadyEngaged(bradyRows, '222'), false);
+check('Checking against the OTHER lead\'s own LeadID correctly finds its own Scheduled-call entry', anyCallEntryIndicatesAlreadyEngaged(bradyRows, '111'), true);
 
-const bradyWithGenuineSignal = brady.concat([fakeCallRow('Someone Scheduled a call', '30 Sep 17:50')]);
-check('A genuine engagement signal WITHIN this cycle still counts once scoped', anyCallEntryIndicatesAlreadyEngaged(bradyWithGenuineSignal, currentCycleMinutes, referenceNow2026), true);
+const bradyWithGenuineSignal = bradyRows.concat([fakeCallRow('Someone Scheduled a call', '222')]);
+check('A genuine engagement signal sharing the target\'s own LeadID still counts', anyCallEntryIndicatesAlreadyEngaged(bradyWithGenuineSignal, '222'), true);
+
+// A row whose own LeadID can't be resolved at all (angular scope read
+// failed) is dropped rather than guessed into matching or not matching.
+const unresolvableRow = fakeCallRow('Someone Scheduled a call', undefined);
+check('A row with an unreadable LeadID never counts, even with a genuine engagement heading', anyCallEntryIndicatesAlreadyEngaged([unresolvableRow], '222'), false);
+
+if (originalAngular === undefined) delete global.angular;
+else global.angular = originalAngular;
 
 if (failures.length > 0) {
 console.error('KonnectBookingCheck already-engaged-detection self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck already-engaged-detection self-test passed (11/11)');
+console.info('KonnectBookingCheck already-engaged-detection self-test passed (12/12)');
 }
 })();
 
@@ -3095,15 +3113,17 @@ const resolvedSource = row.source || panelFields.source;
 // Step 13 is the only place this matters, and getLoadedCallEntries
 // scans the customer's whole currently-loaded timeline, no reason to
 // pay for that on every other row.
-// Scoped to calls at or after THIS lead's own created time (target,
-// already parsed above) - a customer can have earlier, unrelated leads
-// (or earlier Post Closure cycles of their own) with their own
-// "Scheduled a call"/"Spoke To Customer" entries in the same lifetime
-// timeline. Confirmed live: a real customer had Scheduled-call entries
-// left over from a previous, unrelated lead, which wrongly sent a
-// later Post Closure cycle - that only ever got voicemails of its own -
-// straight back through instead of flagging it as needing contact.
-const alreadyEngagedCallEntry = String(resolvedSource || '').toLowerCase() === 'post closure processing' ? hasAlreadyEngagedCallEntry(minutesSinceEpoch(target), referenceNow) : false;
+// Matched by candidate.leadId (this lead's own visible Konnect Lead ID,
+// already resolved above when the target lead was located), not by
+// time - per instruction, a single customer's timeline can hold
+// multiple leads (sometimes for different dealerships, sometimes
+// duplicates closed by either side) with entries genuinely interleaved
+// in time between them, so a time-based window - however bounded -
+// can't reliably tell which lead a given call actually belongs to.
+// Confirmed live: a real customer's earlier, unrelated lead had its own
+// Scheduled-call entry, which still wrongly counted under a time-scoped
+// version of this check.
+const alreadyEngagedCallEntry = String(resolvedSource || '').toLowerCase() === 'post closure processing' ? hasAlreadyEngagedCallEntry(candidate.leadId) : false;
 const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry });
 if (classification.confidence === 'low') {
 // tier/subCategory/flags/reason/confidence are stored even though
