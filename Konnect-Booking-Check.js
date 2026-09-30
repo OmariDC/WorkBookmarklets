@@ -4017,14 +4017,15 @@ button.primary:hover { background: #aab238; }
 .progress-fill { height: 100%; background: #C2CB42; transition: width 0.2s ease; border-radius: 3px; }
 .progress-fill.active { background-image: linear-gradient(135deg, rgba(255,255,255,0.4) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.4) 75%, transparent 75%, transparent); background-size: 14px 14px; animation: kbcProgressStripes 0.6s linear infinite; }
 @keyframes kbcProgressStripes { from { background-position: 0 0; } to { background-position: 14px 0; } }
-// !important, not a plain class rule - button.action's own display:
-// inline-flex (a type+class selector, higher specificity than a single
-// class) was winning over a plain .hidden every time regardless of CSS
-// source order, so toggling this class on a button did nothing visible
-// even though the underlying visibility logic (computeButtonVisibility)
-// was correct - confirmed live: state was right, buttons just never
-// actually disappeared. A utility "hidden" class needs to always win,
-// which is exactly the case !important is for.
+/* !important, not a plain class rule - button.action's own display:
+inline-flex (a type+class selector, higher specificity than a single
+class) was winning over a plain .hidden every time regardless of CSS
+source order, so toggling this class on a button did nothing visible
+even though the underlying visibility logic (computeButtonVisibility)
+was correct. This is CSS, not JS - a // comment here is invalid syntax
+and silently ate the whole rule that followed it on the first attempt,
+which is why the previous fix didn't actually take effect live even
+though the class was being toggled correctly the whole time. */
 .hidden { display: none !important; }
 .footer { flex-shrink: 0; border-top: 1px solid #cbd5e1; padding: 8px 12px; background: white; display: flex; justify-content: flex-end; border-radius: 0 0 10px 10px; }
 .footer button { padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
