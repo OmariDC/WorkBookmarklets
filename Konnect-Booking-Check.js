@@ -2980,6 +2980,19 @@ session.cancelled = false;
 session.done = groupIndex >= session.groups.length;
 }
 
+// Ephemeral, in-memory only (not persisted to session/localStorage) -
+// purely a display aid so the status panel shows what just finished
+// instead of only the current in-flight "Searching for X..." line,
+// which changes too fast to read during a fast batch. Capped at 5;
+// reset whenever a session is cleared, in the two btnClear/
+// btnClearStop handlers.
+let recentCompletions = [];
+function recordResult(session, inputIndex, result) {
+session.results[inputIndex] = result;
+recentCompletions.unshift(result);
+if (recentCompletions.length > 5) recentCompletions.length = 5;
+}
+
 // Advances exactly one input row (per instruction: "Process next must
 // process exactly one row") - opening/searching for a new customer
 // when needed counts as part of reaching that one row, not a separate
@@ -3005,7 +3018,7 @@ uiHandle.setState(`Searching for ${group.rows[0].name}...`, group.rows[0].name, 
 const openResult = await searchAndOpenCustomer(group, session);
 if (openResult.status !== 'OK') {
 group.rows.forEach((row) => {
-session.results[row.inputIndex] = finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception: openResult.exception });
+recordResult(session, row.inputIndex, finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception: openResult.exception }));
 });
 advanceToNextGroup(session);
 saveSession(session);
@@ -3013,7 +3026,7 @@ return true;
 }
 if (openResult.noEligibleEvents) {
 group.rows.forEach((row) => {
-session.results[row.inputIndex] = finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception: 'NO_ELIGIBLE_LEAD_EVENTS' });
+recordResult(session, row.inputIndex, finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception: 'NO_ELIGIBLE_LEAD_EVENTS' }));
 });
 advanceToNextGroup(session);
 saveSession(session);
@@ -3026,7 +3039,7 @@ const row = group.rows[session.rowInGroupIndex];
 uiHandle.setState(`Reading lead at ${row.created}...`, group.rows[0].name, row.created);
 const result = await processLeadRow(row, session);
 result.customerMatchMethod = group.customerMatchMethod;
-session.results[row.inputIndex] = result;
+recordResult(session, row.inputIndex, result);
 
 session.rowInGroupIndex++;
 if (session.rowInGroupIndex >= group.rows.length) advanceToNextGroup(session);
@@ -3075,6 +3088,61 @@ uiHandle.setState(session.cancelled ? 'Cancelled' : (session.done ? 'Done' : 'Pa
 
 function orderedResults(session) {
 return session.rows.map((row) => session.results[row.inputIndex]).filter(Boolean);
+}
+
+function retryableExceptionCount(s) {
+if (!s) return 0;
+return s.rows.filter((row) => {
+if (row.status === 'INVALID_INPUT') return false;
+const result = s.results[row.inputIndex];
+return result && result.status === 'EXCEPTION' && result.exception !== 'CLASSIFICATION_REVIEW_REQUIRED';
+}).length;
+}
+
+function hasRetryableExceptions(s) {
+return retryableExceptionCount(s) > 0;
+}
+
+// The Booking Checker button row used to be one flat always-visible
+// row of 7 buttons regardless of session state (confirmed live:
+// nothing toggled .hidden/.disabled on any of them) - reported as "too
+// many ambiguous buttons sandwiched together". Grouped into run
+// controls / maintenance / handoff, each button now only shown when it
+// would actually do something, so at most 2-4 are visible at once
+// instead of a static 7. Pure function (no DOM) so it's directly
+// self-testable against fabricated session states - syncButtonStates
+// in the UI closure just applies its result to the real buttons,
+// called from render(), which is already the universal redraw hook
+// for every state-changing action.
+function computeButtonVisibility(s, loopAlive) {
+const hasSession = !!s;
+// isRunning alone stays true for the whole time a run is paused too
+// (runLoop just idles on its own poll, see runLoop's own comment) -
+// "actively running" means mid-step-and-unpaused specifically.
+const running = loopAlive && !(hasSession && s.paused);
+const doneOrNoSession = !hasSession || s.done;
+const hasResults = hasSession && orderedResults(s).some((r) => r.status === 'CLASSIFIED' || r.status === 'EXCEPTION');
+const retryable = hasRetryableExceptions(s) && !running;
+const start = !loopAlive && !(hasSession && s.done);
+const pauseResume = loopAlive;
+const processNext = !running && !doneOrNoSession;
+const cancel = loopAlive;
+return {
+start,
+pauseResume,
+processNext,
+cancel,
+// The container is only ever empty (Done state) once none of its own
+// buttons have anything to show - deriving it from them, rather than
+// a separate ad-hoc condition, is what keeps Start visible on a fresh
+// no-session page load instead of being hidden along with it.
+runControls: start || pauseResume || processNext || cancel,
+retryExceptions: retryable,
+clear: hasSession,
+maintenanceControls: retryable || hasSession,
+copyRawForExtract: hasResults,
+handoffControls: hasResults
+};
 }
 
 // Section 2's own sort order: tier ASC, then subRank ASC, then (for
@@ -3418,6 +3486,89 @@ if (failures.length > 0) {
 console.error('KonnectBookingCheck retryExceptions self-test FAILED:\n' + failures.join('\n'));
 } else {
 console.info('KonnectBookingCheck retryExceptions self-test passed (10/10)');
+}
+})();
+
+// ===================================================================
+// Self-test for computeButtonVisibility - the button row used to be
+// one flat always-visible row of 7 regardless of state; this locks in
+// which of them should actually be shown for each real session state
+// (no session, running, paused with/without retryable exceptions,
+// done) without needing a real DOM.
+// ===================================================================
+(function buttonVisibilitySelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+
+const noSessionResult = computeButtonVisibility(null, false);
+check('No session: only Start is visible', noSessionResult, {
+start: true, pauseResume: false, processNext: false, cancel: false, runControls: true,
+retryExceptions: false, clear: false, maintenanceControls: false,
+copyRawForExtract: false, handoffControls: false
+});
+
+const freshSession = { rows: [{ inputIndex: 0, status: 'OK' }], results: {}, done: false, paused: false };
+check('Fresh unstarted session: Start + Process next (single-stepping without ever clicking Start is a real, already-supported action) + Clear', computeButtonVisibility(freshSession, false), {
+start: true, pauseResume: false, processNext: true, cancel: false, runControls: true,
+retryExceptions: false, clear: true, maintenanceControls: true,
+copyRawForExtract: false, handoffControls: false
+});
+
+const runningSession = { rows: [{ inputIndex: 0, status: 'OK' }], results: {}, done: false, paused: false };
+check('Actively running: Pause + Cancel only (no Start, no Process next)', computeButtonVisibility(runningSession, true), {
+start: false, pauseResume: true, processNext: false, cancel: true, runControls: true,
+retryExceptions: false, clear: true, maintenanceControls: true,
+copyRawForExtract: false, handoffControls: false
+});
+
+const pausedWithException = {
+rows: [{ inputIndex: 0, status: 'OK' }],
+results: { 0: { status: 'EXCEPTION', exception: 'SEARCH_NO_RESULTS' } },
+done: false, paused: true
+};
+check('Paused with a retryable exception: Resume + Process next + Cancel + Retry exceptions + Clear - Copy raw for Extract also shows since an exception is still a processed result (exported with its exception as the reason)', computeButtonVisibility(pausedWithException, true), {
+start: false, pauseResume: true, processNext: true, cancel: true, runControls: true,
+retryExceptions: true, clear: true, maintenanceControls: true,
+copyRawForExtract: true, handoffControls: true
+});
+
+const pausedNoException = {
+rows: [{ inputIndex: 0, status: 'OK' }],
+results: { 0: { status: 'CLASSIFIED', tier: 4 } },
+done: false, paused: true
+};
+check('Paused with no retryable exceptions: no Retry exceptions button, but Copy raw for Extract appears (has a real result)', computeButtonVisibility(pausedNoException, true), {
+start: false, pauseResume: true, processNext: true, cancel: true, runControls: true,
+retryExceptions: false, clear: true, maintenanceControls: true,
+copyRawForExtract: true, handoffControls: true
+});
+
+const doneSession = {
+rows: [{ inputIndex: 0, status: 'OK' }],
+results: { 0: { status: 'CLASSIFIED', tier: 4 } },
+done: true, paused: false
+};
+check('Done: run controls collapse entirely, Clear + Copy raw for Extract remain', computeButtonVisibility(doneSession, false), {
+start: false, pauseResume: false, processNext: false, cancel: false, runControls: false,
+retryExceptions: false, clear: true, maintenanceControls: true,
+copyRawForExtract: true, handoffControls: true
+});
+
+const reviewOnlyException = {
+rows: [{ inputIndex: 0, status: 'OK' }],
+results: { 0: { status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED' } },
+done: false, paused: true
+};
+check('CLASSIFICATION_REVIEW_REQUIRED is not retryable (own resolution flow, not a processing failure)', retryableExceptionCount(reviewOnlyException), 0);
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck button-visibility self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck button-visibility self-test passed (7/7)');
 }
 })();
 
@@ -3843,6 +3994,7 @@ their own semantic colors regardless of page theme. */
 .header button:hover { color: white; }
 .bodyEl { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 12px; }
 textarea { width: 100%; height: 70px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px; }
+textarea:focus, .search-input:focus { outline: none; border-color: #C2CB42; box-shadow: 0 0 0 2px rgba(194,203,66,0.3); }
 .row-count { color: #64748b; margin: 4px 0 8px; }
 .section-label { color: #94a3b8; text-transform: uppercase; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; margin: 10px 0 4px; }
 .section-label:first-child { margin-top: 0; }
@@ -3857,6 +4009,10 @@ button.primary { background: #C2CB42; color: #1e293b; border-color: #C2CB42; }
 button.primary:hover { background: #aab238; }
 .status { background: white; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
 .status div { margin-bottom: 2px; }
+.recent-log { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+.recent-log-row { display: flex; align-items: center; gap: 5px; font-size: 10.5px; overflow: hidden; }
+.recent-log-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #334155; }
+.recent-log-tier { flex-shrink: 0; padding: 1px 6px; border-radius: 3px; font-weight: 700; font-size: 9.5px; white-space: nowrap; }
 .progress-track { height: 5px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
 .progress-fill { height: 100%; background: #C2CB42; transition: width 0.2s ease; border-radius: 3px; }
 .progress-fill.active { background-image: linear-gradient(135deg, rgba(255,255,255,0.4) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.4) 75%, transparent 75%, transparent); background-size: 14px 14px; animation: kbcProgressStripes 0.6s linear infinite; }
@@ -3872,11 +4028,19 @@ button.primary:hover { background: #aab238; }
 .topSection-content { padding: 0 8px 8px; }
 .exportBar { flex-shrink: 0; }
 .stats-bar { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
-.stat-pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 5px; font-size: 10.5px; font-weight: 700; cursor: pointer; user-select: none; border: 1px solid transparent; transition: opacity 0.1s ease; }
+.stat-pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 5px; font-size: 10.5px; font-weight: 700; cursor: pointer; user-select: none; border: 1px solid transparent; transition: opacity 0.1s ease, border-color 0.1s ease; }
 .stat-pill.inactive { opacity: 0.35; }
+.stat-pill:hover { border-color: currentColor; }
+.category-badge { border: 1px solid transparent; }
+details.customer:hover > summary .category-badge { border-color: currentColor; }
 .filter-bar { display: flex; gap: 6px; margin-bottom: 8px; }
 .search-input { flex: 1; padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 11px; box-sizing: border-box; font-family: inherit; }
 .category-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 10.5px; font-weight: 700; white-space: nowrap; }
+.subcat-label { display: inline-block; margin-left: 4px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 500; color: #64748b; vertical-align: middle; }
+.maintenance-controls { margin-top: 6px; }
+.maintenance-controls .action { background: #f1f5f9; color: #64748b; font-weight: 600; }
+.handoff-controls { margin-top: 8px; padding-top: 8px; border-top: 1px dashed #cbd5e1; }
+.handoff-controls .action { width: 100%; justify-content: center; }
 .tier { border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 6px; background: white; }
 .tier > summary { padding: 5px 8px; cursor: pointer; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 6px; justify-content: space-between; }
 .tier > summary::-webkit-details-marker { display: none; }
@@ -3926,13 +4090,17 @@ button.primary:hover { background: #aab238; }
 <input type="checkbox" id="autoStartToggle">
 Auto-start on paste
 </label>
-<div class="buttons">
+<div class="buttons" id="runControls">
 <button class="action primary" id="btnStart">${svgIcon('play', 11)}Start</button>
 <button class="action primary" id="btnPauseResume">${svgIcon('pause', 11)}Pause</button>
 <button class="action" id="btnProcessNext">Process next</button>
 <button class="action" id="btnCancel">${svgIcon('x', 11)}Cancel</button>
+</div>
+<div class="buttons maintenance-controls" id="maintenanceControls">
 <button class="action" id="btnRetryExceptions">${svgIcon('refresh', 11)}Retry exceptions</button>
 <button class="action" id="btnClear">Clear session</button>
+</div>
+<div class="buttons handoff-controls" id="handoffControls">
 <button class="action" id="btnCopyRawForExtract">${svgIcon('copy', 11)}Copy raw for Extract</button>
 </div>
 <div class="status">
@@ -3941,6 +4109,7 @@ Auto-start on paste
 <div>State: <span id="curState">Idle</span></div>
 <div>Completed: <span id="completedCount">0</span> &middot; Exceptions: <span id="exceptionCount">0</span> &middot; Total: <span id="totalCount">0</span></div>
 <div class="progress-track"><div class="progress-fill" id="progressFill" style="width: 0%;"></div></div>
+<div class="recent-log" id="recentLog"></div>
 </div>
 </div>
 </details>
@@ -4037,6 +4206,17 @@ const resultsBody = root.getElementById('resultsBody');
 const needsReviewSectionEl = root.getElementById('needsReviewSection');
 const minBtn = root.getElementById('minBtn');
 const headerEl = root.getElementById('headerEl');
+const recentLogEl = root.getElementById('recentLog');
+const runControlsEl = root.getElementById('runControls');
+const maintenanceControlsEl = root.getElementById('maintenanceControls');
+const handoffControlsEl = root.getElementById('handoffControls');
+const btnStartEl = root.getElementById('btnStart');
+const btnProcessNextEl = root.getElementById('btnProcessNext');
+const btnCancelEl = root.getElementById('btnCancel');
+const btnRetryExceptionsEl = root.getElementById('btnRetryExceptions');
+const btnClearEl = root.getElementById('btnClear');
+const btnCopyRawForExtractEl = root.getElementById('btnCopyRawForExtract');
+const pauseResumeBtn = root.getElementById('btnPauseResume');
 
 const badge = buildBadge();
 badge.show();
@@ -4090,11 +4270,20 @@ if (r.exception) return 'EXCEPTION';
 return r.tierName || 'PENDING';
 }
 
+// Split into a short tier-colour pill + a separately-styled, muted
+// sub-category label instead of one long concatenated string ("WARM
+// ENQUIRY - Quote / Offer Request: Detailed") - the single pill read
+// as one dense block next to the customer name, hurting scannability
+// in the collapsed summary row.
 function categoryBadge(r) {
 const color = categoryColor(r);
-const label = escapeHtmlForUi(r.exception ? r.exception : [r.tierName, r.subCategory].filter(Boolean).join(' - ') || 'Pending');
-const icon = r.exception ? svgIcon('warning', 10, ' margin-right: 3px;') : '';
-return `<span class="category-badge" style="background: ${color}1a; color: ${color};">${icon}${label}</span>`;
+if (r.exception) {
+const icon = svgIcon('warning', 10, ' margin-right: 3px;');
+return `<span class="category-badge" style="background: ${color}1a; color: ${color};">${icon}${escapeHtmlForUi(r.exception)}</span>`;
+}
+const tierPill = `<span class="category-badge" style="background: ${color}1a; color: ${color};">${escapeHtmlForUi(r.tierName || 'Pending')}</span>`;
+const subcat = r.subCategory ? `<span class="subcat-label" title="${escapeHtmlForUi(r.subCategory)}">${escapeHtmlForUi(r.subCategory)}</span>` : '';
+return tierPill + subcat;
 }
 
 // Same click-to-copy visual pattern as SLA-Extract.js's .sla-copyable
@@ -4182,6 +4371,8 @@ statsBarEl.classList.add('hidden');
 filterBarEl.classList.add('hidden');
 needsReviewSectionEl.innerHTML = '';
 updateBadgeProgress(badge, [], session);
+syncButtonStates();
+renderRecentLog();
 return;
 }
 rowCountEl.textContent = `${session.rows.length} rows parsed` + (session.headerOk ? '' : ` - ${session.headerError}`);
@@ -4323,6 +4514,31 @@ setTimeout(() => { el.textContent = original; el.style.background = ''; el.style
 completedCountEl.textContent = String(orderedAll.filter((r) => r.status === 'CLASSIFIED').length);
 exceptionCountEl.textContent = String(orderedAll.filter((r) => r.status === 'EXCEPTION').length);
 totalCountEl.textContent = String(session.rows.length);
+syncButtonStates();
+renderRecentLog();
+}
+
+function syncButtonStates() {
+const v = computeButtonVisibility(session, isRunning);
+btnStartEl.classList.toggle('hidden', !v.start);
+pauseResumeBtn.classList.toggle('hidden', !v.pauseResume);
+btnProcessNextEl.classList.toggle('hidden', !v.processNext);
+btnCancelEl.classList.toggle('hidden', !v.cancel);
+runControlsEl.classList.toggle('hidden', !v.runControls);
+btnRetryExceptionsEl.classList.toggle('hidden', !v.retryExceptions);
+btnClearEl.classList.toggle('hidden', !v.clear);
+maintenanceControlsEl.classList.toggle('hidden', !v.maintenanceControls);
+btnCopyRawForExtractEl.classList.toggle('hidden', !v.copyRawForExtract);
+handoffControlsEl.classList.toggle('hidden', !v.handoffControls);
+}
+
+function renderRecentLog() {
+if (recentCompletions.length === 0) { recentLogEl.innerHTML = ''; return; }
+recentLogEl.innerHTML = recentCompletions.map((r) => {
+const color = categoryColor(r);
+const label = escapeHtmlForUi(r.exception || r.tierName || 'Pending');
+return `<div class="recent-log-row"><span class="recent-log-name">${escapeHtmlForUi(r.name || '-')}</span><span class="recent-log-tier" style="background: ${color}1a; color: ${color};">${label}</span></div>`;
+}).join('');
 }
 
 const uiHandle = {
@@ -4459,7 +4675,6 @@ showButtonFeedback(event.currentTarget, 'Clipboard blocked - paste manually', tr
 // loop truly ends (done/cancelled), not on every pause. Without this,
 // pausing would leave the real page dimmed for as long as it stayed
 // paused.
-const pauseResumeBtn = root.getElementById('btnPauseResume');
 pauseResumeBtn.addEventListener('click', () => {
 if (!session) return;
 if (session.paused) {
@@ -4501,19 +4716,32 @@ if (isRunning && !session.paused) {
 showButtonFeedback(event.currentTarget, 'Pause/stop first', true);
 return;
 }
-const retryCount = session.rows.filter((row) => {
-if (row.status === 'INVALID_INPUT') return false;
-const result = session.results[row.inputIndex];
-return result && result.status === 'EXCEPTION' && result.exception !== 'CLASSIFICATION_REVIEW_REQUIRED';
-}).length;
+const retryCount = retryableExceptionCount(session);
 if (retryCount === 0) {
 showButtonFeedback(event.currentTarget, 'No exceptions to retry', true);
 return;
 }
 retryExceptions(session);
 saveSession(session);
-render();
-showButtonFeedback(event.currentTarget, `✓ Queued ${retryCount}`, false);
+// One click now both queues the exceptions AND starts working through
+// them, instead of queuing then requiring a separate Start/Resume
+// click - previously reported as an extra, unnecessary step.
+if (isRunning) {
+// A paused loop is still alive (see runLoop's own comment on this) -
+// just clearing paused lets its own poll pick the change up; calling
+// runLoop again here would start a second, duplicate loop.
+session.paused = false;
+setPauseResumeLabel('Pause');
+uiHandle.setState('Resuming...');
+showPageFlashOverlay('Checking leads…');
+} else {
+session.paused = false;
+session.cancelled = false;
+setPauseResumeLabel('Pause');
+showPageFlashOverlay('Checking leads…');
+runLoop(session, uiHandle);
+}
+showButtonFeedback(event.currentTarget, `✓ Retrying ${retryCount}`, false);
 });
 
 root.getElementById('btnClear').addEventListener('click', () => {
@@ -4527,6 +4755,7 @@ root.getElementById('btnClear').addEventListener('click', () => {
 if (session) session.cancelled = true;
 clearStoredSession();
 session = null;
+recentCompletions = [];
 pasteBox.value = '';
 setPauseResumeLabel('Pause');
 hidePageFlashOverlay();
@@ -4547,6 +4776,7 @@ isRunning = false;
 hidePageFlashOverlay();
 clearStoredSession();
 session = null;
+recentCompletions = [];
 host.remove();
 badge.remove();
 window.__konnectBookingCheck = null;
