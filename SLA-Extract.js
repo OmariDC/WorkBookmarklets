@@ -128,6 +128,17 @@ let lastFailedPageType = null;
 let currentPageType = null;
 let currentCustomers = [];
 let currentPendingCustomers = [];
+// The +N/-N indicator next to the title only means something right
+// after a genuine page re-scan (extractAndExportSla/Pending, where it's
+// computed from a real before/after diff) - every other redraw in this
+// file deliberately passes 0/0 for it (a plain "same data, re-render"
+// isn't a new diff). Remembered here specifically so
+// runBookingCheckClassification's redraw (see its own comment) can
+// re-pass the last real diff instead of wiping it, since that redraw
+// now happens far more often (paste & classify promoted to a one-click
+// top-level button) and isn't itself a new scan of the queue.
+let lastSlaDiffCounts = { newCount: 0, removedCount: 0 };
+let lastPendingDiffCounts = { newCount: 0, removedCount: 0 };
 // 'normal' (SLA/Pending assign view) or 'morningChecks' (the separate
 // page below) - entering/leaving is only ever explicit (the header
 // toggle), never something the background poll decides on its own.
@@ -3752,8 +3763,17 @@ saveBookingCheckImportState({ rawInput: '', results });
 // displayPendingPanel, not always displayPanel - this popover is shown
 // on both the SLA and Pending pages now; calling displayPanel while on
 // Pending would re-render the wrong page's panel entirely.
-if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers);
-else displayPanel(currentCustomers);
+//
+// Explicit lastSlaDiffCounts/lastPendingDiffCounts + invalidateCache:
+// false, not the defaults (0/0/true) - classifying doesn't change which
+// leads exist, it only attaches result badges to already-known ones, so
+// it must neither wipe the real +N/-N diff from the last actual scan
+// nor force another live re-scan of the queue table. Confirmed live:
+// with paste & classify now a one-click top-level button used far more
+// often, the defaults were wiping the +/- indicator and re-scanning the
+// queue on every single classify.
+if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, lastPendingDiffCounts.newCount, lastPendingDiffCounts.removedCount, false);
+else displayPanel(currentCustomers, lastSlaDiffCounts.newCount, lastSlaDiffCounts.removedCount, false);
 const reopened = document.getElementById('bookingCheckPopover');
 if (reopened) reopened.style.display = 'block';
 return true;
@@ -4700,6 +4720,7 @@ showPageFlashOverlay(`Loading new leads… (${remaining} left)`);
 }
 
 const removedCount = currentCustomers.filter(c => !seenKeys.has(c.key)).length;
+lastSlaDiffCounts = { newCount: addedCount, removedCount };
 
 const startTime = Date.now();
 displayPanel(customers, addedCount, removedCount);
@@ -4733,6 +4754,7 @@ const leads = collectPendingCustomers();
 const seenKeys = new Set(leads.map(l => l.key));
 const addedCount = leads.filter(l => !previousByKey.has(l.key)).length;
 const removedCount = currentPendingCustomers.filter(c => !seenKeys.has(c.key)).length;
+lastPendingDiffCounts = { newCount: addedCount, removedCount };
 
 displayPendingPanel(leads, addedCount, removedCount);
 console.info(`✅ Pending Customers report generated (${leads.length} customers, +${addedCount}/-${removedCount})`);
