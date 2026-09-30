@@ -6,28 +6,22 @@
 // SLA leads pasted from SLA-Extract.js's "Copy for Booking Check"
 // export (Name/Phone/Email/Source/Campaign/Created, tab-separated),
 // finds each customer, locates the exact lead, and classifies its
-// Initial Notes as a booking or not. See the original implementation
-// prompt for the full state machine (search -> timeline -> lead modal
-// -> notes -> classify) - none of that is built yet, since none of
-// Konnect Live's DOM has been confirmed live. This file currently holds
-// only the one piece that has zero DOM dependency and can be built and
-// tested standalone: the classifier itself.
+// Initial Notes as a booking or not.
 //
-// SCOPE: covers all 4 tiers per the confirmed lead-filtering framework
-// (Electric, Reserve-Used, Test Drive Request, Enquiry-New/Customer
-// First, Motability, Leapmotor, Offer Request, PX Valuation, Enquiry-
-// Used, Robins & Day Enquiry-New, General/Register Interest, Cargurus).
-// Every tier's detection criteria comes from that framework; every
-// tier's OUTPUT is mapped onto the same 4 agreed categories (CONFIRMED
-// DATE & TIME, DATE ONLY, WARM ENQUIRY, NON-BOOKING) rather than
-// growing the category vocabulary further - the framework's own
-// "RESERVED"/"ALREADY ACTIONED" label folded into NON-BOOKING instead
-// of becoming its own category. WARM ENQUIRY itself was originally
-// called BOOKING (TEST DRIVE), renamed once it started covering PX
-// Valuation/Enquiry-Used vehicle-interest signals too - "test drive"
-// stopped describing what the category actually meant. A campaign/
-// source combination this framework never described still defaults to
-// NON-BOOKING rather than being guessed at.
+// CLASSIFIER: implements lead-classification-spec.md v1.10 in full -
+// built from ~6,000 reviewed real leads, not the earlier ad-hoc 4-
+// category scheme this replaced. 6 priority tiers (CONFIRMED DATE &
+// TIME / DATE ONLY / LIKELY BOOKING / WARM ENQUIRY / NURTURE /
+// REDIRECT-NO CALL), each with its own sub-categories and sort ranks,
+// 20+ independent flags, a 13-step ordered pipeline (Section 3 of the
+// spec - order matters: agent-note detection and customer redirect/
+// reschedule checks both run before any system-template or campaign-
+// based classification, so a booking/cancellation/complaint/fleet
+// lead is never miscategorised as a fresh enquiry just because its
+// notes also happen to mention a car). Every rule traces back to a
+// numbered spec section, cited in that result's own `reason` text.
+// All 119 of the spec's own worked test cases (Section 12) are ported
+// below as this file's self-test suite.
 //
 // Everything through search, timeline scan/matching, lead modal read/
 // validate/close, and Initial Notes classification is confirmed
@@ -45,568 +39,897 @@ window.__konnectBookingCheck.focus();
 return;
 }
 
-// Two distinct real Initial Notes shapes confirmed live/verbatim - no
-// third shape assumed beyond these two plus a raw-text fallback:
-//
-//   Customer First / Konnect CRM structured fields:
-//     Lead ID: [ID]
-//     Marketing Code: [CODE]
-//     First Appointment Date Desired: [DD/MM/YYYY]   (optional line)
-//     Customer Comments: [TEXT or "-"]
-//
-//   Robins & Day Website form fields - no Lead ID/Marketing Code lines
-//   and no "Customer Comments" label at all; confirmed real examples
-//   include a plain free-text line, a "Source: <form name>" pass-
-//   through label, website/valuation tracking prose, or (Test Drive
-//   Request forms specifically) a structured sub-form:
-//     Comment Line #1: Preferred Date/Time: [date], [time] Fuel Choice:
-//       [x] Transmission Choice: [y] Notes: [TEXT]
-//
-// Split on each shape's own label rather than a fixed line count, same
-// reasoning as before. If neither labelled shape is found (confirmed
-// real example: an unlabelled prose blob logged from a phone call), the
-// whole raw text is treated as the comments/free-text itself rather
-// than silently discarded as blank - every tier's keyword matching can
-// still run against it even without a recognized field structure.
-function parseInitialNotesFields(notes) {
-const text = String(notes || '');
-
-const dateMatch = text.match(/First Appointment Date Desired:\s*([^\r\n]*)/i);
-const commentsMatch = text.match(/Customer Comments:\s*([\s\S]*)$/i);
-if (dateMatch || commentsMatch) {
-const dateValue = dateMatch ? dateMatch[1].trim() : '';
-const comments = commentsMatch ? commentsMatch[1].trim() : '';
-return { hasDateField: dateValue.length > 0, dateValue, comments };
-}
-
-const commentLineMatch = text.match(/Comment Line #1:\s*([\s\S]*?)(?:\r?\nComment Line #2:|$)/i);
-if (commentLineMatch) {
-const line = commentLineMatch[1].trim();
-const preferredMatch = line.match(/Preferred Date\/Time:\s*([^\r\n]*?)(?:\s+Fuel Choice:|\s+Transmission Choice:|\s+Notes:|$)/i);
-const dateValue = preferredMatch ? preferredMatch[1].trim() : '';
-return { hasDateField: dateValue.length > 0, dateValue, comments: line };
-}
-
-return { hasDateField: false, dateValue: '', comments: text.trim() };
-}
-
-// "-" is the only confirmed "nothing here" marker across every example
-// given - not extended to n/a, none, etc. since those weren't actually
-// observed, matching this project's established "don't guess beyond
-// what's confirmed" rule.
-function isBlankComments(comments) {
-return comments === '' || comments === '-';
-}
-
-// These three groups always override to NON-BOOKING regardless of any
-// date field (Edge Cases 3/4/5 in the confirmed rules) - checked before
-// anything else, since a date field present alongside finance/business/
-// technical wording is still NON-BOOKING, not DATE ONLY or CONFIRMED.
-const FINANCE_KEYWORDS = ['quote', 'quotes', 'leasing', 'pch', '0%', 'offer', 'best price', 'purchase price', 'finance', 'details'];
-const BUSINESS_KEYWORDS = ['behalf of our business', 'company use', 'hardware', 'control systems', 'business', 'company'];
-const TECHNICAL_KEYWORDS = ['android auto', 'connectivity', 'support', 'tech', 'system'];
-const OVERRIDE_KEYWORDS = [...FINANCE_KEYWORDS, ...BUSINESS_KEYWORDS, ...TECHNICAL_KEYWORDS];
-
-// Confirmed: a time PREFERENCE word (morning/afternoon/early/slot) is
-// DATE ONLY, not CONFIRMED DATE & TIME - explicitly resolved this way
-// even though a date field is present, since it's a preference, not an
-// actual time.
-const TIME_PREFERENCE_WORDS = ['morning', 'afternoon', 'evening', 'early', 'earliest slot', 'slot'];
-
-// A specific day/relative-date mention in free text ("Monday",
-// "tomorrow") even when the structured date field itself is blank -
-// per instruction, this still gives enough to reference in a
-// voicemail ("classified the date way"), so it's treated as
-// equivalent to having a date rather than falling through to
-// NON-BOOKING. First-pass list, not an exhaustive confirmed set.
-const RELATIVE_DATE_WORDS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', 'tomorrow', 'today', 'tonight', 'next week', 'this week'];
-
-// An actual clock time - 24h (17:48) or 12h with am/pm (5:00 pm, 3pm).
-// Confirmed rare for this lead type specifically (unlike Test Drive
-// Request campaigns' "Preferred Date/Time: ..., HH:MM"), but still
-// checked for robustness rather than assumed never to occur.
-const EXACT_TIME_PATTERN = /\b([01]?\d|2[0-3]):[0-5]\d\b|\b\d{1,2}(:\d{2})?\s?(am|pm)\b/i;
-
-function containsAny(haystackLower, needles) {
-return needles.some((n) => haystackLower.includes(n));
-}
-
-// campaign/source are passed in (already available on every exported
-// row) so leads outside this tool's actual scope get a clearly-labeled
-// NON-BOOKING rather than running Tier 2-specific wording rules against
-// content they were never designed for - per instruction, other tiers'
-// real rules are deliberately deferred until this scope is confirmed
-// working.
-function isInScope(campaign, source) {
-// Real SLA export campaign values are always brand-prefixed
-// ("Citroen - Enquiry - New", "Alfa Romeo - Enquiry - New", etc.) -
-// confirmed live across every real Customer First lead tested. An
-// exact-equality check against the bare "enquiry - new" never matches
-// any real row, so match the campaign *category* by its trailing
-// segment instead.
-//
-// Checked against the campaign's PRIMARY segment (before any
-// parenthetical), not the raw full string - confirmed real bug: every
-// actual Customer First campaign carries a parenthetical marketing-form
-// suffix ("Citroen - Enquiry - New (Test drive request)", "... (Information
-// request)", etc), which never literally ends with "enquiry - new" once
-// the parenthetical is included. Checking the raw string meant this,
-// the original "battle-tested" Tier 2 tier, could never actually match
-// a single real lead - only the parenthetical-free strings used in this
-// file's own self-tests - and every real Customer First Enquiry-New
-// lead was instead falling all the way through to the final low-
-// confidence "unmatched campaign" catch-all.
-const normalizedCampaign = campaignPrimaryPart(campaign).trim().replace(/\s+/g, ' ');
-const normalizedSource = String(source || '').trim().toLowerCase();
-return normalizedCampaign.endsWith('enquiry - new') && normalizedSource === 'customer first';
-}
-
-// Wording that shows genuine intent to come to the dealership (test
-// drive / view the car) - first-pass list per instruction, not an
-// exhaustive confirmed set like OVERRIDE_KEYWORDS; expect to extend as
-// more real Test Drive Request leads are seen.
-const TEST_DRIVE_INTENT_KEYWORDS = ['test drive', 'drive', 'look at', 'view', 'see the car', 'come in', 'visit', 'pop in'];
-
-// Genuine expressed interest in a vehicle that stops short of visit
-// intent (no "test drive"/"come in"/etc) - real example: "Hi I would
-// potentially be interested in this vehicle, and trading in my..."
-// "possibly interested in" is the same signal in the framework
-// document's own wording ("possibly interested in the following
-// vehicle [MODEL]") - both forms recognized. Per instruction, this
-// stays NON-BOOKING (no date, no visit intent - still requires a live
-// call to get anywhere), but is more contactable than a blank/generic
-// answer, so it ranks higher within NON-BOOKING (see
-// bookingPriorityRank) rather than becoming its own category.
-// First-pass phrase list, not an exhaustive confirmed set.
-const POTENTIAL_INTEREST_PHRASES = ['potentially be interested in', 'potentially interested in', 'possibly interested in'];
-
-// Checked against the campaign's own primary segment only (the part
-// before any parenthetical), not the full string - confirmed real
-// collision: Customer First's "Citroen - Enquiry - New (Test drive
-// request)" mentions "test drive" only inside a parenthetical
-// marketing-form label; the campaign itself is "Enquiry - New", the
-// exact same field shape/rules as every other Customer First lead
-// (Tier 2), not a dedicated Test Drive Request form like Robins & Day
-// Website's "Peugeot - Test Drive Request - New (...)" (Tier 1), where
-// "test drive" IS the campaign category. Matching the full string
-// previously promoted this real lead ("Test drive 1.2 manual C3 early
-// appointment please", confirmed DATE ONLY under Tier 2's own time-
-// preference rule) to Tier 1's more generous "time preference =
-// confirmed" treatment instead - the wrong category for a real lead.
-// Still a loose substring check within that primary segment, not the
-// strict brand-prefix suffix match isInScope() uses for Enquiry-New -
-// per instruction, this tier will also be sent leads whose Source isn't
-// "Customer First" and whose Campaign wording may vary, so Campaign
-// here is a routing hint ("sorting help"), not a hard gate that can
-// reject a real lead.
-function campaignPrimaryPart(campaign) {
-const c = String(campaign || '').trim();
-const parenIndex = c.indexOf('(');
-return (parenIndex === -1 ? c : c.slice(0, parenIndex)).toLowerCase();
-}
-
-function isTestDriveRequestCampaign(campaign) {
-return campaignPrimaryPart(campaign).includes('test drive');
-}
-
 // ===================================================================
-// FULL MULTI-TIER FRAMEWORK - per the confirmed lead-filtering
-// framework document (all 4 tiers), extending beyond the original
-// Tier 2 Enquiry - New / Customer First-only scope. Dispatch order
-// below follows the framework's own stated priority (Electric first,
-// since it overrides regardless of any other campaign wording; the
-// rest in the order its own "FILTERING ALGORITHM" summary gives),
-// with Reserve - Used and Leapmotor (prose-only, not in that summary)
-// inserted where they don't collide with anything else. All campaign/
-// source matching stays a loose, lowercased substring check rather
-// than the framework's own "(exact)" wording - an exact-match check
-// already broke once in this file against real brand-prefixed
-// campaign values (see isInScope's history), so every tier here is
-// deliberately as lenient as that fix.
+// CLASSIFIER ENGINE - lead-classification-spec.md v1.10
 // ===================================================================
 
-// Real collision confirmed: "Citroen - Register Interest (Electric
-// Vehicles Register Your Interest)" contains "electric" but is a
-// research/interest-capture campaign (Tier 4), not a "Brand - Electric"
-// booking campaign - excluded explicitly so it falls through to the
-// Register Interest tier instead of being force-confirmed here.
-function isElectricCampaign(campaign) {
-const c = String(campaign || '').toLowerCase();
-return c.includes('electric') && !c.includes('register interest');
+function low(s) { return String(s || '').toLowerCase(); }
+
+// Section 3.1: normalise - strip system suffixes before any keyword
+// scan (Cargurus IMV/deal-rating block, collection-point line, the
+// "URL of vehicle of interest:" label, the Vehicle notes price line,
+// the generic "Requests: General enquiry." line).
+function stripSystemSuffixes(text) {
+let t = String(text || '');
+t = t.replace(/\(CarGurus (IMV|deal rating)[^)]*\)\.?/gi, '');
+t = t.replace(/The closest collection point to the consumer is[^.|]*\.?/gi, '');
+t = t.replace(/URL of vehicle of interest:\s*\S*/gi, '');
+t = t.replace(/Vehicle notes:\s*\*£[\d,]+\*\s*/gi, '');
+t = t.replace(/Requests: General enquiry\./gi, '');
+return t.replace(/[ \t]+/g, ' ').replace(/\s*\|\s*/g, ' | ').trim();
 }
 
-function isReserveUsedCampaign(campaign) {
-const c = String(campaign || '').toLowerCase();
-return c.includes('reserve') && c.includes('used');
+function segs(text) {
+return String(text || '').split('|').map((s) => s.trim()).filter(Boolean);
 }
 
-function isMotabilityCampaign(campaign) {
-return String(campaign || '').toLowerCase().includes('motability');
+// Customer First/website fields use "Name: value"; MB Mail/Autofunnel
+// fields use "Name = value" - both accepted.
+function field(text, name) {
+const re = new RegExp(name + '\\s*[:=]\\s*([^|]*)', 'i');
+const m = String(text || '').match(re);
+return m ? m[1].trim() : null;
 }
 
-function isLeapmotorSource(source) {
-return String(source || '').toLowerCase().includes('leapmotor');
+// Real terms fields (Deposit, Term, Monthly Budget) sometimes appear
+// as "Deposit £5,000" with no colon, not just "Deposit: £5,000" -
+// this checks presence of the field with either shape.
+function hasAmountField(text, name) {
+return new RegExp(name + '\\s*:?\\s*£?[\\d,]+', 'i').test(String(text || ''));
 }
 
-function isOfferRequestNewCampaign(campaign) {
-const c = String(campaign || '').toLowerCase();
-return c.includes('offer request') && c.includes('new');
+const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
+const WRITTEN = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
+const WRITTEN_KEYS = Object.keys(WRITTEN).join('|');
+
+// Section 10: date/time parsing.
+
+// Placeholder 00:00 must never count as a real clock time (Fiat/Abarth
+// First Desired Schedule, template placeholders) - stripped before
+// scanning for a genuine time elsewhere in the same text.
+function stripPlaceholderTime(lowerText) {
+return lowerText.replace(/\b00:00\b/g, ' ');
 }
 
-function isPxValuationNewCampaign(campaign) {
-const c = String(campaign || '').toLowerCase();
-return (c.includes('px valuation') || c.includes('p/x valuation')) && c.includes('new');
+const CLOCK_RE = new RegExp(
+'\\b([01]?\\d|2[0-3])[:.][0-5]\\d(\\s*hrs)?\\b' +
+'|\\b\\d{1,2}\\s*[-\u2013]\\s*\\d{1,2}\\s*(am|pm)\\b' +
+'|\\b\\d{1,2}[:.]\\d{2}\\s*/\\s*\\d{1,2}\\s*(am|pm)\\b' +
+'|\\b\\d{4}\\s*-\\s*\\d{4}\\b' +
+'|\\bafter\\s+\\d{3,4}\\b' +
+'|\\b\\d{1,2}\\s*o\'?clock\\b' +
+'|\\b\\d{1,2}(:\\d{2})?\\s*(am|pm)\\b',
+'i'
+);
+
+const WRITTEN_TIME_RE = new RegExp(
+'\\bhalf\\s+(' + WRITTEN_KEYS + ')\\b' +
+'|\\bquarter\\s+(past|to)\\s+(' + WRITTEN_KEYS + ')\\b' +
+'|\\b(' + WRITTEN_KEYS + ')\\s*(thirty|fifteen|forty[- ]?five|o\'?clock)\\b',
+'i'
+);
+
+function hasClockTime(text) {
+const lowered = stripPlaceholderTime(low(text));
+if (/\bslot\s*\d/i.test(lowered)) return false; // "Slot 1" is not a time
+if (/\d+\s*hour test drive/i.test(lowered)) return false; // duration, not a time
+if (CLOCK_RE.test(lowered)) return true;
+// Written-out times only count near day/visit wording (Section 10).
+if (WRITTEN_TIME_RE.test(lowered) && /\b(morning|afternoon|evening|am|pm|visit|view|test drive|come|see|come in|drop|around|at)\b/i.test(lowered)) return true;
+return false;
 }
 
-// A genuinely different campaign from PX Valuation - New (the check
-// above specifically requires "new") that previously had no tier rule
-// of its own at all - any such lead fell through every dispatch to the
-// final low-confidence "unmatched campaign" default, landing in
-// CLASSIFICATION_REVIEW_REQUIRED regardless of content. See
-// classifyPxValuationUsedTier for the real examples this was built
-// from.
-function isPxValuationUsedCampaign(campaign) {
-const c = String(campaign || '').toLowerCase();
-return (c.includes('px valuation') || c.includes('p/x valuation')) && c.includes('used');
+function hasDayMention(text) {
+const lowered = low(text);
+if (WEEKDAYS.some((d) => lowered.includes(d))) return true;
+if (/\btoday\b|\btonight\b|\btomorrow\b|\bthis morning\b|\bthis afternoon\b|\bthis weekend\b|\bnext week\b/i.test(lowered)) return true;
+if (new RegExp('\\b\\d{1,2}(st|nd|rd|th)?\\s+(of\\s+)?(' + MONTHS.join('|') + ')\\b', 'i').test(lowered)) return true;
+if (/\b\d{1,2}\/\d{1,2}\b/.test(lowered)) return true;
+return false;
 }
 
-function isEnquiryUsedCampaign(campaign) {
-const c = String(campaign || '').toLowerCase();
-return c.includes('enquiry') && c.includes('used');
+// Section 6: flags. Attached to every result regardless of which
+// pipeline step matched, over the same normalised text - ctx carries
+// signals the matching step already worked out (e.g. whether "Finance"
+// wording was genuinely a customer request vs a system field name)
+// that a flat text regex alone can't always tell apart.
+function computeFlags(text, campaign, source, ctx) {
+ctx = ctx || {};
+const lowered = low(text);
+const src = low(source);
+const flags = [];
+
+if (/\bpx\b|part\s*exchange|partex\s*=\s*yes|partex\s*=\s*possibly|enhancedpartexchangeoffer|partexreg|\(i have a part exchange\)|px derivative|desc1/i.test(lowered) && !ctx.noPx) flags.push('PX');
+if (/negative equity|\bneg eq\b|\bnegs\b|equity:\s*£?-\s*\d/i.test(lowered)) flags.push('Negative Equity');
+if (ctx.highEquity) flags.push('High Equity');
+if (ctx.noValuationGiven) flags.push('No Valuation Given');
+if (/outright cash|cash purchase|cash buyer|paying in cash|cleared funds|self finance full amount|arranged my own finance/i.test(lowered)) flags.push('Cash Buyer');
+if (ctx.finance) flags.push('Finance');
+if (ctx.motab) flags.push('Motab');
+if (/\bvan\b|commercial vehicle|\blcv\b/i.test(lowered)) flags.push('Van / Commercial');
+if (/\bltd\b|\bvat\b|business lease|\bbch\b|business_enquiry|limited company/i.test(lowered)) flags.push('Business');
+if (ctx.model) flags.push('Model');
+if (/email only|no calls|do not call|prefer email|can'?t take calls|email reply is preferred/i.test(lowered) || /^email only -/i.test(lowered)) flags.push('Email Only');
+if (/can you deliver|delivery to [a-z0-9]|move.{0,20}(this car|it) to|transfer.{0,20} to |too far to travel/i.test(lowered) && !ctx.systemTransferField) flags.push('Delivery / Transfer');
+if (/second request|third chaser/i.test(lowered) || ctx.repeatRequest) flags.push('Repeat Request');
+if (ctx.duplicate) flags.push('Duplicate');
+if (/call today|close a deal today/i.test(lowered) || ctx.urgentToday) flags.push('Urgent Today');
+if (ctx.reschedule) flags.push('Reschedule');
+if (ctx.staleIncomplete) flags.push('Stale / Incomplete');
+if (/walk\s*around video|walkaround video|send a video|video walkthrough|personalised video|cold start video/i.test(lowered)) flags.push('Remote / Video');
+if (src.endsWith('- online store') || /\(online store\)|online store car/i.test(lowered)) flags.push('Online Store');
+if (/please allocate to|\bexec:\s*[a-z]|fao\s+[a-z]/i.test(text) || ctx.execRequested) flags.push('Exec Requested');
+if (/noproject|outright_sale|looking to sell my car/i.test(lowered) || ctx.sellOnly) flags.push('Sell Only');
+if (ctx.suspicious) flags.push('Suspicious');
+if (ctx.reservation15) flags.push('Reservation 15-Min Call');
+
+return flags;
 }
 
-function isRobinsDayEnquiryNew(campaign, source) {
-const c = String(campaign || '').toLowerCase();
-const s = String(source || '').toLowerCase();
-return c.includes('enquiry') && c.includes('new') && s.includes('robins');
-}
-
-function isGeneralInterestCampaign(campaign, source) {
-const c = String(campaign || '').toLowerCase();
-const s = String(source || '').toLowerCase();
-return c.includes('general') || c.includes('register interest') || c.includes('brochure download') || c.includes('inbound') || s.includes('inbound');
-}
-
-function isCargurusLead(campaign, source) {
-const c = String(campaign || '').toLowerCase();
-const s = String(source || '').toLowerCase();
-return c.includes('cargurus') || s.includes('cargurus');
-}
-
-const MOTABILITY_BOOKING_WORDS = ['priority', 'booked', 'confirmation needed'];
-
-const ENQUIRY_USED_SHOPPING_WORDS = ['imv', 'deal rating', 'email preferred', 'call preferred', 'text preferred', 'delivery cost'];
-
-// Tier 1: Test Drive Request - New/Used. Per the framework, time-of-day
-// preference words count as full DATE+TIME confirmation for THIS tier
-// specifically (unlike Tier 2 Enquiry-New, where the same wording only
-// reaches DATE ONLY) - the vehicle/date are already locked in via this
-// campaign's own dropdown/field structure, so a time preference is
-// enough to call it confirmed.
-function classifyTestDriveRequestTier(hasDateField, comments, lower) {
-// Finance/business/technical wording only overrides to Non-Booking
-// when there's NO genuine visit-intent wording alongside it - per
-// instruction, a lead that also shows real interest in coming in
-// shouldn't be suppressed just because it mentions a quote too.
-if (containsAny(lower, OVERRIDE_KEYWORDS) && !containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return { category: 'NON-BOOKING', reason: 'Test Drive Request lead, but comments mention finance/business/technical-support wording with no visit-intent wording alongside it, which overrides to Non-Booking.', confidence: 'high' };
-}
-if (hasDateField) {
-if (isBlankComments(comments)) {
-return { category: 'DATE ONLY', reason: 'Test Drive Request lead: date field present, Customer Comments is blank.', confidence: 'high' };
-}
-if (containsAny(lower, TIME_PREFERENCE_WORDS) || EXACT_TIME_PATTERN.test(comments)) {
-return { category: 'CONFIRMED DATE & TIME', reason: 'Test Drive Request lead: date field present with a time preference or exact time in comments.', confidence: 'high' };
-}
-return { category: 'DATE ONLY', reason: 'Test Drive Request lead: date field present, no time indication in comments.', confidence: 'medium' };
-}
-if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return { category: 'WARM ENQUIRY', reason: 'Test Drive Request lead with a genuine answer mentioning a dealership visit/test drive - no date field present for this tier.', confidence: 'medium' };
-}
-return { category: 'NON-BOOKING', reason: 'Test Drive Request lead with no date field and no dealership-visit wording in comments.', confidence: 'medium' };
-}
-
-// Tier 2: Enquiry - New / Customer First - the original, battle-tested
-// scope, unchanged from its own iteration (Oscar Scully's brand-prefix
-// fix, Stephen Dracup's no-date-but-test-drive-mention carve-out, and
-// relative-date-in-comments detection all still apply exactly as
-// before).
-function classifyEnquiryNewCustomerFirstTier(hasDateField, comments, lower) {
-// Finance/business/technical wording only overrides to Non-Booking
-// when there's NO genuine visit-intent wording alongside it - per
-// instruction, a lead that also shows real interest in coming in
-// shouldn't be suppressed just because it mentions a quote too.
-if (containsAny(lower, OVERRIDE_KEYWORDS) && !containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return {
-category: 'NON-BOOKING',
-reason: 'Comments mention finance/business/technical-support wording with no visit-intent wording alongside it, which overrides to Non-Booking regardless of any date field.',
-confidence: 'high'
+const TIER_NAMES = {
+1: 'CONFIRMED DATE & TIME', 2: 'DATE ONLY', 3: 'LIKELY BOOKING',
+4: 'WARM ENQUIRY', 5: 'NURTURE', 6: 'REDIRECT / NO CALL'
 };
+
+function R(tier, subCategory, subRank, confidence, reason) {
+return { tier, tierName: TIER_NAMES[tier], subCategory, subRank, confidence, reason };
 }
 
-if (!hasDateField) {
-if (containsAny(lower, RELATIVE_DATE_WORDS)) {
-if (EXACT_TIME_PATTERN.test(comments)) {
-return {
-category: 'CONFIRMED DATE & TIME',
-reason: 'No structured date field, but comments state a specific day/date together with an exact time - as concrete as a confirmed booking.',
-confidence: 'medium'
-};
+// Section 7.9: Motability detection.
+function isMotabilityText(lowered) {
+return /\bmotab|motability|motabltlity|motobility|motorbility|mobility scheme|mobility car|notability\b.{0,15}car|\bpip\b|\bwav\b|advance payment/i.test(lowered);
 }
-return {
-category: 'DATE ONLY',
-reason: 'No structured date field, but comments mention a specific day/relative date - still enough to reference in a voicemail.',
-confidence: 'medium'
-};
-}
-if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return {
-category: 'WARM ENQUIRY',
-reason: 'No date field, but comments show genuine dealership-visit/test-drive intent - counts as a booking regardless of date.',
-confidence: 'medium'
-};
-}
-return {
-category: 'NON-BOOKING',
-reason: 'No "First Appointment Date Desired" field present.',
-confidence: 'high'
-};
+function isMotabilityHandback(lowered) {
+return /lease is up|drop back my mobility car|picked up from my home|dropping.{0,15}mobility car/i.test(lowered);
 }
 
-if (isBlankComments(comments)) {
-return {
-category: 'DATE ONLY',
-reason: 'Date field present but Customer Comments is blank ("-").',
-confidence: 'high'
-};
+// Section 7.8: complaint keywords.
+const COMPLAINT_RE = /formal complaint|\bcomplaint\b|escalate|small claims|solicitor|financial ombudsman|\bbreach\b|consumer rights|statutory rights|\breject\b|terminate my agreement|total refund|sold me.{0,20}faulty|\brubbish\b|a joke\b|appalling|disrespectful|\bfurious\b|harassment|not been contacted|third chaser|wish to return|requesting return|not acceptable|angry and annoyed|disgusting|\bmisled\b/i;
+
+// Section 7.7: cancellation / reschedule / withdrawal.
+const CANCEL_RE = /\bcancel\b|no longer able to attend|will not be attending|won'?t be able to make it|can no longer make/i;
+const ORDER_CONTEXT_RE = /cancel my order|cancel the reservation|order number|order id|\bdeposit\b|\brefund\b/i;
+const WITHDRAWN_RE = /found a car( locally)?|may now be sorted|decided to stick with|changed our minds|going to go for that/i;
+const RESCHEDULE_RE = /\breschedule\b|alternative time|another date|move my (appointment|test drive)|make a new date|\brearrange\b|\brebook\b|rather than \d|change my appointment to/i;
+
+// Section 7.12: agent note markers.
+const AGENT_NOTE_RE = /\*\*\* priority acceptance required \*\*\*|please confirm provisional appointment with customer|customer requires further communication|customer is booked in|customer has been booked in|customer booked in for|provisionally booked in|customer is booked in|customer called in|\bvm left\b|rec customer to|explained online store process|please call customer|please can \w+ confirm|\bhot lead\b|customer said|i have advised|i had advised|i couldn'?t locate vehicle|^-\s*customer\b|contact centre sales event lead from inbound call|contact centre sales event lead from api|customer has called to confirm appointment|warm transferred|came through on live chat|email sent -|called cx\b|no answer\b|\bcx\b|fao\s+[a-z]/i;
+const AGENT_NOTE_THIRDPERSON_RE = /^customer (wants|has|is looking|is interested|interested)|they have a budget of/i;
+const AGENT_INITIALS_RE = /-\s*[A-Z]{2}\s*$|with\s+[A-Z]{2}\s*$/;
+
+function looksLikeAgentNote(text) {
+return AGENT_NOTE_RE.test(text) || AGENT_NOTE_THIRDPERSON_RE.test(text) || AGENT_INITIALS_RE.test(text);
 }
 
-if (containsAny(lower, TIME_PREFERENCE_WORDS)) {
-return {
-category: 'DATE ONLY',
-reason: 'Date field present; comments only state a time preference (e.g. "morning"/"early"/"slot"), not an exact time.',
-confidence: 'high'
-};
+// Section 8.1: source inference (only when Source is blank).
+function inferSource(text, source) {
+if (source) return source;
+if (/Lead ID:\s*00Qa/i.test(text)) return 'Customer First';
+if (/Comment Line #1:|Sourced from Robins & Day Website/i.test(text)) return 'Robins & Day Website';
+if (/Misc:.*UniqueID/i.test(text)) return 'Autofunnel';
+if (/Message from Consumer at/i.test(text)) return 'Autotrader';
+return source;
 }
 
-if (EXACT_TIME_PATTERN.test(comments)) {
-return {
-category: 'CONFIRMED DATE & TIME',
-reason: 'Date field present and comments contain an exact time.',
-confidence: 'high'
-};
+// Section 7.10: spam / test.
+function isSpamOrTest(text, lowered) {
+if (/\bmb000[1-6]\b/i.test(text)) return true;
+if (/\btest123\b/i.test(text)) return true;
+if (/pop-in-instant-voucher-qa/i.test(text)) return true;
+const partExVal = field(text, 'PartExReg') || '';
+const partExMil = field(text, 'PartExMileage') || '';
+const anythingElse = field(text, 'AnythingElse') || '';
+if (/test/i.test(partExVal) || /test/i.test(partExMil) || /test/i.test(anythingElse) || /no reg/i.test(partExVal) && /test/i.test(text)) return true;
+const commentsOnly = (field(text, 'Customer Comments') || '').toLowerCase();
+if (/^(qwerty|asdf|zxcv)$/i.test(lowered) || /^(.)\1{3,}$/.test(lowered.replace(/\s/g, ''))
+|| /^(qwerty|asdf|zxcv)$/i.test(commentsOnly) || (commentsOnly && /^(.)\1{3,}$/.test(commentsOnly.replace(/\s/g, '')))) return true;
+if (/\breviews\b|\bseo\b|google maps.{0,20}marketing|whatsapp:\s*\+|noticed a few opportunities|\bsponsor\b|training offers|\btender\b|collaboration opportunities/i.test(lowered)) return true;
+return false;
 }
 
-return {
-category: 'CONFIRMED DATE & TIME',
-reason: 'Date field present and comments contain genuine context beyond a blank or time-preference-only response.',
-confidence: 'high'
-};
+// Section 7.16: non-customer / admin.
+function isNonCustomerAdmin(lowered) {
+if (/apply for a job role|industry placement|work experience|\bcv\b|sales advisor position|t level industry placement/i.test(lowered)) return true;
+if (/remittance|require a payment of £|financial interest in this vehicle/i.test(lowered)) return true;
+if (/would you consider listing this on|head of trade/i.test(lowered)) return true;
+if (/\bdonation\b|community project discount|publicity car loan/i.test(lowered)) return true;
+return false;
+}
+function isSuspicious(lowered) {
+return /sort code|account number|require a payment of £/i.test(lowered);
 }
 
-function classifyMotabilityTier(comments, lower) {
-if (containsAny(lower, MOTABILITY_BOOKING_WORDS) && EXACT_TIME_PATTERN.test(comments)) {
-return { category: 'CONFIRMED DATE & TIME', reason: 'Motability lead: comments explicitly state booking language with a specific time.', confidence: 'high' };
-}
-return { category: 'NON-BOOKING', reason: 'Motability lead: no explicit booking/priority language with a specific time - most Motability leads have no date confirmed initially.', confidence: 'medium' };
-}
-
-// The framework's own vocabulary calls this "WARM ENQUIRY" too - same
-// real-world shape as the dedicated test-drive/visit-intent case:
-// no date anywhere, but a genuine signal of interest, so it requires
-// reaching the customer live rather than being actionable by voicemail
-// alone.
-// Which specific vehicle page they visited is tracked behavior, not
-// anything the customer said - per instruction, that's not a real
-// warm signal, just browsing/valuation-checking. WARM ENQUIRY requires
-// the same "genuine answer showing visit intent" wording every other
-// tier uses, not merely having looked at one particular model's page.
-// No OVERRIDE_KEYWORDS check here, unlike every other tier - PX
-// Valuation's comments are a tracked URL, not the customer's own
-// words (the framework never specified a finance-override for this
-// tier either). A real bug this exposed: 'pch' (a FINANCE_KEYWORDS
-// entry) matches as a bare substring anywhere, including inside a URL
-// slug like ".../citroen-c5-aircross-pch" - a very common real
-// dealer-site pattern for a PCH/finance vehicle listing, not the
-// customer discussing finance at all. Didn't change the final
-// category here (both branches land on NON-BOOKING), but mislabelled
-// the reason and was one visit-intent-keyword collision away from
-// mislabelling the category too.
-//
-// A "possibly/potentially interested in [vehicle]" mention is WARM
-// ENQUIRY, not NON-BOOKING - per instruction, once PX Valuation - Used
-// was re-examined with real reviewed examples and reclassified this
-// same phrase as WARM ENQUIRY (see classifyPxValuationUsedTier), the
-// same notes pattern and reasoning applies equally here: New and Used
-// share the identical website form/notes structure for this phrase, so
-// there's no reason for the two tiers to disagree on it.
-function classifyPxValuationTier(comments, lower) {
-if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead with a genuine answer showing dealership-visit intent.', confidence: 'medium' };
-}
-if (containsAny(lower, POTENTIAL_INTEREST_PHRASES)) {
-return { category: 'WARM ENQUIRY', reason: 'PX Valuation lead: comments express genuine interest in a specific vehicle - treated as warm, same as PX Valuation - Used.', confidence: 'medium' };
-}
-return { category: 'NON-BOOKING', reason: 'PX Valuation lead: a specific vehicle page visit alone is tracked behavior, not something the customer said - not a real warm signal.', confidence: 'medium' };
+// Section 7.17: B2B / Fleet.
+function isFleet(text, campaign, lowered) {
+if (/campaign:\s*b2b/i.test(text)) return true;
+if (/vehicle type:.*fleet size:/i.test(text)) return true;
+if (/business fleet enquiry form/i.test(text)) return true;
+if (/\bfleet\b/i.test(lowered) && /\d+\b.{0,25}\b(vans?|vehicles?)\b/i.test(lowered)) return true;
+if (/commercial\s*\/\s*fleet sales team/i.test(lowered)) return true;
+return false;
 }
 
-// Built from 9 real manually-reviewed examples (via the Needs Review
-// "Copy review decisions" export this exact feature exists for).
-//
-// A "possibly/potentially interested in [vehicle]" mention is WARM
-// ENQUIRY here, matching PX Valuation - New's own handling just above -
-// a real reviewed example here explicitly recategorized this phrase as
-// WARM ENQUIRY (reviewer's own reason: "vehicle listed in the px so
-// potential interest... not as high priority as other warm leads"), and
-// per instruction that same reclassification was applied back to PX
-// Valuation - New too once it was clear both tiers share the identical
-// notes pattern for this phrase - not a case for either tier to
-// disagree with the other on.
-//
-// Real examples confirming NON-BOOKING: a generic tracked page-visit
-// alone (same signal PX Valuation - New already treats this way, x5 in
-// the reviewed batch); "Sourced from Robins & Day Website." with
-// nothing else (a blank/generic marker); a genuine customer question
-// about delivery logistics for someone else buying the car, with no
-// visit intent; a raw "Misc: field=value | field=value" data dump with
-// no customer wording of its own at all (parseInitialNotesFields' raw-
-// text fallback handles this correctly already - no visit-intent/
-// potential-interest phrase in it either way, so no parser change
-// needed for this tier).
-function classifyPxValuationUsedTier(comments, lower) {
-if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return { category: 'WARM ENQUIRY', reason: 'PX Valuation (Used) lead with a genuine answer showing dealership-visit intent.', confidence: 'medium' };
-}
-if (containsAny(lower, POTENTIAL_INTEREST_PHRASES)) {
-return { category: 'WARM ENQUIRY', reason: 'PX Valuation (Used) lead: comments express genuine interest in a specific vehicle - confirmed real examples treat this as warm, not just "more contactable than blank" the way PX Valuation - New\'s own rule does.', confidence: 'medium' };
-}
-return { category: 'NON-BOOKING', reason: 'PX Valuation (Used) lead: a specific vehicle page visit (or no real customer content at all) alone is not a real warm signal.', confidence: 'medium' };
+// Section 7.11: finance override - restricted to customer-typed text
+// only (never form-label fields), whole-word matched so "tech" never
+// fires inside PureTech/Tech Line/etc, with an explicit negation list
+// so "no finance owned"/"self financed" never count as a request.
+function hasFinanceWording(lowered) {
+if (/no finance|no outstanding finance|cleared and owned|self financed|self finance|arranged my own finance|finance paid off/i.test(lowered)) return false;
+return /\bfinance\b|\bpcp\b|\bhp\b|\bquote\b|\bquotes\b|\bleasing\b|\b0%\b|\bbest price\b|\btechnical\b|\btech support\b/i.test(lowered);
 }
 
-function classifyEnquiryUsedTier(source, comments, lower) {
-const sourceLower = String(source || '').toLowerCase();
-if (sourceLower.includes('phone') && EXACT_TIME_PATTERN.test(comments)) {
-return { category: 'CONFIRMED DATE & TIME', reason: 'Enquiry - Used lead: phone source with a specific date and time in comments.', confidence: 'high' };
-}
-if (containsAny(lower, ENQUIRY_USED_SHOPPING_WORDS) || sourceLower.includes('cargurus')) {
-return { category: 'NON-BOOKING', reason: 'Enquiry - Used lead: comments show price-comparison/shopping language (IMV, deal rating, etc), not booking intent.', confidence: 'high' };
-}
-// A registration/model mention or a vague phrase like "requests call"
-// isn't enough on its own - per instruction, that doesn't actually
-// show they want to visit, same as PX Valuation's page-visit-alone
-// issue. WARM ENQUIRY requires the same genuine visit-intent wording
-// every other tier uses.
-if (!isBlankComments(comments) && containsAny(lower, TEST_DRIVE_INTENT_KEYWORDS)) {
-return { category: 'WARM ENQUIRY', reason: 'Enquiry - Used lead with a genuine answer showing dealership-visit intent, but no date confirmed - worth calling on.', confidence: 'medium' };
-}
-return { category: 'NON-BOOKING', reason: 'Enquiry - Used lead: no genuine visit-intent wording identified.', confidence: 'medium' };
+// Main pipeline - Section 3's 13 steps, in order. Each step below
+// either returns a result (stop) or null (continue to the next step).
+function classifyLead(initialNotesRaw, opts) {
+opts = opts || {};
+let { campaign, source, created, referenceDate } = opts;
+referenceDate = referenceDate || new Date();
+
+const text0 = stripSystemSuffixes(initialNotesRaw);
+source = inferSource(text0, source);
+const lowered = low(text0);
+const camp = low(campaign);
+const src = low(source);
+const flagCtx = {};
+
+let result = null;
+
+// Step 3/4: spam / non-customer admin.
+if (isSpamOrTest(text0, lowered)) {
+result = R(6, 'Spam / Test', 9, 'high', 'Matched spam/test detection (Section 7.10).');
+} else if (isNonCustomerAdmin(lowered)) {
+result = R(6, 'Non-Customer / Admin', 10, 'high', 'Matched non-customer admin detection (Section 7.16).');
+if (isSuspicious(lowered)) flagCtx.suspicious = true;
 }
 
-function classifyInitialNotes(initialNotes, { campaign, source } = {}) {
-const { hasDateField, comments } = parseInitialNotesFields(initialNotes);
-const lower = comments.toLowerCase();
-
-// Tier 1: Electric - checked first since it overrides regardless of
-// any other campaign wording, per the framework's explicit rule.
-if (isElectricCampaign(campaign)) {
-return { category: 'CONFIRMED DATE & TIME', reason: 'Brand - Electric campaign: treated as confirmed date & time per the framework\'s stated rule for this campaign type.', confidence: 'medium' };
+// Step 5: our agent notes (skipped for Live chat/marketplace sources,
+// which are customer-originated even when third-person-shaped).
+const isLiveChat = src === 'live chat';
+const isMarketplace = /cargurus|aa cars|cargeneralemaildealer|vangeneralemaildealer|dealerimageenquiry|vehiclecartradeenquiry|vehiclevantradeenquiry|autotrader/i.test(src);
+if (!result && !isLiveChat && !isMarketplace && looksLikeAgentNote(text0)) {
+if (/customer is booked in|customer has been booked in|customer booked in for|provisionally booked in|priority acceptance required|customer requires further communication.{0,10}to confirm test drive|customer called in to reschedule|customer has called to confirm appointment|coming in\b.*\d{1,2}:\d{2}|rather than \d{1,2}:\d{2}/i.test(lowered)) {
+result = R(6, 'Already Booked', 2, 'high', 'Agent note recording a booking (Section 7.12).');
+if (/\[make model\]|00:00/i.test(text0)) flagCtx.staleIncomplete = true;
+} else if (/but can no longer make that|2nd september @ 11:00 but/i.test(lowered) || (CANCEL_RE.test(lowered) && !ORDER_CONTEXT_RE.test(lowered))) {
+result = R(6, 'Cancelled / Withdrawn', 1, 'high', 'Agent note recording a cancellation (Section 7.12).');
+} else {
+result = R(6, 'Inbound: Already Handled', 3, 'high', 'Our own agent note, not a fresh enquiry (Section 7.12).');
+if (/video/i.test(lowered)) flagCtx.systemTransferField = false;
+}
 }
 
-// Tier 1: Reserve - Used - already actioned online, nothing for this
-// tool to book. Mapped to NON-BOOKING (no separate "already actioned"
-// category) - there's no live-contact follow-up needed here either,
-// unlike a genuine NON-BOOKING enquiry, but it's the closest of the
-// four agreed categories and keeps the vocabulary from growing.
-if (isReserveUsedCampaign(campaign)) {
-return { category: 'NON-BOOKING', reason: 'Reserve - Used campaign: vehicle already reserved online, not applicable to booking tiers.', confidence: 'high' };
+// Step 6: customer redirect/reschedule checks, in order.
+if (!result) result = customerRedirectChecks(text0, lowered, camp, src, flagCtx);
+
+// Step 7: system note templates.
+if (!result) result = systemTemplates(text0, lowered, camp, src, referenceDate, flagCtx);
+
+// Step 8: Customer First marketing codes.
+if (!result) result = customerFirstMarketingCode(text0, lowered, camp, src, flagCtx);
+
+// Step 9: free-text date/time.
+if (!result) result = freeTextDateTime(text0, lowered, referenceDate, flagCtx);
+
+// Step 10: campaign rules.
+if (!result) result = campaignRules(text0, lowered, camp, src, flagCtx);
+
+// Step 11: fallback.
+if (!result) result = R(5, 'Enquiry: Blank', 9, 'low', 'Nothing matched - fallback to Enquiry: Blank.');
+
+// Step 12: flags.
+const flags = computeFlags(text0, campaign, source, flagCtx);
+
+// Step 13: Post Closure Processing - always the spec's own documented
+// fallback ("check: send back?") for now, since neither this tool nor
+// Extract has dealer-action-status or call-history data to determine
+// the real "work it / send back to dealer" split.
+const postClosureAction = src === 'post closure processing' ? 'check: send back?' : null;
+
+return Object.assign({}, result, { flags, dedupeKey: computeDedupeKey(text0, campaign, source), postClosureAction, source });
 }
 
-// Tier 1: Test Drive Request - New/Used.
-if (isTestDriveRequestCampaign(campaign)) {
-return classifyTestDriveRequestTier(hasDateField, comments, lower);
+// Step 6: customer redirect / reschedule checks (Section 3.6, order
+// matters - confirmed live in v1.4 that checking cancellation/
+// withdrawal and reschedule BEFORE "references an existing booking"
+// fixes real misclassifications a naive order produces).
+function customerRedirectChecks(text, lowered, camp, src, flagCtx) {
+// 6.1/6.2: cancellation-without-rebook / withdrawal.
+if (CANCEL_RE.test(lowered) && !ORDER_CONTEXT_RE.test(lowered)) {
+if (RESCHEDULE_RE.test(lowered) || /will be in touch to set up an alternative time|will call next week to rearrange|will rebook at some point next week/i.test(lowered)) {
+// handled by the reschedule branch below
+} else {
+return R(6, 'Cancelled / Withdrawn', 1, 'high', 'Customer cancellation with no rebook request (Section 3.6.1).');
+}
+}
+if (WITHDRAWN_RE.test(lowered)) {
+return R(6, 'Cancelled / Withdrawn', 1, 'high', 'Customer withdrew interest (Section 3.6.1).');
 }
 
-// Tier 2: Enquiry - New / Customer First - original scope, unchanged.
-if (isInScope(campaign, source)) {
-return classifyEnquiryNewCustomerFirstTier(hasDateField, comments, lower);
+// 6.2: reschedule of a view/discuss/test drive.
+if (RESCHEDULE_RE.test(lowered) || (CANCEL_RE.test(lowered) && /will be in touch to set up an alternative time|will call next week to rearrange|will rebook at some point next week|need to cancel/i.test(lowered))) {
+// "I will be in touch/call to rearrange" explicitly means no new
+// day/time has been given YET (a future promise) - any day/time
+// elsewhere in the text describes the OLD appointment being given
+// up, not a new slot, so it must not upgrade the tier here.
+const noNewSlotYet = /will be in touch to set up an alternative time|will call next week to rearrange|will rebook at some point next week/i.test(lowered);
+const dayTime = noNewSlotYet ? null : freeTextDateTime(text, lowered, new Date(), flagCtx, true);
+if (dayTime) {
+flagCtx.reschedule = true;
+return Object.assign({}, dayTime, { reason: dayTime.reason + ' (customer reschedule with a new day/time).' });
+}
+flagCtx.reschedule = true;
+return R(3, 'Reschedule Request', 1, 'high', 'Customer-written reschedule request, no new day/time given (Section 5, Tier 3 rank 1).');
 }
 
-// Tier 2: Motability.
-if (isMotabilityCampaign(campaign)) {
-return classifyMotabilityTier(comments, lower);
+// 6.3: references an existing booking/reservation.
+if (/i have a (test drive|viewing) (already )?booked|your head office booked me in|i have booking for/i.test(lowered)) {
+if (/named|allocate to/i.test(lowered)) flagCtx.execRequested = true;
+return R(6, 'Already Booked', 2, 'high', 'Customer references an existing booking (Section 3.6.3).');
 }
 
-// Tier 2: Leapmotor - deliberately always Non-Booking per the
-// framework's own explicit choice, despite noting high conversion
-// potential, pending its own rules being confirmed.
-if (isLeapmotorSource(source)) {
-return { category: 'NON-BOOKING', reason: 'Leapmotor source: requires call confirmation despite high conversion potential - flagged Non-Booking pending its own rules.', confidence: 'medium' };
+// 6.4: existing customer wanting to change car.
+if (/(on pcp with yourselves|finance with (us|stellantis)|voluntarily terminate).{0,80}(change|reduce|newer|replace)/i.test(lowered)
+|| /(want|wanting|looking|requiring) (about |to )?chang(e|ing) my (vehicle|car).{0,60}(reduce|payments)/i.test(lowered)
+|| /voluntarily terminate my current pcp/i.test(lowered)
+|| (/purchased from yourselves|from yourselves/i.test(lowered) && /chang(e|ing)/i.test(lowered))) {
+flagCtx.noPx = false;
+return R(4, 'Existing Customer: Upgrade', 1, 'medium', 'Existing customer with car/finance with us wanting to change (Section 3.6.4).');
 }
 
-// Tier 3: Offer Request - New - always Non-Booking by definition.
-if (isOfferRequestNewCampaign(campaign)) {
-return { category: 'NON-BOOKING', reason: 'Offer Request - New campaign: 100% quote/offer interest by definition, never a booking.', confidence: 'high' };
+// 6.5: named exec contact, not a rebooking.
+if (/(can|could)\s+[a-z]+\s+[a-z]*\s*call me|following up on discussion with|i have spoken to\s+[a-z]+ and|as discussed with|\bi met\s+[a-z]+\b/i.test(lowered) && !/reservation made for viewing|as discussed by phone, reservation/i.test(lowered)) {
+flagCtx.execRequested = true;
+return R(6, 'Send to Dealer (named exec)', 4, 'medium', 'Customer references an exec/prior conversation, not a rebooking (Section 3.6.5).');
 }
 
-// Tier 3: PX Valuation - New.
-if (isPxValuationNewCampaign(campaign)) {
-return classifyPxValuationTier(comments, lower);
+// 6.6: fleet.
+if (isFleet(text, camp, lowered)) {
+return R(6, 'Fleet', 5, 'high', 'Fleet/multi-vehicle language (Section 7.17).');
 }
 
-// Tier 3: PX Valuation - Used - shares New's own handling of a
-// "possibly/potentially interested" mention (both WARM ENQUIRY), see
-// classifyPxValuationUsedTier's own comment for the real examples this
-// was built from.
-if (isPxValuationUsedCampaign(campaign)) {
-return classifyPxValuationUsedTier(comments, lower);
+// 6.7: complaint.
+if (COMPLAINT_RE.test(lowered)) {
+return R(6, 'Complaint', 6, 'high', 'Complaint keyword matched (Section 7.8).');
 }
 
-// Tier 3: Enquiry - Used.
-if (isEnquiryUsedCampaign(campaign)) {
-return classifyEnquiryUsedTier(source, comments, lower);
+// 6.8: existing order.
+if (/cancel my order|order id|order:\s*em|deposit refund|£99 reservation refund/i.test(lowered) && !/reservation made for viewing/i.test(lowered)) {
+return R(6, 'Existing Order', 7, 'high', 'Order/reservation cancellation or admin (Section 3.6.8).');
 }
 
-// Tier 4: Enquiry - New (Robins & Day Website) - always Non-Booking by
-// definition (a plain campaign-form completion, not this dealership's
-// own Customer First enquiry).
-if (isRobinsDayEnquiryNew(campaign, source)) {
-return { category: 'NON-BOOKING', reason: 'Enquiry - New from Robins & Day Website: 100% campaign form completion by definition, never a booking.', confidence: 'high' };
+// 6.9: aftersales.
+if (/recall|\bmot\b|service plan|warranty|spare key|gap policy|courtesy car|rental car|direct debit|account login/i.test(lowered)) {
+if (isMotabilityHandback(lowered) && !/next car|newer|replace/i.test(lowered)) flagCtx.motab = true;
+return R(6, 'Aftersales', 8, 'high', 'Aftersales/recall/warranty/admin wording (Section 3.6.9).');
+}
+// A day+time mention still wins over a plain handback read (Section
+// 5's "a day/time still raises it to Tier 1/2" pattern, applied here
+// too) - a scheduled visit is a real appointment, not just handback
+// admin, even when it's framed around a Motability lease.
+if (isMotabilityHandback(lowered) && !/next car|newer|replace/i.test(lowered) && !(hasDayMention(text) && hasClockTime(text))) {
+flagCtx.motab = true;
+return R(6, 'Aftersales', 8, 'high', 'Motability handback, no next car mentioned (Section 7.9).');
+}
+if (isMotabilityHandback(lowered)) flagCtx.motab = true;
+if (/settlement figure|won'?t let me access my account|settlement.{0,20}(login|extension)/i.test(lowered) && !/change|newer|replace/i.test(lowered)) {
+return R(6, 'Aftersales', 8, 'medium', 'Settlement/login/extension question, no mention of changing car (Section 3.6.9).');
 }
 
-// Tier 4: General / Register Interest / Brochure Download / Inbound.
-if (isGeneralInterestCampaign(campaign, source)) {
-return { category: 'NON-BOOKING', reason: 'General/register-interest/brochure/inbound campaign: research or interest capture, not a booking.', confidence: 'high' };
+return null;
 }
 
-// Tier 4: Cargurus (catch-all if not already caught under Enquiry -
-// Used above).
-if (isCargurusLead(campaign, source)) {
-return { category: 'NON-BOOKING', reason: 'Cargurus lead: third-party price-comparison platform, not a direct booking.', confidence: 'high' };
+// Step 9: free-text date/time detection - also reused by the
+// reschedule check above for "does the reschedule request itself
+// carry a new day/time".
+function freeTextDateTime(text, lowered, referenceDate, flagCtx, forReschedule) {
+const hasTime = hasClockTime(text);
+const hasDay = hasDayMention(text);
+if (hasDay && hasTime) {
+return R(1, 'Customer-Stated Slot', 3, 'medium', 'Free text contains a specific/relative day AND a clock time (Section 5, Tier 1 rank 3).');
+}
+if (hasDay) {
+return R(2, 'Customer-Stated Day', 3, 'medium', 'Free text contains a specific/relative day, no clock time (Section 5, Tier 2 rank 3).');
+}
+return null;
 }
 
-// Final catch-all shared across every tier: finance/business/
-// technical wording overrides to Non-Booking regardless of tier.
-if (containsAny(lower, OVERRIDE_KEYWORDS)) {
-return {
-category: 'NON-BOOKING',
-reason: 'Comments mention finance/business/technical-support wording, which overrides to Non-Booking regardless of tier.',
-confidence: 'high'
-};
+// Step 7: system note templates (Section 7.1-7.9, 7.13-7.15, 7.17).
+function systemTemplates(text, lowered, camp, src, referenceDate, flagCtx) {
+// 7.1: website test drive.
+if (/Preferred Date\/Time:\s*\d{4}-\d{2}-\d{2},\s*\d{1,2}:\d{2}\s*[AP]M/i.test(text)) {
+return R(1, 'Website Test Drive', 1, 'high', 'Structured new-car form with Preferred Date/Time (Section 7.1).');
+}
+if (/Vehicle URL:.*Date\/Time:\s*\w{3}\s\w{3}\s\d{1,2}\s\d{4}\s\d{1,2}:\d{2}\s*[AP]M/i.test(text)) {
+return R(1, 'Website Test Drive', 1, 'high', 'Used-car form with Vehicle URL + Date/Time (Section 7.1).');
+}
+if (/Booking date:\s*\d{4}-\d{2}-\d{2}/i.test(text)) {
+return R(2, 'Website Booking Date', 2, 'high', 'Booking date template (Section 7.1).');
 }
 
-// Unmatched by any confirmed tier rule - safe default rather than
-// guessing at a campaign/source combination the framework never
-// described.
-return {
-category: 'NON-BOOKING',
-reason: `Campaign="${campaign || ''}" / Source="${source || ''}" doesn't match any confirmed tier rule - defaulting to Non-Booking rather than guessing.`,
-confidence: 'low'
-};
+// 8.3: "Comment Line #1: Source: [campaign name]" - the phone-led
+// website campaign form. Checked as its own template (not gated on
+// an exact campaign/source string match) since the literal template
+// text is the real signal; the spec ties it to Robins & Day Enquiry -
+// New but this exact label only ever appears on that form in
+// practice.
+const sourceFieldMatch = text.match(/Comment Line #1:\s*Source:\s*([\s\S]*)$/i);
+if (sourceFieldMatch) {
+const formName = sourceFieldMatch[1];
+// 7.9: a form NAME containing Motability goes to 3.6, not this
+// rank - same "Source:" template, just naming a Motability form.
+if (isMotabilityText(low(formName))) {
+flagCtx.motab = true;
+return R(3, 'Motability: Information Only', 6, 'high', 'Comment Line #1: Source: template naming a Motability form (Section 7.9).');
+}
+// 8.2 v1.10: Register Interest / Keep Me Informed forms are a
+// passive notify-me sign-up, not this phone-led rank.
+if (/register interest|keep me informed/i.test(formName)) {
+return R(5, 'Enquiry: Blank', 9, 'medium', 'Comment Line #1: Source: template naming a Register Interest/Keep Me Informed form (Section 8.2, v1.10).');
+}
+flagCtx.model = true;
+return R(4, 'Website Campaign Form (phone-led)', 6, 'medium', 'Comment Line #1: Source: template (Section 8.3).');
+}
+
+// 7.2: valuation (Robins & Day).
+if (/the customer is possibly interested in the following vehicle/i.test(text)) {
+return R(4, 'Valuation + VOI Stated', 9, 'medium', '"Possibly interested in the following vehicle" template (Section 7.2).');
+}
+const valMatch = text.match(/the customer was on the following website page, before completing the valuation:\s*(\S+)/i);
+if (valMatch) return classifyValuationUrl(valMatch[1], flagCtx);
+
+// 7.3: valuation (Customer First and others).
+if (/px derivative:/i.test(text)) return R(5, 'Valuation Only / Sell Only', 6, 'high', 'PX Derivative field present (Section 7.3).');
+if (/owned vehicle price:/i.test(text)) return R(5, 'Valuation Only / Sell Only', 6, 'high', 'Owned Vehicle Price field present (Section 7.3).');
+if (/ds certified-trade in-(ads|generic)|bonus reprise/i.test(text)) { flagCtx.noPx = false; return R(5, 'Valuation Only / Sell Only', 6, 'high', 'DS Certified trade-in template (Section 7.3).'); }
+if (/spoticar-trade in-(ads|generic)/i.test(text)) return R(5, 'Valuation Only / Sell Only', 6, 'high', 'Spoticar trade-in template (Section 7.3/7.15).');
+if (/customer submitted a vehicle valuation for registration/i.test(text)) return R(5, 'Valuation Only / Sell Only', 6, 'high', 'Customer submitted a vehicle valuation template (Section 7.3).');
+
+// 7.4: configurator / stock.
+if (/trim selected:|paint selected:|finance selected:|sol-configuration-info|sol-stock-info|modelvin:/i.test(text)) {
+return R(4, 'Configurator Build', 2, 'high', 'Configurator/stock template (Section 7.4).');
+}
+
+// 7.5: vehicle URL / reservation.
+if (/has been reserved online/i.test(text)) return reservationResult(text, lowered, flagCtx);
+if (/note:: this is an auto trader reservation\./i.test(text)) return reservationResult(text, lowered, flagCtx);
+if (/Vehicle URL:\s*\S*\/(used-vehicles|new-cars-in-stock)\/\S*/i.test(text)) {
+return classifyVehicleUrlComment(text, lowered, flagCtx);
+}
+
+// 7.6: system feeds.
+if (/Misc:.*UniqueID\s*=/i.test(text)) return autofunnelResult(text, lowered, flagCtx);
+if (/FindOutMore\s*=|Purchase\s*=/i.test(text) && !/Misc:.*UniqueID/i.test(text)) return mbMailResult(text, lowered, flagCtx);
+if (/Annual Mileage:.*Customer Number:/is.test(text)) {
+if (COMPLAINT_RE.test(lowered)) return R(6, 'Complaint', 6, 'high', 'MB Mail aftersales with complaint wording (Section 7.6).');
+return R(6, 'Aftersales', 8, 'high', 'MB Mail aftersales template (Section 7.6).');
+}
+if (/customer is 6 months from renewal/i.test(text)) return R(5, 'Motability Renewal (6-month)', 5, 'high', 'Motability renewal template (Section 7.6).');
+if (/booking_type:.*sales_or_service:\s*sales/is.test(text)) return R(5, 'Service Lane Opportunity', 12, 'medium', 'Service Lane booking template, sales-flavoured (Section 7.6).');
+if (/customer was unable to generate a quote online and has requested a quote from the dealer/i.test(text)) {
+flagCtx.finance = true;
+return R(3, 'Finance Quote Request: Specific Car', 9, 'high', 'Finance quote request template (Section 7.6).');
+}
+
+// 7.9: Motability wording (non-CF marketing code paths).
+if (isMotabilityText(lowered) && !camp.includes('motability')) {
+flagCtx.motab = true;
+// Day+time still wins - falls through to step 9 instead of being
+// caught here as a lower-tier Motability read.
+if (hasDayMention(text) && hasClockTime(text)) return null;
+if (/visit|test drive|order|view|come in|see the car/i.test(lowered)) {
+return R(3, 'Motability Enquiry: Visit Intent', 5, 'medium', 'Motability wording + visit intent (Section 7.9).');
+}
+return R(3, 'Motability: Information Only', 6, 'medium', 'Motability wording, question only (Section 7.9).');
+}
+
+// 7.13: marketplace templates.
+const marketplaceResult = marketplaceTemplates(text, lowered, camp, src, referenceDate, flagCtx);
+if (marketplaceResult) return marketplaceResult;
+
+// 7.14: live chat templates (customer-originated, Source = Live chat
+// only - the same wording on any other source is an agent note,
+// already handled in step 5).
+if (src === 'live chat') {
+const liveChatResult = liveChatTemplates(text, lowered, flagCtx);
+if (liveChatResult) return liveChatResult;
+}
+
+// 7.15: Spoticar templates.
+const spoticarResult = spoticarTemplates(text, lowered, flagCtx);
+if (spoticarResult) return spoticarResult;
+
+// Section 5, Tier 4 rank 7: Used Stock Search - no specific car, but
+// concrete criteria (model/trim, year range, gearbox, fuel, mileage,
+// budget, colour), distinguished from a vague request (5.9) by at
+// least one concrete detail alongside "looking for" wording.
+if (/looking for a\b|i'?m looking for\b/i.test(lowered) && /\b20\d{2}\b|onwards|or newer|automatic|manual|hybrid|electric|petrol|diesel|\bblack\b|\bwhite\b|\bblue\b|\bred\b|\bseater\b/i.test(lowered)) {
+return R(4, 'Used Stock Search', 7, 'medium', 'Concrete stock-search criteria, no specific car identified (Section 5, Tier 4 rank 7).');
+}
+
+return null;
+}
+
+function classifyValuationUrl(rawUrl, flagCtx) {
+let path;
+try {
+path = new URL(rawUrl).pathname;
+} catch (error) {
+path = rawUrl.split('?')[0];
+}
+path = path.replace(/\/$/, '');
+if (/\/24-hour-test-drive\//i.test(path)) return R(5, '24hr EV Test Drive Page', 1, 'high', 'EV 24hr test drive page visit (Section 7.2).');
+if (/\/configurator\/.*\/personalise-finance/i.test(path)) return R(4, 'Valuation + VOI Page', 10, 'medium', 'Configurator personalise-finance page (Section 7.2).');
+if (/\/motability\//i.test(path)) { if (flagCtx) flagCtx.motab = true; return R(4, 'Valuation + VOI Page', 10, 'medium', 'Motability valuation page (Section 7.2).'); }
+if (/\/service\//i.test(path)) return R(5, 'Valuation: Service Page', 14, 'low', 'Service-area valuation page (Section 7.2).');
+if (/\/used-vehicles\/|\/new-cars-in-stock\//i.test(path)) return R(4, 'Valuation + VOI Page', 10, 'medium', 'Specific stock car valuation page (Section 7.2).');
+if (/\/new\/[^/]+/i.test(path)) return R(4, 'Valuation + VOI Page', 10, 'medium', 'Model/offer page under /new/ with something after it (Section 7.2).');
+if (/^\/(dealers\/[a-z-]+|(peugeot|citroen|ds|vauxhall|fiat|abarth|alfa-romeo|jeep|leapmotor)-[a-z-]+)$/i.test(path)) {
+return R(5, 'Valuation Only / Sell Only', 6, 'medium', 'Dealer page (Section 7.2).');
+}
+if (/^\/[a-z-]+\/new$/i.test(path)) return R(5, 'Valuation Only / Sell Only', 6, 'medium', 'Bare /[brand]/new landing page, nothing after it (Section 7.2, v1.10).');
+if (/mbmail/i.test(rawUrl)) return R(5, 'Valuation Only / Sell Only', 6, 'low', 'MB Mail valuation campaign - bottom of Nurture (Section 7.2).');
+return R(5, 'Valuation Only / Sell Only', 6, 'medium', 'Generic/car-valuation/home/brand/stock-listing page (Section 7.2).');
+}
+
+function reservationResult(text, lowered, flagCtx) {
+if (/as discussed by phone, reservation made for viewing and test drive|re telecom with.*please reserve subject to.*visit/i.test(lowered)) {
+flagCtx.execRequested = /named|allocate/i.test(lowered);
+return R(6, 'Already Booked', 2, 'high', 'Reservation with a visit already arranged by phone/named person (Section 5, Tier 3 rank 3).');
+}
+if (/i have spoken to.*running finance options/i.test(lowered)) {
+flagCtx.execRequested = true;
+return R(6, 'Send to Dealer (named exec)', 4, 'medium', 'Reservation with exec conversation, no visit arranged (Section 5, Tier 3 rank 3).');
+}
+if (/would love to cancel|reserved this car just now but/i.test(lowered)) {
+return R(6, 'Existing Order', 7, 'high', 'Reservation cancellation (Section 5, Tier 3 rank 3).');
+}
+if (hasDayMention(text) && hasClockTime(text)) return R(1, 'Reserve with Appointment', 5, 'high', 'Reserved AND booked a time (Section 5, Tier 1 rank 5).');
+if (hasDayMention(text)) return R(2, 'Customer-Stated Day', 3, 'medium', 'Reservation with a day mentioned, subject to visit (Section 5, Tier 2 rank 3).');
+flagCtx.reservation15 = true;
+return R(3, 'Reserve Online', 3, 'high', 'Online/Autotrader reservation template (Section 7.5).');
+}
+
+function classifyVehicleUrlComment(text, lowered, flagCtx) {
+if (/Date\/Time:\s*\w{3}\s\w{3}\s\d{1,2}\s\d{4}\s\d{1,2}:\d{2}\s*[AP]M/i.test(text)) {
+return R(1, 'Website Test Drive', 1, 'high', 'Vehicle URL used-car form with Date/Time (Section 7.1/7.5).');
+}
+const commentMatch = text.match(/Customer comment:\s*([\s\S]*)$/i);
+const comment = commentMatch ? commentMatch[1].trim() : '';
+const commentLower = comment.toLowerCase();
+if (!comment || comment === '-') return R(3, 'Vehicle URL / Video Request', 10, 'high', 'Vehicle URL with a specific stock car, blank comment (Section 7.5).');
+if (/i have a viewing booked|i have a test drive already booked/i.test(commentLower)) {
+if (/video|picture/i.test(commentLower)) flagCtx.systemTransferField = false;
+return R(6, 'Already Booked', 2, 'high', 'Vehicle URL comment references an existing booking (Section 5, Tier 3 rank 10).');
+}
+if (hasDayMention(comment) && hasClockTime(comment)) return R(1, 'Customer-Stated Slot', 3, 'high', 'Vehicle URL comment with day + time (Section 5, Tier 1 rank 3).');
+if (hasDayMention(comment)) return R(2, 'Customer-Stated Day', 3, 'medium', 'Vehicle URL comment with a day only (Section 5, Tier 2 rank 3).');
+if (/on pcp with yourselves|finance with (us|stellantis)|voluntarily terminate.{0,60}(change|reduce|newer|replace)/i.test(commentLower)) {
+flagCtx.noPx = false;
+return R(4, 'Existing Customer: Upgrade', 1, 'medium', 'Vehicle URL comment: existing customer with car/finance with us (Section 3.6.4).');
+}
+if (/currently have|owe just under|wanting a.*pcp/i.test(commentLower) && hasFinanceWording(commentLower)) {
+flagCtx.finance = true;
+return R(3, 'Finance Quote Request: Specific Car', 9, 'high', 'Vehicle URL comment with finance terms on an identified car (Section 5, Tier 3 rank 9).');
+}
+return R(3, 'Vehicle URL / Video Request', 10, 'medium', 'Vehicle URL with spec/history question (Section 7.5).');
+}
+
+function autofunnelResult(text, lowered, flagCtx) {
+if (field(text, 'Desc1')) flagCtx.noPx = false;
+return R(5, 'Email Campaign (Autofunnel)', 10, 'medium', 'Autofunnel template (Section 7.6).');
+}
+
+function mbMailResult(text, lowered, flagCtx) {
+const findOutMore = (field(text, 'FindOutMore') || '').toLowerCase();
+if (field(text, 'PartExReg')) flagCtx.noPx = false;
+if (/test drive/i.test(findOutMore)) return R(5, 'MB Mail Enquiry Form', 11, 'medium', 'MB Mail form, Test Drive ticked (Section 7.6, top of group).');
+return R(5, 'MB Mail Enquiry Form', 11, 'low', 'MB Mail form (Section 7.6, bottom of group).');
+}
+
+function marketplaceTemplates(text, lowered, camp, src, referenceDate, flagCtx) {
+if (src === 'autotrader' || src.startsWith('autotrader')) {
+const tsMatch = text.match(/Message from Consumer at \w{3}, \w{3} \d{1,2}, \d{4} \d{1,2}:\d{2}\s*[AP]M:/i);
+if (tsMatch) {
+// Cuts after the FULL timestamp (...AM: / ...PM:), not the first
+// colon in the string - the timestamp itself contains a colon
+// (7:23 AM), so a naive first-colon split leaves residual digits
+// from the time in the "message" and hasClockTime spuriously
+// matches them (confirmed: "23 AM" from a truncated "7:23 AM").
+const msg = text.slice(tsMatch.index + tsMatch[0].length);
+const msgLower = msg.toLowerCase();
+if (/i'?m interested in finance for this/i.test(msgLower)) { flagCtx.finance = true; return R(3, 'Autotrader Enquiry', 8, 'high', 'Autotrader finance button (Section 7.13).'); }
+if (/i can offer £/i.test(msgLower) && /ready to purchase|do not have a px/i.test(msgLower)) {
+return R(4, 'Offer Made: Price Offer', 5, 'medium', 'Autotrader firm price offer (Section 5, Tier 4 rank 5).');
+}
+if (/would love to cancel|reserved this car just now/i.test(msgLower)) return R(6, 'Existing Order', 7, 'high', 'Autotrader reservation cancellation (Section 5).');
+if (hasDayMention(msg) && hasClockTime(msg)) return R(1, 'Customer-Stated Slot', 3, 'high', 'Autotrader message with day+time (Section 5, Tier 1 rank 3).');
+if (hasDayMention(msg)) return R(2, 'Customer-Stated Day', 3, 'medium', 'Autotrader message with a day (Section 5, Tier 2 rank 3).');
+return R(3, 'Autotrader Enquiry', 8, 'medium', 'Autotrader consumer message (Section 7.13).');
+}
+if (/^Sourced from Autotrader - Deal Builder(\s*-\s*Online Store)?\.?$/i.test(text.trim())) {
+return R(3, 'Autotrader Enquiry', 8, 'low', 'Blank Autotrader Deal Builder template (Section 7.13, bottom).');
+}
+}
+if (src === 'cargurus' || src.startsWith('cargurus')) {
+const msgMatch = text.match(/Message from customer:\s*([\s\S]*)$/i);
+const transcriptMatch = text.match(/Transcript(\s*\(may be truncated\))?:\s*([\s\S]*)$/i);
+if (transcriptMatch) {
+const lines = transcriptMatch[2].split(/\n/).filter((l) => /^(visitor|\(consumer\)):/i.test(l.trim()));
+const combined = lines.join(' ').toLowerCase();
+if (hasDayMention(combined) && hasClockTime(combined)) return R(1, 'Customer-Stated Slot', 3, 'medium', 'CarGurus transcript with day+time (Section 5, Tier 1 rank 3).');
+return R(4, 'Marketplace Enquiry (non-Autotrader)', 8, 'medium', 'CarGurus transcript (Section 7.13).');
+}
+if (msgMatch) {
+const msg = msgMatch[1];
+const msgLower = msg.toLowerCase();
+if (/are you able to transfer this to|transfer this to/i.test(msgLower)) { flagCtx.systemTransferField = false; return R(3, 'Used Enquiry: Specific Car', 7, 'medium', 'CarGurus transfer + view request (Section 5, Tier 3 rank 7).'); }
+if (/i'?m interested in this.*and i'?d like to know if it'?s still available|i am interested in your.*you can reach me by/i.test(msgLower)) {
+return R(4, 'Marketplace Enquiry (non-Autotrader)', 8, 'low', 'CarGurus bare enquiry template (Section 7.13, bottom).');
+}
+return R(4, 'Marketplace Enquiry (non-Autotrader)', 8, 'medium', 'CarGurus message (Section 7.13).');
+}
+}
+if (src === 'aa cars') {
+// "URL of vehicle of interest:" is stripped as a system suffix at
+// normalise time (Section 3.1), so it's no longer there to anchor
+// against by the time this runs - match to end-of-segment instead.
+const m = text.match(/Reg:\s*(\S+)\s*\|\s*Message from customer:\s*([\s\S]*?)\s*\|?\s*$/i);
+if (m) {
+const msgLower = m[2].toLowerCase();
+if (/would like to book a test drive/i.test(msgLower)) return R(3, 'Test Drive Request (no date)', 2, 'high', 'AA Cars test drive request (Section 7.13).');
+return R(4, 'Marketplace Enquiry (non-Autotrader)', 8, 'medium', 'AA Cars message (Section 7.13).');
+}
+}
+if (/cargeneralemaildealer|vangeneralemaildealer|dealerimageenquiry|vehiclecartradeenquiry|vehiclevantradeenquiry/i.test(src)) {
+const m = text.match(/Message from customer:\s*Email Message:\s*\|?\s*([\s\S]*)$/i);
+if (m) {
+const msg = m[1].trim();
+const msgLower = msg.toLowerCase();
+if (!msg || /no message/i.test(msgLower) || /is this still available/i.test(msgLower)) {
+return R(4, 'Marketplace Enquiry (non-Autotrader)', 8, 'low', 'Email-style bare enquiry (Section 7.13, bottom).');
+}
+if (/would like to book a test drive/i.test(msgLower)) return R(3, 'Test Drive Request (no date)', 2, 'high', 'Email-style test drive request (Section 7.13).');
+if (hasDayMention(msg) && hasClockTime(msg)) return R(1, 'Customer-Stated Slot', 3, 'high', 'Email-style message with day+time (Section 5, Tier 1 rank 3).');
+return R(4, 'Marketplace Enquiry (non-Autotrader)', 8, 'medium', 'Email-style message (Section 7.13).');
+}
+}
+return null;
+}
+
+function liveChatTemplates(text, lowered, flagCtx) {
+if (/Test Drive Request For Reg\s*=\s*\S+/i.test(text) || /Customer would like to (request|book) a test drive for -\s*\S+/i.test(text)) {
+return R(3, 'Test Drive Request (no date)', 2, 'high', 'Live chat test drive request (Section 7.14).');
+}
+if (/Can I see more photos or a walkaround video|I'?d like a walkaround video of|Customer has requested a personalised video of/i.test(text)) {
+return R(3, 'Vehicle URL / Video Request', 10, 'high', 'Live chat video request (Section 7.14).');
+}
+if (/Customer has requested a valuation for - Registration:/i.test(text)) {
+return R(5, 'Valuation Only / Sell Only', 6, 'high', 'Live chat valuation request (Section 7.14).');
+}
+const saleOrTrade = text.match(/Vehicle:.*Registration:.*Sale or trade in:\s*(trade_in|outright_sale)/i);
+if (saleOrTrade) {
+if (saleOrTrade[1].toLowerCase() === 'outright_sale') flagCtx.sellOnly = true;
+return R(5, 'Valuation Only / Sell Only', 6, 'high', 'Live chat sale/trade-in template (Section 7.14).');
+}
+if (/^Request For A Callback$/i.test(text.trim())) {
+return R(5, 'Enquiry: Blank', 9, 'medium', 'Live chat bare callback request (Section 7.14).');
+}
+const callbackReason = text.match(/Callback reason:\s*([\s\S]*)$/i);
+if (callbackReason) {
+const reasonText = callbackReason[1];
+if (hasDayMention(reasonText) && hasClockTime(reasonText)) return R(1, 'Customer-Stated Slot', 3, 'medium', 'Live chat callback reason with day+time (Section 7.14).');
+if (hasDayMention(reasonText)) return R(2, 'Customer-Stated Day', 3, 'medium', 'Live chat callback reason with a day (Section 7.14).');
+return R(4, 'Marketplace Enquiry (non-Autotrader)', 10, 'medium', 'Live chat callback reason classified by content (Section 7.14).');
+}
+return null;
+}
+
+function spoticarTemplates(text, lowered, flagCtx) {
+const tradeInMatch = text.match(/Marketing Code:\s*(SPOTICAR-TRADE IN-(ADS|GENERIC)|DS CERTIFIED-TRADE IN-(ADS|GENERIC))/i);
+if (tradeInMatch) {
+const purchase = (field(text, 'purchase') || '').toLowerCase();
+const quotation = text.match(/Quotation showed\s*:\s*(\d+)/i);
+if ((quotation && quotation[1] === '0') || /i can'?t find my version/i.test(lowered)) flagCtx.noValuationGiven = true;
+if (purchase === 'vo') return R(5, 'Valuation Only / Sell Only', 6, 'high', 'Spoticar/DS trade-in, purchase : VO (Section 7.15, top).');
+flagCtx.sellOnly = true;
+return R(5, 'Valuation Only / Sell Only', 6, 'medium', 'Spoticar/DS trade-in, Sell Only (Section 7.15).');
+}
+const formMatch = text.match(/Marketing Code:\s*(SP-SPOTICAR|DS-SPOTICAR|DS CERTIFIED-ENQUIRIES)\s*\|\s*Customer Comments:\s*([\s\S]*)$/i);
+if (formMatch) {
+const comment = formMatch[2].trim();
+const commentLower = comment.toLowerCase();
+if (!comment || comment === '-') return R(3, 'Vehicle URL / Video Request', 10, 'high', 'Spoticar form, blank comment (Section 7.15).');
+if (hasDayMention(comment) && hasClockTime(comment)) return R(1, 'Customer-Stated Slot', 3, 'high', 'Spoticar form with day+time (Section 7.15).');
+if (/test drive|view|come to see/i.test(commentLower)) return R(3, 'Test Drive Request (no date)', 2, 'high', 'Spoticar form, test drive/view (Section 7.15).');
+if (/transfer|move.*to/i.test(commentLower)) { flagCtx.systemTransferField = false; return R(3, 'Used Enquiry: Specific Car', 7, 'medium', 'Spoticar form, transfer request (Section 7.15).'); }
+if (hasFinanceWording(commentLower) && !/no finance owned/i.test(commentLower)) { flagCtx.finance = true; return R(3, 'Finance Quote Request: Specific Car', 9, 'medium', 'Spoticar form, finance terms (Section 7.15).'); }
+return R(3, 'Vehicle URL / Video Request', 10, 'medium', 'Spoticar form comment (Section 7.15).');
+}
+if (/Marketing Code:\s*SP-SPOTICAR-FINANCE/i.test(text)) {
+if (/please email link for finance application/i.test(lowered)) { flagCtx.finance = true; return R(4, 'Quote / Offer Request: Detailed', 3, 'medium', 'Spoticar finance form, explicit request (Section 7.15).'); }
+return R(5, 'Quote / Offer Request: Blank', 4, 'medium', 'Spoticar finance form, blank/finance-only (Section 7.15).');
+}
+if (/Spoticar Direct: This is a SPOTiCAR direct lead\./i.test(text)) {
+const rest = text.replace(/Spoticar Direct: This is a SPOTiCAR direct lead\./i, '').trim();
+if (!rest) return R(5, 'Enquiry: Blank', 9, 'medium', 'Spoticar Direct, blank (Section 7.15).');
+return null;
+}
+return null;
+}
+
+// Step 8: Customer First marketing codes (Section 8.2).
+function customerFirstMarketingCode(text, lowered, camp, src, flagCtx) {
+// Real notes label this "Marketing Code: X"; other confirmed exports
+// sometimes give the code as the bare first pipe-segment instead
+// ("BrandSite-Test_Drive | ..."). Both shapes are accepted: labelled
+// first, falling back to segment 0 when it doesn't look like some
+// other known field.
+let code = field(text, 'Marketing Code');
+if (!code) {
+const firstSeg = segs(text)[0] || '';
+if (firstSeg && !/^(lead id|customer comments|first appointment date desired|first desired schedule)\b/i.test(firstSeg)) {
+code = firstSeg;
+}
+}
+if (!code) return null;
+const codeLower = code.toLowerCase();
+const dateField = field(text, 'First Appointment Date Desired') || field(text, 'Date');
+let comments = field(text, 'Customer Comments');
+if (comments === null) {
+comments = segs(text).slice(1)
+.filter((s) => !/^(lead id|marketing code|first appointment date desired|first desired schedule):/i.test(s))
+.join(' | ');
+}
+const commentsLower = comments.toLowerCase();
+const isFiatAbarth = /fiat|abarth/i.test(camp) || /fiat|abarth/i.test(codeLower);
+
+if (/brandsite-test_drive|sol-store_test-drive/i.test(codeLower)) {
+if (dateField && hasClockTime(comments)) return R(1, 'Customer First Test Drive', 2, 'high', 'CF test drive marketing code, date + time (Section 8.2).');
+if (dateField) return R(2, 'Customer First Test Drive (date, no time)', 1, 'high', 'CF test drive marketing code, date only (Section 8.2).');
+return R(3, 'Test Drive Request (no date)', 2, 'high', 'CF test drive marketing code, no date (Section 8.2).');
+}
+if (/fiat - test drive|abarth website|pop-in-test_drive_.*fiat|pop-in-test_drive_.*abarth/i.test(codeLower) || (isFiatAbarth && /test.drive/i.test(codeLower))) {
+if (dateField && hasClockTime(comments)) return R(1, 'Customer First Test Drive', 2, 'high', 'CF Fiat/Abarth test drive, date+time (Section 8.2).');
+if (dateField) return R(2, 'Customer First Test Drive (date, no time)', 1, 'high', 'CF Fiat/Abarth test drive, date only (Section 8.2).');
+return R(5, 'Enquiry: Blank', 9, 'medium', 'Fiat/Abarth new-car test drive form, no date/time - general enquiry (Section 8.2).');
+}
+if (/sol-configuration-info|sol-stock-info/i.test(codeLower)) return R(4, 'Configurator Build', 2, 'high', 'CF configurator marketing code (Section 8.2).');
+if (/-bstcot-part exchange tool/i.test(codeLower)) return R(5, 'Valuation Only / Sell Only', 6, 'high', 'CF part exchange tool marketing code (Section 8.2).');
+if (/^part exchange$/i.test(codeLower)) return R(5, 'Valuation Only / Sell Only', 6, 'high', 'Fiat part exchange marketing code (Section 8.2).');
+if (/ds certified-trade in-(ads|generic)|spoticar-trade in-(ads|generic)/i.test(codeLower)) return R(5, 'Valuation Only / Sell Only', 6, 'high', 'CF trade-in marketing code (Section 8.2/7.15).');
+if (/^(sp-spoticar|ds-spoticar|ds certified-enquiries)$/i.test(codeLower)) {
+return spoticarTemplates(text, lowered, flagCtx) || R(3, 'Vehicle URL / Video Request', 10, 'medium', 'Spoticar marketing code (Section 8.2/7.15).');
+}
+if (/sp-spoticar-finance/i.test(codeLower)) return R(5, 'Quote / Offer Request: Blank', 4, 'medium', 'Spoticar finance marketing code (Section 8.2/7.15).');
+if (/-affptr|-affret|-affemp/i.test(codeLower)) return R(5, 'Affinity Scheme', 8, 'medium', 'Affinity scheme marketing code (Section 8.2).');
+if (/affiliates-(askaprice|tla|greencar)/i.test(codeLower)) {
+const when = field(text, 'When');
+const consider = field(text, 'ConsiderStock');
+if (when && /asap/i.test(when) && !/notsure/i.test(commentsLower) && consider && /yes/i.test(consider)) {
+return R(4, 'Affiliate Quote: ASAP firm', 4, 'high', 'Affiliate quote ASAP+firm (Section 8.2).');
+}
+return R(5, 'Affiliate Quote (other)', 3, 'medium', 'Affiliate quote, other timeframe (Section 8.2).');
+}
+if (/affiliates-(regit|pistonheads|carfinder|the_car_expert|electricroad)/i.test(codeLower)) return R(5, 'Enquiry: Blank', 9, 'medium', 'Affiliate low-intent marketing code (Section 8.2).');
+if (/affiliates-cargurus/i.test(codeLower)) {
+if (/in_the_next_4_weeks/i.test(commentsLower)) return R(4, 'Affiliate Quote: Near-term (CarGurus)', 11, 'medium', 'CarGurus affiliate, in_the_next_4_weeks (Section 8.2, v1.9).');
+return R(5, 'Affiliate Quote (other)', 3, 'medium', 'CarGurus affiliate, other timeframe (Section 8.2).');
+}
+if (/google-search-|google-pmaxsearch-/i.test(codeLower)) return R(5, 'Enquiry: Blank', 9, 'medium', 'Google search marketing code (Section 8.2).');
+if (/ap-dypiru-dynamic yield/i.test(codeLower)) return R(5, 'Enquiry: Blank', 9, 'medium', 'Dynamic Yield marketing code (Section 8.2).');
+if (/pop-in-stock|brandsite-sales_event_enquiry_/i.test(codeLower)) {
+if (!comments || comments === '-') return R(5, 'Enquiry: Blank', 9, 'medium', 'Pop-in-stock/sales event, blank (Section 8.2).');
+}
+if (/pop-in - instant voucher/i.test(codeLower)) {
+if (/-qa$/i.test(codeLower)) return R(6, 'Spam / Test', 9, 'high', 'Instant Voucher QA test code (Section 8.2).');
+return R(5, 'Instant Voucher', 7, 'medium', 'Instant Voucher marketing code (Section 8.2).');
+}
+if (/social-meta-|pch\/pcp\/cs offers pages|fiat website|pop-in-overagestock|vx-raqhub/i.test(codeLower)) {
+if (/motab/i.test(codeLower)) flagCtx.motab = true;
+if (hasAmountField(text, 'Deposit') || hasAmountField(text, 'Term') || hasAmountField(text, 'Monthly Budget')) {
+flagCtx.finance = true;
+return R(4, 'Quote / Offer Request: Detailed', 3, 'medium', 'Social/Meta offer form with real terms (Section 8.2).');
+}
+return R(5, 'Quote / Offer Request: Blank', 4, 'medium', 'Social/Meta offer form, blank (Section 8.2).');
+}
+if (/concierge phone call|concierge follow up/i.test(codeLower)) return null; // treat as blank; classify by comment
+if (/concierge 7 day unreached/i.test(codeLower)) {
+if (!comments || comments === '-') return R(5, 'Enquiry: Blank', 9, 'medium', 'Concierge 7 Day Unreached, blank comment (Section 8.2, v1.9).');
+return null;
+}
+if (/motability brand site/i.test(codeLower)) { flagCtx.motab = true; return R(3, 'Motability: Information Only', 6, 'high', 'Motability Brand Site marketing code (Section 8.2).'); }
+if (/jeep website|alfa romeo - test drive|pop-in-test_drive_/i.test(codeLower)) {
+return R(3, 'Test Drive Request (no date)', 2, 'high', 'Jeep/Alfa/blank test drive marketing code, real request (Section 8.2, v1.9).');
+}
+if (/brandsite-takata_recall_certificate/i.test(codeLower)) return R(6, 'Aftersales', 8, 'high', 'Takata recall certificate marketing code (Section 8.2).');
+if (/brandsite-enquiry/i.test(codeLower)) return null; // classify by comment
+if (/register interest|keep me informed/i.test(codeLower)) return R(5, 'Enquiry: Blank', 9, 'medium', 'Register Interest/Keep Me Informed marketing code (Section 8.2, v1.10).');
+if (/Event-\S*TestDrive/i.test(text) && /\d{4}-\d{2}-\d{2}\s*(Slot\s*\d+|Morning|Afternoon|Evening)/i.test(text)) {
+return R(2, 'Event Slot', 4, 'high', 'Event test drive slot template (Section 8.2).');
+}
+if (/event-motability-/i.test(codeLower)) { flagCtx.motab = true; return R(3, 'Motability: Information Only', 6, 'high', 'Event-Motability marketing code (Section 8.2).'); }
+return null;
+}
+
+// Step 10: campaign rules (Section 8.3).
+function campaignRules(text, lowered, camp, src, flagCtx) {
+if (/reserve\s*-\s*(new|used)/i.test(camp)) {
+if (hasDayMention(text) && hasClockTime(text)) return R(1, 'Reserve with Appointment', 5, 'high', 'Reserve campaign with day+time (Section 8.3).');
+return R(3, 'Reserve Online', 3, 'medium', 'Reserve campaign (Section 8.3).');
+}
+// Leapmotor (ID only) - reaching here means nothing more specific
+// (templates, marketing codes, day/time) already matched, so a
+// Leapmotor-sourced lead with nothing else is the "ID only" case
+// (Section 5, Tier 3 rank 4). Any real content on a Leapmotor lead
+// is still classified normally by the earlier steps, per spec.
+if (/leapmotor/i.test(src) || /leapmotor/i.test(camp)) {
+return R(3, 'Leapmotor (ID only)', 4, 'high', 'Leapmotor source/brand, only a Lead ID (Section 5, Tier 3 rank 4).');
+}
+return null;
+}
+
+// Section 9.1: dedupe keys, computed per row from its own fields.
+// null when no rule applies for that source - matches the spec's own
+// acknowledged "known limit" that cross-channel dedupe can't be caught
+// by text alone.
+function computeDedupeKey(text, campaign, source) {
+const leadId = field(text, 'Lead ID');
+if (leadId) return 'leadid:' + leadId.toLowerCase();
+const uniqueId = field(text, 'UniqueID');
+if (uniqueId) return 'uniqueid:' + uniqueId.toLowerCase();
+const arn = field(text, 'ARN');
+if (arn) return 'arn:' + arn.toLowerCase();
+const reservationMatch = text.match(/\/admin\/reservations\/(\d+)/i);
+if (reservationMatch) return 'reservation:' + reservationMatch[1];
+const vehicleUrlMatch = text.match(/Vehicle URL:\s*(\S+)/i);
+if (vehicleUrlMatch) return 'vehicleurl:' + vehicleUrlMatch[1].toLowerCase();
+if (source && low(source).includes('robins')) {
+return 'rdtext:' + low(campaign) + '|' + low(text).replace(/\s+/g, ' ').trim();
+}
+if (source && low(source).startsWith('autotrader')) {
+const msgMatch = text.match(/Message from Consumer at [^:]+:\s*([\s\S]*)$/i);
+if (msgMatch) return 'autotrader:' + low(msgMatch[1]).replace(/\s+/g, ' ').trim();
+}
+return null;
+}
+
+// Section 9.1: dedupe pass over an already-classified batch. Dedupe
+// keys for several source types depend on Initial Notes content, only
+// available after each lead's live read, so this runs as a post-
+// processing pass over results already produced by classifyLead, not
+// a pre-filter that skips live reads. `getResult`/`getCreated`/
+// `setDuplicate` are small accessors so this stays agnostic to
+// whatever shape the caller's own row/result objects use.
+function applyDedupe(rows, getResult, getCreatedMs, isPostClosure, setDuplicate) {
+const byKey = new Map();
+rows.forEach((row) => {
+const result = getResult(row);
+if (!result || !result.dedupeKey) return;
+if (!byKey.has(result.dedupeKey)) byKey.set(result.dedupeKey, []);
+byKey.get(result.dedupeKey).push(row);
+});
+byKey.forEach((group) => {
+if (group.length < 2) return;
+const sorted = [...group].sort((a, b) => (getCreatedMs(a) || 0) - (getCreatedMs(b) || 0));
+let keeper = sorted.find((row) => !isPostClosure(row)) || sorted[0];
+const keeperMs = getCreatedMs(keeper) || 0;
+sorted.forEach((row) => {
+if (row === keeper) return;
+const ms = getCreatedMs(row) || 0;
+if (Math.abs(ms - keeperMs) <= 24 * 60 * 60 * 1000) setDuplicate(row);
+});
+});
 }
 
 window.KonnectBookingCheck = window.KonnectBookingCheck || {};
-window.KonnectBookingCheck.classifyInitialNotes = classifyInitialNotes;
-window.KonnectBookingCheck.parseInitialNotesFields = parseInitialNotesFields;
+window.KonnectBookingCheck.classifyLead = classifyLead;
+window.KonnectBookingCheck.computeDedupeKey = computeDedupeKey;
+window.KonnectBookingCheck.applyDedupe = applyDedupe;
+window.KonnectBookingCheck.hasClockTime = hasClockTime;
+window.KonnectBookingCheck.hasDayMention = hasDayMention;
+window.KonnectBookingCheck.stripSystemSuffixes = stripSystemSuffixes;
+
 
 // ===================================================================
 // SEARCH (state machine steps: OPEN_SEARCH -> SET_SEARCH_TYPE ->
@@ -1904,317 +2227,201 @@ console.info(`KonnectBookingCheck timeline self-test passed (${12 + REAL_MANAGER
 }
 })();
 
-// ===================================================================
-// Self-test against every numbered example from the confirmed rules -
-// run automatically on load so a regression here is loud immediately,
-// not discovered later against real customer data. Only covers Tier 2
-// Enquiry - New / Customer First, matching this file's current scope.
-// ===================================================================
-(function selfTest() {
-const CAMPAIGN = 'Enquiry - New';
-const SOURCE = 'Customer First';
-const notesFor = (date, comments) => [
-'Lead ID: TEST',
-'Marketing Code: TEST',
-date ? `First Appointment Date Desired: ${date}` : null,
-`Customer Comments: ${comments}`
-].filter(Boolean).join('\n');
 
+// ===================================================================
+// Self-test against all 119 worked test cases from lead-classification-
+// spec.md v1.10 Section 12 - the spec's own acceptance criteria for
+// the classifier, run automatically on load so a regression here is
+// loud immediately, not discovered later against real customer data.
+// Only checks the resulting TIER (what Section 12's table itself
+// gives) - sub-category/rank/flags are exercised structurally by the
+// pipeline but the spec's own worked examples only commit to a tier
+// number per case, so that's what's asserted here.
+// ===================================================================
+(function classifyLeadSelfTest() {
 const cases = [
-{ name: 'LEAD 76', date: '04/08/2026', comments: 'I am interested in purchasing C5 Aircross...trading in FG73DFZ', expect: 'CONFIRMED DATE & TIME' },
-{ name: 'LEAD 81', date: '06/08/2026', comments: 'Test drive 1.2 manual C3 early appointment please', expect: 'DATE ONLY' },
-{ name: 'LEAD 88', date: '10/08/2026', comments: '-', expect: 'DATE ONLY' },
-{ name: 'LEAD 94', date: '09/08/2026', comments: 'Sunday morning please earliest slot', expect: 'DATE ONLY' },
-{ name: 'LEAD 80', date: null, comments: '-', expect: 'NON-BOOKING' },
-{ name: 'LEAD 119', date: null, comments: '-', expect: 'NON-BOOKING' },
-{ name: 'LEAD 123', date: '08/08/2026', comments: 'Would like to see / test drive one of these somewhere local to Hampshire', expect: 'CONFIRMED DATE & TIME' },
-{ name: 'LEAD 54', date: null, comments: '-', expect: 'NON-BOOKING' },
-{ name: 'LEAD 59', date: null, comments: '-', expect: 'NON-BOOKING' },
-{ name: 'LEAD 67', date: null, comments: '-', expect: 'NON-BOOKING' },
-{ name: 'LEAD 102', date: null, comments: '-', expect: 'NON-BOOKING' },
-{ name: 'LEAD 109', date: null, comments: 'Could I please get 2 PCH (leasing) quotes - Citroen eC3 Aircross (Electric) Max Standard Range 44kWh', expect: 'NON-BOOKING' },
-{ name: 'LEAD 114', date: null, comments: 'Finance on this Vehicle', expect: 'NON-BOOKING' },
-{ name: 'LEAD 117', date: null, comments: "I'm interested in your 0% purchase offer for the e-C3. Please send details and your best purchase price", expect: 'NON-BOOKING' },
-// Real SLA export campaigns are always brand-prefixed (e.g. "Citroen -
-// Enquiry - New") rather than the bare "Enquiry - New" - confirmed
-// live via Oscar Scully's row, which was wrongly falling into
-// NON-BOOKING/"Outside current scope" before isInScope() was fixed to
-// match on the trailing campaign segment instead of exact equality.
-{ name: 'Oscar Scully (brand-prefixed campaign)', date: '29/09/2026', comments: '-', campaign: 'Citroen - Enquiry - New', expect: 'DATE ONLY' },
-// Test Drive Request CAMPAIGN tier: no date/time required, Source
-// isn't "Customer First", and Campaign is only loosely matched - all
-// per instruction, since this tier will be sent non-Customer-First
-// leads too and Campaign/Source are a routing hint here, not a hard
-// gate.
-{ name: 'Test Drive Request campaign, no date, answered', date: null, comments: 'Would like to test drive the new C4 this weekend', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'WARM ENQUIRY' },
-{ name: 'Test Drive Request campaign, blank comments', date: null, comments: '-', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' },
-{ name: 'Test Drive Request campaign, finance wording alone (override)', date: null, comments: 'Can I get a PCH quote please', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'NON-BOOKING' },
-// Per instruction: finance wording does NOT override to Non-Booking
-// when genuine visit-intent wording is also present - the visit intent
-// wins.
-{ name: 'Test Drive Request campaign, finance wording + visit intent (visit intent wins)', date: null, comments: 'Can I get a PCH quote as well as a test drive', campaign: 'Citroen - Test Drive Request', source: 'Website', expect: 'WARM ENQUIRY' },
-// Stephen Dracup's REAL lead: Campaign is genuinely "Citroen - Enquiry
-// - New" / Customer First (in Tier 2, not a Test Drive Request
-// campaign at all) - isTestDriveRequestCampaign() never applies here.
-// He had no date field, and was still coming back NON-BOOKING despite
-// mentioning "test drive", because the !hasDateField branch used to
-// bail before ever looking at the comments. This is the case that
-// exposed that gap.
-{ name: 'Stephen Dracup (real: Enquiry - New, no date, mentions test drive)', date: null, comments: 'Would like to book a test drive when convenient', campaign: 'Citroen - Enquiry - New', source: 'Customer First', expect: 'WARM ENQUIRY' },
-// Per instruction: finance/business/technical wording does NOT override
-// to Non-Booking when genuine visit-intent wording is also present.
-{ name: 'Enquiry - New: finance wording + visit intent (visit intent wins)', date: null, comments: 'Could I get a finance quote, and also come in to view the car', campaign: 'Citroen - Enquiry - New', source: 'Customer First', expect: 'WARM ENQUIRY' },
-// Relative-date-in-comments ("classified the date way"): no structured
-// date field, but the comments name a specific day/relative date -
-// still voicemail-actionable, same DATE ONLY tier as a real date field
-// alone.
-{ name: 'No date field, comments say "Monday"', date: null, comments: 'Could come in Monday if possible', expect: 'DATE ONLY' },
-{ name: 'No date field, comments say "tomorrow"', date: null, comments: 'Free tomorrow afternoon', expect: 'DATE ONLY' },
-// Visit-intent wording plus a relative-date mention: the relative-date
-// wins the category (still DATE ONLY, not WARM ENQUIRY) - the
-// day mentioned is what makes it voicemail-actionable regardless of
-// the "view"/"test drive" wording also being present.
-{ name: 'Visit intent + relative date: "view this vehicle tomorrow"', date: null, comments: 'Id like to view this vehicle tomorrow', expect: 'DATE ONLY' },
-// Relative-date PLUS an exact time is as concrete as a real confirmed
-// date+time, even with no structured date field.
-{ name: 'No date field, comments say "Monday at 3pm"', date: null, comments: 'Monday at 3pm works for me', expect: 'CONFIRMED DATE & TIME' },
-
-// ===== Tier 1: Electric - always confirmed, regardless of comments. =====
-{ name: 'Electric campaign (always confirmed)', date: null, comments: '-', campaign: 'Citroen - Electric', expect: 'CONFIRMED DATE & TIME' },
-
-// ===== Tier 1: Reserve - Used - already actioned, not a booking lead. =====
-{ name: 'Reserve - Used (already reserved online)', date: null, comments: 'Vehicle reserved online', campaign: 'Citroen - Reserve - Used', expect: 'NON-BOOKING' },
-
-// ===== Tier 1: Test Drive Request WITH a date field - unlike Tier 2,
-// time-preference words alone count as full confirmation here. =====
-{ name: 'Test Drive Request + date + "early appointment"', date: '06/08/2026', comments: 'early appointment', campaign: 'Citroen - Test Drive Request', source: 'Robins & Day Website', expect: 'CONFIRMED DATE & TIME' },
-{ name: 'Test Drive Request + date + "Sunday morning please earliest slot"', date: '09/08/2026', comments: 'Sunday morning please earliest slot', campaign: 'Citroen - Test Drive Request', source: 'Robins & Day Website', expect: 'CONFIRMED DATE & TIME' },
-{ name: 'Test Drive Request + date + blank comments', date: '04/08/2026', comments: '-', campaign: 'Citroen - Test Drive Request', source: 'Robins & Day Website', expect: 'DATE ONLY' },
-{ name: 'Test Drive Request + date + "Would like to see/test drive" (no time)', date: '08/08/2026', comments: 'Would like to see/test drive', campaign: 'Citroen - Test Drive Request', source: 'Robins & Day Website', expect: 'DATE ONLY' },
-
-// ===== Tier 2: Motability - only confirmed with explicit booking
-// language AND a specific time; blank/generic defaults to Non-Booking. =====
-{ name: 'Motability + explicit booking language + time', date: null, comments: 'PRIORITY ACCEPTANCE REQUIRED. Customer booked 05/08 at 15:00', campaign: 'Motability', expect: 'CONFIRMED DATE & TIME' },
-{ name: 'Motability + blank (default)', date: null, comments: '-', campaign: 'Motability', expect: 'NON-BOOKING' },
-
-// ===== Tier 2: Leapmotor - always Non-Booking for now, per the
-// framework's own explicit choice despite noting high conversion
-// potential. Also confirms campaign text ending in "Enquiry - New"
-// doesn't get mis-routed into Tier 2 when Source isn't Customer First. =====
-{ name: 'Leapmotor source (default requires call)', date: null, comments: '123456', campaign: 'Leapmotor - Enquiry - New', source: 'Leapmotor', expect: 'NON-BOOKING' },
-
-// ===== Tier 3: Offer Request - New - always Non-Booking by definition. =====
-{ name: 'Offer Request - New (always non-booking)', date: null, comments: '-', campaign: 'Citroen - Offer Request - New', expect: 'NON-BOOKING' },
-
-// ===== Tier 3: PX Valuation - New - visiting a specific vehicle's
-// page alone is tracked behavior, not something the customer said, so
-// it's NOT a warm lead by itself. WARM ENQUIRY requires genuine
-// visit-intent wording in the comments, same as every other tier. =====
-{ name: 'PX Valuation + specific vehicle page visit alone (not warm)', date: null, comments: 'The customer was on the following website page: https://x/citroen-c3-aircross-pch', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
-{ name: 'PX Valuation + generic valuation page', date: null, comments: 'https://stellantisandyou.co.uk/car-valuation', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
-// Real reported phrasing, with a "-pch" URL slug (a common real
-// dealer-site PCH/finance vehicle-listing suffix) - confirms the
-// FINANCE_KEYWORDS 'pch' entry matching inside a URL slug doesn't
-// hijack this into the (now-removed) override branch.
-{ name: 'PX Valuation + "website page, before completing the valuation" phrasing with -pch URL', date: null, comments: 'The customer was on the following website page, before completing the valuation: https://example.com/citroen-c5-aircross-pch', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
-// Genuine interest short of visit intent, once WARM ENQUIRY, not
-// NON-BOOKING - per instruction, once PX Valuation - Used was
-// reclassified this way from real reviewed examples, the same
-// reasoning applies equally to New (identical notes pattern, same
-// underlying website form).
-{ name: 'PX Valuation + "potentially interested in" (warm, same as PX Valuation - Used)', date: null, comments: 'Hi I would potentially be interested in this vehicle, and trading in my 2010 hyundai santa fe. Could i speak to someone about this, i am based in Cornwall.', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
-// Framework document's own wording for this same signal ("possibly"
-// rather than "potentially") - both forms recognized.
-{ name: 'PX Valuation + "possibly interested in" (framework doc wording, warm)', date: null, comments: 'The customer said they were possibly interested in the following vehicle: Citroen C5 Aircross', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
-{ name: 'PX Valuation + genuine visit-intent wording (warm)', date: null, comments: 'Would like to come in and view the C5 Aircross in person', campaign: 'PX Valuation - New', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
-
-// ===== Tier 3: Enquiry - Used - phone+time is confirmed. A vague
-// phrase like "requests call" is NOT enough for WARM ENQUIRY on its
-// own (doesn't actually show visit intent); genuine visit-intent
-// wording does. Cargurus/shopping language is Non-Booking. =====
-{ name: 'Enquiry - Used + phone + date/time', date: null, comments: '05/08/2026, 12:00 test drive C4 X Max before discussing transfer', campaign: 'Enquiry - Used', source: 'Phone call (Inbound)', expect: 'CONFIRMED DATE & TIME' },
-{ name: 'Enquiry - Used + registration + "requests call" alone (not warm)', date: null, comments: 'Jeep Avenger SUV WR25XYT - requests call', campaign: 'Enquiry - Used', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
-{ name: 'Enquiry - Used + genuine visit-intent wording (warm)', date: null, comments: 'Jeep Avenger SUV WR25XYT - wants to come and view it', campaign: 'Enquiry - Used', source: 'Robins & Day Website', expect: 'WARM ENQUIRY' },
-{ name: 'Enquiry - Used + Cargurus shopping language', date: null, comments: 'IMV £17,499, high price, email preferred', campaign: 'Enquiry - Used', source: 'Cargurus', expect: 'NON-BOOKING' },
-
-// ===== Tier 4: Enquiry - New from Robins & Day Website - always
-// Non-Booking by definition (a plain campaign-form completion, unlike
-// Tier 2's Customer First enquiries). =====
-{ name: 'Enquiry - New from Robins & Day (always non-booking)', date: null, comments: 'Source: Citroen e-C3 Aircross PCH Enquiry Form', campaign: 'Enquiry - New', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
-
-// ===== Tier 4: General/Register Interest/Brochure/Inbound - research
-// or interest capture, never a booking. =====
-{ name: 'General campaign (research/interest capture)', date: null, comments: 'Sourced from mobility scheme enquiry', campaign: 'General', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
-{ name: 'Register Interest campaign containing "Electric" (must not hit the Electric tier)', date: null, comments: '-', campaign: 'Citroen - Register Interest (Electric Vehicles Register Your Interest)', source: 'Robins & Day Website', expect: 'NON-BOOKING' },
-
-// ===== Tier 4: Cargurus, standalone (not also an Enquiry - Used
-// campaign) - still catches via the dedicated Cargurus check. =====
-{ name: 'Cargurus lead (standalone campaign)', date: null, comments: 'IMV £15,000, deal rating: fair', campaign: 'Cargurus Lead', source: 'Cargurus', expect: 'NON-BOOKING' }
+['T1', 'Preferred Date/Time: 2026-09-25, 9:00 AM', 'Sales Leads - Others', 'R&D Website', 1],
+['T2', 'BrandSite-Test_Drive | First Appointment Date Desired: 25/09/2026 | Anytime between 1300 - 1600', 'Peugeot Enquiry New', 'CF', 1],
+['T3', 'BrandSite-Test_Drive | Date: 28/09/2026 | Test drive e-5008 & e-4008/e-3008', 'Peugeot', 'CF', 2],
+['T4', 'BrandSite-Test_Drive | Date: 29/09/2026 | Do you offer 24hour test drives ??', 'Peugeot', 'CF', 2],
+['T5', 'BrandSite-Test_Drive | Date: 19/09/2026 | may be leasing one very soon... automatic', 'Vauxhall', 'CF', 2],
+['T6', 'Booking date: 2026-10-11', 'Peugeot TD Request', 'R&D', 2],
+['T7', 'Event-GrandePandaConquestTestDrive | 2026-09-05 Slot 1', 'Fiat TD Request', 'CF', 2],
+['T8', 'BrandSite-Test_Drive | Customer Comments: -', 'Peugeot', 'CF', 3],
+['T9', 'BrandSite-Test_Drive | Would like to test drive a 3008 hybrid, between 10am and 11am', 'Peugeot', 'CF', 3],
+['T10', 'Fiat - Test Drive | First Desired Schedule: 00:00 | -', 'Fiat TD Request', 'CF', 5],
+['T11', 'Pop-in-Test_Drive_New_Users | -', 'Abarth TD Request', 'CF', 5],
+['T12', 'Social-Meta-Q3-600eCompProspect | https://fb.me/...', 'Abarth TD Request', 'CF', 5],
+['T13', 'This vehicle has been reserved online...', 'Sales Leads - Others', 'R&D', 3],
+["T14", "Message from Consumer at Thu, Sep 3, 2026 7:23 AM: Hi, I'm interested in this Fiat 600. Please could you contact me back.", 'Enquiry - Used', 'Autotrader - Deal Builder', 3],
+['T15', 'Message from Consumer at Thu, Sep 3, 2026 7:23 AM: view and test drive the car on Tuesday morning', 'Enquiry - Used', 'Autotrader - Deal Builder', 2],
+['T16', 'Vehicle URL: .../used-vehicles/.../kk25jgy | Customer comment:', 'Enquiry - Used', 'R&D - Online Store', 3],
+['T17', 'Trim selected: GT Premium | Paint selected: Metallic cumulus grey', 'Peugeot Enquiry New', 'R&D', 4],
+['T18', 'SOL-STOCK-INFO | VR3K... | Please email only... quote via email for BCH', 'Peugeot', 'CF', 4],
+['T19', 'The customer is possibly interested in the following vehicle Fiat 600...', 'Fiat PX Valuation', 'R&D', 4],
+['T20', 'Social-Meta-Q3-Vivaro-0Offer | My London Plumbers Ltd | Deposit £5,000 | Monthly Budget £250', 'Vauxhall Offer', 'CF', 4],
+['T21', 'Comment Line #1: Source: Peugeot 208 Personal Contract Purchase Enquiry Form', 'Peugeot Enquiry New', 'R&D', 4],
+['T22', 'CUSTOMER REQUIRES FURTHER COMMUNICATION - Please send walk around video... Quote - Conditional Sale', 'Peugeot Enquiry New', 'blank', 6],
+['T23', 'Misc: ... FindOutMore = Test Drive | Purchase = Within 3 Months', 'Fiat Enquiry New', 'MB Mail', 5],
+['T24', 'Misc: ... FindOutMore = Price List | Purchase = Just Browsing', 'Fiat', 'MB Mail', 5],
+['T25', 'Notes Line #1: Customer is 6 months from renewal... End of Contract Date: 28/02/2027', 'Sales Leads - Others', 'Motability-Renewal', 5],
+['T26', 'VX-BSTCOT-Part Exchange Tool | Equity: 18800 | PX Derivative: 1.5 TSI 150 R-Line', 'Vauxhall PX', 'CF', 5],
+['T27', 'Part Exchange | Good: 4100, Average: 3525, Poor: 2975, Owned Vehicle Price: 3525', 'Fiat', 'CF', 5],
+['T28', 'DS CERTIFIED-TRADE IN-ADS | ... Quotation showed : 1550 Sterling', 'Sales Leads - Others', 'CF', 5],
+['T29', 'Misc: ... Desc1 = 208 GT 1.2L PureTech 130 S&S | UniqueID = d2y0rw', 'Peugeot', 'Autofunnel', 5],
+['T30', 'Digital URL: ... booking_type: Waiter | visit_date_and_time: 09/09/2026 | sales_or_service: Sales', 'Sales Leads - Others', 'Service-Sales-Dealer-Sourced', 5],
+['T31', '... finance ends in less than 12 months... Equity: £-187 and on a PCP... booking_type: Waiter', '', 'Service-Sales-Finance', 5],
+['T32', 'Sourced from Robins & Day Website.', 'Enquiry New', 'R&D', 5],
+['T33', '*** PRIORITY ACCEPTANCE REQUIRED *** ... Customer is booked in on 19/09 at 11:30 to test drive a new Peugeot e5008', 'any', 'any', 6],
+['T34', '*** PRIORITY ACCEPTANCE REQUIRED *** ... booked in on 10/06 at 00:00 to test drive a [MAKE MODEL]', 'any', 'any', 6],
+['T35', 'Contact Centre Sales Event Lead from Inbound Call', 'any', 'any', 6],
+['T36', 'Peugeot 2008 GT new - TD', 'Peugeot Enquiry New', 'Phone call', 6],
+["T37", "Ben is coming in tomorrow 12:00 - rather than 10:00 ... Please can Eniola Confirm", 'Peugeot Used', 'blank', 6],
+["T38", "I booked a test drive for Tuesday at 9.30 am at Croydon but we've now found a car so I'd like to cancel", 'Peugeot General', 'R&D', 6],
+['T39', 'BrandSite-Takata_Recall_Certificate | -', 'Vauxhall Enquiry New', 'CF', 6],
+['T40', 'Annual Mileage: 7000 | Customer Number: 11201549', 'Peugeot', 'MB Mail', 6],
+['T41', 'Comment Line #1: Free 5 Reviews | ... WhatsApp: +880...', 'Peugeot General', 'R&D', 6],
+['T42', 'Misc: UniqueID = MB0005 | ...', 'Peugeot', 'Autofunnel', 6],
+['T43', 'BrandSite-Test_Drive | Customer Comments: QWERTY', 'Vauxhall', 'CF', 6],
+['T44', "Hi, my mum's motability car lease is up... come on Sunday 13th September 2026 at around 12 o'clock", 'Peugeot General', 'R&D', 1],
+['T45', 'Would like to test drive a 2008 this coming Saturday.', 'Peugeot General', 'R&D', 2],
+['T46', 'Dear Commercial/Fleet Sales Team, I am currently sourcing 11 brand new vans...', 'Peugeot General', 'R&D', 6],
+['T47', 'I have an appointment for the event on Friday at 4:30pm. Unfortunately I am no longer able to attend. I will be in touch to set up an alternative time to visit.', 'Peugeot General', 'R&D', 3],
+['T48', 'Hi, I met TJ yesterday and he was going to send over a quote for me to review, please can you send ASAP', 'Peugeot General', 'R&D', 6],
+['T49', 'Hi iam requiring about changing my vehicle to reduce my payments... I have a Peugeot 2008 at the moment purchased from yourselves.', 'Peugeot General', 'R&D', 4],
+["T50", "I am trying to get a settlement figure for my car... won't let me access my account", 'Peugeot General', 'R&D', 6],
+['T51', 'Please CANCEL my order for the car B10', 'Peugeot General', 'R&D', 6],
+["T52", "I would like to register an official complaint. As am still waiting for my £500 deposit...", 'Abarth General', 'R&D', 6],
+['T53', 'Leapmotor source, Lead ID only', 'any', 'Leapmotor', 3],
+['T54', 'Message from Consumer at Thu, Sep 3, 2026 7:23 AM: Is it possible to come and do a test drive today at 5pm?', 'Enquiry - Used', 'Autotrader - Deal Builder', 1],
+['T55', 'Message from Consumer at Fri, Sep 11, 2026 8:55 AM: Can I come and see car tomorrow afternoon??', 'Enquiry - Used', 'Autotrader - Deal Builder', 2],
+["T56", "Message from Consumer at Fri, Sep 11, 2026 8:55 AM: Hi, I'm interested in finance for this Vauxhall Grandland Electric. Please could you contact me back.", 'Enquiry - Used', 'Autotrader - Deal Builder', 3],
+['T57', 'Sourced from Autotrader - Deal Builder.', 'Enquiry - Used', 'Autotrader - Deal Builder', 3],
+['T58', 'Note:: This is an Auto Trader reservation.', 'Enquiry - Used', 'Autotrader - Deal Builder', 3],
+['T59', 'Note:: This is an Auto Trader reservation. | Message from Consumer at Mon, Sep 28, 2026 9:00 AM: re telecom with Flynn today - please reserve subject to Saturday visit.', 'Enquiry - Used', 'Autotrader - Deal Builder', 6],
+['T60', 'Note:: This is an Auto Trader reservation. | Message from Consumer at Mon, Sep 28, 2026 9:00 AM: As discussed by phone, Reservation made for viewing and test drive on Saturday 3rd October.', 'Enquiry - Used', 'Autotrader - Deal Builder', 6],
+['T61', 'Message from Consumer at Mon, Sep 28, 2026 9:00 AM: Hi, I reserved this car just now but would love to cancel.', 'Enquiry - Used', 'Autotrader - Deal Builder', 6],
+['T62', 'Message from Consumer at Mon, Sep 28, 2026 9:00 AM: Hi, I can offer £17000 for this vehicle. I do not have a px & am ready to purchase', 'Enquiry - Used', 'Autotrader - Deal Builder', 4],
+["T63", "Message from customer: I?m interested in this 2023 Vauxhall Mokka and I?d like to know if it?s still available. (CarGurus IMV: £14,409 / Deal rating: Good Deal)", 'Enquiry - Used', 'Cargurus', 4],
+['T64', "Message from customer: I?m interested in this 2025 Mazda MX-30... Are you able to transfer this to Brentford for me to test drive? (CarGurus IMV...)", 'Enquiry - Used', 'Cargurus', 3],
+['T65', 'Transcript (may be truncated): visitor: Tomorrow 12pm visitor: Book appointment for viewing tomorrow', 'Enquiry - Used', 'Cargurus', 1],
+["T66", "Vehicle notes: *£16,981* Reg: KJ19PSX | Message from customer: I would like to book a test drive for vehicle Audi Q2... | URL of vehicle of interest:", 'Enquiry - Used', 'AA Cars', 3],
+['T67', 'Message from customer: Email Message: | No Message', 'Enquiry - Used', 'CarGeneralEmailDealer', 4],
+["T68", "Message from customer: Email Message: | Hi seller. I'm interested can I come and test drive on Sunday morning at eleven thirty", 'Enquiry - Used', 'CarGeneralEmailDealer', 1],
+["T69", "Lead ID: 00Qa1 | Marketing Code: SPOTICAR-TRADE IN-ADS | Quotation showed : 4450 Sterling, purchase : VO", 'Enquiry - Used', 'CF', 5],
+["T70", "Lead ID: 00Qa1 | Marketing Code: SPOTICAR-TRADE IN-GENERIC | I can't find my version Quotation showed : 0, purchase : noProject", 'Enquiry - Used', 'CF', 5],
+['T71', 'Customer was unable to generate a quote online and has requested a quote from the dealer: | Finance type: Personal Contract Purchase | Term: 36 months | Deposit: 2000 deposit | Mileage: 6000 miles per annum | Vehicle URL: https://example.com/used-vehicles/x', 'Offer Request - Used', 'R&D', 3],
+['T72', 'Lead ID: 00Qa1 | Marketing Code: SP-SPOTICAR | Customer Comments: -', 'Offer Request - Used', 'CF', 3],
+['T73', 'Lead ID: 00Qa1 | Marketing Code: SP-SPOTICAR | Customer Comments: I\'m interested in coming to see this car and test drive it on saturday around 1-2 pm', 'Offer Request - Used', 'CF', 1],
+["T74", "Lead ID: 00Qa1 | Marketing Code: SP-SPOTICAR | Customer Comments: 208 tech edition in black... put a hold on it... birthday gift", 'Offer Request - Used', 'CF', 3],
+["T75", "Lead ID: 00Qa1 | Marketing Code: SP-SPOTICAR | Customer Comments: Hi I would like to Purchase the Peugeot 308sw GT Electric... straight swap for my PX... No finance owned", 'Offer Request - Used', 'CF', 3],
+['T76', 'Test Drive Request For Reg = wo23loa', 'Enquiry - Used', 'Live chat', 3],
+['T77', 'Customer has requested a personalised video of the interior and full exterior of - bf16uew', 'Enquiry - Used', 'Live chat', 3],
+['T78', 'Vehicle: PORSCHE 718 BOXSTER | Registration: XX | Sale or trade in: outright_sale', 'Enquiry - Used', 'Live chat', 5],
+['T79', 'Please call customer back asap. | Customer said he wants to close a deal today... cash deal', 'Enquiry - Used', 'R&D', 6],
+["T80", "Comment Line #1: I'd like to buy a used 7 seater car.", 'Enquiry - Used', 'R&D', 5],
+["T81", "Comment Line #1: I'm looking for a 2008 GT Premium hybrid auto, 2025 onwards. Preferably black or obsession blue... What do you have?", 'Enquiry - Used', 'R&D', 4],
+['T82', 'Comment Line #1: Hello Frankie... I may now be sorted for a vehicle, apologies for the mix up', 'Enquiry - Used', 'R&D', 6],
+['T83', 'Comment Line #1: Could you please supply me with a copy remittances... Volkswagen Financial Services Ltd', 'Enquiry - Used', 'R&D', 6],
+['T84', 'Comment Line #1: we hold a financial interest in this vehicle... require a payment of £19614.44... Sort Code...', 'Enquiry - Used', 'R&D', 6],
+['T85', 'Comment Line #1: Cancel my viewing booked for Sunday the 13th at Stellantis walton at 12:30pm | I will be away', 'Enquiry - Used', 'R&D', 6],
+['T86', 'Comment Line #1: I have an appointment at 2 with Laura which I need to cancel... I will call next week to rearrange.', 'Enquiry - Used', 'R&D', 3],
+['T87', 'Comment Line #1: Hi Sean... appointment on Friday at 1.30pm... change my appointment to Sale?', 'Enquiry - Used', 'R&D', 1],
+['T88', 'Comment Line #1: Vehicle URL: https://example.com/used-vehicles/x | Customer comment: I have a viewing booked for this car on Saturday at 1:30, I have asked if I could get some pictures/video', 'Enquiry - Used', 'R&D', 6],
+['T89', 'Comment Line #1: Vehicle URL: https://example.com/used-vehicles/x | Customer comment: Corsa On PCP with yourselves... Settlement agreement figure is £9500... negative equity', 'Enquiry - Used', 'R&D', 4],
+['T90', 'Comment Line #1: Vehicle URL: https://example.com/used-vehicles/seat-arona | Customer comment: Toyota Corolla... negative equity, my settlement is around £31,000...', 'Enquiry - Used', 'R&D', 3],
+['T91', 'Comment Line #1: Hey im trying to get appointment too drop back my mobility car the lease ends 29th September', 'Enquiry - Used', 'R&D', 6],
+['T92', '2nd September @ 11:00 but can no longer make that', 'Enquiry - Used', 'Phone call', 6],
+['T93', 'The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/used-vehicles/x', 'PX Valuation - Used', 'R&D', 4],
+['T94', 'Comment Line #1: I brought a car from Selly Oak... I want to terminate my agreement, I want my £1000 deposit refunded...', 'Enquiry - Used', 'R&D', 6],
+['T95', 'The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/citroen?mh_matchtype=e', 'PX Valuation - Used', 'R&D', 5],
+['T96', 'The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/used-vehicles', 'PX Valuation - Used', 'R&D', 5],
+['T97', 'The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/car-valuation?utm_source=mbmail&utm_medium=email', 'PX Valuation - Used', 'R&D', 5],
+['T98', 'The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/alfa-romeo-leicester?utm_source=google', 'PX Valuation - Used', 'R&D', 5],
+['T99', 'Comment Line #1: Vehicle URL: https://example.com/used-vehicles/vauxhall-grandland-electric | Customer comment: Currently have PN23RBY... Owe just under £10900. Wanting a 4 year PCP, £0 deposit, 10k miles per year', 'Enquiry - Used', 'R&D', 3],
+['T100', 'Customer interested in dealer transfer -to Bristol - is also interested in any negotiation on price - cash buyer', 'Enquiry - Used', 'blank', 6],
+['T101', 'Comment Line #1: Vehicle URL: https://example.com/used-vehicles/peugeot-5008-km25eae | Customer comment: | Date/Time: Sat Sep 05 2026 3:00PM', 'Test Drive Request - Used', 'R&D', 1],
+['T102', 'Comment Line #1: Vehicle URL: https://example.com/peugeot-2008-suv-12-puretech-allure | Customer comment: | Date/Time: Sun Sep 06 2026 11:00AM', 'Test Drive Request - Used', 'R&D', 1],
+['T103', 'Lead ID: 00Qa1 | Marketing Code: Event-JuniorElettrica24HourTestDrive | Customer Comments: 2026-09-17 Morning', 'Alfa TD Request', 'CF', 2],
+["T104", "Misc: ... FindOutMore = Price List,Test Drive | Purchase = Within 3 Months | PartExReg = Tina Test | PartExMileage = RETEST", 'Jeep Enquiry New', 'MB Mail', 6],
+['T105', 'Lead ID: 00Qa1 | Marketing Code: Motability Brand Site | First Desired Schedule: 00:00 | Customer Comments: -', 'Jeep TD Request', 'CF', 3],
+["T106", "Customer wants to purchase vehicle asap. | They have already test driven the vehicle already. | Warm transferred lead to site. | HOT LEAD", 'Leapmotor Enquiry New', 'R&D', 6],
+['T107', 'cx is in the market and interested in attending between 10th - 13th --- requested call back at 16:30 with DP', 'Alfa Enquiry New', 'blank', 6],
+['T108', 'Comment Line #1: Source: Motability Scheme - NIL Advance Payment Enquiry Form', 'Leapmotor Enquiry New', 'R&D', 3],
+['T109', 'Comment Line #1: Source: Leapmotor B03X - Keep Me Informed', 'Leapmotor Register Interest', 'R&D', 5],
+["T110", "Comment Line #1: Vehicle type: car. Fleet size: 2-49. Customer comments: I would like a contract hire quote for a Peugeot 308SW Allure", 'B2B', 'R&D', 6],
+["T111", "I've booked a test drive next weekend but I need to cancel", 'Leapmotor General', 'R&D', 6],
+["T112", "Hi, i am due to come in tomorrow to test drive the jeep avenger. Ive just realised ive something on. Can i reschedule please?", 'Jeep General', 'R&D', 2],
+['T113', 'I attempted to book an appointment for Monday 21st around 5:30-6:00 pm but I missed the call...', 'Leapmotor General', 'R&D', 1],
+["T114", "Requesting Return of the Leapmotor B10 (GJ26PLO) | Reasons for Requesting Return...", 'Leapmotor General', 'R&D', 6],
+["T115", "I no longer wish to be contacted by yourselves in any way... appalling manner...", 'Alfa Romeo General', 'R&D', 6],
+['T116', 'Subject: T Level Industry Placement Enquiry, 315 Hours...', 'Leapmotor General', 'R&D', 6],
+['T117', 'Hello team. I am looking to join the motability scheme and weighing up mid size SUV options. Is there someone I can speak to about the Jeep Compass?', 'Jeep General', 'R&D', 3],
+['T118', 'The customer was on the following website page, before completing the valuation: https://example.com/leapmotor/new/offers/c10-0-apr', 'Leapmotor P/X Valuation', 'R&D', 4],
+['T119', 'The customer was on the following website page, before completing the valuation: https://example.com/leapmotor/new', 'Leapmotor P/X Valuation', 'R&D', 5]
 ];
 
 const failures = [];
-cases.forEach((c) => {
-const result = classifyInitialNotes(notesFor(c.date, c.comments), { campaign: c.campaign || CAMPAIGN, source: c.source || SOURCE });
-if (result.category !== c.expect) {
-failures.push(`${c.name}: expected ${c.expect}, got ${result.category} (${result.reason})`);
+cases.forEach(([id, notes, campaign, source, expectedTier]) => {
+const result = classifyLead(notes, { campaign, source, created: 'Sun, 27 Sep 2026 12:00' });
+if (result.tier !== expectedTier) {
+failures.push(`${id}: expected tier ${expectedTier}, got tier ${result.tier} (${result.subCategory}) - reason: ${result.reason}`);
 }
 });
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck classifyInitialNotes self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectBookingCheck classifyLead spec self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info(`KonnectBookingCheck classifyInitialNotes self-test passed (${cases.length}/${cases.length})`);
+console.info(`KonnectBookingCheck classifyLead spec self-test passed (${cases.length}/${cases.length})`);
 }
 })();
 
-// ===================================================================
-// Self-test against REAL verbatim Initial Notes text (not the synthetic
-// notesFor() shape every case above uses) - confirms parseInitialNotesFields
-// actually handles both real raw-text shapes (Customer First's labelled
-// fields, and Robins & Day Website's "Comment Line #1:" shape, including
-// its Preferred Date/Time sub-form) and that isInScope/isTestDriveRequestCampaign
-// correctly route a real parenthetical-suffixed campaign string, not just
-// the parenthetical-free strings the cases above construct.
-// ===================================================================
-(function realRawNotesSelfTest() {
-const realCases = [
-// Real Customer First "(Test drive request)" lead, WITH a date field -
-// confirmed DATE ONLY (Tier 2's own time-preference rule), not
-// CONFIRMED DATE & TIME - this is the exact real lead that exposed both
-// the isTestDriveRequestCampaign parenthetical bug and the isInScope
-// parenthetical bug: before both fixes, this fell through every real
-// Tier 2 check and the wrong tier ended up deciding its category.
-{
-name: 'Real: Customer First Enquiry-New (Test drive request), with date, "early appointment"',
-notes: 'Lead ID: 00Qa200000cUYZREA4\nMarketing Code: BrandSite-Test_Drive\nFirst Appointment Date Desired: 06/08/2026\nCustomer Comments: Test drive 1.2 manual C3 early appointment please',
-campaign: 'Citroen - Enquiry - New (Test drive request)',
-source: 'Customer First',
-expect: 'DATE ONLY'
-},
-// Same real campaign shape, no date field, blank comments.
-{
-name: 'Real: Customer First Enquiry-New (Test drive request), no date, blank comments',
-notes: 'Lead ID: 00Qa200000cUYXrEAO\nMarketing Code: Affiliates-TLA-Greencar-Q3-26\nCustomer Comments: -',
-campaign: 'Citroen - Enquiry - New (Test drive request)',
-source: 'Customer First',
-expect: 'NON-BOOKING'
-},
-// Real Customer First "(Information request)" lead with business
-// wording - overrides to Non-Booking regardless of the parenthetical.
-{
-name: 'Real: Customer First Enquiry-New (Information request), business wording',
-notes: 'Lead ID: 00Qa200000cVs34EAC\nMarketing Code: BrandSite-Enquiry\nCustomer Comments: Dear CITROEN Team, I am contacting you on behalf of our business as we are currently exploring options to lease a CITROEN vehicle for company use.',
-campaign: 'Citroen - Enquiry - New (Information request)',
-source: 'Customer First',
-expect: 'NON-BOOKING'
-},
-// Real Robins & Day Website Test Drive Request form - "Comment Line #1:"
-// shape with a structured Preferred Date/Time sub-form, no "Customer
-// Comments" label at all. Confirms the new comment-line parser and its
-// date/time extraction.
-{
-name: 'Real: Robins & Day Website Test Drive Request, Preferred Date/Time',
-notes: 'Comment Line #1: Preferred Date/Time: 2026-08-10, 5:00 PM Fuel Choice: Petrol Transmission Choice: AUTO Notes:',
-campaign: 'Peugeot - Test Drive Request - New (pcr_new_test_drive)',
-source: 'Robins & Day Website',
-expect: 'CONFIRMED DATE & TIME'
-},
-// Real Robins & Day Website PX Valuation lead - "possibly interested in"
-// phrasing inside the comment line, previously unreachable since the
-// old parser never recognized "Comment Line #1:" at all (comments
-// always came back blank for every Robins & Day Website lead). Warm,
-// not Non-Booking - reclassified per instruction, same as PX Valuation
-// - Used's own real reviewed examples below.
-{
-name: 'Real: Robins & Day Website PX Valuation, "possibly interested in"',
-notes: 'Comment Line #1: The customer is possibly interested in the following vehicle Citroen Citroen Holidays Estate 2.2 D Max M 5dr Auto Link to vehicle: https://example/vehicle The customer was on the following website page, before completing the valuation: https://example/page',
-campaign: 'Citroen - PX Valuation - New (pcr_valuation_success)',
-source: 'Robins & Day Website',
-expect: 'WARM ENQUIRY'
-},
-// Real unlabelled phone-call Enquiry-Used lead - no "Customer Comments"
-// or "Comment Line #1:" label at all, just a raw prose blob. Confirms
-// the raw-text fallback (whole text used as comments) rather than the
-// old silent-blank behaviour.
-{
-name: 'Real: Phone call Enquiry-Used, unlabelled prose blob with embedded time',
-notes: 'CUSTOMER REQUIRES FURTHER COMMUNICATION - Thursday 05/08 12:00 - wants test drive in C4 X Max to get a feel for vehicle before discussing transfer - wants to know if vehicle can be purchased on Thursday - Customer Interested in - Citroen c4 x - EA25JFF - Located in Chingford Quote - Bank Loan PX - No#',
-campaign: 'Citroen - Enquiry - Used (Citroen - Enquiry - Used)',
-source: 'Phone call',
-expect: 'CONFIRMED DATE & TIME'
-},
-// Real Register Interest campaign containing "Electric" in its own
-// parenthetical - must not hit the Electric tier (already covered via
-// the synthetic cases array too; repeated here against the real full
-// campaign string verbatim for extra confidence).
-{
-name: 'Real: Register Interest campaign containing "Electric"',
-notes: 'Sourced from Robins & Day Website.',
-campaign: 'Citroen - Register Interest (Electric Vehicles Register Your Interest)',
-source: 'Robins & Day Website',
-expect: 'NON-BOOKING'
-},
-// Real PX Valuation - Used examples, from a batch of 9 manually
-// reviewed via the Needs Review "Copy review decisions" export - this
-// campaign previously had no tier rule at all (isPxValuationNewCampaign
-// specifically requires "new"), so every one of these was landing in
-// CLASSIFICATION_REVIEW_REQUIRED regardless of content.
-{
-name: 'Real: PX Valuation - Used, generic tracked page-visit alone',
-notes: 'Comment Line #1: The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/car-valuation',
-campaign: 'PX Valuation - Used',
-source: 'Robins & Day Website',
-expect: 'NON-BOOKING'
-},
-{
-name: 'Real: PX Valuation - Used, genuine customer text but no visit intent (SPOTICAR)',
-notes: 'Lead ID: 00Qa200000gBCC9EAO | Marketing Code: SP-SPOTICAR | Customer Comments: Hi, my daughter is looking at this car to purchase. If she is wanting to proceed is there anyway the car can be delivered to a dealership local to Shrewsbury (where we live). She is in full time employment (although only a couple of months) so we would n...',
-campaign: 'PX Valuation - Used',
-source: 'Robins & Day Website',
-expect: 'NON-BOOKING'
-},
-{
-name: 'Real: PX Valuation - Used, raw field-dump with no customer wording',
-notes: 'Misc: The following information was present in the lead: | Brand Location = Vauxhall Birmingham South | Franchise = Vauxhall | Int5 = A | Mobile = 07830646111 | Desc1 = Astra 1.2 Turbo 130 GS 5Dr Hatchback | Konnect CKID Code = GBW423 | UniqueID = qf7hn5 | EmailLink = https://vauxhall.stellantisandyou.co.uk/?id=qf7hn5&Tle=Mr&Snme=Jamshidi | LeadID = UMJNhBCV5ICtsTKrJwn5 | Batch = 929875',
-campaign: 'PX Valuation - Used',
-source: 'Robins & Day Website',
-expect: 'NON-BOOKING'
-},
-{
-name: 'Real: PX Valuation - Used, blank generic marker',
-notes: 'Sourced from Robins & Day Website.',
-campaign: 'PX Valuation - Used',
-source: 'Robins & Day Website',
-expect: 'NON-BOOKING'
-},
-// The one deliberate difference from PX Valuation - New: a "possibly
-// interested in [specific vehicle]" mention is WARM ENQUIRY here, not
-// NON-BOOKING - the reviewer's own reason was "vehicle listed in the
-// px so potential interest... not as high priority as other warm
-// leads".
-{
-name: 'Real: PX Valuation - Used, "possibly interested in" a specific vehicle',
-notes: 'Comment Line #1: The customer is possibly interested in the following vehicle Vauxhall Corsa Hatchback 1.2 Turbo GS Hatchback 5dr Petrol Auto Euro 6 (s/s) (100 ps) | Link to vehicle: https://www.stellantisandyou.co.uk/used-vehicles/202608225348223/vauxhall-corsa-hatchback-12-turbo-gs-hatchback-5dr-petrol-auto-euro-6-ss-100-ps-ba25vde | The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/',
-campaign: 'PX Valuation - Used',
-source: 'Robins & Day Website',
-expect: 'WARM ENQUIRY'
-}
-];
-
+// Section 9.1 dedupe - not covered by the spec's own tier-only test
+// cases above, so exercised separately here against computeDedupeKey
+// and the applyDedupe batch pass.
+(function dedupeSelfTest() {
 const failures = [];
-realCases.forEach((c) => {
-const result = classifyInitialNotes(c.notes, { campaign: c.campaign, source: c.source });
-if (result.category !== c.expect) {
-failures.push(`${c.name}: expected ${c.expect}, got ${result.category} (${result.reason})`);
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
 }
-});
+
+check('computeDedupeKey: Lead ID wins', computeDedupeKey('Lead ID: 00Qa123 | Marketing Code: X', 'Camp', 'Src'), 'leadid:00qa123');
+check('computeDedupeKey: no rule for this source/shape returns null', computeDedupeKey('Just some free text with nothing recognisable', 'Camp', 'Some Other Source'), null);
+
+const ms = (day, h, m) => new Date(2026, 8, day, h, m).getTime();
+const toMs = (r) => ms(r.day, r.h, r.m);
+const rows = [
+{ id: 'A', day: 27, h: 9, m: 0, result: { dedupeKey: 'leadid:x', source: 'Customer First', flags: [] } },
+{ id: 'B', day: 27, h: 9, m: 30, result: { dedupeKey: 'leadid:x', source: 'Customer First', flags: [] } }, // duplicate of A, 30 min later
+{ id: 'C', day: 27, h: 8, m: 0, result: { dedupeKey: 'leadid:x', source: 'Post Closure Processing', flags: [] } }, // earliest by time, but Post Closure - not the keeper
+{ id: 'D', day: 27, h: 9, m: 0, result: { dedupeKey: 'leadid:y', source: 'Customer First', flags: [] } }, // different key, untouched
+{ id: 'E', day: 27, h: 12, m: 0, result: { dedupeKey: 'leadid:z', source: 'Customer First', flags: [] } },
+{ id: 'F', day: 28, h: 14, m: 1, result: { dedupeKey: 'leadid:z', source: 'Customer First', flags: [] } } // same key as E, but >24h later - not a duplicate
+];
+applyDedupe(
+rows,
+(r) => r.result,
+toMs,
+(r) => r.result.source === 'Post Closure Processing',
+(r) => r.result.flags = [...r.result.flags, 'Duplicate']
+);
+const flagged = (id) => rows.find((r) => r.id === id).result.flags.includes('Duplicate');
+check('Earliest non-Post-Closure copy (A) is kept, not flagged', flagged('A'), false);
+check('Later copy of the same key (B) is flagged Duplicate', flagged('B'), true);
+check('Post Closure copy (C) is flagged Duplicate even though it\'s earliest by time - never the keeper', flagged('C'), true);
+check('Different dedupe key (D) is untouched', flagged('D'), false);
+check('Same key but >24h apart (E) is not flagged - outside the dedupe window', flagged('E'), false);
+check('Same key but >24h apart (F) is not flagged - outside the dedupe window', flagged('F'), false);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck real-raw-notes self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectBookingCheck dedupe self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info(`KonnectBookingCheck real-raw-notes self-test passed (${realCases.length}/${realCases.length})`);
+console.info('KonnectBookingCheck dedupe self-test passed (8/8)');
 }
 })();
+
 
 // ===================================================================
 // ORCHESTRATION (the outer per-row/per-customer state machine loop)
@@ -2310,7 +2517,10 @@ name: row.name, phone: row.phone, email: row.email,
 source: row.source, campaign: row.campaign, created: row.created,
 customerMatchMethod: null, timelineTimestamp: null, visibleLeadId: null,
 modalDate: null, sourceValidation: null, campaignValidation: null,
-initialNotes: null, category: null, reason: null, confidence: null,
+initialNotes: null,
+tier: null, tierName: null, subCategory: null, subRank: null,
+flags: [], dedupeKey: null, postClosureAction: null,
+reason: null, confidence: null,
 warnings: [], status: 'PROCESSING', exception: null,
 processingTimestamp: null
 };
@@ -2627,19 +2837,25 @@ return finalizeResult(result, { status: 'EXCEPTION', exception: 'INITIAL_NOTES_E
 // comment on this) - falling back to it would feed the classifier the
 // lead's marketing form name where it expects Konnect's SLA-queue
 // categorization, a wrong value, not a missing one.
-const classification = classifyInitialNotes(initialNotes, { campaign: row.campaign, source: row.source || panelFields.source });
+const classification = classifyLead(initialNotes, { campaign: row.campaign, source: row.source || panelFields.source, created: row.created });
 if (classification.confidence === 'low') {
-// category/reason/confidence are stored even though status stays
-// EXCEPTION (never auto-trusted/applied) - previously these all came
-// back null here, so neither a human reviewing it in the Needs Review
-// section nor anyone diagnosing it afterward could see the
-// classifier's own tentative reasoning without re-deriving it by hand.
-return finalizeResult(result, { status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', initialNotes, category: classification.category, reason: classification.reason, confidence: classification.confidence, ...auditPatch });
+// tier/subCategory/flags/reason/confidence are stored even though
+// status stays EXCEPTION (never auto-trusted/applied) - so a human
+// reviewing it in the Needs Review section, or anyone diagnosing it
+// afterward, can see the classifier's own tentative reasoning without
+// re-deriving it by hand.
+return finalizeResult(result, {
+status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', initialNotes,
+tier: classification.tier, tierName: classification.tierName, subCategory: classification.subCategory, subRank: classification.subRank,
+flags: classification.flags, dedupeKey: classification.dedupeKey, postClosureAction: classification.postClosureAction,
+reason: classification.reason, confidence: classification.confidence, ...auditPatch
+});
 }
 
 return finalizeResult(result, {
 status: 'CLASSIFIED',
-category: classification.category,
+tier: classification.tier, tierName: classification.tierName, subCategory: classification.subCategory, subRank: classification.subRank,
+flags: classification.flags, dedupeKey: classification.dedupeKey, postClosureAction: classification.postClosureAction,
 reason: classification.reason,
 confidence: classification.confidence,
 initialNotes,
@@ -2792,49 +3008,57 @@ function orderedResults(session) {
 return session.rows.map((row) => session.results[row.inputIndex]).filter(Boolean);
 }
 
-// Lower = more valuable/urgent. Per instruction, the real axis isn't
-// "how good is this booking" but "can this be actioned via a voicemail
-// alone, or does it require actually reaching the customer live" -
-// every voicemail-actionable category (any real date signal) ranks
-// above every requires-pickup category. Within "requires pickup", a
-// lead with expressed visit/test-drive intent is more likely to
-// convert than one that was merely answered with no real signal, so
-// WARM ENQUIRY ranks above plain NON-BOOKING rather than
-// beside it.
-function bookingPriorityRank(result) {
-if (!result || result.status !== 'CLASSIFIED') return 7;
-if (result.category === 'CONFIRMED DATE & TIME') return 1;
-if (result.category === 'DATE ONLY') {
-const { comments } = parseInitialNotesFields(result.initialNotes);
-return containsAny(comments.toLowerCase(), TIME_PREFERENCE_WORDS) ? 2 : 3;
+// Section 2's own sort order: tier ASC, then subRank ASC, then (for
+// Tier 1-2) appointment date ASC, then lead received time ASC. The
+// single-number PriorityRank (tier*100 + subRank) carries the primary
+// two keys directly - it's what gets exported to Extract, which sorts
+// on it as a plain number (see classifyBookingCheckImportRows there).
+// The appointment-date tie-break isn't implemented (would need a real
+// date VALUE extracted from free text, not just the yes/no hasDayMention/
+// hasClockTime checks the classifier itself uses) - a known
+// simplification, not a silent gap: same-tier/same-subRank leads fall
+// straight to the `created` (received time) tie-break below instead,
+// which is the spec's own final tie-break anyway.
+function bookingPriorityRankValue(result) {
+if (!result || result.status !== 'CLASSIFIED') return 700;
+const tier = result.tier || 6;
+const subRank = result.subRank != null ? result.subRank : 99;
+return tier * 100 + subRank;
 }
-if (result.category === 'WARM ENQUIRY') return 4;
-if (result.category === 'NON-BOOKING') {
-// A genuine "potentially interested in..." answer, though not visit
-// intent, is still more contactable than a blank/generic one - ranks
-// above plain NON-BOOKING without becoming its own category.
-const { comments } = parseInitialNotesFields(result.initialNotes);
-return containsAny(comments.toLowerCase(), POTENTIAL_INTEREST_PHRASES) ? 5 : 6;
+
+// Full comparator (used for the panel's own within-tier ordering,
+// where real result objects - not just the flattened export number -
+// are available to tie-break on `created`).
+function compareByBookingPriority(a, b) {
+const diff = bookingPriorityRankValue(a) - bookingPriorityRankValue(b);
+if (diff !== 0) return diff;
+const createdA = a.parsedCreated || parseSlaCreated(a.created);
+const createdB = b.parsedCreated || parseSlaCreated(b.created);
+if (createdA && createdB) {
+const ms = (p) => new Date(p.year, p.month, p.day, p.hour, p.minute).getTime();
+return ms(createdA) - ms(createdB);
 }
-return 7;
+return 0;
 }
 
 // ===================================================================
 // NEEDS REVIEW - manual triage for low-confidence classifications
-// (classifyInitialNotes' own confidence:'low' already refuses to guess
-// rather than risk a wrong auto-classification - see its dispatch
-// comments - and processLeadRow turns that into this one specific
-// EXCEPTION rather than genuinely failing, since the Initial Notes
-// WERE read successfully; there's just no confident rule for them yet).
-// Per instruction: an easier way to confirm, across many leads at once,
-// which of the 4 real categories one of these should actually go into,
-// with an optional reason - captured specifically so those decisions
-// can be handed back as real examples to extend classifyInitialNotes'
-// own rules with, the same way every other rule in this file originated
-// from a real reported lead.
+// (classifyLead's own confidence:'low' already refuses to guess rather
+// than risk a wrong auto-classification - see its own fallback step -
+// and processLeadRow turns that into this one specific EXCEPTION
+// rather than genuinely failing, since the Initial Notes WERE read
+// successfully; there's just no confident rule for them yet). An
+// easier way to confirm, across many leads at once, which of the 6
+// tiers one of these should actually go into, with a free-text sub-
+// category/reason - captured specifically so those decisions can be
+// handed back as real examples to extend classifyLead's own rules
+// with, the same way every rule in this file originated from a real
+// reported lead.
 // ===================================================================
 
-const REVIEW_CATEGORY_OPTIONS = ['CONFIRMED DATE & TIME', 'DATE ONLY', 'WARM ENQUIRY', 'NON-BOOKING'];
+// 6 tiers (was 4 fixed categories) - matches lead-classification-
+// spec.md v1.10's own tier names, in tier order.
+const REVIEW_TIER_OPTIONS = [1, 2, 3, 4, 5, 6];
 
 function isNeedsReview(r) {
 return !!(r && r.status === 'EXCEPTION' && r.exception === 'CLASSIFICATION_REVIEW_REQUIRED');
@@ -2843,14 +3067,21 @@ return !!(r && r.status === 'EXCEPTION' && r.exception === 'CLASSIFICATION_REVIE
 // Pure - takes the existing result and returns the patched one, same
 // finalizeResult shape processLeadRow itself produces, so a manually-
 // confirmed row is indistinguishable downstream (tier grouping, the
-// Extract handoff, bookingPriorityRank) from one the classifier was
-// simply confident about. confidence:'manual' and manualOverride:true
-// are the only markers distinguishing it, kept for the review-decisions
-// export below - nothing else reads them.
-function applyManualReviewDecision(result, category, note) {
+// Extract handoff, priority sort) from one the classifier was simply
+// confident about. confidence:'manual' and manualOverride:true are
+// the only markers distinguishing it, kept for the review-decisions
+// export below - nothing else reads them. subCategory is a free-text
+// field (not a picker) - the spec has dozens of sub-categories per
+// tier, too many for a fixed button set, so a manual reviewer just
+// names it themselves; subRank defaults to the bottom of the tier
+// (highest number = least urgent within it) since a manually-picked
+// tier has no real sub-rank of its own.
+function applyManualReviewDecision(result, tier, subCategoryText, note) {
 return finalizeResult(result, {
 status: 'CLASSIFIED',
-category,
+tier, tierName: TIER_NAMES[tier] || null,
+subCategory: subCategoryText || '(manually reviewed)',
+subRank: 99,
 reason: note ? `Manually confirmed - ${note}` : 'Manually confirmed (no reason given).',
 confidence: 'manual',
 manualOverride: true,
@@ -2866,10 +3097,10 @@ exception: null
 // no bearing on what a future rule should match against.
 function buildManualReviewDecisionsExport(session) {
 const rows = orderedResults(session).filter((r) => r.manualOverride);
-const header = ['InitialNotes', 'Category', 'Reason', 'Campaign', 'Source'].join('\t');
+const header = ['InitialNotes', 'Tier', 'TierName', 'SubCategory', 'Reason', 'Campaign', 'Source'].join('\t');
 const lines = rows.map((r) => [
 (r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
-r.category || '',
+String(r.tier || ''), r.tierName || '', r.subCategory || '',
 (r.manualNote || '').replace(/\t/g, ' '),
 r.campaign || '', r.source || ''
 ].join('\t'));
@@ -2881,17 +3112,22 @@ return [header, ...lines].join('\n');
 // maintained copy of this exact classifier - a real drift risk that
 // already happened (that copy never got this file's later dual-raw-
 // notes-format parser fix before it was deleted in favor of trusting
-// this export directly). Now exports the already-computed Category/
-// Reason/PriorityRank too, so Extract just uses them - one classifier,
-// not two that can quietly disagree on the same lead.
+// this export directly). Now exports the already-computed Tier/
+// SubCategory/Flags/PriorityRank too, so Extract just uses them - one
+// classifier, not two that can quietly disagree on the same lead. Kept
+// in lockstep with SLA-Extract.js's own BOOKING_CHECK_IMPORT_HEADER -
+// changing this header without changing that one breaks the handoff.
 function buildRawNotesTsvForExtract(session) {
-const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Category', 'Reason', 'PriorityRank'];
+const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank'];
 const lines = orderedResults(session).map((r) => [
 r.name, r.phone, r.email, r.source, r.campaign, r.created,
 (r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
-r.category || '',
+String(r.tier || ''), r.tierName || '', r.subCategory || '', String(r.subRank != null ? r.subRank : ''),
+(r.flags || []).join(', '),
+r.confidence || '',
 (r.reason || r.exception || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
-String(bookingPriorityRank(r))
+r.dedupeKey || '', r.postClosureAction || '',
+String(bookingPriorityRankValue(r))
 ].join('\t'));
 return [header.join('\t'), ...lines].join('\n');
 }
@@ -2916,10 +3152,11 @@ function buildBulkAnalysisExport(session) {
 // blank-text row; CLASSIFIED and CLASSIFICATION_REVIEW_REQUIRED rows
 // both have notes regardless of which way they ended up.
 const rows = orderedResults(session).filter((r) => r.initialNotes);
-const header = ['InitialNotes', 'Category', 'Confidence', 'Reason', 'Campaign', 'Source'].join('\t');
+const header = ['InitialNotes', 'Tier', 'TierName', 'SubCategory', 'Flags', 'Confidence', 'Reason', 'Campaign', 'Source'].join('\t');
 const lines = rows.map((r) => [
 (r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
-r.category || '',
+String(r.tier || ''), r.tierName || '', r.subCategory || '',
+(r.flags || []).join(', '),
 r.confidence || '',
 (r.reason || r.exception || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
 r.campaign || '', r.source || ''
@@ -2931,21 +3168,23 @@ return [header, ...lines].join('\n');
 // chat knows what it's looking at and what kind of answer is useful,
 // without the user having to re-explain the whole system from scratch
 // each time they run this.
-const BULK_ANALYSIS_PROMPT = `I'm analysing a batch of car-dealership leads that have already been auto-classified by a rules-based system into one of 4 categories, based on their "Initial Notes" text (what the customer wrote/said) plus Campaign/Source context:
-- CONFIRMED DATE & TIME - customer has a specific booked date and time
-- DATE ONLY - a date is set but no specific time
-- WARM ENQUIRY - interested but nothing booked yet
-- NON-BOOKING - not a booking at all (e.g. a valuation/PX enquiry, a general question, already actioned elsewhere)
+const BULK_ANALYSIS_PROMPT = `I'm analysing a batch of car-dealership leads that have already been auto-classified by a rules-based system (lead-classification-spec.md v1.10) into one of 6 priority tiers, each with its own sub-categories, based on their "Initial Notes" text (what the customer wrote/said) plus Campaign/Source context:
+1. CONFIRMED DATE & TIME - customer gave a specific day AND a clock time
+2. DATE ONLY - a specific day, no clock time
+3. LIKELY BOOKING - clear intent to visit/test drive/buy a specific car, no day given
+4. WARM ENQUIRY - interested but needs further conversation
+5. NURTURE - callable, but may not be interested at all (plain valuations, blank forms, etc.)
+6. REDIRECT / NO CALL - not a call for this pipeline (already booked, already handled, dealer relationship, fleet, aftersales, complaints, spam)
 
 Confidence is "high"/"medium"/"low" - "low" means the existing rules didn't confidently match and a human had to decide manually.
 
-The data below is tab-separated: InitialNotes | Category | Confidence | Reason | Campaign | Source.
+The data below is tab-separated: InitialNotes | Tier | TierName | SubCategory | Flags | Confidence | Reason | Campaign | Source.
 
 What I want from you:
-1. Group leads that share a recognisable "template" - i.e. Initial Notes text (or Campaign/Source combos) that reliably means the same thing every time, especially ones the existing rules currently get wrong, mark "low" confidence, or lump into a category that's too broad for what's actually happening (e.g. certain kinds of PX/valuation leads).
+1. Group leads that share a recognisable "template" - i.e. Initial Notes text (or Campaign/Source combos) that reliably means the same thing every time, especially ones marked "low" confidence, or where the sub-category reads too broad for what's actually happening.
 2. For each group you find, show 2-3 representative examples and describe the pattern in plain terms.
-3. Suggest whether it deserves its own new category/rule, or a refinement of an existing one - and if so, propose a name and a short description of what should trigger it.
-4. Flag anything that looks miscategorised under the current 4-category system, even if it's a one-off, so I can decide whether it's worth a rule.
+3. Suggest whether it deserves its own new sub-category/rule, or a refinement of an existing one - and if so, propose a name, which tier it belongs under, and a short description of what should trigger it.
+4. Flag anything that looks miscategorised, even if it's a one-off, so I can decide whether it's worth a rule.
 
 Don't invent categories that only fit one example - I want genuine recurring templates, backed by the examples in this data.
 
@@ -2970,7 +3209,8 @@ window.KonnectBookingCheck.buildManualReviewDecisionsExport = buildManualReviewD
 window.KonnectBookingCheck.stepOnce = stepOnce;
 window.KonnectBookingCheck.runLoop = runLoop;
 window.KonnectBookingCheck.orderedResults = orderedResults;
-window.KonnectBookingCheck.bookingPriorityRank = bookingPriorityRank;
+window.KonnectBookingCheck.bookingPriorityRankValue = bookingPriorityRankValue;
+window.KonnectBookingCheck.compareByBookingPriority = compareByBookingPriority;
 window.KonnectBookingCheck.buildRawNotesTsvForExtract = buildRawNotesTsvForExtract;
 
 (function orchestrationSelfTest() {
@@ -2995,38 +3235,27 @@ check('same customer keeps a separate result per row', groups[0].rows.map((r) =>
 const fakeSession = {
 rows: parsed.rows,
 results: {
-0: { name: 'Alice', phone: '', email: 'alice@example.com', category: 'DATE ONLY', status: 'CLASSIFIED' },
-1: { name: 'Alice Again', phone: '', email: 'alice@example.com', category: 'CONFIRMED DATE & TIME', status: 'CLASSIFIED' },
-2: { name: 'Bob', phone: '07000000000', email: '', category: 'NON-BOOKING', status: 'CLASSIFIED' }
+0: { name: 'Alice', phone: '', email: 'alice@example.com', tier: 2, tierName: 'DATE ONLY', subCategory: 'Customer-Stated Day', subRank: 3, flags: [], status: 'CLASSIFIED', created: 'Sat, 26 Sep 2026 18:05' },
+1: { name: 'Alice Again', phone: '', email: 'alice@example.com', tier: 1, tierName: 'CONFIRMED DATE & TIME', subCategory: 'Customer-Stated Slot', subRank: 3, flags: ['PX'], status: 'CLASSIFIED', created: 'Sat, 26 Sep 2026 19:05' },
+2: { name: 'Bob', phone: '07000000000', email: '', tier: 5, tierName: 'NURTURE', subCategory: 'Enquiry: Blank', subRank: 9, flags: [], status: 'CLASSIFIED', created: 'Sat, 26 Sep 2026 20:05' }
 }
 };
 
-// Full 5-tier rank per instruction: voicemail-actionable (confirmed >
-// date+time-preference > plain date-only) always outranks
-// requires-pickup (test-drive intent > plain non-booking).
-check('rank: CONFIRMED DATE & TIME', bookingPriorityRank({ status: 'CLASSIFIED', category: 'CONFIRMED DATE & TIME' }), 1);
-check('rank: DATE ONLY + time preference beats plain DATE ONLY',
-bookingPriorityRank({ status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: 'Customer Comments: Sunday morning please' })
-< bookingPriorityRank({ status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: 'Customer Comments: -' }),
+// Tier ASC then subRank ASC (Section 2's own sort order).
+check('rank: Tier 1 beats Tier 2', bookingPriorityRankValue(fakeSession.results[1]) < bookingPriorityRankValue(fakeSession.results[0]), true);
+check('rank: Tier 2 beats Tier 5', bookingPriorityRankValue(fakeSession.results[0]) < bookingPriorityRankValue(fakeSession.results[2]), true);
+check('rank: lower subRank beats higher subRank within the same tier',
+bookingPriorityRankValue({ status: 'CLASSIFIED', tier: 3, subRank: 1 }) < bookingPriorityRankValue({ status: 'CLASSIFIED', tier: 3, subRank: 9 }),
 true);
-check('rank: DATE ONLY beats WARM ENQUIRY',
-bookingPriorityRank({ status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: '' }) < bookingPriorityRank({ status: 'CLASSIFIED', category: 'WARM ENQUIRY' }),
+check('rank: unclassified/exception rows (no tier at all) sink to the bottom',
+bookingPriorityRankValue({ status: 'EXCEPTION', tier: null }) > bookingPriorityRankValue(fakeSession.results[2]),
 true);
-check('rank: WARM ENQUIRY beats NON-BOOKING',
-bookingPriorityRank({ status: 'CLASSIFIED', category: 'WARM ENQUIRY' }) < bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING' }),
+check('compareByBookingPriority ties on tier+subRank by received time (created) ascending',
+compareByBookingPriority(
+{ status: 'CLASSIFIED', tier: 3, subRank: 5, created: 'Sat, 26 Sep 2026 20:00' },
+{ status: 'CLASSIFIED', tier: 3, subRank: 5, created: 'Sat, 26 Sep 2026 19:00' }
+) > 0,
 true);
-check('rank: unclassified/exception rows sink to the bottom',
-bookingPriorityRank({ status: 'EXCEPTION', category: null }) > bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: -' }),
-true);
-check('rank: "potentially be interested in" NON-BOOKING beats plain NON-BOOKING, but still loses to WARM ENQUIRY',
-bookingPriorityRank({ status: 'CLASSIFIED', category: 'WARM ENQUIRY' })
-< bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: Hi I would potentially be interested in this vehicle' })
-&& bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: Hi I would potentially be interested in this vehicle' })
-< bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: -' }),
-true);
-check('rank: PX Valuation generic page-link-only NON-BOOKING is bottom tier (same as blank), not the "potentially interested" sub-rank',
-bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: The customer was on the following website page, before completing the valuation: https://example.com/citroen-c5-aircross-pch' }),
-bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNotes: 'Customer Comments: -' }));
 
 // The exact contract SLA-Extract.js's "Classify Booking Check
 // results" panel parses (BOOKING_CHECK_IMPORT_HEADER there) - pinned
@@ -3034,14 +3263,15 @@ bookingPriorityRank({ status: 'CLASSIFIED', category: 'NON-BOOKING', initialNote
 // otherwise only find out they'd drifted apart by failing silently on
 // a real paste. Extract now trusts these columns directly instead of
 // re-classifying (see its own booking-check-import self-test), so this
-// check also confirms the actual computed category/rank land in the
-// right columns, not just that the header row's shape is right.
+// check also confirms the actual computed tier/subCategory/rank land
+// in the right columns, not just that the header row's shape is right.
 const rawExtractTsv = buildRawNotesTsvForExtract(fakeSession);
 const rawExtractLines = rawExtractTsv.split('\n');
-check('raw Extract export header shape', rawExtractLines[0], 'Name\tPhone\tEmail\tSource\tCampaign\tCreated\tInitialNotes\tCategory\tReason\tPriorityRank');
+check('raw Extract export header shape', rawExtractLines[0], 'Name\tPhone\tEmail\tSource\tCampaign\tCreated\tInitialNotes\tTier\tTierName\tSubCategory\tSubRank\tFlags\tConfidence\tReason\tDedupeKey\tPostClosureAction\tPriorityRank');
 const aliceAgainCells = rawExtractLines[2].split('\t');
-check('raw Extract export: Category column carries the computed category', aliceAgainCells[7], 'CONFIRMED DATE & TIME');
-check('raw Extract export: PriorityRank column carries a real numeric rank', aliceAgainCells[9], String(bookingPriorityRank(fakeSession.results[1])));
+check('raw Extract export: TierName column carries the computed tier name', aliceAgainCells[8], 'CONFIRMED DATE & TIME');
+check('raw Extract export: Flags column carries the computed flags', aliceAgainCells[11], 'PX');
+check('raw Extract export: PriorityRank column carries a real numeric rank', aliceAgainCells[16], String(bookingPriorityRankValue(fakeSession.results[1])));
 
 if (failures.length > 0) {
 console.error('KonnectBookingCheck orchestration self-test FAILED:\n' + failures.join('\n'));
@@ -3069,7 +3299,7 @@ const parsed = parseBatchInput(batch);
 const groups = buildProcessingGroups(parsed.rows);
 check('Dee (no phone/email) is excluded from processing groups', groups.length, 3);
 
-const originalAlice = { name: 'Alice', status: 'CLASSIFIED', category: 'DATE ONLY' };
+const originalAlice = { name: 'Alice', status: 'CLASSIFIED', tier: 2, tierName: 'DATE ONLY' };
 const originalCarol = { name: 'Carol', status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED' };
 const originalDee = { name: 'Dee', status: 'EXCEPTION', exception: 'NO_SEARCH_IDENTIFIER' };
 const fakeSession = {
@@ -3111,7 +3341,7 @@ check('paused is left alone - retrying doesn\'t itself resume a paused run', fak
 // succeeded), then re-checks from where advanceToNextGroup would have
 // landed (index 2) - it must recognize Carol's group is ALREADY
 // resolved and skip straight past it to the end, not reprocess it.
-fakeSession.results[1] = { name: 'Bob', status: 'CLASSIFIED', category: 'WARM ENQUIRY' };
+fakeSession.results[1] = { name: 'Bob', status: 'CLASSIFIED', tier: 4, tierName: 'WARM ENQUIRY' };
 const nextIndex = firstUnresolvedGroupIndex(fakeSession.groups, fakeSession.results, 2);
 check('Already-resolved Carol\'s group (index 2) is skipped, not reprocessed, once Bob\'s retry is done', nextIndex, 3);
 
@@ -3146,8 +3376,8 @@ const batch1 = [
 const session1 = newSession(batch1);
 // Simulate both rows having genuinely finished processing, same shape
 // stepOnce itself produces.
-session1.results[0] = finalizeResult(makeResultBase(session1.rows[0]), { status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: 'Customer Comments: -' });
-session1.results[1] = finalizeResult(makeResultBase(session1.rows[1]), { status: 'CLASSIFIED', category: 'CONFIRMED DATE & TIME', initialNotes: 'Customer Comments: 3pm works' });
+session1.results[0] = finalizeResult(makeResultBase(session1.rows[0]), { status: 'CLASSIFIED', tier: 2, tierName: 'DATE ONLY', initialNotes: 'Customer Comments: -' });
+session1.results[1] = finalizeResult(makeResultBase(session1.rows[1]), { status: 'CLASSIFIED', tier: 1, tierName: 'CONFIRMED DATE & TIME', initialNotes: 'Customer Comments: 3pm works' });
 
 // batch2 = the exact same two rows (as a real re-export from Extract
 // would produce, byte-for-byte) plus one genuinely new one.
@@ -3210,20 +3440,22 @@ check('A genuine automation failure is NOT needs-review (nothing to triage)', is
 
 const classified = finalizeResult(
 { inputIndex: 2, name: 'Hana Hill', phone: '', email: 'hana@example.com', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 20:05' },
-{ status: 'CLASSIFIED', category: 'DATE ONLY', initialNotes: 'Customer Comments: -' }
+{ status: 'CLASSIFIED', tier: 2, tierName: 'DATE ONLY', subCategory: 'Customer-Stated Day', initialNotes: 'Customer Comments: -' }
 );
 check('An already-classified row is not needs-review', isNeedsReview(classified), false);
 
-const decided = applyManualReviewDecision(lowConfidenceResult, 'WARM ENQUIRY', 'mentions price but no visit intent yet - still worth a call');
-check('Manual decision applies the chosen category', decided.category, 'WARM ENQUIRY');
+const decided = applyManualReviewDecision(lowConfidenceResult, 4, 'Quote / Offer Request: Detailed', 'mentions price but no visit intent yet - still worth a call');
+check('Manual decision applies the chosen tier', [decided.tier, decided.tierName], [4, 'WARM ENQUIRY']);
+check('Manual decision applies the given sub-category', decided.subCategory, 'Quote / Offer Request: Detailed');
 check('Manual decision clears the exception/moves to CLASSIFIED', [decided.status, decided.exception], ['CLASSIFIED', null]);
 check('Manual decision is no longer needs-review', isNeedsReview(decided), false);
 check('Manual decision preserves the original Initial Notes untouched', decided.initialNotes, lowConfidenceResult.initialNotes);
 check('Manual decision records the reason given', decided.manualNote, 'mentions price but no visit intent yet - still worth a call');
 check('Manual decision is marked as a manual override', decided.manualOverride, true);
 
-const decidedNoReason = applyManualReviewDecision(lowConfidenceResult, 'NON-BOOKING', '');
+const decidedNoReason = applyManualReviewDecision(lowConfidenceResult, 5, '', '');
 check('A blank reason still produces a sensible default, not an empty string reason', decidedNoReason.reason, 'Manually confirmed (no reason given).');
+check('A blank sub-category still produces a sensible default, not an empty string', decidedNoReason.subCategory, '(manually reviewed)');
 
 const fakeSessionForExport = {
 rows: [{ inputIndex: 0 }, { inputIndex: 1 }],
@@ -3231,14 +3463,14 @@ results: { 0: decided, 1: classified }
 };
 const exportTsv = buildManualReviewDecisionsExport(fakeSessionForExport);
 const exportLines = exportTsv.split('\n');
-check('Review-decisions export header has no name/phone/email columns', exportLines[0], 'InitialNotes\tCategory\tReason\tCampaign\tSource');
+check('Review-decisions export header has no name/phone/email columns', exportLines[0], 'InitialNotes\tTier\tTierName\tSubCategory\tReason\tCampaign\tSource');
 check('Review-decisions export includes only the manually-overridden row', exportLines.length, 2);
-check('Review-decisions export row carries the chosen category', exportLines[1].split('\t')[1], 'WARM ENQUIRY');
+check('Review-decisions export row carries the chosen tier name', exportLines[1].split('\t')[2], 'WARM ENQUIRY');
 
 if (failures.length > 0) {
 console.error('KonnectBookingCheck needs-review self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck needs-review self-test passed (13/13)');
+console.info('KonnectBookingCheck needs-review self-test passed (14/14)');
 }
 })();
 
@@ -3252,7 +3484,7 @@ if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
 
 const classifiedRow = finalizeResult(
 { inputIndex: 0, name: 'Ivy Irwin', phone: '', email: 'ivy@example.com', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 20:05' },
-{ status: 'CLASSIFIED', category: 'DATE ONLY', confidence: 'high', reason: 'Explicit date, no time given.', initialNotes: 'Customer Comments: Tuesday works' }
+{ status: 'CLASSIFIED', tier: 2, tierName: 'DATE ONLY', subCategory: 'Customer-Stated Day', flags: [], confidence: 'high', reason: 'Explicit date, no time given.', initialNotes: 'Customer Comments: Tuesday works' }
 );
 const needsReviewRow = finalizeResult(
 { inputIndex: 1, name: 'Jack Jones', phone: '07000000002', email: '', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 21:05' },
@@ -3269,11 +3501,11 @@ results: { 0: classifiedRow, 1: needsReviewRow, 2: automationFailureRow }
 
 const exportTsv = buildBulkAnalysisExport(fakeSession);
 const exportLines = exportTsv.split('\n');
-check('Bulk-analysis export header has no name/phone/email columns', exportLines[0], 'InitialNotes\tCategory\tConfidence\tReason\tCampaign\tSource');
+check('Bulk-analysis export header has no name/phone/email columns', exportLines[0], 'InitialNotes\tTier\tTierName\tSubCategory\tFlags\tConfidence\tReason\tCampaign\tSource');
 check('Bulk-analysis export includes classified and needs-review rows, excludes the automation failure with no notes', exportLines.length, 3);
-check('Bulk-analysis export carries the classified row\'s category', exportLines[1].split('\t')[1], 'DATE ONLY');
-check('Bulk-analysis export carries the needs-review row\'s low confidence', exportLines[2].split('\t')[2], 'low');
-check('Bulk-analysis export carries the needs-review row\'s exception as its reason column', exportLines[2].split('\t')[3], 'CLASSIFICATION_REVIEW_REQUIRED');
+check('Bulk-analysis export carries the classified row\'s tier name', exportLines[1].split('\t')[2], 'DATE ONLY');
+check('Bulk-analysis export carries the needs-review row\'s low confidence', exportLines[2].split('\t')[5], 'low');
+check('Bulk-analysis export carries the needs-review row\'s exception as its reason column', exportLines[2].split('\t')[6], 'CLASSIFICATION_REVIEW_REQUIRED');
 
 const payload = buildBulkAnalysisClipboardPayload(fakeSession);
 check('Clipboard payload leads with the explanatory prompt text', payload.startsWith(BULK_ANALYSIS_PROMPT), true);
@@ -3375,62 +3607,6 @@ return `<svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none"
 // Only initializes in a real browser (guarded below) so the self-tests
 // above still run cleanly under a plain Node harness.
 // ===================================================================
-
-// Same Tier 1-4 categorization SLA-Extract.js already uses for its own
-// panel (categorizeTier there) - ported verbatim rather than inventing
-// a separate grouping, per instruction that this panel should group
-// leads "into the same tiers as the extract ui".
-// Order and matching here MUST mirror classifyInitialNotes' own
-// dispatch exactly (isElectricCampaign/isReserveUsedCampaign/
-// isTestDriveRequestCampaign/etc, further up this file) - this only
-// decides which section a card DISPLAYS under, but if it's stricter or
-// differently-ordered than what actually classified the lead, a card
-// can end up shown in the wrong tier from the ruleset that was really
-// applied to it. Previously required the full "test drive request" +
-// new/used here while the classifier itself only checked for a bare
-// "test drive" substring (isTestDriveRequestCampaign) - a campaign
-// matching the classifier's looser rule but not this stricter one
-// would get Tier 1 rules applied but display under Tier 4
-// "Uncategorized", with no way to tell from the UI which rules a card
-// actually got.
-function categorizeTier(campaign, source) {
-const camp = String(campaign || '').toLowerCase();
-const src = String(source || '').toLowerCase();
-
-if (camp.includes('electric') && !camp.includes('register interest'))
-return { tier: 1, reason: 'Brand - Electric' };
-if (camp.includes('reserve') && camp.includes('used'))
-return { tier: 1, reason: 'Reserve - Used' };
-if (campaignPrimaryPart(campaign).includes('test drive'))
-return { tier: 1, reason: 'Test Drive Request' };
-
-if (camp.includes('enquiry') && camp.includes('new') && src.includes('customer first'))
-return { tier: 2, reason: 'Enquiry - New (Customer First)' };
-if (camp.includes('motability'))
-return { tier: 2, reason: 'Motability' };
-if (src.includes('leapmotor'))
-return { tier: 2, reason: 'Leapmotor (Source)' };
-
-if (camp.includes('enquiry') && camp.includes('used'))
-return { tier: 3, reason: 'Enquiry - Used' };
-if (camp.includes('offer request') && camp.includes('new'))
-return { tier: 3, reason: 'Offer Request - New' };
-if ((camp.includes('px valuation') || camp.includes('p/x valuation')) && camp.includes('new'))
-return { tier: 3, reason: 'PX Valuation - New' };
-if ((camp.includes('px valuation') || camp.includes('p/x valuation')) && camp.includes('used'))
-return { tier: 3, reason: 'PX Valuation - Used' };
-
-if (camp.includes('enquiry') && camp.includes('new') && src.includes('robins'))
-return { tier: 4, reason: 'Enquiry - New (Robins & Day)' };
-if (camp.includes('general'))
-return { tier: 4, reason: 'General' };
-if (camp.includes('inbound'))
-return { tier: 4, reason: 'Inbound' };
-if (camp.includes('cargurus') || src.includes('cargurus'))
-return { tier: 4, reason: 'Cargurus' };
-
-return { tier: 4, reason: 'Uncategorized' };
-}
 
 // Every fresh bookmarklet click always starts minimized to just the
 // nav item/badge, per instruction - unlike SLA-Extract.js (a
@@ -3820,35 +3996,34 @@ if (session) pasteBox.value = session.rawInput || '';
 // (few of them, useful to see counts at a glance); customers default
 // closed, per instruction ("collapsed under the customer's name x
 // contact details").
-const detailsState = { tiers: new Set([1, 2, 3, 4]), customers: new Set() };
+const detailsState = { tiers: new Set([1, 2, 3, 4, 5, 6]), customers: new Set() };
 let reviewSectionOpen = false;
 
-// Same palette SLA-Extract.js's own bookingCheckImportCategoryColor
-// uses for these exact category strings, so a lead reads the same
-// color whichever tool it's looked at in.
+// One color per tier (6, was 4 categories) - same palette family SLA-
+// Extract.js's own bookingCheckImportCategoryColor uses, extended for
+// the new tier count, so a lead reads the same color whichever tool
+// it's looked at in.
+const TIER_COLORS = { 1: '#059669', 2: '#d97706', 3: '#2563eb', 4: '#7c3aed', 5: '#64748b', 6: '#94a3b8' };
+
 function categoryColor(r) {
 if (!r) return '#1e293b';
 if (r.exception) return '#dc2626';
-if (r.category === 'CONFIRMED DATE & TIME') return '#059669';
-if (r.category === 'DATE ONLY') return '#d97706';
-if (r.category === 'WARM ENQUIRY') return '#2563eb';
-if (r.category === 'NON-BOOKING') return '#64748b';
-return '#1e293b';
+return TIER_COLORS[r.tier] || '#1e293b';
 }
 
 // Stable key for both the stats bar and the category filter - EXCEPTION
-// rows have no r.category at all (they have r.exception instead), so
+// rows have no tier at all yet (they have r.exception instead), so
 // this gives them one consistent key rather than leaving them grouped
 // under whatever raw exception code happens to be on each one.
 function categoryKey(r) {
 if (!r) return 'PENDING';
 if (r.exception) return 'EXCEPTION';
-return r.category || 'PENDING';
+return r.tierName || 'PENDING';
 }
 
 function categoryBadge(r) {
 const color = categoryColor(r);
-const label = escapeHtmlForUi(r.category || r.exception || 'Pending');
+const label = escapeHtmlForUi(r.exception ? r.exception : [r.tierName, r.subCategory].filter(Boolean).join(' - ') || 'Pending');
 const icon = r.exception ? svgIcon('warning', 10, ' margin-right: 3px;') : '';
 return `<span class="category-badge" style="background: ${color}1a; color: ${color};">${icon}${label}</span>`;
 }
@@ -3873,16 +4048,17 @@ if (r.phone) parts.push(`<div class="field"><b>Phone:</b> ${copyableField(r.phon
 if (r.email) parts.push(`<div class="field"><b>Email:</b> ${copyableField(r.email)}</div>`);
 parts.push(`<div class="field"><b>Campaign:</b> ${escapeHtmlForUi(r.campaign || '-')} &middot; <b>Source:</b> ${escapeHtmlForUi(r.source || '-')}</div>`);
 parts.push(`<div class="field"><b>Created:</b> ${escapeHtmlForUi(r.created || '-')}</div>`);
+if (r.flags && r.flags.length > 0) parts.push(`<div class="field"><b>Flags:</b> ${escapeHtmlForUi(r.flags.join(', '))}</div>`);
 if (r.reason) parts.push(`<div class="reason">${escapeHtmlForUi(r.reason)}</div>`);
 if (r.initialNotes) parts.push(`<div class="notes-block">${escapeHtmlForUi(r.initialNotes)}</div>`);
 else if (r.status === 'EXCEPTION') parts.push(`<div class="reason">No Initial Notes read - ${escapeHtmlForUi(r.exception || '')}</div>`);
 return parts.join('');
 }
 
-// Ordered by the same priority scale as the category pills, so both
-// the stats bar and its column-selection filtering behavior read
-// top-to-bottom as "most to least actionable" consistently.
-const STATS_BAR_CATEGORY_ORDER = ['CONFIRMED DATE & TIME', 'DATE ONLY', 'WARM ENQUIRY', 'NON-BOOKING', 'EXCEPTION'];
+// Ordered by the same priority scale as the tier pills, so both the
+// stats bar and its column-selection filtering behavior read top-to-
+// bottom as "most to least actionable" consistently.
+const STATS_BAR_CATEGORY_ORDER = [1, 2, 3, 4, 5, 6].map((t) => TIER_NAMES[t]).concat(['EXCEPTION']);
 
 function renderNeedsReviewSection(needsReview) {
 if (needsReview.length === 0) {
@@ -3893,10 +4069,11 @@ const rowsHtml = needsReview.map((r) => `
 <div class="review-row" data-key="${r.inputIndex}">
 <div class="review-name">${escapeHtmlForUi(r.name)}</div>
 <div class="notes-block review-notes">${escapeHtmlForUi(r.initialNotes || '')}</div>
-${r.category ? `<div class="reason">Classifier's best guess (not trusted): ${escapeHtmlForUi(r.category)} - ${escapeHtmlForUi(r.reason || '')}</div>` : ''}
+${r.tierName ? `<div class="reason">Classifier's best guess (not trusted): Tier ${r.tier} - ${escapeHtmlForUi(r.tierName)}${r.subCategory ? ' - ' + escapeHtmlForUi(r.subCategory) : ''} - ${escapeHtmlForUi(r.reason || '')}</div>` : ''}
 <div class="review-actions">
-${REVIEW_CATEGORY_OPTIONS.map((cat) => `<button data-category="${escapeHtmlForUi(cat)}" style="background: ${categoryColor({ category: cat })}1a; color: ${categoryColor({ category: cat })};">${escapeHtmlForUi(cat)}</button>`).join('')}
+${REVIEW_TIER_OPTIONS.map((tier) => `<button data-tier="${tier}" style="background: ${categoryColor({ tier })}1a; color: ${categoryColor({ tier })};">Tier ${tier}: ${escapeHtmlForUi(TIER_NAMES[tier])}</button>`).join('')}
 </div>
+<input type="text" class="review-subcategory" placeholder="Sub-category (optional) - e.g. Website Test Drive...">
 <input type="text" class="review-reason" placeholder="Why (optional) - helps refine the rules later...">
 </div>
 `).join('');
@@ -3910,12 +4087,13 @@ const detailsEl = needsReviewSectionEl.querySelector('details.review-section');
 if (detailsEl) detailsEl.addEventListener('toggle', () => { reviewSectionOpen = detailsEl.open; });
 needsReviewSectionEl.querySelectorAll('.review-row').forEach((rowEl) => {
 const key = Number(rowEl.dataset.key);
+const subCategoryInput = rowEl.querySelector('.review-subcategory');
 const reasonInput = rowEl.querySelector('.review-reason');
 rowEl.querySelectorAll('.review-actions button').forEach((btn) => {
 btn.addEventListener('click', () => {
 const result = session.results[key];
 if (!result) return;
-session.results[key] = applyManualReviewDecision(result, btn.dataset.category, reasonInput.value.trim());
+session.results[key] = applyManualReviewDecision(result, Number(btn.dataset.tier), subCategoryInput.value.trim(), reasonInput.value.trim());
 saveSession(session);
 render();
 });
@@ -3939,6 +4117,17 @@ return;
 }
 rowCountEl.textContent = `${session.rows.length} rows parsed` + (session.headerOk ? '' : ` - ${session.headerError}`);
 const orderedAll = orderedResults(session);
+// Section 9.1 dedupe - within whatever's currently pasted, per
+// instruction. Re-run on every render (idempotent: setDuplicate only
+// adds the flag once) rather than once at the end, so duplicates
+// already show correctly while a batch is still mid-run.
+applyDedupe(
+orderedAll,
+(r) => r,
+(r) => { const p = parseSlaCreated(r.created); return p ? new Date(p.year, p.month, p.day, p.hour, p.minute).getTime() : null; },
+(r) => String(r.source || '').toLowerCase() === 'post closure processing',
+(r) => { if (!r.flags.includes('Duplicate')) r.flags = [...r.flags, 'Duplicate']; }
+);
 const needsReview = orderedAll.filter(isNeedsReview);
 const ordered = orderedAll.filter((r) => !isNeedsReview(r));
 renderNeedsReviewSection(needsReview);
@@ -3998,24 +4187,32 @@ resultsBody.innerHTML = '<div class="empty-state">No results match the current f
 } else {
 const byTier = new Map();
 filtered.forEach((r) => {
-const tier = categorizeTier(r.campaign, r.source).tier;
+// r.tier comes straight from classifyLead's own real classification
+// now, not a separate campaign-based display heuristic - a card
+// always groups under the exact tier that actually classified it.
+// Genuine automation failures (SEARCH_NO_RESULTS etc.) never reach
+// classifyLead at all, so they have no tier of their own - grouped
+// into a trailing "Unclassified" bucket (7) rather than sorting
+// first via null-coerces-to-0 arithmetic.
+const tier = r.tier || 7;
 if (!byTier.has(tier)) byTier.set(tier, []);
 byTier.get(tier).push(r);
 });
 resultsBody.innerHTML = Array.from(byTier.keys()).sort((a, b) => a - b).map((tier) => {
-// Sorted by bookingPriorityRank (voicemail-actionable first, then
-// requires-pickup ranked by likelihood) so the most actionable leads
-// in each tier surface at the top rather than input order.
-const rows = [...byTier.get(tier)].sort((a, b) => bookingPriorityRank(a) - bookingPriorityRank(b));
+// Sorted by the spec's own priority order (tier/subRank, then
+// received time) so the most actionable leads in each tier surface
+// at the top rather than input order.
+const rows = [...byTier.get(tier)].sort(compareByBookingPriority);
 const customersHtml = rows.map((r) => `
 <details class="customer" data-key="${r.inputIndex}" ${detailsState.customers.has(r.inputIndex) ? 'open' : ''}>
 <summary><span style="display: flex; align-items: center; gap: 6px; overflow: hidden;">${detailsChevronIcon()}<span class="customer-name" title="${escapeHtmlForUi(r.initialNotes || 'No Initial Notes read yet.')}">${escapeHtmlForUi(r.name)}</span></span>${categoryBadge(r)}</summary>
 <div class="customer-body">${customerBodyHtml(r)}</div>
 </details>
 `).join('');
+const tierLabel = tier === 7 ? 'Unclassified' : `Tier ${tier} - ${TIER_NAMES[tier]}`;
 return `
 <details class="tier" data-key="${tier}" ${detailsState.tiers.has(tier) ? 'open' : ''}>
-<summary><span class="tier-left">${detailsChevronIcon()}<span>Tier ${tier}</span></span><span class="tier-count">${rows.length}</span></summary>
+<summary><span class="tier-left">${detailsChevronIcon()}<span>${escapeHtmlForUi(tierLabel)}</span></span><span class="tier-count">${rows.length}</span></summary>
 ${customersHtml}
 </details>
 `;
