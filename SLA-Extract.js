@@ -3171,9 +3171,12 @@ return String(value || '').replace(/[\t\r\n]+/g, ' ').trim();
 // confirmation, not as a search key.
 function buildBookingCheckTsv(tiers, customerFirstOnly) {
 const tierSet = new Set(tiers);
+const importResults = loadBookingCheckImportState().results;
+let excludedCount = 0;
 const rows = currentCustomers.filter((c) => {
 if (!tierSet.has(c.tier)) return false;
 if (customerFirstOnly && !(c.source || '').toLowerCase().includes('customer first')) return false;
+if (isAlreadyClassifiedForContact(c, importResults)) { excludedCount++; return false; }
 return true;
 });
 // Registration dropped per instruction - not something that needs
@@ -3185,7 +3188,7 @@ const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'].join(
 const lines = rows.map((c) => [
 tsvSafe(stripTitle(c.name)), tsvSafe(c.phone), tsvSafe(c.email), tsvSafe(c.source), tsvSafe(c.campaign), tsvSafe(c.createdText)
 ].join('\t'));
-return { tsv: [header, ...lines].join('\n'), count: rows.length };
+return { tsv: [header, ...lines].join('\n'), count: rows.length, excludedCount };
 }
 
 // Deliberately a small popover toggled from a single header icon, not a
@@ -3241,16 +3244,23 @@ localStorage.setItem(BOOKING_CHECK_EXPORT_PENDING_KEY, JSON.stringify(settings))
 // already provides.
 function buildPendingBookingCheckTsv(callbackTypes) {
 const typeSet = new Set(callbackTypes);
+const importResults = loadBookingCheckImportState().results;
+let excludedCount = 0;
 const rows = currentPendingCustomers.filter((c) => {
 if (!typeSet.has(c.callbackType)) return false;
 if (!c.lastActionText) return false;
+// isAlreadyClassifiedForContact compares against c.createdText - alias
+// lastActionText (Pending Customers' own equivalent "which contact is
+// this" timestamp, used as the Created column below) onto that field
+// rather than forking the matching logic for this page.
+if (isAlreadyClassifiedForContact({ ...c, createdText: c.lastActionText }, importResults)) { excludedCount++; return false; }
 return true;
 });
 const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'].join('\t');
 const lines = rows.map((c) => [
 tsvSafe(stripTitle(c.name)), tsvSafe(c.mobile || c.landline), tsvSafe(c.email), '', tsvSafe(c.campaign), tsvSafe(c.lastActionText)
 ].join('\t'));
-return { tsv: [header, ...lines].join('\n'), count: rows.length };
+return { tsv: [header, ...lines].join('\n'), count: rows.length, excludedCount };
 }
 
 // Shared shell (same popover DOM id/position/Copy button) between the
@@ -3272,7 +3282,7 @@ const exportSectionHtml = (() => {
 if (currentPageType === PAGE_PENDING) {
 const settings = loadPendingBookingCheckExportSettings();
 const selectedTypes = new Set(settings.callbackTypes);
-const { count } = buildPendingBookingCheckTsv(settings.callbackTypes);
+const { count, excludedCount } = buildPendingBookingCheckTsv(settings.callbackTypes);
 const typeCheckboxes = PENDING_BOOKING_CHECK_CALLBACK_TYPES.map(t => `
 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;">
 <input type="checkbox" class="booking-export-callback-type" value="${escapeHtml(t)}" ${selectedTypes.has(t) ? 'checked' : ''} onchange="window._updateBookingCheckExportPreview()">
@@ -3282,13 +3292,13 @@ return `
 <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${typeCheckboxes}</div>
 <div style="font-size: 10.5px; color: #94a3b8; margin-bottom: 10px;">New (never-actioned) leads are excluded - check the SLA queue for those.</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-<span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}</span>
+<span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}</span>
 <button onclick="window._copyBookingCheckExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
 </div>`;
 }
 const settings = loadBookingCheckExportSettings();
 const selectedTiers = new Set(settings.tiers);
-const { count } = buildBookingCheckTsv(settings.tiers, settings.customerFirstOnly);
+const { count, excludedCount } = buildBookingCheckTsv(settings.tiers, settings.customerFirstOnly);
 const tierCheckboxes = [1, 2, 3, 4].map(t => `
 <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;">
 <input type="checkbox" class="booking-export-tier" value="${t}" ${selectedTiers.has(t) ? 'checked' : ''} onchange="window._updateBookingCheckExportPreview()">
@@ -3301,7 +3311,7 @@ return `
 Customer First only
 </label>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-<span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}</span>
+<span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}</span>
 <button onclick="window._copyBookingCheckExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
 </div>`;
 })();
@@ -3322,8 +3332,7 @@ return `
 ${exportSectionHtml}
 <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 14px 0;">
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">CLASSIFY RESULTS BACK IN</div>
-<button onclick="window._pasteAndClassifyBookingCheck(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 8px;">${svgIcon('copy', 13)}Paste from clipboard & Classify</button>
-<div style="font-size: 10px; color: #94a3b8; text-align: center; margin-bottom: 8px;">or paste manually below</div>
+<div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">Use the "Paste & Classify from Booking Check" button above the list - or paste manually here if clipboard access is blocked:</div>
 <textarea id="bookingCheckImportBox" placeholder="Paste TSV from Konnect Booking Check" oninput="window._updateBookingCheckImportInput(this.value)" style="width: 100%; height: 60px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px;">${escapeHtml(importState.rawInput)}</textarea>
 <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
 <button onclick="window._classifyBookingCheckImport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Classify</button>
@@ -3342,17 +3351,17 @@ window._updateBookingCheckExportPreview = function() {
 if (currentPageType === PAGE_PENDING) {
 const callbackTypes = Array.from(document.querySelectorAll('.booking-export-callback-type:checked')).map(el => el.value);
 savePendingBookingCheckExportSettings({ callbackTypes });
-const { count } = buildPendingBookingCheckTsv(callbackTypes);
+const { count, excludedCount } = buildPendingBookingCheckTsv(callbackTypes);
 const countEl = document.getElementById('bookingExportRowCount');
-if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}`;
+if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}`;
 return;
 }
 const tiers = Array.from(document.querySelectorAll('.booking-export-tier:checked')).map(el => Number(el.value));
 const customerFirstOnly = document.getElementById('bookingExportCustomerFirstOnly')?.checked || false;
 saveBookingCheckExportSettings({ tiers, customerFirstOnly });
-const { count } = buildBookingCheckTsv(tiers, customerFirstOnly);
+const { count, excludedCount } = buildBookingCheckTsv(tiers, customerFirstOnly);
 const countEl = document.getElementById('bookingExportRowCount');
-if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}`;
+if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}`;
 };
 
 window._copyBookingCheckExport = function(buttonEl) {
@@ -3566,6 +3575,64 @@ console.info('SLA Extract pending-booking-check-export self-test passed (8/8)');
 }
 })();
 
+// ===================================================================
+// Self-test for isAlreadyClassifiedForContact and its use in both TSV
+// builders - a customer already classified for this EXACT contact
+// (same identity, same created/lastActionText) should drop out of the
+// next "Copy leads to Booking Check" export so repeat auto contacts
+// and SLA-leads-turned-autos stop being re-copied/re-scanned every
+// round, while a genuinely new contact (different created time, or no
+// prior result at all) must still be exported as usual.
+// ===================================================================
+(function bookingCheckExportDedupeSelfTest() {
+const failures = [];
+const originalCustomers = currentCustomers;
+const originalPendingCustomers = currentPendingCustomers;
+const originalImportState = localStorage.getItem(BOOKING_CHECK_IMPORT_KEY);
+
+saveBookingCheckImportState({
+rawInput: '',
+results: [
+{ name: 'Dan Davis', email: 'dan@example.com', phone: '', created: 'Sat, 26 Sep 2026 10:00', tier: 2 },
+{ name: 'Eve Evans', email: 'eve@example.com', phone: '', created: 'Sat, 26 Sep 2026 09:00', tier: 2 }
+]
+});
+
+currentCustomers = [
+// Already classified for this exact contact - must be excluded.
+{ name: 'Dan Davis', tier: 2, source: 'Autos', campaign: 'X', phone: '', email: 'dan@example.com', createdText: 'Sat, 26 Sep 2026 10:00' },
+// Same person, but this is a NEW contact (different created time than
+// the stored result) - a real auto re-contact, must still be included.
+{ name: 'Eve Evans', tier: 2, source: 'Autos', campaign: 'X', phone: '', email: 'eve@example.com', createdText: 'Sat, 26 Sep 2026 11:00' },
+// Never classified before - included.
+{ name: 'Fay Fields', tier: 2, source: 'Autos', campaign: 'X', phone: '', email: 'fay@example.com', createdText: 'Sat, 26 Sep 2026 12:00' }
+];
+const slaResult = buildBookingCheckTsv([2], false);
+if (slaResult.count !== 2) failures.push(`SLA export: expected 2 included (Eve, Fay), got ${slaResult.count}`);
+if (slaResult.excludedCount !== 1) failures.push(`SLA export: expected 1 excluded (Dan), got ${slaResult.excludedCount}`);
+if (slaResult.tsv.includes('Dan Davis')) failures.push('SLA export: Dan Davis (already classified for this exact contact) should not appear in the TSV');
+if (!slaResult.tsv.includes('Eve Evans')) failures.push('SLA export: Eve Evans (new contact, different created time) should still appear');
+
+currentPendingCustomers = [
+{ name: 'Dan Davis', mobile: '', landline: '', email: 'dan@example.com', campaign: 'X', callbackType: 'Auto Rescheduled', lastActionText: 'Sat, 26 Sep 2026 10:00' },
+{ name: 'Fay Fields', mobile: '', landline: '', email: 'fay@example.com', campaign: 'X', callbackType: 'Auto Rescheduled', lastActionText: 'Sat, 26 Sep 2026 12:00' }
+];
+const pendingResult = buildPendingBookingCheckTsv(['Auto Rescheduled']);
+if (pendingResult.count !== 1) failures.push(`Pending export: expected 1 included (Fay), got ${pendingResult.count}`);
+if (pendingResult.excludedCount !== 1) failures.push(`Pending export: expected 1 excluded (Dan), got ${pendingResult.excludedCount}`);
+
+currentCustomers = originalCustomers;
+currentPendingCustomers = originalPendingCustomers;
+if (originalImportState === null) localStorage.removeItem(BOOKING_CHECK_IMPORT_KEY);
+else localStorage.setItem(BOOKING_CHECK_IMPORT_KEY, originalImportState);
+
+if (failures.length > 0) {
+console.error('SLA Extract booking-check-export-dedupe self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract booking-check-export-dedupe self-test passed (4/4)');
+}
+})();
+
 // Same TIER_COLORS palette Konnect-Booking-Check.js's own panel uses
 // for these exact 6 tiers (lead-classification-spec.md v1.10), so a
 // lead reads the same color whichever tool it's looked at in.
@@ -3615,6 +3682,23 @@ return false;
 });
 if (candidates.length <= 1) return candidates[0] || null;
 return candidates.find((r) => r.created === c.createdText) || candidates[0];
+}
+
+// A customer contacted repeatedly (autos typically reach the same
+// person 3-5 times, and an SLA lead can later turn into an auto) kept
+// forcing a re-copy to Booking Check and a re-scan there every round,
+// even when nothing about that specific contact had changed since it
+// was last classified. Reuses findBookingCheckResultForCustomer's own
+// identity matching (email/phone) rather than a second matching
+// implementation - "already classified for THIS contact" is exactly
+// its existing exact-`created`-match case, just checked independently
+// here since that function falls back to a looser match when there's
+// no exact one (which must NOT count as "already classified" - a
+// different created time means a genuinely new contact/lead).
+function isAlreadyClassifiedForContact(c, importResults) {
+if (!importResults || importResults.length === 0) return false;
+const match = findBookingCheckResultForCustomer(c, importResults);
+return !!match && match.created === c.createdText;
 }
 
 // The point of classifying here (rather than reading results in
@@ -4379,6 +4463,7 @@ ${assignSectionHtml}
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
 ${hideSearch ? '' : `
 <div style="position: sticky; top: 0; z-index: 2; background: #f8fafc; padding-bottom: 10px; margin-bottom: 10px;">
+${showBookingCheck ? `<button onclick="window._pasteAndClassifyBookingCheck(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 8px;" title="Reads Konnect Booking Check's &quot;Copy raw for Extract&quot; result straight off the clipboard and classifies it">${svgIcon('copy', 13)}Paste & Classify from Booking Check</button>` : ''}
 <input type="text" id="customerSearchInput" placeholder="Search by name…" oninput="window._filterCustomerSearch(this.value)"
 style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; color: #1e293b; background: white;">
 </div>`}
