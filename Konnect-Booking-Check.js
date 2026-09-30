@@ -3270,6 +3270,70 @@ handoffControls: hasResults
 };
 }
 
+// One color per tier (6, was 4 categories) - same palette family SLA-
+// Extract.js's own bookingCheckImportCategoryColor uses, extended for
+// the new tier count, so a lead reads the same color whichever tool
+// it's looked at in.
+const TIER_COLORS = { 1: '#059669', 2: '#d97706', 3: '#2563eb', 4: '#7c3aed', 5: '#64748b', 6: '#94a3b8' };
+
+// Per instruction: for a Post Closure lead, the tier/sub-category the
+// classifier would otherwise have landed on (WARM ENQUIRY, NURTURE,
+// etc.) isn't the important part - most of the time it's just "didn't
+// answer the phone" regardless of tier, and what actually matters is
+// the Post Closure decision itself. Shared by categoryColor/categoryKey/
+// categoryBadge and Extract's own postClosureActionColor (kept in
+// lockstep the same way TIER_COLORS already is) so a lead reads the
+// same way wherever it's looked at.
+function postClosureColor(action) {
+return action === 'send back through' ? '#0891b2' : '#d97706';
+}
+
+function categoryColor(r) {
+if (!r) return '#1e293b';
+if (r.exception) return '#dc2626';
+if (r.postClosureAction) return postClosureColor(r.postClosureAction);
+return TIER_COLORS[r.tier] || '#1e293b';
+}
+
+// Stable key for both the stats bar and the category filter - EXCEPTION
+// rows have no tier at all yet (they have r.exception instead), so
+// this gives them one consistent key rather than leaving them grouped
+// under whatever raw exception code happens to be on each one.
+// Post Closure leads get their own two keys, checked before tierName,
+// for the same reason categoryBadge below leads with postClosureAction -
+// tier isn't what should group/filter these.
+function categoryKey(r) {
+if (!r) return 'PENDING';
+if (r.exception) return 'EXCEPTION';
+if (r.postClosureAction) return r.postClosureAction === 'send back through' ? 'POST CLOSURE: SEND BACK' : 'POST CLOSURE: CHECK';
+return r.tierName || 'PENDING';
+}
+
+// Split into a short primary pill + a separately-styled, muted
+// secondary label instead of one long concatenated string ("WARM
+// ENQUIRY - Quote / Offer Request: Detailed") - the single pill read
+// as one dense block next to the customer name, hurting scannability
+// in the collapsed summary row. For a Post Closure lead the primary
+// pill is the Post Closure decision, not the tier (per instruction,
+// that's the part that actually matters here) - tier/sub-category still
+// shows, just demoted to the same secondary spot subCategory normally
+// occupies.
+function categoryBadge(r) {
+const color = categoryColor(r);
+if (r.exception) {
+const icon = svgIcon('warning', 10, ' margin-right: 3px;');
+return `<span class="category-badge" style="background: ${color}1a; color: ${color};">${icon}${escapeHtmlForUi(r.exception)}</span>`;
+}
+if (r.postClosureAction) {
+const pcPill = `<span class="category-badge" style="background: ${color}1a; color: ${color};">${escapeHtmlForUi(r.postClosureAction)}</span>`;
+const tierLabel = r.tierName ? `<span class="subcat-label" title="${escapeHtmlForUi(r.tierName)}">${escapeHtmlForUi(r.tierName)}</span>` : '';
+return pcPill + tierLabel;
+}
+const tierPill = `<span class="category-badge" style="background: ${color}1a; color: ${color};">${escapeHtmlForUi(r.tierName || 'Pending')}</span>`;
+const subcat = r.subCategory ? `<span class="subcat-label" title="${escapeHtmlForUi(r.subCategory)}">${escapeHtmlForUi(r.subCategory)}</span>` : '';
+return tierPill + subcat;
+}
+
 // curState only ever gets a real value from uiHandle.setState, which is
 // called mid-step ("Searching for X...", "Reading lead at Y...") and at
 // the end of a run (Done/Paused/Cancelled) - but render() itself never
@@ -3342,8 +3406,15 @@ return 0;
 // spec.md v1.10's own tier names, in tier order.
 const REVIEW_TIER_OPTIONS = [1, 2, 3, 4, 5, 6];
 
+// !r.postClosureAction - a Post Closure lead's underlying tier
+// classification can still land on CLASSIFICATION_REVIEW_REQUIRED (low
+// confidence), but per instruction that tier isn't what matters for
+// these leads at all - pulling them into Needs Review to manually pick
+// a tier would bury the actual, more confident Post Closure decision
+// they already have. These always go to their own Post Closure section
+// in the tier list instead (see render()'s virtual -2/-1 tier keys).
 function isNeedsReview(r) {
-return !!(r && r.status === 'EXCEPTION' && r.exception === 'CLASSIFICATION_REVIEW_REQUIRED');
+return !!(r && r.status === 'EXCEPTION' && r.exception === 'CLASSIFICATION_REVIEW_REQUIRED' && !r.postClosureAction);
 }
 
 // Pure - takes the existing result and returns the patched one, same
@@ -3718,6 +3789,43 @@ console.info('KonnectBookingCheck button-visibility self-test passed (7/7)');
 })();
 
 // ===================================================================
+// Self-test for the Post Closure carve-out's card/grouping display -
+// categoryColor/categoryKey/categoryBadge must all treat postClosureAction
+// as the primary signal (per instruction: tier isn't what matters for
+// these leads), ahead of the tier they'd otherwise group/colour under.
+// ===================================================================
+(function postClosureDisplaySelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
+}
+
+check('postClosureColor: confident send-back gets the teal colour', postClosureColor('send back through'), '#0891b2');
+check('postClosureColor: the uncertain "check" bucket gets the amber colour', postClosureColor('check: needs contact?'), '#d97706');
+
+const sendBackLead = { tier: 4, tierName: 'WARM ENQUIRY', postClosureAction: 'send back through' };
+const checkLead = { tier: 5, tierName: 'NURTURE', postClosureAction: 'check: needs contact?' };
+const normalLead = { tier: 4, tierName: 'WARM ENQUIRY', subCategory: 'Quote / Offer Request: Detailed' };
+
+check('categoryColor uses postClosureColor, not TIER_COLORS, once postClosureAction is set', categoryColor(sendBackLead), '#0891b2');
+check('categoryColor falls back to the real tier colour when there is no postClosureAction', categoryColor(normalLead), '#7c3aed');
+
+check('categoryKey groups a confident send-back separately from its underlying tier', categoryKey(sendBackLead), 'POST CLOSURE: SEND BACK');
+check('categoryKey groups the uncertain check bucket separately too', categoryKey(checkLead), 'POST CLOSURE: CHECK');
+check('categoryKey falls back to tierName when there is no postClosureAction', categoryKey(normalLead), 'WARM ENQUIRY');
+
+check('categoryBadge leads with the Post Closure decision, not the tier pill', categoryBadge(sendBackLead).indexOf('send back through') < categoryBadge(sendBackLead).indexOf('WARM ENQUIRY'), true);
+check('categoryBadge still surfaces the underlying tier as secondary info', categoryBadge(sendBackLead).includes('WARM ENQUIRY'), true);
+check('categoryBadge for a normal lead still leads with the tier pill as before', categoryBadge(normalLead).indexOf('WARM ENQUIRY') < categoryBadge(normalLead).indexOf('Quote'), true);
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck postClosureDisplay self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck postClosureDisplay self-test passed (9/9)');
+}
+})();
+
+// ===================================================================
 // Self-test for deriveRestStateLabel - reopening the panel on a
 // restored session left "State" stuck on its hardcoded "Idle" HTML
 // placeholder forever (render() never touched it, only setState did,
@@ -3826,6 +3934,12 @@ const lowConfidenceResult = finalizeResult(
 );
 check('Low-confidence review-required row is flagged needs-review', isNeedsReview(lowConfidenceResult), true);
 
+const lowConfidencePostClosure = finalizeResult(
+{ inputIndex: 99, name: 'Ivy Ingram', phone: '', email: 'ivy@example.com', source: 'Post Closure Processing', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 18:05' },
+{ status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', initialNotes: 'Customer Comments: maybe next month if the price is right', postClosureAction: 'check: needs contact?' }
+);
+check('Low-confidence tier classification does NOT pull a Post Closure lead into Needs Review - it always gets its own section instead', isNeedsReview(lowConfidencePostClosure), false);
+
 const genuineException = finalizeResult(
 { inputIndex: 1, name: 'Gus Grant', phone: '07000000001', email: '', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 19:05' },
 { status: 'EXCEPTION', exception: 'SEARCH_NO_RESULTS' }
@@ -3864,7 +3978,7 @@ check('Review-decisions export row carries the chosen tier name', exportLines[1]
 if (failures.length > 0) {
 console.error('KonnectBookingCheck needs-review self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck needs-review self-test passed (14/14)');
+console.info('KonnectBookingCheck needs-review self-test passed (15/15)');
 }
 })();
 
@@ -4428,46 +4542,8 @@ if (session) pasteBox.value = session.rawInput || '';
 // (few of them, useful to see counts at a glance); customers default
 // closed, per instruction ("collapsed under the customer's name x
 // contact details").
-const detailsState = { tiers: new Set([1, 2, 3, 4, 5, 6]), customers: new Set() };
+const detailsState = { tiers: new Set([-2, -1, 1, 2, 3, 4, 5, 6]), customers: new Set() };
 let reviewSectionOpen = false;
-
-// One color per tier (6, was 4 categories) - same palette family SLA-
-// Extract.js's own bookingCheckImportCategoryColor uses, extended for
-// the new tier count, so a lead reads the same color whichever tool
-// it's looked at in.
-const TIER_COLORS = { 1: '#059669', 2: '#d97706', 3: '#2563eb', 4: '#7c3aed', 5: '#64748b', 6: '#94a3b8' };
-
-function categoryColor(r) {
-if (!r) return '#1e293b';
-if (r.exception) return '#dc2626';
-return TIER_COLORS[r.tier] || '#1e293b';
-}
-
-// Stable key for both the stats bar and the category filter - EXCEPTION
-// rows have no tier at all yet (they have r.exception instead), so
-// this gives them one consistent key rather than leaving them grouped
-// under whatever raw exception code happens to be on each one.
-function categoryKey(r) {
-if (!r) return 'PENDING';
-if (r.exception) return 'EXCEPTION';
-return r.tierName || 'PENDING';
-}
-
-// Split into a short tier-colour pill + a separately-styled, muted
-// sub-category label instead of one long concatenated string ("WARM
-// ENQUIRY - Quote / Offer Request: Detailed") - the single pill read
-// as one dense block next to the customer name, hurting scannability
-// in the collapsed summary row.
-function categoryBadge(r) {
-const color = categoryColor(r);
-if (r.exception) {
-const icon = svgIcon('warning', 10, ' margin-right: 3px;');
-return `<span class="category-badge" style="background: ${color}1a; color: ${color};">${icon}${escapeHtmlForUi(r.exception)}</span>`;
-}
-const tierPill = `<span class="category-badge" style="background: ${color}1a; color: ${color};">${escapeHtmlForUi(r.tierName || 'Pending')}</span>`;
-const subcat = r.subCategory ? `<span class="subcat-label" title="${escapeHtmlForUi(r.subCategory)}">${escapeHtmlForUi(r.subCategory)}</span>` : '';
-return tierPill + subcat;
-}
 
 // Same click-to-copy visual pattern as SLA-Extract.js's .sla-copyable
 // fields (cursor pointer, light indigo background) - per instruction,
@@ -4491,9 +4567,7 @@ parts.push(`<div class="field"><b>Campaign:</b> ${escapeHtmlForUi(r.campaign || 
 parts.push(`<div class="field"><b>Created:</b> ${escapeHtmlForUi(r.created || '-')}</div>`);
 if (r.flags && r.flags.length > 0) parts.push(`<div class="field"><b>Flags:</b> ${escapeHtmlForUi(r.flags.join(', '))}</div>`);
 if (r.postClosureAction) {
-const isSendBack = r.postClosureAction === 'send back through';
-const color = isSendBack ? '#0891b2' : '#d97706';
-parts.push(`<div class="field"><b>Post Closure:</b> <span style="color: ${color}; font-weight: 700;">${escapeHtmlForUi(r.postClosureAction)}</span></div>`);
+parts.push(`<div class="field"><b>Post Closure:</b> <span style="color: ${postClosureColor(r.postClosureAction)}; font-weight: 700;">${escapeHtmlForUi(r.postClosureAction)}</span></div>`);
 }
 if (r.reason) parts.push(`<div class="reason">${escapeHtmlForUi(r.reason)}</div>`);
 if (r.initialNotes) parts.push(`<div class="notes-block">${escapeHtmlForUi(r.initialNotes)}</div>`);
@@ -4503,8 +4577,10 @@ return parts.join('');
 
 // Ordered by the same priority scale as the tier pills, so both the
 // stats bar and its column-selection filtering behavior read top-to-
-// bottom as "most to least actionable" consistently.
-const STATS_BAR_CATEGORY_ORDER = [1, 2, 3, 4, 5, 6].map((t) => TIER_NAMES[t]).concat(['EXCEPTION']);
+// bottom as "most to least actionable" consistently. Post Closure keys
+// lead the list - per instruction, these matter more than the generic
+// tier grouping when they apply at all.
+const STATS_BAR_CATEGORY_ORDER = ['POST CLOSURE: SEND BACK', 'POST CLOSURE: CHECK'].concat([1, 2, 3, 4, 5, 6].map((t) => TIER_NAMES[t])).concat(['EXCEPTION']);
 
 function renderNeedsReviewSection(needsReview) {
 if (needsReview.length === 0) {
@@ -4636,14 +4712,21 @@ resultsBody.innerHTML = '<div class="empty-state">No results match the current f
 } else {
 const byTier = new Map();
 filtered.forEach((r) => {
-// r.tier comes straight from classifyLead's own real classification
-// now, not a separate campaign-based display heuristic - a card
-// always groups under the exact tier that actually classified it.
-// Genuine automation failures (SEARCH_NO_RESULTS etc.) never reach
-// classifyLead at all, so they have no tier of their own - grouped
-// into a trailing "Unclassified" bucket (7) rather than sorting
-// first via null-coerces-to-0 arithmetic.
-const tier = r.tier || 7;
+// Post Closure leads group by their Post Closure decision (virtual
+// keys -2/-1), not their real tier - per instruction, tier isn't
+// what matters for these, and mixing them into WARM ENQUIRY/NURTURE
+// etc. buried them among leads that need actual classification work.
+// -2/-1 sort ahead of every real tier (1-6) via the same numeric
+// sort below, so they surface first without any separate container
+// or duplicated event-wiring.
+// r.tier otherwise comes straight from classifyLead's own real
+// classification, not a separate campaign-based display heuristic -
+// a card always groups under the exact tier that actually classified
+// it. Genuine automation failures (SEARCH_NO_RESULTS etc.) never
+// reach classifyLead at all, so they have no tier of their own -
+// grouped into a trailing "Unclassified" bucket (7) rather than
+// sorting first via null-coerces-to-0 arithmetic.
+const tier = r.postClosureAction ? (r.postClosureAction === 'send back through' ? -2 : -1) : (r.tier || 7);
 if (!byTier.has(tier)) byTier.set(tier, []);
 byTier.get(tier).push(r);
 });
@@ -4658,10 +4741,14 @@ const customersHtml = rows.map((r) => `
 <div class="customer-body">${customerBodyHtml(r)}</div>
 </details>
 `).join('');
-const tierLabel = tier === 7 ? 'Unclassified' : `Tier ${tier} - ${TIER_NAMES[tier]}`;
+const tierLabel = tier === -2 ? 'Post Closure - Send back through'
+: tier === -1 ? 'Post Closure - Check: needs contact?'
+: tier === 7 ? 'Unclassified'
+: `Tier ${tier} - ${TIER_NAMES[tier]}`;
+const tierLabelColor = tier === -2 || tier === -1 ? ` style="color: ${postClosureColor(tier === -2 ? 'send back through' : 'check')};"` : '';
 return `
 <details class="tier" data-key="${tier}" ${detailsState.tiers.has(tier) ? 'open' : ''}>
-<summary><span class="tier-left">${detailsChevronIcon()}<span>${escapeHtmlForUi(tierLabel)}</span></span><span class="tier-count">${rows.length}</span></summary>
+<summary><span class="tier-left">${detailsChevronIcon()}<span${tierLabelColor}>${escapeHtmlForUi(tierLabel)}</span></span><span class="tier-count">${rows.length}</span></summary>
 ${customersHtml}
 </details>
 `;
