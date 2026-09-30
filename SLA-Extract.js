@@ -3544,6 +3544,20 @@ console.info('SLA Extract booking-check-import self-test passed (9/9)');
 }
 })();
 
+(function postClosureActionColorSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
+}
+check('send back through gets the confident colour', postClosureActionColor('send back through'), '#0891b2');
+check('the uncertain "check" bucket gets the warning colour', postClosureActionColor('check: needs contact?'), '#d97706');
+if (failures.length > 0) {
+console.error('SLA Extract postClosureActionColor self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract postClosureActionColor self-test passed (2/2)');
+}
+})();
+
 (function pendingBookingCheckExportSelfTest() {
 const failures = [];
 const originalPendingCustomers = currentPendingCustomers;
@@ -3651,6 +3665,14 @@ const BOOKING_CHECK_TIER_COLORS = { 1: '#059669', 2: '#d97706', 3: '#2563eb', 4:
 
 function bookingCheckImportCategoryColor(tier) {
 return BOOKING_CHECK_TIER_COLORS[tier] || '#1e293b';
+}
+
+// Matches Konnect-Booking-Check.js's own postClosureBadge colouring -
+// kept in lockstep the same way BOOKING_CHECK_TIER_COLORS already is,
+// since the same two values can show up on either tool's card for the
+// same lead.
+function postClosureActionColor(action) {
+return action === 'send back through' ? '#0891b2' : '#d97706';
 }
 
 // Same normalization as Konnect-Booking-Check.js's own normalizeEmail/
@@ -4414,7 +4436,7 @@ ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
 <span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
 </div>
-${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.tier)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.tier)};">${escapeHtml(bookingCheck.tierName || String(bookingCheck.tier || ''))}</span></div>` : ''}
+${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.tier)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.tier)};">${escapeHtml(bookingCheck.tierName || String(bookingCheck.tier || ''))}</span>${bookingCheck.postClosureAction ? ` <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${postClosureActionColor(bookingCheck.postClosureAction)}1a; color: ${postClosureActionColor(bookingCheck.postClosureAction)};">${escapeHtml(bookingCheck.postClosureAction)}</span>` : ''}</div>` : ''}
 ${renderQueuePositionBadge(c.assigned, queuePosition)}
 ${renderContactToggle(`
 <div>
@@ -4478,7 +4500,7 @@ return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLow
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
 </div>
 ${urgency.label ? `<div style="margin-bottom: 10px;"><span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${urgency.color}1a; color: ${urgency.color};">${urgency.label}</span></div>` : ''}
-${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.tier)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.tier)};">${escapeHtml(bookingCheck.tierName || String(bookingCheck.tier || ''))}</span></div>` : ''}
+${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.tier)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.tier)};">${escapeHtml(bookingCheck.tierName || String(bookingCheck.tier || ''))}</span>${bookingCheck.postClosureAction ? ` <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${postClosureActionColor(bookingCheck.postClosureAction)}1a; color: ${postClosureActionColor(bookingCheck.postClosureAction)};">${escapeHtml(bookingCheck.postClosureAction)}</span>` : ''}</div>` : ''}
 ${renderQueuePositionBadge(c.assigned, queuePosition)}
 ${renderContactToggle(`
 <div>
