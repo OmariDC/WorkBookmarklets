@@ -3145,6 +3145,26 @@ handoffControls: hasResults
 };
 }
 
+// curState only ever gets a real value from uiHandle.setState, which is
+// called mid-step ("Searching for X...", "Reading lead at Y...") and at
+// the end of a run (Done/Paused/Cancelled) - but render() itself never
+// touched it, so reopening the panel on a restored session (e.g. after
+// a page reload) left it stuck on its hardcoded HTML placeholder
+// ("Idle") forever, even for a session that was actually fully done or
+// mid-retry - confirmed live: a 42/42-resolved session still showed
+// "State: Idle" until something was clicked. Returns null specifically
+// while actively stepping (isRunning && not paused), since a live
+// setState call already owns the label in that state and this must not
+// stomp it with a generic one between steps.
+function deriveRestStateLabel(s, loopAlive) {
+if (!s) return 'Idle';
+if (loopAlive && !s.paused) return null;
+if (s.paused) return 'Paused';
+if (s.cancelled) return 'Cancelled';
+if (s.done) return 'Done';
+return 'Idle';
+}
+
 // Section 2's own sort order: tier ASC, then subRank ASC, then (for
 // Tier 1-2) appointment date ASC, then lead received time ASC. The
 // single-number PriorityRank (tier*100 + subRank) carries the primary
@@ -3569,6 +3589,35 @@ if (failures.length > 0) {
 console.error('KonnectBookingCheck button-visibility self-test FAILED:\n' + failures.join('\n'));
 } else {
 console.info('KonnectBookingCheck button-visibility self-test passed (7/7)');
+}
+})();
+
+// ===================================================================
+// Self-test for deriveRestStateLabel - reopening the panel on a
+// restored session left "State" stuck on its hardcoded "Idle" HTML
+// placeholder forever (render() never touched it, only setState did,
+// and nothing calls setState on a plain reopen) - confirmed live via a
+// 42/42-resolved session still reading "State: Idle" until a button
+// was clicked.
+// ===================================================================
+(function deriveRestStateLabelSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
+}
+
+check('No session', deriveRestStateLabel(null, false), 'Idle');
+check('Actively running, unpaused - null, so a live setState message is never stomped', deriveRestStateLabel({ paused: false, done: false, cancelled: false }, true), null);
+check('Running but paused - loopAlive alone stays true while paused (see runLoop)', deriveRestStateLabel({ paused: true, done: false, cancelled: false }, true), 'Paused');
+check('Paused with no loop alive (e.g. reopened after a reload mid-pause)', deriveRestStateLabel({ paused: true, done: false, cancelled: false }, false), 'Paused');
+check('Done, loop not alive - the reported live case (42/42 resolved)', deriveRestStateLabel({ paused: false, done: true, cancelled: false }, false), 'Done');
+check('Cancelled takes priority over done being false', deriveRestStateLabel({ paused: false, done: false, cancelled: true }, false), 'Cancelled');
+check('Freshly parsed, never started', deriveRestStateLabel({ paused: false, done: false, cancelled: false }, false), 'Idle');
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck deriveRestStateLabel self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck deriveRestStateLabel self-test passed (7/7)');
 }
 })();
 
@@ -4380,6 +4429,7 @@ statsBarEl.classList.add('hidden');
 filterBarEl.classList.add('hidden');
 needsReviewSectionEl.innerHTML = '';
 updateBadgeProgress(badge, [], session);
+curStateEl.textContent = deriveRestStateLabel(session, isRunning);
 syncButtonStates();
 renderRecentLog();
 return;
@@ -4523,6 +4573,8 @@ setTimeout(() => { el.textContent = original; el.style.background = ''; el.style
 completedCountEl.textContent = String(orderedAll.filter((r) => r.status === 'CLASSIFIED').length);
 exceptionCountEl.textContent = String(orderedAll.filter((r) => r.status === 'EXCEPTION').length);
 totalCountEl.textContent = String(session.rows.length);
+const restStateLabel = deriveRestStateLabel(session, isRunning);
+if (restStateLabel !== null) curStateEl.textContent = restStateLabel;
 syncButtonStates();
 renderRecentLog();
 }
