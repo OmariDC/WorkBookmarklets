@@ -1688,10 +1688,19 @@ return title ? title.textContent.replace(/\s+/g, ' ').trim() : null;
 // target's own LeadID can't be read either, nothing counts at all -
 // this falls to the safer "check: needs contact?" default rather than
 // guessing which entries are actually this lead's own.
-function anyCallEntryIndicatesAlreadyEngaged(callEntryRows, targetLeadId) {
+// readScope defaults to the real readTimelineItemScope (which needs a
+// live Angular app) - overridable so self-tests can inject a fake
+// reader instead, without ever touching a real or Node-only global
+// (readTimelineItemScope itself reads the bare `angular` global; a
+// self-test standing that up would mean either a Node-only `global`
+// reference that throws in a real browser, or briefly clobbering a live
+// Konnect page's own actual Angular app to point at a fake - neither is
+// acceptable just to get coverage).
+function anyCallEntryIndicatesAlreadyEngaged(callEntryRows, targetLeadId, readScope) {
+const resolveScope = readScope || readTimelineItemScope;
 if (!targetLeadId) return false;
 return callEntryRows.some((row) => {
-const item = readTimelineItemScope(row);
+const item = resolveScope(row);
 const rowLeadId = item && item.LeadID != null ? String(item.LeadID) : null;
 if (rowLeadId !== targetLeadId) return false;
 const heading = extractCallHeadingText(row);
@@ -1717,31 +1726,34 @@ const failures = [];
 function check(label, actual, expected) {
 if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
 }
-// leadId undefined means "readTimelineItemScope can't resolve this row
-// at all" (the real fallback when angular.element().scope() fails) -
-// distinct from a resolvable-but-different leadId.
+// leadId undefined means "the scope reader can't resolve this row at
+// all" (the real equivalent being angular.element(row).scope() failing) -
+// distinct from a resolvable-but-different leadId. fakeReadScope is
+// injected as anyCallEntryIndicatesAlreadyEngaged's 3rd argument rather
+// than touching any real global - the real readTimelineItemScope reads
+// the bare `angular` global, which is Node-only as `global.angular`
+// (throws in a real browser) and would mean briefly clobbering a live
+// Konnect page's own actual Angular app as `window.angular` otherwise;
+// neither is acceptable just to get test coverage (unlike
+// findMatchingCallLeadId, which uses the same real mechanism with no
+// self-test coverage at all, for exactly this reason).
 function fakeCallRow(headingText, leadId) {
 return {
 querySelector: (sel) => sel === '.connected-customer-title-lightblue' ? { textContent: headingText } : null,
 __fakeLeadId: leadId
 };
 }
-// readTimelineItemScope depends on a live Angular app (angular.element(row).
-// scope().item) that doesn't exist in this Node harness - mocked here,
-// scoped to just this self-test, so the LeadID-matching logic itself is
-// still directly verifiable rather than only checkable live (unlike
-// findMatchingCallLeadId, which uses the same mechanism with no self-
-// test coverage at all).
-const originalAngular = global.angular;
-global.angular = { element: (row) => ({ scope: () => (row.__fakeLeadId !== undefined ? { item: { LeadID: row.__fakeLeadId } } : null) }) };
+function fakeReadScope(row) {
+return row.__fakeLeadId !== undefined ? { LeadID: row.__fakeLeadId } : null;
+}
 
 check('extractCallHeadingText reads the real heading text, whitespace collapsed',
 extractCallHeadingText({ querySelector: (sel) => sel === '.connected-customer-title-lightblue' ? { textContent: '\n                            Charles Harvey called the customer with an outcome of No Answer Message Left\n                            ' } : null }),
 'Charles Harvey called the customer with an outcome of No Answer Message Left');
 check('extractCallHeadingText returns null when the title element is missing', extractCallHeadingText({ querySelector: () => null }), null);
 
-check('No target LeadID at all - never guesses, always false regardless of what the calls say', anyCallEntryIndicatesAlreadyEngaged([fakeCallRow('Amanullah Mirlashari Scheduled a call', '123')], null), false);
-check('Empty call history', anyCallEntryIndicatesAlreadyEngaged([], '123'), false);
+check('No target LeadID at all - never guesses, always false regardless of what the calls say', anyCallEntryIndicatesAlreadyEngaged([fakeCallRow('Amanullah Mirlashari Scheduled a call', '123')], null, fakeReadScope), false);
+check('Empty call history', anyCallEntryIndicatesAlreadyEngaged([], '123', fakeReadScope), false);
 
 const voicemailOnlyRows = [
 fakeCallRow('Charles Harvey called the customer with an outcome of No Answer Message Left', '123'),
@@ -1749,7 +1761,7 @@ fakeCallRow('Wajih Jamil called the customer with an outcome of No Answer Messag
 fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left', '123'),
 fakeCallRow('Adam Ali called the customer with an outcome of No Answer Message Left', '123')
 ];
-check('Real "needs contact" example (Sylvia Lyddy) - voicemail only, no engagement signal', anyCallEntryIndicatesAlreadyEngaged(voicemailOnlyRows, '123'), false);
+check('Real "needs contact" example (Sylvia Lyddy) - voicemail only, no engagement signal', anyCallEntryIndicatesAlreadyEngaged(voicemailOnlyRows, '123', fakeReadScope), false);
 
 // Real "do not contact again" example (Kevin Hu) - voicemail calls both
 // BEFORE and AFTER the Scheduled a call entry, all sharing the same
@@ -1762,7 +1774,7 @@ fakeCallRow('Wajih Jamil called the customer with an outcome of No Answer Messag
 fakeCallRow('Amanullah Mirlashari Scheduled a call', '456'),
 fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left', '456')
 ];
-check('Real "do not contact again" example (Kevin Hu) - Scheduled a call mixed in among voicemail-only calls', anyCallEntryIndicatesAlreadyEngaged(scheduledCallMixedIn, '456'), true);
+check('Real "do not contact again" example (Kevin Hu) - Scheduled a call mixed in among voicemail-only calls', anyCallEntryIndicatesAlreadyEngaged(scheduledCallMixedIn, '456', fakeReadScope), true);
 
 // Real "wrongly filtered as a warm lead" example - a genuine live
 // connection ("Spoke To Customer") appears twice in this customer's
@@ -1774,7 +1786,7 @@ fakeCallRow('Jamario Belnavis called the customer with an outcome of Spoke To Cu
 fakeCallRow('Henry Marnell called the customer with an outcome of Spoke To Customer', '789'),
 fakeCallRow('Lillian Ferrando Auberton called the customer with an outcome of No Answer No Message Left', '789')
 ];
-check('Real "wrongly filtered as a warm lead" example - Spoke To Customer is also an already-engaged signal', anyCallEntryIndicatesAlreadyEngaged(spokeToCustomerMixedIn, '789'), true);
+check('Real "wrongly filtered as a warm lead" example - Spoke To Customer is also an already-engaged signal', anyCallEntryIndicatesAlreadyEngaged(spokeToCustomerMixedIn, '789', fakeReadScope), true);
 
 // Real "Mrs Brady" example - one customer, two leads on the same
 // timeline: an EARLIER, unrelated lead (LeadID 111) with a genuine
@@ -1791,19 +1803,16 @@ fakeCallRow('Some Agent Scheduled a call', '111'),
 fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left', '222'),
 fakeCallRow('Adam Ali called the customer with an outcome of No Answer Message Left', '222')
 ];
-check('The unrelated earlier lead\'s Scheduled-call entry (different LeadID) is correctly excluded', anyCallEntryIndicatesAlreadyEngaged(bradyRows, '222'), false);
-check('Checking against the OTHER lead\'s own LeadID correctly finds its own Scheduled-call entry', anyCallEntryIndicatesAlreadyEngaged(bradyRows, '111'), true);
+check('The unrelated earlier lead\'s Scheduled-call entry (different LeadID) is correctly excluded', anyCallEntryIndicatesAlreadyEngaged(bradyRows, '222', fakeReadScope), false);
+check('Checking against the OTHER lead\'s own LeadID correctly finds its own Scheduled-call entry', anyCallEntryIndicatesAlreadyEngaged(bradyRows, '111', fakeReadScope), true);
 
 const bradyWithGenuineSignal = bradyRows.concat([fakeCallRow('Someone Scheduled a call', '222')]);
-check('A genuine engagement signal sharing the target\'s own LeadID still counts', anyCallEntryIndicatesAlreadyEngaged(bradyWithGenuineSignal, '222'), true);
+check('A genuine engagement signal sharing the target\'s own LeadID still counts', anyCallEntryIndicatesAlreadyEngaged(bradyWithGenuineSignal, '222', fakeReadScope), true);
 
 // A row whose own LeadID can't be resolved at all (angular scope read
 // failed) is dropped rather than guessed into matching or not matching.
 const unresolvableRow = fakeCallRow('Someone Scheduled a call', undefined);
-check('A row with an unreadable LeadID never counts, even with a genuine engagement heading', anyCallEntryIndicatesAlreadyEngaged([unresolvableRow], '222'), false);
-
-if (originalAngular === undefined) delete global.angular;
-else global.angular = originalAngular;
+check('A row with an unreadable LeadID never counts, even with a genuine engagement heading', anyCallEntryIndicatesAlreadyEngaged([unresolvableRow], '222', fakeReadScope), false);
 
 if (failures.length > 0) {
 console.error('KonnectBookingCheck already-engaged-detection self-test FAILED:\n' + failures.join('\n'));
