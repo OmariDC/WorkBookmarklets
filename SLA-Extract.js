@@ -3658,52 +3658,6 @@ console.info('SLA Extract booking-check-export-dedupe self-test passed (4/4)');
 }
 })();
 
-// ===================================================================
-// Self-test for splitPostClosureCustomers - per instruction, a Post
-// Closure lead's tier/callback-type isn't what matters, so these must
-// be pulled out of the normal grouping entirely into their own two
-// buckets, leaving everyone else (including customers with no Booking
-// Check result at all, the common case) untouched in `rest`.
-// ===================================================================
-(function splitPostClosureCustomersSelfTest() {
-const failures = [];
-function check(label, actual, expected) {
-const a = JSON.stringify(actual);
-const e = JSON.stringify(expected);
-if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
-}
-
-const originalImportState = localStorage.getItem(BOOKING_CHECK_IMPORT_KEY);
-saveBookingCheckImportState({
-rawInput: '',
-results: [
-{ name: 'Sendback Sam', email: 'sam@example.com', phone: '', created: 'Sat, 26 Sep 2026 10:00', tier: 4, postClosureAction: 'send back through' },
-{ name: 'Check Cara', email: 'cara@example.com', phone: '', created: 'Sat, 26 Sep 2026 11:00', tier: 5, postClosureAction: 'check: needs contact?' },
-{ name: 'Normal Nina', email: 'nina@example.com', phone: '', created: 'Sat, 26 Sep 2026 12:00', tier: 2 }
-]
-});
-
-const customers = [
-{ name: 'Sendback Sam', email: 'sam@example.com', phone: '', createdText: 'Sat, 26 Sep 2026 10:00', tier: 1 },
-{ name: 'Check Cara', email: 'cara@example.com', phone: '', createdText: 'Sat, 26 Sep 2026 11:00', tier: 1 },
-{ name: 'Normal Nina', email: 'nina@example.com', phone: '', createdText: 'Sat, 26 Sep 2026 12:00', tier: 2 },
-{ name: 'Unclassified Uma', email: 'uma@example.com', phone: '', createdText: 'Sat, 26 Sep 2026 13:00', tier: 3 }
-];
-const { sendBack, checkNeeded, rest } = splitPostClosureCustomers(customers);
-check('Confidently-resolved Post Closure lead goes to sendBack, regardless of its own (irrelevant) native tier', sendBack.map(c => c.name), ['Sendback Sam']);
-check('Uncertain Post Closure lead goes to checkNeeded', checkNeeded.map(c => c.name), ['Check Cara']);
-check('A customer with a Booking Check result but no postClosureAction stays in rest, with everyone else that has no result at all', rest.map(c => c.name), ['Normal Nina', 'Unclassified Uma']);
-
-if (originalImportState === null) localStorage.removeItem(BOOKING_CHECK_IMPORT_KEY);
-else localStorage.setItem(BOOKING_CHECK_IMPORT_KEY, originalImportState);
-
-if (failures.length > 0) {
-console.error('SLA Extract splitPostClosureCustomers self-test FAILED:\n' + failures.join('\n'));
-} else {
-console.info('SLA Extract splitPostClosureCustomers self-test passed (3/3)');
-}
-})();
-
 // Same TIER_COLORS palette Konnect-Booking-Check.js's own panel uses
 // for these exact 6 tiers (lead-classification-spec.md v1.10), so a
 // lead reads the same color whichever tool it's looked at in.
@@ -3778,30 +3732,6 @@ function isAlreadyClassifiedForContact(c, importResults) {
 if (!importResults || importResults.length === 0) return false;
 const match = findBookingCheckResultForCustomer(c, importResults);
 return !!match && match.created === c.createdText;
-}
-
-// Per instruction: for a Post Closure lead, the tier/callback-type it'd
-// otherwise land under isn't the important part - most of the time
-// it's just "didn't answer the phone" regardless, and what matters is
-// the Post Closure decision from Booking Check. Pulls anyone with a
-// classified postClosureAction out of `customers` entirely, into their
-// own two buckets, so displayPanel/displayPendingPanel can render them
-// as their own sections instead of burying them in the normal tier/
-// callback-type groups. Customers with no Booking Check result at all
-// (the common case before anything's been round-tripped) land in `rest`
-// unchanged, same as today.
-function splitPostClosureCustomers(customers) {
-const bookingCheckResults = loadBookingCheckImportState().results;
-const sendBack = [];
-const checkNeeded = [];
-const rest = [];
-customers.forEach((c) => {
-const bc = findBookingCheckResultForCustomer(c, bookingCheckResults);
-if (bc && bc.postClosureAction === 'send back through') sendBack.push(c);
-else if (bc && bc.postClosureAction) checkNeeded.push(c);
-else rest.push(c);
-});
-return { sendBack, checkNeeded, rest };
 }
 
 // The point of classifying here (rather than reading results in
@@ -3963,9 +3893,21 @@ return localStorage.getItem(BOOKING_CHECK_PRIORITY_SORT_KEY) === '1';
 // for Pending) is left exactly as-is. Array.prototype.sort has been a
 // stable sort in every engine this bookmarklet runs in for years, so
 // this rank-only comparator is enough on its own.
+// Post Closure leads never really get a meaningful tier of their own
+// here - per instruction, they don't appear on the SLA queue at all
+// (not genuinely new leads), and Pending's own "Post Closure" callback
+// type already isolates them into their own section on its own, no
+// separate grouping needed. Within that existing section though, a
+// "Send back through" result should sort ahead of a "Check: needs
+// contact?" one, both ahead of anyone not yet classified by Booking
+// Check at all, regardless of whatever tier the classifier's own
+// pipeline happened to land the lead on underneath.
 function bookingCheckPriorityRank(customer, bookingCheckResults) {
 const result = findBookingCheckResultForCustomer(customer, bookingCheckResults);
-if (!result || !result.tier) return 7;
+if (!result) return 7;
+if (result.postClosureAction === 'send back through') return -2;
+if (result.postClosureAction) return -1;
+if (!result.tier) return 7;
 return result.tier;
 }
 
@@ -4039,6 +3981,73 @@ if (failures.length > 0) {
 console.error('SLA Extract sortByBookingCheckPriority self-test FAILED:\n' + failures.join('\n'));
 } else {
 console.info('SLA Extract sortByBookingCheckPriority self-test passed (7/7)');
+}
+})();
+
+// ===================================================================
+// Self-test for bookingCheckPriorityRank's Post Closure ordering - per
+// instruction, within the Post Closure section, Send back through must
+// sort ahead of Check: needs contact, both ahead of anyone not yet
+// classified at all, regardless of whatever tier each one's classifier
+// pipeline happened to land on underneath.
+// ===================================================================
+(function bookingCheckPriorityRankPostClosureSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+
+const customers = [
+{ name: 'Not Yet Classified', email: 'nyc@example.com', phone: '', createdText: '' },
+{ name: 'Check Needed', email: 'check@example.com', phone: '', createdText: 'Sat, 26 Sep 2026 11:00' },
+{ name: 'Send Back', email: 'sendback@example.com', phone: '', createdText: 'Sat, 26 Sep 2026 10:00' }
+];
+const bookingCheckResults = [
+{ email: 'check@example.com', phone: '', tier: 4, postClosureAction: 'check: needs contact?' },
+{ email: 'sendback@example.com', phone: '', tier: 6, postClosureAction: 'send back through' }
+];
+const sorted = sortByBookingCheckPriority(customers, bookingCheckResults).map((c) => c.name);
+check('Send back through comes first, even though its underlying tier (6) is the least urgent one', sorted[0], 'Send Back');
+check('Check: needs contact comes second', sorted[1], 'Check Needed');
+check('Not yet classified comes last', sorted[2], 'Not Yet Classified');
+
+if (failures.length > 0) {
+console.error('SLA Extract bookingCheckPriorityRank-postClosure self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract bookingCheckPriorityRank-postClosure self-test passed (3/3)');
+}
+})();
+
+// ===================================================================
+// Self-test for the card badge - per instruction, a Post Closure lead
+// stays in its normal tier/callback-type section (no separate section),
+// but its badge shows ONLY the Post Closure decision, replacing the
+// tier badge entirely rather than showing both side by side.
+// ===================================================================
+(function postClosureBadgeReplacementSelfTest() {
+const failures = [];
+const originalImportState = localStorage.getItem(BOOKING_CHECK_IMPORT_KEY);
+saveBookingCheckImportState({
+rawInput: '',
+results: [{ name: 'Sendback Sam', email: 'sam@example.com', phone: '', created: 'Sat, 26 Sep 2026 10:00', tier: 4, tierName: 'WARM ENQUIRY', postClosureAction: 'send back through' }]
+});
+
+const html = renderTierSection('Tier 1 - Priority', [
+{ name: 'Sendback Sam', email: 'sam@example.com', phone: '', createdText: 'Sat, 26 Sep 2026 10:00', tier: 1, key: 'k1' }
+], '#dc2626', 'tier1-badge-test');
+
+if (!html.includes('send back through')) failures.push('Expected the Post Closure badge text to appear on the card');
+if (html.includes('WARM ENQUIRY')) failures.push('Expected the underlying tier badge (WARM ENQUIRY) to be replaced, not shown alongside the Post Closure badge');
+
+if (originalImportState === null) localStorage.removeItem(BOOKING_CHECK_IMPORT_KEY);
+else localStorage.setItem(BOOKING_CHECK_IMPORT_KEY, originalImportState);
+
+if (failures.length > 0) {
+console.error('SLA Extract postClosureBadgeReplacement self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract postClosureBadgeReplacement self-test passed (2/2)');
 }
 })();
 
@@ -4476,8 +4485,15 @@ const collapsed = isSectionCollapsed(sectionId);
 // Loaded once per section (not per card) - same pattern as
 // renderTierSection's own bookingCheckResults.
 const bookingCheckResults = loadBookingCheckImportState().results;
+// No hour-bucketing for the Post Closure callback type specifically -
+// per instruction, within that section a Send-back-through result must
+// sort ahead of a Check-needs-contact one, both ahead of anyone not yet
+// classified, full stop, regardless of which hour each happens to be
+// due in. Every other callback type still gets the hour-to-contact
+// grouping as the dominant key (see sortByBookingCheckPriority's own
+// comment on why booking-likelihood can't override that).
 const orderedCustomers = isBookingCheckPrioritySortEnabled()
-? sortByBookingCheckPriority(customers, bookingCheckResults, (c) => c.nextActionDate)
+? sortByBookingCheckPriority(customers, bookingCheckResults, typeName === 'Post Closure' ? null : (c) => c.nextActionDate)
 : customers;
 return `<div style="margin-bottom: 16px;">
 <div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 10px 4px;
@@ -4506,7 +4522,7 @@ ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
 <span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
 </div>
-${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.tier)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.tier)};">${escapeHtml(bookingCheck.tierName || String(bookingCheck.tier || ''))}</span>${bookingCheck.postClosureAction ? ` <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${postClosureActionColor(bookingCheck.postClosureAction)}1a; color: ${postClosureActionColor(bookingCheck.postClosureAction)};">${escapeHtml(bookingCheck.postClosureAction)}</span>` : ''}</div>` : ''}
+${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheck.postClosureAction ? postClosureActionColor(bookingCheck.postClosureAction) : bookingCheckImportCategoryColor(bookingCheck.tier)}1a; color: ${bookingCheck.postClosureAction ? postClosureActionColor(bookingCheck.postClosureAction) : bookingCheckImportCategoryColor(bookingCheck.tier)};">${escapeHtml(bookingCheck.postClosureAction || bookingCheck.tierName || String(bookingCheck.tier || ''))}</span></div>` : ''}
 ${renderQueuePositionBadge(c.assigned, queuePosition)}
 ${renderContactToggle(`
 <div>
@@ -4570,7 +4586,7 @@ return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLow
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
 </div>
 ${urgency.label ? `<div style="margin-bottom: 10px;"><span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${urgency.color}1a; color: ${urgency.color};">${urgency.label}</span></div>` : ''}
-${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.tier)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.tier)};">${escapeHtml(bookingCheck.tierName || String(bookingCheck.tier || ''))}</span>${bookingCheck.postClosureAction ? ` <span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${postClosureActionColor(bookingCheck.postClosureAction)}1a; color: ${postClosureActionColor(bookingCheck.postClosureAction)};">${escapeHtml(bookingCheck.postClosureAction)}</span>` : ''}</div>` : ''}
+${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheck.postClosureAction ? postClosureActionColor(bookingCheck.postClosureAction) : bookingCheckImportCategoryColor(bookingCheck.tier)}1a; color: ${bookingCheck.postClosureAction ? postClosureActionColor(bookingCheck.postClosureAction) : bookingCheckImportCategoryColor(bookingCheck.tier)};">${escapeHtml(bookingCheck.postClosureAction || bookingCheck.tierName || String(bookingCheck.tier || ''))}</span></div>` : ''}
 ${renderQueuePositionBadge(c.assigned, queuePosition)}
 ${renderContactToggle(`
 <div>
@@ -4723,12 +4739,11 @@ currentCustomers = customers;
 currentPageType = PAGE_SLA;
 currentPanelMode = 'normal';
 if (invalidateCache) invalidateLeadsCache();
-const { sendBack, checkNeeded, rest } = splitPostClosureCustomers(customers);
 const tiered = {
-tier1: sortByUrgency(rest.filter(c => c.tier === 1)),
-tier2: sortByUrgency(rest.filter(c => c.tier === 2)),
-tier3: sortByUrgency(rest.filter(c => c.tier === 3)),
-tier4: sortByUrgency(rest.filter(c => c.tier === 4))
+tier1: sortByUrgency(customers.filter(c => c.tier === 1)),
+tier2: sortByUrgency(customers.filter(c => c.tier === 2)),
+tier3: sortByUrgency(customers.filter(c => c.tier === 3)),
+tier4: sortByUrgency(customers.filter(c => c.tier === 4))
 };
 
 const bodyHtml = customers.length === 0 ? `
@@ -4738,8 +4753,6 @@ const bodyHtml = customers.length === 0 ? `
 <p style="color: #64748b; margin: 0; font-size: 15px; line-height: 1.6;">The SLA queue is empty. Check back when new leads arrive.</p>
 </div>
 ` : `
-${sendBack.length > 0 ? renderTierSection('Post Closure - Send back through', sendBack, postClosureActionColor('send back through'), 'pc-sendback') : ''}
-${checkNeeded.length > 0 ? renderTierSection('Post Closure - Check: needs contact?', checkNeeded, postClosureActionColor('check: needs contact?'), 'pc-check') : ''}
 ${renderTierSection('Tier 1 - Priority', tiered.tier1, '#dc2626', 'tier1')}
 ${renderTierSection('Tier 2 - High', tiered.tier2, '#d97706', 'tier2')}
 ${renderTierSection('Tier 3 - Medium', tiered.tier3, '#0d9488', 'tier3')}
@@ -4765,11 +4778,10 @@ currentPageType = PAGE_PENDING;
 currentPanelMode = 'normal';
 if (invalidateCache) invalidateLeadsCache();
 
-const { sendBack, checkNeeded, rest } = splitPostClosureCustomers(customers);
 const grouped = CALLBACK_TYPE_ORDER.map(type => ({
 type,
 color: CALLBACK_TYPE_COLORS[type],
-customers: rest.filter(c => c.callbackType === type)
+customers: customers.filter(c => c.callbackType === type)
 }));
 
 const bodyHtml = customers.length === 0 ? `
@@ -4778,11 +4790,7 @@ const bodyHtml = customers.length === 0 ? `
 <h3 style="color: #1e293b; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Pending Customers</h3>
 <p style="color: #64748b; margin: 0; font-size: 15px; line-height: 1.6;">Nothing in the queue right now.</p>
 </div>
-` : (
-(sendBack.length > 0 ? renderCallbackTypeSection('Post Closure - Send back through', sendBack, postClosureActionColor('send back through')) : '') +
-(checkNeeded.length > 0 ? renderCallbackTypeSection('Post Closure - Check: needs contact?', checkNeeded, postClosureActionColor('check: needs contact?')) : '') +
-grouped.map(g => renderCallbackTypeSection(g.type, g.customers, g.color)).join('')
-);
+` : grouped.map(g => renderCallbackTypeSection(g.type, g.customers, g.color)).join('');
 
 mountPanel(renderPanelShell({
 title: 'Pending Customers',
