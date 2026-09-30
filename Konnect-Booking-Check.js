@@ -209,6 +209,12 @@ if (/Lead ID:\s*00Qa/i.test(text)) return 'Customer First';
 if (/Comment Line #1:|Sourced from Robins & Day Website/i.test(text)) return 'Robins & Day Website';
 if (/Misc:.*UniqueID/i.test(text)) return 'Autofunnel';
 if (/Message from Consumer at/i.test(text)) return 'Autotrader';
+// Confirmed live: a real CarGurus lead had a blank Source column, with
+// only the "(CarGurus IMV: ...)"/"Deal rating:" signature in the notes
+// themselves to go on - without this, it's indistinguishable from a
+// generic Robins & Day enquiry and never reaches marketplaceTemplates'
+// CarGurus branch at all.
+if (/\(CarGurus (IMV|deal rating)/i.test(text)) return 'Cargurus';
 return source;
 }
 
@@ -266,8 +272,14 @@ opts = opts || {};
 let { campaign, source, created, referenceDate } = opts;
 referenceDate = referenceDate || new Date();
 
+// inferSource runs against the RAW text, before stripSystemSuffixes -
+// the CarGurus signature it looks for ("(CarGurus IMV: ...)") is
+// exactly the system suffix Section 3.1 strips before any keyword
+// scan, so checking the already-stripped text would never find it
+// (confirmed live: a real CarGurus lead with a blank Source column
+// was never recognised as CarGurus at all because of this ordering).
+source = inferSource(initialNotesRaw, source);
 const text0 = stripSystemSuffixes(initialNotesRaw);
-source = inferSource(text0, source);
 const lowered = low(text0);
 const camp = low(campaign);
 const src = low(source);
@@ -545,6 +557,22 @@ if (spoticarResult) return spoticarResult;
 // least one concrete detail alongside "looking for" wording.
 if (/looking for a\b|i'?m looking for\b/i.test(lowered) && /\b20\d{2}\b|onwards|or newer|automatic|manual|hybrid|electric|petrol|diesel|\bblack\b|\bwhite\b|\bblue\b|\bred\b|\bseater\b/i.test(lowered)) {
 return R(4, 'Used Stock Search', 7, 'medium', 'Concrete stock-search criteria, no specific car identified (Section 5, Tier 4 rank 7).');
+}
+
+// Section 5, Tier 4 rank 3: Quote/Offer Request: Detailed - real terms
+// (deposit, term, mileage) on a model with no specific stock car.
+// Confirmed live from a real manually-reviewed lead ("interested in
+// lease deals... 2 year contract 8000 miles no arrangement fee and
+// low penalty charge") that the classifier's blanket 5.9 fallback was
+// missing: genuine quote terms phrased as prose ("lease deal"/a
+// contract length + a mileage figure), not just the CF form's own
+// Deposit:/Term:/Monthly Budget: field labels hasAmountField looks
+// for elsewhere. Guarded on no day/time - a day/time mention still
+// wins regardless (Section 5's own repeated rule), so this only
+// catches leads that get this far without one.
+if (!(hasDayMention(text) && hasClockTime(text)) && /lease deals?\b|\b\d+\s*(year|yr|month)s?\s*(contract|lease|term)\b/i.test(lowered) && /\b\d[\d,]*\s*(k\s*)?miles?\b/i.test(lowered)) {
+flagCtx.finance = true;
+return R(4, 'Quote / Offer Request: Detailed', 3, 'medium', 'Real quote terms in free text - contract length + mileage (Section 5, Tier 4 rank 3).');
 }
 
 return null;
@@ -2422,6 +2450,47 @@ console.info('KonnectBookingCheck dedupe self-test passed (8/8)');
 }
 })();
 
+// Real leads caught via the Needs Review -> Copy review decisions ->
+// feed back real examples workflow (Section 12's own worked cases
+// don't cover either of these) - locked in as their own self-test the
+// same way every other rule in this file originated from a real
+// reported lead.
+(function realReviewedLeadsSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected ${expected}, got ${actual}`);
+}
+
+// A genuine CarGurus lead with a blank Source column - only the
+// "(CarGurus IMV: ...)" signature in the notes themselves gives it
+// away. Previously fell through to the 5.9 fallback entirely, since
+// marketplaceTemplates' CarGurus branch only ever checked the Source
+// field, and by the time it ran, stripSystemSuffixes had already
+// removed the one piece of text that could have identified it.
+const carGurusResult = classifyLead(
+"Message from customer: I am interested in your 2026 Peugeot 3008 1.2 Hybrid 145 Gt Premium 5dr E-dsc6. You can reach me by email at brianandrewhough@gmail.com or phone at 07426 512197. Thank you! (CarGurus IMV: £28,354 / Deal rating: Fair Deal / Is from deliverable listing: No)",
+{ campaign: 'Enquiry - Used', source: '' }
+);
+check('CarGurus lead with blank Source is now recognised as CarGurus (tier)', carGurusResult.tier, 4);
+check('CarGurus lead with blank Source is now recognised as CarGurus (source inferred)', carGurusResult.source, 'Cargurus');
+
+// Real quote terms phrased as prose on a Brand - General campaign
+// ("classify by content" per Section 8.3) - previously missed because
+// hasAmountField/hasFinanceWording only recognised the CF form's own
+// Deposit:/Term:/Monthly Budget: field labels, not this phrasing.
+const leaseResult = classifyLead(
+'Comment Line #1: interested in lease deals cheapest the best please 2 year contract 8000 miles no arrangement fee and low penalty charge',
+{ campaign: 'Peugeot - General', source: '' }
+);
+check('Lease-quote-terms prose on a General campaign lands in Tier 4 (was 5.9 fallback)', leaseResult.tier, 4);
+check('Lease-quote-terms result is flagged Finance', leaseResult.flags.includes('Finance'), true);
+
+if (failures.length > 0) {
+console.error('KonnectBookingCheck real-reviewed-leads self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectBookingCheck real-reviewed-leads self-test passed (4/4)');
+}
+})();
 
 // ===================================================================
 // ORCHESTRATION (the outer per-row/per-customer state machine loop)
