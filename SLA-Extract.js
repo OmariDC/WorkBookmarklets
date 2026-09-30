@@ -4835,6 +4835,15 @@ currentPendingCustomers = [];
 currentPageType = null;
 extracting = false;
 
+// Booking Check's own paste-and-classify box (rawInput + results) is
+// persisted separately from currentCustomers/currentPendingCustomers,
+// so clearing just those left it showing the last scan's leads and
+// classifications the moment the panel was reopened - confirmed live,
+// reported repeatedly: Clear & Stop must genuinely start from nothing,
+// the same discipline Konnect-Booking-Check.js's own Clear & Stop
+// already follows (clearStoredSession there).
+try { localStorage.removeItem(BOOKING_CHECK_IMPORT_KEY); } catch (error) { /* ignore */ }
+
 if (panelElement) {
 panelElement.remove();
 panelElement = null;
