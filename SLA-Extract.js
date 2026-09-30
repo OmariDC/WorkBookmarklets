@@ -3735,6 +3735,16 @@ saveBookingCheckImportState({ rawInput: value, results: state.results });
 // label so each entry point's own idle state (a plain icon+label
 // button in one case) survives round-tripping through this.
 function runBookingCheckClassification(rawInput, buttonEl, originalLabel) {
+// Captured before the panel gets rebuilt below (which replaces this
+// element along with everything else) - reopening it unconditionally
+// afterward was fine when Classify only ever lived inside the popover
+// itself (it was already open, by definition, to have been clicked).
+// Now that Paste & Classify is also a top-level button outside the
+// popover, that same unconditional reopen was forcing the popover
+// (with its manual-paste textarea) open every time, even when the user
+// never opened it - reported as an unwanted extra UI appearing.
+const popoverBeforeEl = document.getElementById('bookingCheckPopover');
+const popoverWasOpen = !!popoverBeforeEl && popoverBeforeEl.style.display !== 'none';
 const parsed = parseBookingCheckImportTsv(rawInput);
 if (!parsed.headerOk) {
 buttonEl.textContent = 'Bad header';
@@ -3774,8 +3784,10 @@ saveBookingCheckImportState({ rawInput: '', results });
 // queue on every single classify.
 if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, lastPendingDiffCounts.newCount, lastPendingDiffCounts.removedCount, false);
 else displayPanel(currentCustomers, lastSlaDiffCounts.newCount, lastSlaDiffCounts.removedCount, false);
+if (popoverWasOpen) {
 const reopened = document.getElementById('bookingCheckPopover');
 if (reopened) reopened.style.display = 'block';
+}
 return true;
 }
 
@@ -3865,10 +3877,36 @@ if (!result || !result.tier) return 7;
 return result.tier;
 }
 
-function sortByBookingCheckPriority(customers, bookingCheckResults) {
+// Bucket 0 = due before the next clock hour (matches defaultHourCutoff/
+// renderPendingDueSummary's own "This hour", which already folds
+// anything overdue into that same bucket), bucket 1 = the hour after
+// that, and so on - same boundary definition used everywhere else in
+// this file that talks about due-hour blocks, so "this hour" means the
+// same thing here as it does on the stat tiles. No due date at all
+// sorts last, in its own bucket, rather than being guessed into "now".
+function hourBucketIndex(dueDate) {
+if (!dueDate) return Infinity;
+const thisHourCutoff = defaultHourCutoff();
+if (dueDate.getTime() < thisHourCutoff.getTime()) return 0;
+return 1 + Math.floor((dueDate.getTime() - thisHourCutoff.getTime()) / (60 * 60000));
+}
+
+// getDueDate is optional (existing callers/tests that don't pass one
+// get every customer into the same bucket, i.e. pure rank+original-
+// order, same as before this existed) - when given, priority only ever
+// reorders WITHIN a due-hour bucket. Per instruction: booking-likelihood
+// must not let a lead due hours from now jump ahead of one due within
+// the next few minutes just because it has a "more likely" result -
+// the hour-to-contact grouping stays the dominant sort key, likelihood
+// is the tie-break inside it.
+function sortByBookingCheckPriority(customers, bookingCheckResults, getDueDate) {
 return customers
-.map((c, index) => ({ c, index, rank: bookingCheckPriorityRank(c, bookingCheckResults) }))
-.sort((a, b) => a.rank - b.rank || a.index - b.index)
+.map((c, index) => ({
+c, index,
+hourBucket: getDueDate ? hourBucketIndex(getDueDate(c)) : 0,
+rank: bookingCheckPriorityRank(c, bookingCheckResults)
+}))
+.sort((a, b) => a.hourBucket - b.hourBucket || a.rank - b.rank || a.index - b.index)
 .map((entry) => entry.c);
 }
 
@@ -3909,6 +3947,51 @@ if (failures.length > 0) {
 console.error('SLA Extract sortByBookingCheckPriority self-test FAILED:\n' + failures.join('\n'));
 } else {
 console.info('SLA Extract sortByBookingCheckPriority self-test passed (7/7)');
+}
+})();
+
+// ===================================================================
+// Self-test for the hour-bucket grouping in sortByBookingCheckPriority -
+// booking-likelihood must only ever reorder WITHIN a due hour, never
+// let a lead due hours from now outrank one due within the next few
+// minutes. Uses real relative times (defaultHourCutoff's own "top of
+// the next clock hour" boundary), not fixed clock times, so this stays
+// correct regardless of what time it's actually run.
+// ===================================================================
+(function sortByBookingCheckPriorityHourBucketSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
+}
+
+const thisHourCutoff = defaultHourCutoff();
+const dueThisHourSoon = new Date(thisHourCutoff.getTime() - 5 * 60000);
+const dueThisHourLater = new Date(thisHourCutoff.getTime() - 2 * 60000);
+const dueNextHour = new Date(thisHourCutoff.getTime() + 10 * 60000);
+
+const customers = [
+{ name: 'Amy (this hour, no result)', email: 'amy@example.com', phone: '', slaDate: dueThisHourSoon },
+{ name: 'Ben (next hour, tier 1 - highest likelihood)', email: 'ben@example.com', phone: '', slaDate: dueNextHour },
+{ name: 'Cat (this hour, tier 1)', email: 'cat@example.com', phone: '', slaDate: dueThisHourLater },
+{ name: 'Dee (this hour, no result)', email: 'dee@example.com', phone: '', slaDate: dueThisHourSoon }
+];
+const bookingCheckResults = [
+{ email: 'ben@example.com', phone: '', tier: 1, tierName: 'CONFIRMED DATE & TIME' },
+{ email: 'cat@example.com', phone: '', tier: 1, tierName: 'CONFIRMED DATE & TIME' }
+];
+
+const sorted = sortByBookingCheckPriority(customers, bookingCheckResults, (c) => c.slaDate).map((c) => c.name);
+check('Ben (next hour) never outranks anyone due this hour, despite the highest likelihood result', sorted[3], 'Ben (next hour, tier 1 - highest likelihood)');
+check('Within this hour, Cat (tier 1) sorts first', sorted[0], 'Cat (this hour, tier 1)');
+check('Within this hour, no-result customers keep their original relative order (Amy before Dee)', sorted.slice(1, 3).join(', '), 'Amy (this hour, no result), Dee (this hour, no result)');
+
+const noGetter = sortByBookingCheckPriority(customers, bookingCheckResults).map((c) => c.name);
+check('With no getDueDate passed, hour bucketing is skipped entirely (backward compatible) - Ben (tier 1) sorts to the very top', noGetter[0], 'Ben (next hour, tier 1 - highest likelihood)');
+
+if (failures.length > 0) {
+console.error('SLA Extract sortByBookingCheckPriority-hour-bucket self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract sortByBookingCheckPriority-hour-bucket self-test passed (4/4)');
 }
 })();
 
@@ -4302,7 +4385,7 @@ const collapsed = isSectionCollapsed(sectionId);
 // renderTierSection's own bookingCheckResults.
 const bookingCheckResults = loadBookingCheckImportState().results;
 const orderedCustomers = isBookingCheckPrioritySortEnabled()
-? sortByBookingCheckPriority(customers, bookingCheckResults)
+? sortByBookingCheckPriority(customers, bookingCheckResults, (c) => c.nextActionDate)
 : customers;
 return `<div style="margin-bottom: 16px;">
 <div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 10px 4px;
@@ -4372,7 +4455,7 @@ const collapsed = isSectionCollapsed(tierId);
 // details, instead of a second disconnected list.
 const bookingCheckResults = loadBookingCheckImportState().results;
 const orderedCustomers = isBookingCheckPrioritySortEnabled()
-? sortByBookingCheckPriority(customers, bookingCheckResults)
+? sortByBookingCheckPriority(customers, bookingCheckResults, (c) => c.slaDate)
 : customers;
 return `<div style="margin-bottom: 16px;">
 <div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 10px 4px;
