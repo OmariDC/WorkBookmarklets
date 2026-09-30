@@ -269,7 +269,7 @@ return /\bfinance\b|\bpcp\b|\bhp\b|\bquote\b|\bquotes\b|\bleasing\b|\b0%\b|\bbes
 // either returns a result (stop) or null (continue to the next step).
 function classifyLead(initialNotesRaw, opts) {
 opts = opts || {};
-let { campaign, source, created, referenceDate, hasScheduledCallEntry } = opts;
+let { campaign, source, created, referenceDate, hasAlreadyEngagedCallEntry } = opts;
 referenceDate = referenceDate || new Date();
 
 // inferSource runs against the RAW text, before stripSystemSuffixes -
@@ -334,16 +334,17 @@ const flags = computeFlags(text0, campaign, source, flagCtx);
 
 // Step 13: Post Closure Processing. Being carved out incrementally as
 // real criteria are confirmed (per instruction) rather than replaced in
-// one go - "Scheduled a call" anywhere in the customer's timeline is
-// the first confirmed signal (see hasScheduledCallEntry/
-// anyCallEntryIsScheduledCall), meaning it's already been engaged and
-// should go straight back rather than being worked again. Everything
-// else still falls to the "check" bucket - not yet known whether a
-// dealer already contacted the customer or the lead was rejected,
-// which would also mean "send back", just not detectable yet. "check:"
-// drops once those are carved out too and this stops being a guess.
+// one go - "Scheduled a call" and a "Spoke To Customer" call outcome
+// anywhere in the customer's timeline are the confirmed signals so far
+// (see hasAlreadyEngagedCallEntry/anyCallEntryIndicatesAlreadyEngaged),
+// meaning the customer's already been engaged and the lead should go
+// straight back rather than being worked again. Everything else still
+// falls to the "check" bucket - not yet known whether a dealer already
+// contacted the customer or the lead was rejected, which would also
+// mean "send back", just not detectable yet. "check:" drops once those
+// are carved out too and this stops being a guess.
 const postClosureAction = src === 'post closure processing'
-? (hasScheduledCallEntry ? 'send back through' : 'check: needs contact?')
+? (hasAlreadyEngagedCallEntry ? 'send back through' : 'check: needs contact?')
 : null;
 
 return Object.assign({}, result, { flags, dedupeKey: computeDedupeKey(text0, campaign, source), postClosureAction, source });
@@ -1657,34 +1658,43 @@ const title = row.querySelector('.connected-customer-title-lightblue');
 return title ? title.textContent.replace(/\s+/g, ' ').trim() : null;
 }
 
-// Post Closure Processing Step 13 (see classifyLead) - a "Scheduled a
-// call" entry anywhere in the customer's currently-loaded timeline
-// means the lead should be sent straight back through rather than
-// worked again, per real reviewed examples: one customer had voicemail-
-// only calls both before AND after a "Scheduled a call" entry, and was
-// still confirmed as a "do not contact again" case - the entry itself
-// is the signal, regardless of what (if anything) happens around it.
+// Post Closure Processing Step 13 (see classifyLead) - either of these
+// two confirmed signals anywhere in the customer's currently-loaded
+// timeline means the lead should be sent straight back through rather
+// than worked again:
+// - "Scheduled a call" - per a real reviewed example, one customer had
+//   voicemail-only calls both before AND after this entry, and was
+//   still confirmed as a "do not contact again" case; the entry itself
+//   is the signal, regardless of what (if anything) happens around it.
+// - "...with an outcome of Spoke To Customer" - a real reported case
+//   was wrongly left classified by tier (WARM ENQUIRY) despite this
+//   outcome appearing twice in the customer's own history, once with a
+//   Face To Face appointment resulting from it - a genuine live
+//   connection is exactly the "if we spoke to the customer... we do
+//   not contact again" case from the original brief.
 // Pure/testable half split out from the real DOM read below it, same
 // pattern as the rest of this file's DOM-touching functions.
-function anyCallEntryIsScheduledCall(callEntryRows) {
+function anyCallEntryIndicatesAlreadyEngaged(callEntryRows) {
 return callEntryRows.some((row) => {
 const heading = extractCallHeadingText(row);
-return heading != null && /\bscheduled a call\b/i.test(heading);
+if (heading == null) return false;
+return /\bscheduled a call\b/i.test(heading) || /\bspoke to customer\b/i.test(heading);
 });
 }
 
-function hasScheduledCallEntry() {
-return anyCallEntryIsScheduledCall(getLoadedCallEntries());
+function hasAlreadyEngagedCallEntry() {
+return anyCallEntryIndicatesAlreadyEngaged(getLoadedCallEntries());
 }
 
 // ===================================================================
-// Self-test for the Scheduled-call detection - real row text pulled
-// directly from a live DOM dump of two actual customers (one voicemail-
-// only "needs contact" case, one with a "Scheduled a call" entry mixed
-// in among voicemail-only calls on either side, confirmed as a "do not
-// contact again" case regardless of what's around it).
+// Self-test for the already-engaged detection - real row text pulled
+// directly from a live DOM dump of three actual customers (one
+// voicemail-only "needs contact" case, one with a "Scheduled a call"
+// entry mixed in among voicemail-only calls on either side, and one
+// with "Spoke To Customer" outcomes - a real reported case that had
+// been wrongly left classified by tier (WARM ENQUIRY) instead).
 // ===================================================================
-(function scheduledCallDetectionSelfTest() {
+(function alreadyEngagedDetectionSelfTest() {
 const failures = [];
 function check(label, actual, expected) {
 if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
@@ -1707,7 +1717,7 @@ fakeCallRow('Wajih Jamil called the customer with an outcome of No Answer Messag
 fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left'),
 fakeCallRow('Adam Ali called the customer with an outcome of No Answer Message Left')
 ];
-check('Real "needs contact" example (Sylvia Lyddy) - voicemail only, no Scheduled a call entry', anyCallEntryIsScheduledCall(voicemailOnlyRows), false);
+check('Real "needs contact" example (Sylvia Lyddy) - voicemail only, no engagement signal', anyCallEntryIndicatesAlreadyEngaged(voicemailOnlyRows), false);
 
 // Real "do not contact again" example (Kevin Hu) - voicemail calls both
 // BEFORE and AFTER the Scheduled a call entry. The entry itself is what
@@ -1719,13 +1729,26 @@ fakeCallRow('Wajih Jamil called the customer with an outcome of No Answer Messag
 fakeCallRow('Amanullah Mirlashari Scheduled a call'),
 fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left')
 ];
-check('Real "do not contact again" example (Kevin Hu) - Scheduled a call mixed in among voicemail-only calls', anyCallEntryIsScheduledCall(scheduledCallMixedIn), true);
-check('Empty call history', anyCallEntryIsScheduledCall([]), false);
+check('Real "do not contact again" example (Kevin Hu) - Scheduled a call mixed in among voicemail-only calls', anyCallEntryIndicatesAlreadyEngaged(scheduledCallMixedIn), true);
+
+// Real "wrongly filtered as a warm lead" example - a genuine live
+// connection ("Spoke To Customer") appears twice in this customer's
+// history, once resulting in a Face To Face appointment, mixed among
+// otherwise voicemail-only calls.
+const spokeToCustomerMixedIn = [
+fakeCallRow('Omari Duporte- Clarke called the customer with an outcome of No Answer Message Left'),
+fakeCallRow('Jamario Belnavis called the customer with an outcome of Spoke To Customer'),
+fakeCallRow('Henry Marnell called the customer with an outcome of Spoke To Customer'),
+fakeCallRow('Lillian Ferrando Auberton called the customer with an outcome of No Answer No Message Left')
+];
+check('Real "wrongly filtered as a warm lead" example - Spoke To Customer is also an already-engaged signal', anyCallEntryIndicatesAlreadyEngaged(spokeToCustomerMixedIn), true);
+
+check('Empty call history', anyCallEntryIndicatesAlreadyEngaged([]), false);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck scheduled-call-detection self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectBookingCheck already-engaged-detection self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck scheduled-call-detection self-test passed (7/7)');
+console.info('KonnectBookingCheck already-engaged-detection self-test passed (8/8)');
 }
 })();
 
@@ -2599,10 +2622,10 @@ if (actual !== expected) failures.push(`${label}: expected "${expected}", got "$
 }
 
 const opts = { campaign: 'Citroen - Enquiry - New', source: 'Post Closure Processing', created: 'Sat, 26 Sep 2026 10:00' };
-check('No Scheduled-call signal - falls to the "check" bucket', classifyLead('Customer Comments: -', { ...opts, hasScheduledCallEntry: false }).postClosureAction, 'check: needs contact?');
-check('hasScheduledCallEntry omitted entirely - same "check" default', classifyLead('Customer Comments: -', opts).postClosureAction, 'check: needs contact?');
-check('Scheduled-call signal confirmed - sent straight back, not worked again', classifyLead('Customer Comments: -', { ...opts, hasScheduledCallEntry: true }).postClosureAction, 'send back through');
-check('Non-Post-Closure source - postClosureAction stays null regardless of the signal', classifyLead('Customer Comments: -', { campaign: 'Citroen - Enquiry - New', source: 'Customer First', hasScheduledCallEntry: true }).postClosureAction, null);
+check('No engagement signal - falls to the "check" bucket', classifyLead('Customer Comments: -', { ...opts, hasAlreadyEngagedCallEntry: false }).postClosureAction, 'check: needs contact?');
+check('hasAlreadyEngagedCallEntry omitted entirely - same "check" default', classifyLead('Customer Comments: -', opts).postClosureAction, 'check: needs contact?');
+check('Engagement signal confirmed (Scheduled a call or Spoke To Customer) - sent straight back, not worked again', classifyLead('Customer Comments: -', { ...opts, hasAlreadyEngagedCallEntry: true }).postClosureAction, 'send back through');
+check('Non-Post-Closure source - postClosureAction stays null regardless of the signal', classifyLead('Customer Comments: -', { campaign: 'Citroen - Enquiry - New', source: 'Customer First', hasAlreadyEngagedCallEntry: true }).postClosureAction, null);
 
 if (failures.length > 0) {
 console.error('KonnectBookingCheck postClosureAction self-test FAILED:\n' + failures.join('\n'));
@@ -3030,8 +3053,8 @@ const resolvedSource = row.source || panelFields.source;
 // Step 13 is the only place this matters, and getLoadedCallEntries
 // scans the customer's whole currently-loaded timeline, no reason to
 // pay for that on every other row.
-const scheduledCallEntry = String(resolvedSource || '').toLowerCase() === 'post closure processing' ? hasScheduledCallEntry() : false;
-const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasScheduledCallEntry: scheduledCallEntry });
+const alreadyEngagedCallEntry = String(resolvedSource || '').toLowerCase() === 'post closure processing' ? hasAlreadyEngagedCallEntry() : false;
+const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry });
 if (classification.confidence === 'low') {
 // tier/subCategory/flags/reason/confidence are stored even though
 // status stays EXCEPTION (never auto-trusted/applied) - so a human
