@@ -3392,13 +3392,18 @@ setTimeout(() => { buttonEl.textContent = original; }, 1500);
 // "ported verbatim... do not edit one without the other"). That's a real
 // drift risk, not a hypothetical one - this copy never got that file's
 // later dual-raw-notes-format parser fix before being deleted in favor
-// of this. Booking Check now exports its own already-computed Category/
-// Reason/PriorityRank columns directly (see its own buildRawNotesTsv
-// ForExtract) - trusted as-is below, no second classifier needed.
+// of this. Booking Check now exports its own already-computed Tier/
+// SubCategory/Flags/Reason/PriorityRank columns directly (see its own
+// buildRawNotesTsvForExtract) - trusted as-is below, no second
+// classifier needed.
 // ===================================================================
 
 const BOOKING_CHECK_IMPORT_KEY = '_slaBookingCheckImportState';
-const BOOKING_CHECK_IMPORT_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Category', 'Reason', 'PriorityRank'];
+// Matches Konnect-Booking-Check.js's own buildRawNotesTsvForExtract
+// header exactly (lead-classification-spec.md v1.10 - 6 tiers with
+// sub-categories/flags/dedupe, not the old 4-category scheme) - kept
+// in lockstep since the two files can't share a module.
+const BOOKING_CHECK_IMPORT_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank'];
 
 function loadBookingCheckImportState() {
 try {
@@ -3440,8 +3445,10 @@ const cells = line.split('\t');
 // become top priority, so blankness is checked before parsing, not
 // left to Number.isFinite alone (confirmed by this file's own self-
 // test below, which caught exactly this on the first pass).
-const rawRank = (cells[9] || '').trim();
+const rawRank = (cells[16] || '').trim();
 const parsedRank = rawRank === '' ? NaN : Number(rawRank);
+const rawTier = (cells[7] || '').trim();
+const parsedTier = rawTier === '' ? NaN : Number(rawTier);
 return {
 name: (cells[0] || '').trim(),
 phone: (cells[1] || '').trim(),
@@ -3450,9 +3457,16 @@ source: (cells[3] || '').trim(),
 campaign: (cells[4] || '').trim(),
 created: (cells[5] || '').trim(),
 initialNotes: (cells[6] || '').trim(),
-category: (cells[7] || '').trim(),
-reason: (cells[8] || '').trim(),
-priorityRank: Number.isFinite(parsedRank) ? parsedRank : 7
+tier: Number.isFinite(parsedTier) ? parsedTier : null,
+tierName: (cells[8] || '').trim(),
+subCategory: (cells[9] || '').trim(),
+subRank: (cells[10] || '').trim(),
+flags: (cells[11] || '').trim(),
+confidence: (cells[12] || '').trim(),
+reason: (cells[13] || '').trim(),
+dedupeKey: (cells[14] || '').trim(),
+postClosureAction: (cells[15] || '').trim(),
+priorityRank: Number.isFinite(parsedRank) ? parsedRank : 700
 };
 });
 return { rows, headerOk: true, error: null };
@@ -3472,32 +3486,36 @@ return [...rows].sort((a, b) => a.priorityRank - b.priorityRank);
 // not any re-derivation from category/notes.
 (function bookingCheckImportSelfTest() {
 const failures = [];
+// Columns: Name Phone Email Source Campaign Created InitialNotes Tier
+// TierName SubCategory SubRank Flags Confidence Reason DedupeKey
+// PostClosureAction PriorityRank - matches Konnect-Booking-Check.js's
+// own buildRawNotesTsvForExtract (lead-classification-spec.md v1.10).
 const sampleTsv = [
 BOOKING_CHECK_IMPORT_HEADER.join('\t'),
-['Amy Adams', '07700900001', 'amy@example.com', 'Customer First', 'Citroen - Enquiry - New', '01/09/2026', 'Customer Comments: -', 'NON-BOOKING', 'No date field present.', '7'].join('\t'),
-['Ben Brown', '07700900002', 'ben@example.com', 'Customer First', 'Citroen - Enquiry - New', '02/09/2026', 'Customer Comments: See you at 3pm', 'CONFIRMED DATE & TIME', 'Exact time in comments.', '1'].join('\t'),
-['Cara Chen', '07700900003', 'cara@example.com', 'Customer First', 'Citroen - Enquiry - New', '03/09/2026', 'Customer Comments: possibly interested in a C3', 'NON-BOOKING', 'Genuine interest, no visit intent.', '5'].join('\t')
+['Amy Adams', '07700900001', 'amy@example.com', 'Customer First', 'Citroen - Enquiry - New', '01/09/2026', 'Customer Comments: -', '5', 'NURTURE', 'Enquiry: Blank', '9', '', 'low', 'Nothing matched.', '', '', '509'].join('\t'),
+['Ben Brown', '07700900002', 'ben@example.com', 'Customer First', 'Citroen - Enquiry - New', '02/09/2026', 'Customer Comments: See you at 3pm', '1', 'CONFIRMED DATE & TIME', 'Customer-Stated Slot', '3', '', 'medium', 'Exact time in comments.', '', '', '103'].join('\t'),
+['Cara Chen', '07700900003', 'cara@example.com', 'Customer First', 'Citroen - Enquiry - New', '03/09/2026', 'Customer Comments: possibly interested in a C3', '4', 'WARM ENQUIRY', 'Valuation + VOI Stated', '9', '', 'medium', 'Genuine interest, no visit intent.', '', '', '409'].join('\t')
 ].join('\n');
 
 const parsed = parseBookingCheckImportTsv(sampleTsv);
 if (!parsed.headerOk) failures.push(`Expected the real export header to parse OK, got error: ${parsed.error}`);
 if (parsed.rows.length !== 3) failures.push(`Expected 3 parsed rows, got ${parsed.rows.length}`);
-if (parsed.rows[1] && parsed.rows[1].category !== 'CONFIRMED DATE & TIME') failures.push(`Expected row 2's category to be read straight from the Category column, got "${parsed.rows[1].category}"`);
-if (parsed.rows[1] && parsed.rows[1].priorityRank !== 1) failures.push(`Expected row 2's priorityRank to be read straight from the PriorityRank column, got ${parsed.rows[1].priorityRank}`);
+if (parsed.rows[1] && parsed.rows[1].tierName !== 'CONFIRMED DATE & TIME') failures.push(`Expected row 2's tierName to be read straight from the TierName column, got "${parsed.rows[1].tierName}"`);
+if (parsed.rows[1] && parsed.rows[1].priorityRank !== 103) failures.push(`Expected row 2's priorityRank to be read straight from the PriorityRank column, got ${parsed.rows[1].priorityRank}`);
 
 const ordered = classifyBookingCheckImportRows(parsed.rows);
-if (!(ordered[0] && ordered[0].name === 'Ben Brown')) failures.push(`Expected Ben Brown (rank 1) to sort first, got "${ordered[0] && ordered[0].name}"`);
-if (!(ordered[1] && ordered[1].name === 'Cara Chen')) failures.push(`Expected Cara Chen (rank 5) to sort second, got "${ordered[1] && ordered[1].name}"`);
-if (!(ordered[2] && ordered[2].name === 'Amy Adams')) failures.push(`Expected Amy Adams (rank 7) to sort third, got "${ordered[2] && ordered[2].name}"`);
+if (!(ordered[0] && ordered[0].name === 'Ben Brown')) failures.push(`Expected Ben Brown (rank 103) to sort first, got "${ordered[0] && ordered[0].name}"`);
+if (!(ordered[1] && ordered[1].name === 'Cara Chen')) failures.push(`Expected Cara Chen (rank 409) to sort second, got "${ordered[1] && ordered[1].name}"`);
+if (!(ordered[2] && ordered[2].name === 'Amy Adams')) failures.push(`Expected Amy Adams (rank 509) to sort third, got "${ordered[2] && ordered[2].name}"`);
 
 const badHeader = parseBookingCheckImportTsv('Name\tPhone\tEmail');
 if (badHeader.headerOk) failures.push('Expected a mismatched/old-shape header to be rejected, not accepted');
 
 const missingRank = parseBookingCheckImportTsv([
 BOOKING_CHECK_IMPORT_HEADER.join('\t'),
-['Dee Dixon', '07700900004', 'dee@example.com', 'Customer First', 'Citroen - Enquiry - New', '04/09/2026', '-', 'NON-BOOKING', '', ''].join('\t')
+['Dee Dixon', '07700900004', 'dee@example.com', 'Customer First', 'Citroen - Enquiry - New', '04/09/2026', '-', '', '', '', '', '', '', '', '', '', ''].join('\t')
 ].join('\n'));
-if (!(missingRank.rows[0] && missingRank.rows[0].priorityRank === 7)) failures.push(`Expected a blank/malformed PriorityRank to default to 7 (lowest priority), got ${missingRank.rows[0] && missingRank.rows[0].priorityRank}`);
+if (!(missingRank.rows[0] && missingRank.rows[0].priorityRank === 700)) failures.push(`Expected a blank/malformed PriorityRank to default to 700 (lowest priority), got ${missingRank.rows[0] && missingRank.rows[0].priorityRank}`);
 
 if (failures.length > 0) {
 console.error('SLA Extract booking-check-import self-test FAILED:\n' + failures.join('\n'));
@@ -3548,12 +3566,13 @@ console.info('SLA Extract pending-booking-check-export self-test passed (8/8)');
 }
 })();
 
-function bookingCheckImportCategoryColor(category) {
-if (category === 'CONFIRMED DATE & TIME') return '#059669';
-if (category === 'DATE ONLY') return '#d97706';
-if (category === 'WARM ENQUIRY') return '#2563eb';
-if (category === 'NON-BOOKING') return '#64748b';
-return '#1e293b';
+// Same TIER_COLORS palette Konnect-Booking-Check.js's own panel uses
+// for these exact 6 tiers (lead-classification-spec.md v1.10), so a
+// lead reads the same color whichever tool it's looked at in.
+const BOOKING_CHECK_TIER_COLORS = { 1: '#059669', 2: '#d97706', 3: '#2563eb', 4: '#7c3aed', 5: '#64748b', 6: '#94a3b8' };
+
+function bookingCheckImportCategoryColor(tier) {
+return BOOKING_CHECK_TIER_COLORS[tier] || '#1e293b';
 }
 
 // Same normalization as Konnect-Booking-Check.js's own normalizeEmail/
@@ -3724,20 +3743,22 @@ function isBookingCheckPrioritySortEnabled() {
 return localStorage.getItem(BOOKING_CHECK_PRIORITY_SORT_KEY) === '1';
 }
 
-// CONFIRMED DATE & TIME first, then WARM ENQUIRY, everything else
-// (including customers with no Booking Check result at all) keeping
-// its existing relative order - a stable sort on a 0/1/2 rank, not a
-// full re-sort, so within "everything else" the section's own
-// existing order (urgency for SLA, current order for Pending) is left
-// exactly as-is. Array.prototype.sort has been a stable sort in every
-// engine this bookmarklet runs in for years, so this rank-only
-// comparator is enough on its own.
+// Sorts ascending by the imported tier number directly (1 =
+// CONFIRMED DATE & TIME ... 6 = REDIRECT/NO CALL, per lead-
+// classification-spec.md v1.10) - simpler than the old hardcoded
+// two-category special case, and it naturally extends to all 6 tiers
+// instead of only distinguishing two of them. Customers with no
+// Booking Check result at all (or an unresolved tier) sort after
+// every real tier, keeping their existing relative order - a stable
+// sort on this rank alone, not a full re-sort, so within "no result"
+// the section's own existing order (urgency for SLA, current order
+// for Pending) is left exactly as-is. Array.prototype.sort has been a
+// stable sort in every engine this bookmarklet runs in for years, so
+// this rank-only comparator is enough on its own.
 function bookingCheckPriorityRank(customer, bookingCheckResults) {
 const result = findBookingCheckResultForCustomer(customer, bookingCheckResults);
-if (!result) return 2;
-if (result.category === 'CONFIRMED DATE & TIME') return 0;
-if (result.category === 'WARM ENQUIRY') return 1;
-return 2;
+if (!result || !result.tier) return 7;
+return result.tier;
 }
 
 function sortByBookingCheckPriority(customers, bookingCheckResults) {
@@ -3755,21 +3776,25 @@ if (actual !== expected) failures.push(`${label}: expected "${expected}", got "$
 
 const customers = [
 { name: 'Alice (no result)', email: 'alice@example.com', phone: '' },
-{ name: 'Bob (WARM)', email: 'bob@example.com', phone: '' },
+{ name: 'Bob (tier 4)', email: 'bob@example.com', phone: '' },
 { name: 'Carol (no result)', email: 'carol@example.com', phone: '' },
-{ name: 'Dee (CONFIRMED)', email: 'dee@example.com', phone: '' },
-{ name: 'Eve (NON-BOOKING)', email: 'eve@example.com', phone: '' }
+{ name: 'Dee (tier 1)', email: 'dee@example.com', phone: '' },
+{ name: 'Eve (tier 5)', email: 'eve@example.com', phone: '' },
+{ name: 'Fay (tier 3)', email: 'fay@example.com', phone: '' }
 ];
 const bookingCheckResults = [
-{ email: 'bob@example.com', phone: '', category: 'WARM ENQUIRY' },
-{ email: 'dee@example.com', phone: '', category: 'CONFIRMED DATE & TIME' },
-{ email: 'eve@example.com', phone: '', category: 'NON-BOOKING' }
+{ email: 'bob@example.com', phone: '', tier: 4, tierName: 'WARM ENQUIRY' },
+{ email: 'dee@example.com', phone: '', tier: 1, tierName: 'CONFIRMED DATE & TIME' },
+{ email: 'eve@example.com', phone: '', tier: 5, tierName: 'NURTURE' },
+{ email: 'fay@example.com', phone: '', tier: 3, tierName: 'LIKELY BOOKING' }
 ];
 
 const sorted = sortByBookingCheckPriority(customers, bookingCheckResults).map((c) => c.name);
-check('CONFIRMED comes first', sorted[0], 'Dee (CONFIRMED)');
-check('WARM comes second', sorted[1], 'Bob (WARM)');
-check('No-result and NON-BOOKING keep their original relative order (Alice before Carol before Eve)', sorted.slice(2).join(', '), 'Alice (no result), Carol (no result), Eve (NON-BOOKING)');
+check('Tier 1 comes first', sorted[0], 'Dee (tier 1)');
+check('Tier 3 comes second - generalises to every tier, not just two hardcoded ones', sorted[1], 'Fay (tier 3)');
+check('Tier 4 comes third', sorted[2], 'Bob (tier 4)');
+check('Tier 5 comes fourth', sorted[3], 'Eve (tier 5)');
+check('No-result customers sort after every real tier, keeping their original relative order', sorted.slice(4).join(', '), 'Alice (no result), Carol (no result)');
 
 const untouched = sortByBookingCheckPriority(customers, []);
 check('With no Booking Check results at all, original order is preserved entirely', untouched.map((c) => c.name).join(', '), customers.map((c) => c.name).join(', '));
@@ -3779,7 +3804,7 @@ check('Disabled by default (BOOKING_CHECK_PRIORITY_SORT_KEY unset)', isBookingCh
 if (failures.length > 0) {
 console.error('SLA Extract sortByBookingCheckPriority self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Extract sortByBookingCheckPriority self-test passed (5/5)');
+console.info('SLA Extract sortByBookingCheckPriority self-test passed (7/7)');
 }
 })();
 
@@ -4202,7 +4227,7 @@ ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
 <span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
 </div>
-${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.category)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.category)};">${escapeHtml(bookingCheck.category)}</span></div>` : ''}
+${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.tier)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.tier)};">${escapeHtml(bookingCheck.tierName || String(bookingCheck.tier || ''))}</span></div>` : ''}
 ${renderQueuePositionBadge(c.assigned, queuePosition)}
 ${renderContactToggle(`
 <div>
@@ -4266,7 +4291,7 @@ return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLow
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
 </div>
 ${urgency.label ? `<div style="margin-bottom: 10px;"><span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${urgency.color}1a; color: ${urgency.color};">${urgency.label}</span></div>` : ''}
-${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.category)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.category)};">${escapeHtml(bookingCheck.category)}</span></div>` : ''}
+${bookingCheck ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(bookingCheckTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${bookingCheckImportCategoryColor(bookingCheck.tier)}1a; color: ${bookingCheckImportCategoryColor(bookingCheck.tier)};">${escapeHtml(bookingCheck.tierName || String(bookingCheck.tier || ''))}</span></div>` : ''}
 ${renderQueuePositionBadge(c.assigned, queuePosition)}
 ${renderContactToggle(`
 <div>
