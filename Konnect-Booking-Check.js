@@ -1659,9 +1659,8 @@ return title ? title.textContent.replace(/\s+/g, ' ').trim() : null;
 }
 
 // Post Closure Processing Step 13 (see classifyLead) - either of these
-// two confirmed signals anywhere in the customer's currently-loaded
-// timeline means the lead should be sent straight back through rather
-// than worked again:
+// two confirmed signals means the lead should be sent straight back
+// through rather than worked again:
 // - "Scheduled a call" - per a real reviewed example, one customer had
 //   voicemail-only calls both before AND after this entry, and was
 //   still confirmed as a "do not contact again" case; the entry itself
@@ -1672,18 +1671,35 @@ return title ? title.textContent.replace(/\s+/g, ' ').trim() : null;
 //   Face To Face appointment resulting from it - a genuine live
 //   connection is exactly the "if we spoke to the customer... we do
 //   not contact again" case from the original brief.
+//
+// sinceMinutes (minutesSinceEpoch of the target lead's own created
+// time) scopes the search to calls at or after THIS lead's own cycle -
+// confirmed live via a real customer with Scheduled-call entries left
+// over from an EARLIER, unrelated lead in the same lifetime timeline,
+// which wrongly sent a LATER Post Closure cycle - that only ever got
+// voicemails of its own - straight back through. null/undefined skips
+// the scoping entirely (matches every entry regardless of timestamp) -
+// used by the self-tests below, which don't need real dates to prove
+// the text-matching half works.
 // Pure/testable half split out from the real DOM read below it, same
 // pattern as the rest of this file's DOM-touching functions.
-function anyCallEntryIndicatesAlreadyEngaged(callEntryRows) {
+function anyCallEntryIndicatesAlreadyEngaged(callEntryRows, sinceMinutes, referenceDate) {
+const refNow = referenceDate || new Date();
 return callEntryRows.some((row) => {
+if (sinceMinutes != null) {
+const rawTimestamp = extractCallTimestamp(row);
+const parsed = rawTimestamp ? parseTimelineTimestamp(rawTimestamp, refNow) : null;
+const minutes = minutesSinceEpoch(parsed);
+if (minutes == null || minutes < sinceMinutes) return false;
+}
 const heading = extractCallHeadingText(row);
 if (heading == null) return false;
 return /\bscheduled a call\b/i.test(heading) || /\bspoke to customer\b/i.test(heading);
 });
 }
 
-function hasAlreadyEngagedCallEntry() {
-return anyCallEntryIndicatesAlreadyEngaged(getLoadedCallEntries());
+function hasAlreadyEngagedCallEntry(sinceMinutes, referenceDate) {
+return anyCallEntryIndicatesAlreadyEngaged(getLoadedCallEntries(), sinceMinutes, referenceDate);
 }
 
 // ===================================================================
@@ -1699,8 +1715,14 @@ const failures = [];
 function check(label, actual, expected) {
 if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
 }
-function fakeCallRow(headingText) {
-return { querySelector: (sel) => sel === '.connected-customer-title-lightblue' ? { textContent: headingText } : null };
+function fakeCallRow(headingText, timestampText) {
+return {
+querySelector: (sel) => {
+if (sel === '.connected-customer-title-lightblue') return { textContent: headingText };
+if (sel.includes('connected-customer-timeline-heading')) return timestampText ? { textContent: timestampText } : null;
+return null;
+}
+};
 }
 
 check('extractCallHeadingText reads the real heading text, whitespace collapsed',
@@ -1745,10 +1767,30 @@ check('Real "wrongly filtered as a warm lead" example - Spoke To Customer is als
 
 check('Empty call history', anyCallEntryIndicatesAlreadyEngaged([]), false);
 
+// Real "Mrs Brady" example - a customer with a Scheduled a call entry
+// left over from an EARLIER, unrelated lead's own history, plus a
+// current Post Closure cycle (created 30 Sep 2026 17:35) that only ever
+// got voicemails of its own. Confirmed live: without scoping to calls
+// at/after the current lead's own created time, this wrongly sent the
+// current cycle straight back through because of the unrelated older
+// entry.
+const referenceNow2026 = new Date(2026, 8, 30, 18, 0);
+const brady = [
+fakeCallRow('Some Agent Scheduled a call', '15 Sep 09:00'),
+fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left', '30 Sep 17:40'),
+fakeCallRow('Adam Ali called the customer with an outcome of No Answer Message Left', '30 Sep 18:00')
+];
+const currentCycleMinutes = minutesSinceEpoch(parseTimelineTimestamp('30 Sep 17:35', referenceNow2026));
+check('Without scoping, the unrelated older Scheduled-call entry wrongly counts', anyCallEntryIndicatesAlreadyEngaged(brady, null, referenceNow2026), true);
+check('Scoped to this cycle\'s own created time, the older entry is correctly excluded - voicemail-only within this cycle', anyCallEntryIndicatesAlreadyEngaged(brady, currentCycleMinutes, referenceNow2026), false);
+
+const bradyWithGenuineSignal = brady.concat([fakeCallRow('Someone Scheduled a call', '30 Sep 17:50')]);
+check('A genuine engagement signal WITHIN this cycle still counts once scoped', anyCallEntryIndicatesAlreadyEngaged(bradyWithGenuineSignal, currentCycleMinutes, referenceNow2026), true);
+
 if (failures.length > 0) {
 console.error('KonnectBookingCheck already-engaged-detection self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck already-engaged-detection self-test passed (8/8)');
+console.info('KonnectBookingCheck already-engaged-detection self-test passed (11/11)');
 }
 })();
 
@@ -3053,7 +3095,15 @@ const resolvedSource = row.source || panelFields.source;
 // Step 13 is the only place this matters, and getLoadedCallEntries
 // scans the customer's whole currently-loaded timeline, no reason to
 // pay for that on every other row.
-const alreadyEngagedCallEntry = String(resolvedSource || '').toLowerCase() === 'post closure processing' ? hasAlreadyEngagedCallEntry() : false;
+// Scoped to calls at or after THIS lead's own created time (target,
+// already parsed above) - a customer can have earlier, unrelated leads
+// (or earlier Post Closure cycles of their own) with their own
+// "Scheduled a call"/"Spoke To Customer" entries in the same lifetime
+// timeline. Confirmed live: a real customer had Scheduled-call entries
+// left over from a previous, unrelated lead, which wrongly sent a
+// later Post Closure cycle - that only ever got voicemails of its own -
+// straight back through instead of flagging it as needing contact.
+const alreadyEngagedCallEntry = String(resolvedSource || '').toLowerCase() === 'post closure processing' ? hasAlreadyEngagedCallEntry(minutesSinceEpoch(target), referenceNow) : false;
 const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry });
 if (classification.confidence === 'low') {
 // tier/subCategory/flags/reason/confidence are stored even though
