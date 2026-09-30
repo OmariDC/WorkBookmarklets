@@ -2284,6 +2284,25 @@ group.rows.push(row);
 return groups;
 }
 
+// Finds the earliest group, starting from fromIndex, that ISN'T fully
+// resolved (every row in it already has a result) - i.e. the correct
+// place to resume/retry from. Never treats a PARTIALLY resolved group
+// as skippable (even one unresolved row leaves the whole group as the
+// resume point, reprocessed in full including its already-resolved
+// rows) - a customer's rows are searched/opened together in one pass,
+// so there's no meaningful way to resume mid-group without redoing
+// that shared search-and-open step anyway. Originally inline in
+// newSession alone (run once, at session creation), factored out once
+// retryExceptions needed the exact same logic applied mid-session too -
+// see stepOnce's own comment on why a one-time skip isn't enough there.
+function firstUnresolvedGroupIndex(groups, results, fromIndex) {
+let groupIndex = fromIndex || 0;
+while (groupIndex < groups.length && groups[groupIndex].rows.every((r) => results[r.inputIndex])) {
+groupIndex++;
+}
+return groupIndex;
+}
+
 function makeResultBase(row) {
 return {
 inputIndex: row.inputIndex,
@@ -2350,15 +2369,7 @@ const groups = buildProcessingGroups(rows);
 // Skip past whole groups that are already fully resolved (every row
 // in them has a carried-over result) - resuming from here behaves
 // identically to having genuinely just finished processing them.
-// Never skips a PARTIAL group (even one unresolved row leaves the
-// whole group as the resume point, reprocessed in full, including its
-// already-resolved rows) - a customer's rows are searched/opened
-// together in one pass, so there's no meaningful way to resume
-// mid-group without redoing that shared search-and-open step anyway.
-let groupIndex = 0;
-while (groupIndex < groups.length && groups[groupIndex].rows.every((r) => results[r.inputIndex])) {
-groupIndex++;
-}
+const groupIndex = firstUnresolvedGroupIndex(groups, results, 0);
 
 return {
 rawInput, headerOk: parsed.headerOk, headerError: parsed.error,
@@ -2676,10 +2687,7 @@ delete session.results[row.inputIndex];
 }
 });
 
-let groupIndex = 0;
-while (groupIndex < session.groups.length && session.groups[groupIndex].rows.every((r) => session.results[r.inputIndex])) {
-groupIndex++;
-}
+const groupIndex = firstUnresolvedGroupIndex(session.groups, session.results, 0);
 
 session.groupIndex = groupIndex;
 session.rowInGroupIndex = 0;
@@ -2693,6 +2701,16 @@ session.done = groupIndex >= session.groups.length;
 // step of its own.
 async function stepOnce(session, uiHandle) {
 if (session.done || session.cancelled) return false;
+// Re-checked on EVERY call, not just once at session creation (that
+// happens too, in newSession, via this exact same helper) - without
+// this, retryExceptions rewinding groupIndex back to some EARLIER
+// group (to reprocess a scattered exception) would then have
+// advanceToNextGroup's own blind +1 sequential advance march forward
+// through every group after it too, reprocessing already-good results
+// all the way to the end of the batch instead of stopping once caught
+// back up. Confirmed live: retrying reran the whole rest of the list,
+// not just the exception.
+session.groupIndex = firstUnresolvedGroupIndex(session.groups, session.results, session.groupIndex);
 if (session.groupIndex >= session.groups.length) { session.done = true; return false; }
 
 const group = session.groups[session.groupIndex];
@@ -2942,6 +2960,7 @@ window.KonnectBookingCheck.buildBulkAnalysisExport = buildBulkAnalysisExport;
 window.KonnectBookingCheck.buildBulkAnalysisClipboardPayload = buildBulkAnalysisClipboardPayload;
 
 window.KonnectBookingCheck.buildProcessingGroups = buildProcessingGroups;
+window.KonnectBookingCheck.firstUnresolvedGroupIndex = firstUnresolvedGroupIndex;
 window.KonnectBookingCheck.newSession = newSession;
 window.KonnectBookingCheck.retryExceptions = retryExceptions;
 window.KonnectBookingCheck.rowIdentityKey = rowIdentityKey;
@@ -3080,10 +3099,26 @@ check('done recalculated as false - there is work left', fakeSession.done, false
 check('cancelled reset to false', fakeSession.cancelled, false);
 check('paused is left alone - retrying doesn\'t itself resume a paused run', fakeSession.paused, true);
 
+// The actual bug reported live: retrying didn't just rerun the
+// exception, it reran the rest of the whole list. Root cause was
+// stepOnce only ever skipping resolved groups ONCE, at session
+// creation - after retryExceptions rewinds groupIndex back to Bob's
+// group (index 1), advanceToNextGroup's own blind +1 would move on to
+// Carol's group (index 2) next and stepOnce would reprocess it too,
+// even though results[2] (Carol) was never cleared and is still
+// perfectly valid. Simulates exactly what stepOnce now does on every
+// call: Bob's group just got a fresh result (as if reprocessing it
+// succeeded), then re-checks from where advanceToNextGroup would have
+// landed (index 2) - it must recognize Carol's group is ALREADY
+// resolved and skip straight past it to the end, not reprocess it.
+fakeSession.results[1] = { name: 'Bob', status: 'CLASSIFIED', category: 'WARM ENQUIRY' };
+const nextIndex = firstUnresolvedGroupIndex(fakeSession.groups, fakeSession.results, 2);
+check('Already-resolved Carol\'s group (index 2) is skipped, not reprocessed, once Bob\'s retry is done', nextIndex, 3);
+
 if (failures.length > 0) {
 console.error('KonnectBookingCheck retryExceptions self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck retryExceptions self-test passed (9/9)');
+console.info('KonnectBookingCheck retryExceptions self-test passed (10/10)');
 }
 })();
 
