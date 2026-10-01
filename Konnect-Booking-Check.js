@@ -3134,6 +3134,17 @@ const resolvedSource = row.source || panelFields.source;
 // version of this check.
 const alreadyEngagedCallEntry = String(resolvedSource || '').toLowerCase() === 'post closure processing' ? hasAlreadyEngagedCallEntry(candidate.leadId) : false;
 const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry });
+// source: classification.source, not left as makeResultBase's own
+// row.source - that's the raw, often-blank batch value (Pending
+// Customers' own export deliberately leaves Source blank, see
+// buildPendingBookingCheckTsv's own comment), never updated to the
+// value classifyLead actually resolved and classified against
+// (resolvedSource, further possibly inferred from Initial Notes text
+// by inferSource). Confirmed live: the card's own Source field was
+// showing blank/a brand name for genuine Post Closure leads, making it
+// impossible to tell from the UI whether Step 13 had actually matched
+// "post closure processing" or not - this was the exact field being
+// read to diagnose that.
 if (classification.confidence === 'low') {
 // tier/subCategory/flags/reason/confidence are stored even though
 // status stays EXCEPTION (never auto-trusted/applied) - so a human
@@ -3142,6 +3153,7 @@ if (classification.confidence === 'low') {
 // re-deriving it by hand.
 return finalizeResult(result, {
 status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', initialNotes,
+source: classification.source,
 tier: classification.tier, tierName: classification.tierName, subCategory: classification.subCategory, subRank: classification.subRank,
 flags: classification.flags, dedupeKey: classification.dedupeKey, postClosureAction: classification.postClosureAction,
 reason: classification.reason, confidence: classification.confidence, ...auditPatch
@@ -3150,6 +3162,7 @@ reason: classification.reason, confidence: classification.confidence, ...auditPa
 
 return finalizeResult(result, {
 status: 'CLASSIFIED',
+source: classification.source,
 tier: classification.tier, tierName: classification.tierName, subCategory: classification.subCategory, subRank: classification.subRank,
 flags: classification.flags, dedupeKey: classification.dedupeKey, postClosureAction: classification.postClosureAction,
 reason: classification.reason,
