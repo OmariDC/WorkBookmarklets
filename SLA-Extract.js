@@ -5841,14 +5841,27 @@ clearInterval(window._slaAutoDetectInterval);
 // applied to the panel, which had no equivalent.
 document.getElementById(PANEL_ID)?.remove();
 let lastKnownPageType = detectPageType();
+// A changed detection needs to be seen on two consecutive ticks before
+// acting on it, not just one - confirmed live: switching SLA -> Pending
+// correctly loaded Pending, then flipped back to SLA Report on its own
+// a few seconds later, with no further navigation in between. A single
+// transient misread (detectPageType matching a stale/duplicate <table>
+// briefly left in the DOM during Konnect's own unrelated Angular
+// re-render, for instance) was otherwise enough on its own to wrongly
+// flip the panel straight back. Genuine navigation stays on the new
+// page for far longer than one extra 2.5s tick, so this doesn't
+// meaningfully slow down reacting to a real page switch.
+let pendingPageType = null;
 window._slaAutoDetectInterval = setInterval(() => {
 if (extracting || assigning || runningMorningChecks || refreshingLeads || currentPanelMode === 'morningChecks') return;
 const pageType = detectPageType();
-if (pageType && pageType !== lastKnownPageType) {
+if (!pageType || pageType === lastKnownPageType) { pendingPageType = null; return; }
+if (pageType === pendingPageType) {
 lastKnownPageType = pageType;
+pendingPageType = null;
 runExtraction();
-} else if (pageType) {
-lastKnownPageType = pageType;
+} else {
+pendingPageType = pageType;
 }
 }, 2500);
 
