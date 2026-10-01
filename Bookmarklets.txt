@@ -1,0 +1,70 @@
+WorkBookmarklets - loader URLs
+==============================
+
+Each entry below is a full "javascript:" bookmarklet. Drag/paste it into
+a bookmark's URL field. Clicking it fetches the real script fresh from
+GitHub every time (cache-busted via ?_=<timestamp>), so edits pushed to
+this repo take effect immediately - no need to re-save the bookmarklet
+itself.
+
+Same loader pattern for every entry (matches Konnect-Notes-Bookmarklet.txt):
+fetch -> check response.ok -> Function(code)() -> alert on failure.
+
+--------------------------------------------------------------------
+
+Auto-AcceptLP
+
+javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Auto-AcceptLP.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Auto-AcceptLP: "+e);}})();
+
+--------------------------------------------------------------------
+
+Auto-Correct
+
+javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Auto-Correct.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Auto-Correct: "+e);}})();
+
+--------------------------------------------------------------------
+
+Auto-Summary
+
+javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Auto-Summary.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Auto-Summary: "+e);}})();
+
+--------------------------------------------------------------------
+
+Halo-Tool
+
+javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Halo-Tool.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Halo-Tool: "+e);}})();
+
+--------------------------------------------------------------------
+
+Konnect-Lead-Checker
+
+javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Lead-Checker.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Konnect-Lead-Checker: "+e);}})();
+
+--------------------------------------------------------------------
+
+Konnect-Notes
+
+javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Notes.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Konnect Notes: "+e);}})();
+
+--------------------------------------------------------------------
+
+Reg-Check
+
+javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Reg-Check.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Reg-Check: "+e);}})();
+
+--------------------------------------------------------------------
+
+SLA-Extract
+
+javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/SLA-Extract.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading SLA-Extract: "+e);}})();
+
+--------------------------------------------------------------------
+
+SLA-Manager
+
+javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/SLA-Manager.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading SLA-Manager: "+e);}})();
+
+--------------------------------------------------------------------
+
+Not included: Auto-Fill.js (placeholder stub, not a real bookmarklet)
+and Konnect-Notes-Phrases.json (data file, not a script).

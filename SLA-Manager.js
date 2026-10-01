@@ -1,12 +1,59 @@
 (function() {
 const BADGE_ID = '_slaBadge';
-const BADGE_COLOR = '#1e293b';
-const BADGE_BORDER_COLOR = '#059669';
+// Konnect CJM Manager's own confirmed navbar colors (background
+// #22365D, white text/icons - live DOM scan), not a generic scheme, so
+// the badge reads as belonging to this page rather than a floating
+// element that happens to sit near it.
+const BADGE_COLOR = '#22365D';
+const BADGE_BORDER_COLOR = '#FFFFFF';
 const PANEL_ID = '_slaPanel';
 const PANEL_BOX_ID = '_slaPanelBox';
 const PANEL_STATE_KEY = '_slaPanelState';
 const PANEL_SIZE_KEY = '_slaPanelSize';
 const ASSIGN_SETTINGS_KEY = '_slaAssignSettings';
+
+// ===================================================================
+// ICONS
+//
+// Small inline-SVG line icons (Lucide/Feather-style: 24x24 viewBox,
+// stroke-based, currentColor) replacing the emoji this panel used
+// everywhere - emoji render inconsistently across OS/browser and read
+// as dated next to the rest of the redesign. currentColor means each
+// icon just inherits whatever color/text the element around it already
+// has, no separate color plumbing needed per call site. A couple
+// (bolt, the History bar chart) are filled shapes instead of strokes,
+// set via their own fill/stroke attributes which override the parent
+// SVG's defaults.
+// ===================================================================
+
+const ICONS = {
+refresh: '<path d="M21 12a9 9 0 1 1-3.2-6.9"/><path d="M21 3v6h-6"/>',
+history: '<path d="M3 3v18h18" fill="none"/><rect x="7" y="13" width="3" height="5" fill="currentColor" stroke="none"/><rect x="12" y="9" width="3" height="9" fill="currentColor" stroke="none"/><rect x="17" y="5" width="3" height="13" fill="currentColor" stroke="none"/>',
+bolt: '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" fill="currentColor" stroke="none"/>',
+inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+clipboard: '<rect x="5" y="3" width="14" height="18" rx="2"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="12" y2="16"/>',
+warning: '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>',
+expand: '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>',
+shrink: '<path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/>',
+minimize: '<line x1="5" y1="12" x2="19" y2="12"/>',
+restore: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
+arrowUp: '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',
+chevron: '<polyline points="6 9 12 15 18 9"/>',
+checklist: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
+copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'
+};
+
+function svgIcon(name, size, extraStyle) {
+return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;${extraStyle || ''}">${ICONS[name]}</svg>`;
+}
+
+// Rotates rather than swaps between two glyphs (the old ▼/▶ text-content
+// toggle) - one icon, animated, is the more modern pattern, and the
+// toggle handlers only need to flip a transform instead of picking
+// between two strings.
+function chevronIcon(collapsed, id) {
+return `<svg id="${id}" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; transition: transform 0.15s ease; transform: rotate(${collapsed ? -90 : 0}deg);">${ICONS.chevron}</svg>`;
+}
 
 // SLA table columns: Customer, Registration, Source, Campaign, Created,
 // Received, SLA Date, Status, Assign. td-only queries mean the bare
@@ -77,19 +124,93 @@ let assigning = false;
 let cancelRequested = false;
 let lastFailedAssignmentPlan = null;
 let lastFailedLocateCellFn = null;
+let lastFailedPageType = null;
 let currentPageType = null;
 let currentCustomers = [];
 let currentPendingCustomers = [];
+// The +N/-N indicator next to the title only means something right
+// after a genuine page re-scan (extractAndExportSla/Pending, where it's
+// computed from a real before/after diff) - every other redraw in this
+// file deliberately passes 0/0 for it (a plain "same data, re-render"
+// isn't a new diff). Remembered here specifically so
+// runLeadCheckerClassification's redraw (see its own comment) can
+// re-pass the last real diff instead of wiping it, since that redraw
+// now happens far more often (paste & classify promoted to a one-click
+// top-level button) and isn't itself a new scan of the queue.
+let lastSlaDiffCounts = { newCount: 0, removedCount: 0 };
+let lastPendingDiffCounts = { newCount: 0, removedCount: 0 };
+// 'normal' (SLA/Pending assign view) or 'morningChecks' (the separate
+// page below) - entering/leaving is only ever explicit (the header
+// toggle), never something the background poll decides on its own.
+let currentPanelMode = 'normal';
+let runningMorningChecks = false;
+// True for the whole window._refreshLeadsAndPanel() flow, not just its
+// final runExtraction() call - clicking the native refresh icon and
+// waiting for it to finish can take several seconds with no hash
+// change and no recognized-page-type change either, so nothing else
+// naturally excludes the background auto-detect poll from firing its
+// own independent runExtraction() mid-wait (unlike a real navigation,
+// which self-excludes the poll since detectPageType() goes null while
+// on an unrecognized route). Without this, swapping pages while a
+// refresh was still waiting on the icon let two overlapping scans run
+// against two different pages at once - the reported "SLA rescans
+// everything" / "Pending briefly shows no leads then corrects itself".
+let refreshingLeads = false;
+// Populated by window._runAllMorningChecks as each check completes -
+// {key, label, status: 'pending'|'running'|'done', ok, summary, details}.
+// Drives renderMorningChecksBody(); empty means "hasn't been run yet".
+// Restored from today's persisted run (if any) rather than always
+// starting empty - per instruction, results should persist across a
+// bookmarklet re-invocation/page reload until explicitly cleared or a
+// fresh run overwrites them, not silently reset just because the
+// panel/page was closed and reopened. loadMorningChecksLastRun is
+// defined further down but hoisted, and already scopes to today only.
+let morningChecksResults = (function() {
+const lastRun = loadMorningChecksLastRun();
+return (lastRun && Array.isArray(lastRun.results)) ? lastRun.results : [];
+})();
+const MORNING_CHECKS_ORDER = [
+{ key: 'emailOnly', label: 'Email Only Count' },
+{ key: 'sla', label: 'SLA Count' },
+{ key: 'inProgress', label: 'In Progress' },
+{ key: 'leadType', label: 'Lead Type Check' },
+{ key: 'routedTo', label: 'All Leads Are Routed To' },
+{ key: 'voicemail', label: 'Voicemail' },
+];
+const PAGE_FLASH_OVERLAY_ID = '_slaPageFlashOverlay';
+
+// Checked against the campaign's primary segment (before any
+// parenthetical) rather than the raw full string - confirmed real
+// collision: Customer First's "Citroen - Enquiry - New (Test drive
+// request)" contains "test drive request" only inside a parenthetical
+// marketing-form label; the campaign itself is "Enquiry - New", not a
+// dedicated Test Drive Request campaign like "Peugeot - Test Drive
+// Request - New (...)" where "test drive request" IS the campaign
+// category. Same fix as Konnect-Lead-Checker.js's own
+// isTestDriveRequestCampaign/isInScope, ported back here for
+// consistency - this file's categorizeTier is what that one's own copy
+// was ported FROM, so both need to agree, not just the copy.
+function campaignPrimaryPart(campaign) {
+const c = String(campaign || '').trim();
+const parenIndex = c.indexOf('(');
+return (parenIndex === -1 ? c : c.slice(0, parenIndex)).toLowerCase();
+}
 
 function categorizeTier(campaign, source) {
 const camp = campaign.toLowerCase();
 const src = source.toLowerCase();
+const campPrimary = campaignPrimaryPart(campaign);
 
-if (camp.includes('test drive request') && camp.includes('new'))
+if (campPrimary.includes('test drive request') && campPrimary.includes('new'))
 return { tier: 1, reason: 'Test Drive Request - New' };
-if (camp.includes('test drive request') && camp.includes('used'))
+if (campPrimary.includes('test drive request') && campPrimary.includes('used'))
 return { tier: 1, reason: 'Test Drive Request - Used' };
-if (camp.includes('electric'))
+// Excludes Register Interest - confirmed real collision: "Citroen -
+// Register Interest (Electric Vehicles Register Your Interest)"
+// contains "electric" but is a research/interest-capture campaign
+// (Tier 4), not a "Brand - Electric" one. Same fix as
+// Konnect-Lead-Checker.js's own isElectricCampaign.
+if (camp.includes('electric') && !camp.includes('register interest'))
 return { tier: 1, reason: 'Brand - Electric' };
 if (camp.includes('reserve') && camp.includes('used'))
 return { tier: 1, reason: 'Reserve - Used' };
@@ -107,6 +228,8 @@ if (camp.includes('offer request') && camp.includes('new'))
 return { tier: 3, reason: 'Offer Request - New' };
 if ((camp.includes('px valuation') || camp.includes('p/x valuation')) && camp.includes('new'))
 return { tier: 3, reason: 'PX Valuation - New' };
+if ((camp.includes('px valuation') || camp.includes('p/x valuation')) && camp.includes('used'))
+return { tier: 3, reason: 'PX Valuation - Used' };
 
 if (camp.includes('enquiry') && camp.includes('new') && src.includes('robins'))
 return { tier: 4, reason: 'Enquiry - New (Robins & Day)' };
@@ -116,6 +239,74 @@ if (camp.includes('inbound'))
 return { tier: 4, reason: 'Inbound' };
 
 return { tier: 4, reason: 'Uncategorized' };
+}
+
+// This file had no self-test coverage at all before now, unlike
+// Konnect-Lead-Checker.js's own copy of this same function - added
+// here specifically to catch the two collisions just fixed above (and
+// guard against them regressing back in), using real verbatim campaign
+// strings rather than synthetic ones.
+(function categorizeTierSelfTest() {
+const cases = [
+{ name: 'Real: Customer First Enquiry-New (Test drive request) stays Tier 2, not Tier 1', campaign: 'Citroen - Enquiry - New (Test drive request)', source: 'Customer First', expectTier: 2 },
+{ name: 'Real: dedicated Test Drive Request campaign is Tier 1', campaign: 'Peugeot - Test Drive Request - New (pcr_new_test_drive)', source: 'Robins & Day Website', expectTier: 1 },
+{ name: 'Real: Register Interest campaign containing "Electric" is not Tier 1 Electric', campaign: 'Citroen - Register Interest (Electric Vehicles Register Your Interest)', source: 'Robins & Day Website', expectTier: 4 },
+{ name: 'A genuine Brand - Electric campaign is still Tier 1', campaign: 'Citroen - Electric', source: 'Website', expectTier: 1 },
+{ name: 'Reserve - Used is Tier 1', campaign: 'Citroen - Reserve - Used', source: 'Robins & Day Website', expectTier: 1 },
+{ name: 'Motability is Tier 2', campaign: 'Motability', source: 'Motability', expectTier: 2 },
+{ name: 'Offer Request - New is Tier 3', campaign: 'Citroen - Offer Request - New (Quote request)', source: 'Customer First', expectTier: 3 },
+{ name: 'PX Valuation - Used is Tier 3, same as PX Valuation - New', campaign: 'PX Valuation - Used', source: 'Robins & Day Website', expectTier: 3 }
+];
+const failures = [];
+cases.forEach((c) => {
+const result = categorizeTier(c.campaign, c.source);
+if (result.tier !== c.expectTier) {
+failures.push(`${c.name}: expected tier ${c.expectTier}, got tier ${result.tier} (${result.reason})`);
+}
+});
+if (failures.length > 0) {
+console.error('SLA Extract categorizeTier self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info(`SLA Extract categorizeTier self-test passed (${cases.length}/${cases.length})`);
+}
+})();
+
+// Display-only urgency ordering/labeling for the SLA tier cards -
+// distinct from computeSortKey further down (used for ROUND-ROBIN
+// ASSIGNMENT ordering), which deliberately pushes Missed leads slightly
+// behind ones still due imminently so a fair-share sweep doesn't always
+// hand every agent's next lead to whoever's already overdue. That
+// fairness concern doesn't apply to what a human should see FIRST while
+// visually triaging the list - here, more overdue always means show it
+// first, no penalty.
+function computeDisplaySortKey(customer) {
+if (!customer.slaDate) return Infinity;
+return customer.slaDate.getTime() - Date.now();
+}
+
+function sortByUrgency(customers) {
+return [...customers].sort((a, b) => computeDisplaySortKey(a) - computeDisplaySortKey(b));
+}
+
+// Status text is only confirmed to say "Missed" once a lead's SLA date
+// has passed, but msUntil <= 0 is checked too in case the status column
+// hasn't caught up yet - a lead already past its due time is urgent
+// regardless of what the Status cell currently says. emphasize marks
+// the bucket the user asked to "stand out even further" - Missed and
+// due-within-15-minutes both get it, since both mean "needs attention
+// right now", not just "coming up soon".
+function slaUrgencyInfo(customer) {
+if (!customer.slaDate) return { label: null, color: null, emphasize: false };
+const minsUntil = Math.round((customer.slaDate.getTime() - Date.now()) / 60000);
+if (customer.status === 'Missed' || minsUntil <= 0) {
+return { label: `MISSED ${Math.abs(minsUntil)}m ago`, color: '#dc2626', emphasize: true };
+}
+if (minsUntil <= 15) return { label: `Due in ${minsUntil}m`, color: '#dc2626', emphasize: true };
+if (minsUntil <= 30) return { label: `Due in ${minsUntil}m`, color: '#d97706', emphasize: false };
+if (minsUntil <= 60) return { label: `Due in ${minsUntil}m`, color: '#ca8a04', emphasize: false };
+const hrs = Math.floor(minsUntil / 60);
+const mins = minsUntil % 60;
+return { label: `Due in ${hrs}h ${mins}m`, color: '#64748b', emphasize: false };
 }
 
 function findDetailModal() {
@@ -173,6 +364,1476 @@ observer.observe(document.body, { childList: true, subtree: true });
 });
 }
 
+// Generic version of the waitForModal pattern above - waits for any
+// selector to exist rather than specifically the customer-detail modal,
+// for navigating to a different Konnect page/route (Queue by Agent)
+// where content renders in asynchronously after the hash change.
+function waitForElement(selector, timeout = 5000) {
+return new Promise((resolve) => {
+const existing = document.querySelector(selector);
+if (existing) {
+resolve(existing);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(null);
+}, timeout);
+const observer = new MutationObserver(() => {
+const el = document.querySelector(selector);
+if (el) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(el);
+}
+});
+observer.observe(document.body, { childList: true, subtree: true });
+});
+}
+
+// detectPageType() reads the table's header row, which renders before
+// ng-repeat has actually populated any data rows for the page just
+// switched to - the background auto-detect poll calls extractAndExportSla/
+// Pending the instant it notices the header match, which could mean
+// reading a still-loading table as "0 leads" and reporting an empty
+// queue that a moment later turns out to have plenty, needing a manual
+// refresh to fix (confirmed live, swapping Pending -> SLA). A smaller,
+// one-shot version of what waitForInboundRowsSettled solved for the
+// Inbound API page - there's no evidence this table loads progressively
+// in chunks the way that one does, just a short delay before it renders
+// in one batch, so this only needs to wait for the FIRST row rather than
+// watch for growth to stop. Resolves instantly if rows already exist
+// (the common case costs nothing), or after timeout with none found -
+// callers still treat that as a genuinely empty queue rather than
+// erroring, since an actually-empty SLA/Pending queue is a normal state.
+function waitForLeadsTableRows(table, timeout = 8000) {
+return new Promise((resolve) => {
+const hasRows = () => table.querySelectorAll('tbody tr').length > 0;
+if (hasRows()) {
+resolve(true);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(false);
+}, timeout);
+const observer = new MutationObserver(() => {
+if (hasRows()) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(true);
+}
+});
+observer.observe(table, { childList: true, subtree: true });
+});
+}
+
+// Stricter settle-based variant, used only by waitForLeadsTableReady
+// (the four queue-check re-render call sites), not a replacement for
+// waitForLeadsTableRows everywhere - that one's "resolve on the very
+// first row" behaviour is proven fine for the main extraction flow
+// (extractAndExportSla/Pending, a same-page native-icon refresh), which
+// has never been reported as racy, and adding a settle window there too
+// would cost every already-fast, all-cached extraction a fixed chunk of
+// pure added latency for no benefit. The queue-check paths are the ones
+// actually reported live as still intermittently reading a partial/
+// empty table even with waitForLeadsTableRows in place - those involve
+// a full route change (navigating to Queue by Agent and back), not the
+// same-page refresh this function's sibling was built and confirmed
+// against, so its "loads in one batch, not progressively" assumption
+// (see its own comment) may simply not hold for a route change. Same
+// "wait for the DOM to actually go quiet" signal already confirmed live
+// for the Inbound API page's own progressive loading (see
+// waitForInboundRowsSettled) - the row count must stay unchanged for a
+// full quiet window before this trusts it, not just become non-zero
+// once. quietMs is a reasonable-guess default, not a confirmed-live
+// value the way waitForInboundRowsSettled's 1500ms is - this table is a
+// much smaller, one-shot dataset than Inbound's continuously-arriving
+// feed, so a shorter window was chosen, but only a live re-test can
+// confirm it's actually long enough.
+function waitForLeadsTableRowsSettled(table, timeout = 8000, quietMs = 400) {
+return new Promise((resolve) => {
+let settleTimer = null;
+let hardTimer = null;
+
+function finish() {
+clearTimeout(settleTimer);
+clearTimeout(hardTimer);
+observer.disconnect();
+resolve(table.querySelectorAll('tbody tr').length > 0);
+}
+
+function armSettleTimer() {
+clearTimeout(settleTimer);
+settleTimer = setTimeout(finish, quietMs);
+}
+
+const observer = new MutationObserver(armSettleTimer);
+observer.observe(table, { childList: true, subtree: true });
+
+// Armed immediately too, in case rows already existed and settled
+// before this even started watching (no further mutations coming).
+armSettleTimer();
+hardTimer = setTimeout(finish, timeout);
+});
+}
+
+// Shared by every flow that navigates away (Queue by Agent) and back
+// before re-rendering the SLA/Pending panel - handleBadgeClick, the
+// post-successful-assign auto re-scan, window._checkAgentQueuePositions,
+// and window._clearWholeQueue all do this same navigate-away-and-back
+// before calling displayPanel/displayPendingPanel. The hash changing
+// back is just the route changing, not Angular having actually
+// repopulated the table's rows yet (same gap this file already guards
+// against for the auto-detect poll, via waitForLeadsTableRows itself).
+// renderAssignSection (behind every one of those render calls) reads
+// document.querySelector('table') synchronously via
+// collectAssignableLeads - skipping this wait showed correct data
+// briefly, then "0 leads due"/"No leads match the current filters"
+// until an unrelated manual refresh fixed it.
+async function waitForLeadsTableReady() {
+const table = await waitForElement('table');
+// A much tighter hard cap than waitForLeadsTableRowsSettled's own
+// 8000ms default - this call site is a secondary refresh (the leads
+// data itself is already correct from the extraction that just ran;
+// this is only trying to avoid reading the table in the split-second
+// it's empty right after navigating back from Queue by Agent), not a
+// primary data load worth waiting a long time for. If this page's
+// table rows get torn down and rebuilt on every Angular digest cycle
+// rather than only when data genuinely changes, the settle timer would
+// keep getting reset indefinitely and this would silently eat the
+// full hard cap every single time - reported live as "not loading up
+// the UI" after the queue check, which a long cap makes look identical
+// to a real hang even though it would eventually resolve. 2.5s is
+// enough to ride out the ordinary post-navigation gap without making a
+// worse-case run feel stuck.
+if (table) await waitForLeadsTableRowsSettled(table, 2500);
+}
+
+// Shared by anything that causes a real Konnect page navigation/re-
+// render mid-flow (Morning Checks, Clear Queue, ingesting freshly-seen
+// SLA leads) - masks the underlying page's own flashing/repopulating
+// so it doesn't read as the screen glitching, without slowing down
+// whatever's actually running underneath it (purely cosmetic).
+//
+// Opening/closing each new lead's detail modal during SLA ingestion
+// toggles whether the underlying page itself has a scrollbar (the
+// modal sets its own overflow while open) - a fixed, inset:0 overlay
+// still tracks the viewport's actual available width, which most
+// browsers shrink/grow by the scrollbar's own width as it appears and
+// disappears, so the overlay was visibly jumping left-right in step
+// with every single modal open/close - the exact same "looks like a
+// glitch" complaint this overlay exists to prevent, just moved onto
+// the overlay itself. Locking documentElement's overflow to hidden for
+// the overlay's whole duration freezes the scrollbar in one state
+// (fine either way, since the page underneath is fully obscured
+// anyway) so nothing behind it can make it move.
+let pageFlashOverlayPrevOverflow = null;
+
+function showPageFlashOverlay(message) {
+const existing = document.getElementById(PAGE_FLASH_OVERLAY_ID);
+if (existing) {
+const label = existing.querySelector('[data-overlay-label]');
+if (label) label.textContent = message;
+return;
+}
+if (!document.getElementById('_slaSpinKeyframes')) {
+const style = document.createElement('style');
+style.id = '_slaSpinKeyframes';
+style.textContent = '@keyframes _slaSpin { to { transform: rotate(360deg); } }';
+document.head.appendChild(style);
+}
+const overlay = document.createElement('div');
+overlay.id = PAGE_FLASH_OVERLAY_ID;
+overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(15,23,42,0.94); z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: white; font-size: 14px; font-weight: 600;';
+overlay.innerHTML = `
+<div style="width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.25); border-top-color: white; border-radius: 50%; animation: _slaSpin 0.8s linear infinite;"></div>
+<div data-overlay-label>${message}</div>
+`;
+pageFlashOverlayPrevOverflow = document.documentElement.style.overflow;
+document.documentElement.style.overflow = 'hidden';
+document.documentElement.appendChild(overlay);
+}
+
+function hidePageFlashOverlay() {
+document.getElementById(PAGE_FLASH_OVERLAY_ID)?.remove();
+document.documentElement.style.overflow = pageFlashOverlayPrevOverflow || '';
+pageFlashOverlayPrevOverflow = null;
+}
+
+// Confirmed live on the SLA queue page: <i class="fa fa-refresh"
+// ng-class="{ 'fa-spin' : loading }" ng-click="getData()" title="Refresh">.
+// No id/aria-label to key off instead - the ng-click name plus its class
+// together are specific enough not to collide with anything else on the
+// page. Clicking it adds fa-spin immediately and Angular's own
+// $scope.loading clears it again once the refetch actually finishes
+// (observed ~1.1s in testing, but that's real network time, not assumed
+// to be a fixed delay) - waiting for the class to toggle both ways is
+// what confirms the refetch genuinely started and genuinely finished,
+// rather than guessing a duration.
+function findNativeLeadsRefreshIcon() {
+return document.querySelector('i.fa-refresh[ng-click="getData()"]');
+}
+
+function waitForRefreshIconSpinState(icon, spinning, timeout) {
+return new Promise((resolve) => {
+if (icon.classList.contains('fa-spin') === spinning) {
+resolve(true);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(false);
+}, timeout);
+const observer = new MutationObserver(() => {
+if (icon.classList.contains('fa-spin') === spinning) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(true);
+}
+});
+observer.observe(icon, { attributes: true, attributeFilter: ['class'] });
+});
+}
+
+// Triggered by clicking the panel's own title (see renderPanelShell's
+// onTitleClick) - lets the underlying leads list get refreshed, and this
+// panel resynced with it, without ever needing to reach Konnect's own
+// refresh icon by hand, which a full-screen panel covers entirely and a
+// compact one usually gets in the way of too. Clicks the native icon
+// first if this page happens to have one (falls through to a plain
+// re-scan otherwise, rather than failing - the panel refresh is the part
+// that actually matters), waits for its spin state to confirm the
+// refetch genuinely ran, then runs this panel's normal full re-scan so
+// newly-arrived leads get properly ingested (tiered, detail-scraped),
+// not just a stale re-render of what was already cached.
+window._refreshLeadsAndPanel = async function() {
+if (extracting || assigning || runningMorningChecks || refreshingLeads) return;
+refreshingLeads = true;
+showPageFlashOverlay('Refreshing leads…');
+try {
+const icon = findNativeLeadsRefreshIcon();
+if (icon) {
+icon.click();
+await waitForRefreshIconSpinState(icon, true, 2000);
+await waitForRefreshIconSpinState(icon, false, 15000);
+}
+await runExtraction();
+} finally {
+refreshingLeads = false;
+hidePageFlashOverlay();
+}
+};
+
+// The Customer Hub / Service Booking module selector on the Queue by
+// Agent page isn't a URL-based route - it's Angular scope state, and
+// neither option carries a distinguishing class when selected (both
+// <li> elements are class="ng-scope" either way). The only way to tell
+// which is active is reading the selector's own trigger text, and the
+// only way to change it is opening the dropdown and clicking the
+// matching <li> by its text content, then waiting for the trigger text
+// to actually update before trusting the switch took effect - a stale
+// module selection here would mean Clear Queues clears the wrong scope
+// entirely.
+async function ensureCustomerHubModule() {
+// Re-queries the trigger fresh every time rather than trusting one
+// captured reference across the whole switch - confirmed live starting
+// from Service Booking, but reported live to time out starting from
+// "Service" specifically. The likely difference: switching away from
+// that module regenerates this whole element (Angular tearing down and
+// recreating it) rather than just mutating its label text in place,
+// which is what every previously-tested starting module did. A stale
+// captured `trigger` would silently watch a node that's no longer part
+// of the live document, so its own MutationObserver would never fire
+// and the label would never appear to change, even though the switch
+// genuinely succeeded on the page - a timeout that looks identical to a
+// real failure. Reading document.querySelector fresh on every check
+// avoids depending on that one reference surviving.
+const readLabel = () => document.querySelector('div[title="Filter by Module"] span.ng-binding')?.textContent?.trim() || null;
+if (readLabel() === 'Customer Hub') return true;
+
+const trigger = document.querySelector('div[title="Filter by Module"]');
+if (!trigger) return false;
+trigger.click();
+
+const menuItem = await waitForElement('li[ng-click="moduleSelected(module)"]');
+if (!menuItem) return false;
+
+const items = Array.from(document.querySelectorAll('li[ng-click="moduleSelected(module)"]'));
+const target = items.find(li => li.textContent.includes('Customer Hub'));
+if (!target) {
+console.warn('[SLA Extract] Customer Hub option not found in the module dropdown - items seen:', items.map(li => li.textContent.trim()));
+return false;
+}
+target.click();
+
+if (readLabel() === 'Customer Hub') return true;
+
+return new Promise((resolve) => {
+const timer = setTimeout(() => {
+observer.disconnect();
+console.warn('[SLA Extract] Timed out waiting for module switch to Customer Hub - trigger now reads:', readLabel());
+resolve(false);
+}, 3000);
+// Observes document.body, not the trigger element captured above (see
+// comment at the top of this function) - same broad-observe pattern
+// waitForElement already uses elsewhere in this file, for the same
+// reason: the element being watched for a change can be replaced
+// outright, not just mutated.
+const observer = new MutationObserver(() => {
+if (readLabel() === 'Customer Hub') {
+clearTimeout(timer);
+observer.disconnect();
+resolve(true);
+}
+});
+observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+});
+}
+
+// Bulk-unassigns every currently-assigned lead in the queue back to
+// unassigned, via Konnect's own "Clear Queues" admin action - reached
+// through the Queue by Agent page rather than anything this bookmarklet
+// normally touches. No confirm prompt - deliberately removed at the
+// user's request since this button isn't reachable by accident.
+// Konnect itself shows no confirmation before firing this either (only
+// a "Queues Cleared" message after the fact), and there's no undo on
+// either side once it runs. Navigates the actual visible tab there and
+// back (Konnect is a single-page app sharing this same tab, not
+// something reachable in a hidden background context) so expect a
+// brief visible page flash.
+window._clearWholeQueue = async function() {
+const originalHash = window.location.hash;
+// Captured before navigating away, since Clear Queue is offered from
+// both the SLA and Pending Customers summaries - detectPageType()
+// would otherwise be reading Queue by Agent's own (unrecognized) page
+// by the time this matters.
+const originatingPageType = detectPageType();
+showPageFlashOverlay('Clearing the queue…');
+let cleared = false;
+try {
+window.location.hash = '#/Queue/QueueByAgent';
+const clearBtn = await waitForElement('button[ng-click="ClearQueues()"]');
+if (!clearBtn) {
+alert('Could not find the Clear Queues button after navigating - aborted, nothing was cleared.');
+return;
+}
+const moduleOk = await ensureCustomerHubModule();
+if (!moduleOk) {
+alert('Could not confirm the Customer Hub module is selected - aborted for safety, nothing was cleared.');
+return;
+}
+clearBtn.click();
+await sleep(800);
+// Clear Queues only unassigns every currently-assigned lead - it
+// doesn't touch any lead's underlying details (name/phone/email/
+// campaign/etc), so the fix for the panel showing stale "assigned"
+// state is updating that one field on the already-cached leads, not
+// re-running the full ingestion pipeline (runExtraction ->
+// extractAndExportSla/extractAndExportPending). That would re-open
+// every lead's detail modal again for no reason, since nothing about
+// them actually changed besides assignment - confirmed live as an
+// unwanted full re-ingestion, not the cheap refresh this needs.
+clearAgentQueueSnapshot();
+cleared = true;
+} finally {
+window.location.hash = originalHash;
+}
+
+// Rendering used to happen inside the try block above, before this hash
+// restore ran - collectAssignableLeads (behind renderAssignSection,
+// itself behind displayPanel/displayPendingPanel) reads
+// document.querySelector('table') directly, so it was reading whatever
+// table belonged to the Queue by Agent page (or none at all), not the
+// SLA/Pending one. And the hash changing back here is itself just the
+// route changing, not Angular having actually repopulated the SLA/
+// Pending table yet - same gap waitForLeadsTableRows exists for
+// elsewhere in this file - so a wait for real rows is needed here too,
+// not just moving the render after the hash restore.
+try {
+if (cleared) {
+try {
+await waitForLeadsTableReady();
+} catch (error) {
+console.warn('[SLA Extract] Wait for table after clearing the queue failed - showing the panel anyway:', error);
+}
+try {
+if (originatingPageType === PAGE_PENDING) {
+currentPendingCustomers = currentPendingCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
+displayPendingPanel(currentPendingCustomers, 0, 0, false);
+} else {
+currentCustomers = currentCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
+displayPanel(currentCustomers, 0, 0, false);
+}
+} catch (error) {
+console.error('[SLA Extract] Panel failed to render after clearing the queue:', error);
+alert('SLA Manager: the queue was cleared, but the panel failed to reload.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
+}
+}
+} finally {
+// Always runs now, even if the render itself threw - previously this
+// sat after an un-guarded await, so any failure in that wait left the
+// "Clearing the queue…" overlay stuck on screen forever, on top of
+// the panel never appearing.
+hidePageFlashOverlay();
+}
+};
+
+// ===================================================================
+// AGENT QUEUE POSITIONS - confirmed live on the same Queue by Agent
+// page Clear Queue already navigates to. Each agent has their own
+// repeated panel (li[ng-repeat="agent in fullqueue | filter:
+// filterMessages"] > objectqueuelist), holding up to 10 lead rows
+// (ul.list-group > li.queueitem.list-group-item, ng-repeat="item in
+// queueList") in queue order - DOM order top-to-bottom is queue
+// position, 1st = top. The page's own info-icon tooltip confirms only
+// the last 10 queued items per agent are ever shown, so counts/
+// positions here are scoped to that window, not necessarily the true
+// full queue for an agent holding more than 10.
+//
+// "Done" vs "not done" has NO class difference (both are exactly
+// "queueitem list-group-item ng-scope") - it's item.IsProcessed's own
+// ng-style adding an explicit inline "background-color: rgb(244, 244,
+// 244)" only when done; not-done rows carry no background-color at
+// all. Each row's customer identity lives in a title attribute shaped
+// "Name | Email | Phone" on a span inside the row's .pull-right block -
+// matched by title containing "|" rather than a fixed selector path,
+// since sibling spans (campaign, "Outbound Call Attempts") also carry
+// unrelated title attributes.
+// ===================================================================
+
+const AGENT_QUEUE_SNAPSHOT_KEY = '_slaAgentQueueSnapshot';
+
+function loadAgentQueueSnapshot() {
+try {
+const raw = JSON.parse(localStorage.getItem(AGENT_QUEUE_SNAPSHOT_KEY));
+if (raw && Array.isArray(raw.agents)) return raw;
+} catch (error) {
+// ignore
+}
+return { scannedAt: null, agents: [] };
+}
+
+function saveAgentQueueSnapshot(agents) {
+try {
+localStorage.setItem(AGENT_QUEUE_SNAPSHOT_KEY, JSON.stringify({ scannedAt: new Date().toISOString(), agents }));
+} catch (error) {
+// ignore
+}
+}
+
+// Clear Queue and a successful assign run both change every affected
+// lead's real queue position - the stale snapshot would show a "3rd in
+// queue" badge on a lead that isn't queued to anyone anymore (Clear
+// Queue), or the wrong position for one that's genuinely just been
+// added (assign). Wiping it (not re-scanning Queue by Agent again) is
+// the same "cheap and correct beats an unnecessary re-scan" choice
+// already made for both of those actions' own lead-card refresh.
+function clearAgentQueueSnapshot() {
+try {
+localStorage.removeItem(AGENT_QUEUE_SNAPSHOT_KEY);
+} catch (error) {
+// ignore
+}
+}
+
+function scrapeAgentQueuePositions() {
+const agentPanels = document.querySelectorAll('li[ng-repeat="agent in fullqueue | filter: filterMessages"]');
+const agents = [];
+agentPanels.forEach((panelLi) => {
+const nameEl = panelLi.querySelector('.queueitem.panel-heading div[style*="font-weight:bold"]');
+const agentName = nameEl ? nameEl.textContent.trim() : '';
+if (!agentName) return;
+
+const rows = [...panelLi.querySelectorAll('ul.list-group > li.queueitem.list-group-item')];
+const queue = rows.map((row, index) => {
+const infoSpan = [...row.querySelectorAll('span[title]')].find((el) => (el.getAttribute('title') || '').includes('|'));
+const title = infoSpan ? infoSpan.getAttribute('title') || '' : '';
+const parts = title.split('|').map((s) => s.trim());
+const processed = /background-color:\s*rgb\(244,\s*244,\s*244\)/.test(row.getAttribute('style') || '');
+return { position: index + 1, name: parts[0] || '', email: parts[1] || '', phone: parts[2] || '', processed };
+});
+
+agents.push({
+agentName,
+totalShown: queue.length,
+notDoneCount: queue.filter((item) => !item.processed).length,
+queue
+});
+});
+return agents;
+}
+
+// Navigates to Queue by Agent, scrapes every agent's queue, saves the
+// snapshot, and comes back - same navigation shape as
+// window._clearWholeQueue. Shared by the manual "Queue" link and the
+// automatic post-assign re-scan below, so the navigation logic only
+// exists once. Returns true/false rather than throwing, since a failed
+// refresh shouldn't abort whatever the caller was already doing.
+async function refreshAgentQueueSnapshot() {
+const originalHash = window.location.hash;
+try {
+window.location.hash = '#/Queue/QueueByAgent';
+const ready = await waitForElement('li[ng-repeat="agent in fullqueue | filter: filterMessages"]', 15000);
+if (!ready) {
+console.warn('[SLA Extract] Could not find the Queue by Agent panels after navigating - queue snapshot not refreshed.');
+return false;
+}
+const moduleOk = await ensureCustomerHubModule();
+if (!moduleOk) {
+console.warn('[SLA Extract] Could not confirm the Customer Hub module is selected - queue snapshot not refreshed.');
+return false;
+}
+// Angular renders the panel shell first and fills in each agent's
+// queueList items a moment after - same "first paint isn't the full
+// picture yet" pattern seen elsewhere in this file, not assumed here
+// without seeing it, but cheap enough to wait out regardless.
+await sleep(500);
+const agents = scrapeAgentQueuePositions();
+// No visible confirmation this scrape actually found anything real -
+// logged so a "why isn't the badge showing" report can be diagnosed
+// from what was actually seen, not guessed at.
+console.info(`[SLA Extract] Queue by Agent scan: ${agents.length} agent panel(s) found`, agents.map((a) => ({
+agent: a.agentName, notDone: a.notDoneCount, totalShown: a.totalShown,
+sample: a.queue.slice(0, 3).map((q) => ({ position: q.position, name: q.name, email: q.email, phone: q.phone, processed: q.processed }))
+})));
+saveAgentQueueSnapshot(agents);
+return true;
+} finally {
+window.location.hash = originalHash;
+}
+}
+
+window._checkAgentQueuePositions = async function(buttonEl) {
+const originatingPageType = detectPageType();
+const originalText = buttonEl ? buttonEl.textContent : null;
+if (buttonEl) buttonEl.textContent = 'Checking…';
+showPageFlashOverlay('Checking agent queues…');
+try {
+// refreshAgentQueueSnapshot/waitForLeadsTableReady's own failure is
+// not a reason to also withhold the panel re-render below - reported
+// live as leads ingesting fine, the queue check running, but the
+// panel then never loading at all, which fits an uncaught rejection
+// here previously skipping straight past the render calls entirely
+// (this whole function is a plain click handler - nothing awaits it,
+// so that rejection would surface nowhere visible).
+try {
+const ok = await refreshAgentQueueSnapshot();
+if (!ok) alert('Could not check agent queues - see console for details.');
+// refreshAgentQueueSnapshot navigates to Queue by Agent and back -
+// its own finally block resets window.location.hash, but that's just
+// the route changing, not the SLA/Pending table having actually
+// re-rendered yet (same gap documented above waitForLeadsTableRows
+// for the auto-detect poll). Re-rendering the panel immediately here
+// was reading a table that Angular hadn't repopulated after the
+// navigation back, so renderAssignSection's "due this hour/next
+// hour" tiles (fed by collectAssignableLeads' own unguarded,
+// synchronous scrape) briefly went from correct counts to "0 leads
+// due" until the next manual refresh fixed it. extractAndExportSla/
+// Pending already wait here; this path went straight through
+// displayPanel/displayPendingPanel and never did.
+await waitForLeadsTableReady();
+} catch (error) {
+console.warn('[SLA Extract] Queue check failed - showing the panel anyway:', error);
+}
+// The catch above only covers the queue check - if displayPanel/
+// displayPendingPanel itself throws (renderAssignSection, mountPanel,
+// anything inside them), that propagates out uncaught exactly the
+// same way and the panel still never appears, just one step later
+// than what that catch actually guards. Surfaced visibly (an alert)
+// rather than only to console, which this session has had no way to
+// see after two rounds of this same report.
+try {
+if (originatingPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, 0, 0, false);
+else displayPanel(currentCustomers, 0, 0, false);
+} catch (error) {
+console.error('[SLA Extract] Panel failed to render after queue check:', error);
+alert('SLA Manager: the panel failed to load after checking the queue.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
+}
+} finally {
+hidePageFlashOverlay();
+if (buttonEl) buttonEl.textContent = originalText;
+}
+};
+
+// Matches a lead (any shape with .email/.phone) to its position in
+// whichever agent's queue it's in, from the last snapshot taken by
+// window._checkAgentQueuePositions - a point-in-time read, not live,
+// same tradeoff already accepted for the agent roster elsewhere here.
+function findAgentQueuePositionForLead(lead) {
+const snapshot = loadAgentQueueSnapshot();
+if (!snapshot.agents || snapshot.agents.length === 0) return null;
+const emailKey = normalizeEmailForLeadCheckerMatch(lead.email);
+const phoneKey = normalizePhoneForLeadCheckerMatch(lead.phone);
+if (!emailKey && !phoneKey) return null;
+for (const agent of snapshot.agents) {
+for (const item of agent.queue) {
+const itemEmailKey = normalizeEmailForLeadCheckerMatch(item.email);
+const itemPhoneKey = normalizePhoneForLeadCheckerMatch(item.phone);
+const matches = (emailKey && itemEmailKey && emailKey === itemEmailKey) || (phoneKey && itemPhoneKey && phoneKey === itemPhoneKey);
+if (matches) {
+return { agentName: agent.agentName, position: item.position, totalShown: agent.totalShown, processed: item.processed };
+}
+}
+}
+return null;
+}
+
+function ordinal(n) {
+const s = ['th', 'st', 'nd', 'rd'];
+const v = n % 100;
+return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+// Reused as-is for the normal case (assigned here, and genuinely
+// queued) and the mismatch case (shows unassigned here, but Konnect's
+// own Queue by Agent already has it queued to someone) - same badge
+// slot on the card either way, just recolored/reworded, rather than
+// adding a second element for the mismatch. Per instruction: don't
+// clutter the UI with an extra warning section just for this.
+function renderQueuePositionBadge(assigned, queuePosition) {
+if (!queuePosition) return '';
+const mismatch = !assigned;
+const label = mismatch ? `⚠ Already in ${escapeHtml(queuePosition.agentName)}'s queue` : `${ordinal(queuePosition.position)} in queue`;
+const title = mismatch
+? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${escapeHtml(queuePosition.agentName)} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.`
+: `In ${escapeHtml(queuePosition.agentName)}'s live call queue, out of the last ${queuePosition.totalShown} shown${queuePosition.processed ? ' (already called)' : ''}`;
+const color = mismatch ? '#dc2626' : '#64748b';
+const background = mismatch ? '#dc262615' : '#f1f5f915';
+const border = mismatch ? '#dc2626' : '#e2e8f0';
+return `<div style="margin-bottom: 10px;"><span title="${title}" style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${background}; color: ${color}; border: 1px solid ${border};">${label}</span></div>`;
+}
+
+// ===================================================================
+// MORNING CHECKS
+//
+// A separate daily routine from lead assignment, done once at the
+// start of a shift against Konnect pages this tool otherwise never
+// touches. Each check below (window._checkXxx) was built and confirmed
+// one at a time against real DOM, then converted to return a plain
+// {ok, summary, details} result instead of alert()-ing it directly, so
+// window._runAllMorningChecks can run all five in sequence and render
+// them progressively on the Morning Checks page (see
+// renderMorningChecksBody / displayMorningChecks further down).
+// ===================================================================
+
+// The month selector has no id/title/distinguishing attribute - just a
+// Bootstrap dropdown - so it's matched by its distinctive "YYYY - Month"
+// text content instead, which nothing else on the page would have. The
+// page auto-selects the current month already, but nothing loads until
+// that same month is explicitly re-clicked - the trigger's own
+// displayed text already tells us which one that is, so there's no
+// need to compute "the current month" independently.
+function findMonthSelectorTrigger() {
+const triggers = Array.from(document.querySelectorAll('div[data-toggle="dropdown"]'));
+return triggers.find(t => /^\d{4}\s*-\s*[A-Za-z]+$/.test(t.querySelector('span.ng-binding')?.textContent?.trim() || ''));
+}
+
+// findMonthSelectorTrigger() alone is a synchronous, one-shot DOM
+// query with no wait - calling it immediately after a hash change (the
+// very first thing reloadCurrentMonthCampaigns did) can run before
+// Angular has rendered anything at all for a route visited for the
+// first time in a session, failing even though the selector logic
+// itself is correct. This actually confirmed against real use: the
+// first click aborted, an immediate second click (page already loaded
+// from the first attempt) succeeded instantly.
+function waitForMonthSelectorTrigger(timeout = 15000) {
+return new Promise((resolve) => {
+const existing = findMonthSelectorTrigger();
+if (existing) {
+resolve(existing);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(null);
+}, timeout);
+const observer = new MutationObserver(() => {
+const found = findMonthSelectorTrigger();
+if (found) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(found);
+}
+});
+observer.observe(document.body, { childList: true, subtree: true });
+});
+}
+
+async function reloadCurrentMonthCampaigns() {
+const trigger = await waitForMonthSelectorTrigger();
+if (!trigger) return false;
+const label = trigger.querySelector('span.ng-binding')?.textContent?.trim();
+if (!label) return false;
+
+trigger.click();
+// The first visit to this route in a session took long enough to
+// abort with the original 5s default (Angular presumably compiling/
+// fetching this route for the first time) - a second click right
+// after succeeded instantly, confirming it's a one-off warm-up cost
+// rather than something wrong with the selectors themselves. Given
+// generously here since a slow-but-successful wait costs nothing (it
+// resolves the moment the element actually appears either way).
+const firstOption = await waitForElement('li[ng-click="monthToDateSelected(monthToDate)"]', 15000);
+if (!firstOption) return false;
+
+const options = Array.from(document.querySelectorAll('li[ng-click="monthToDateSelected(monthToDate)"]'));
+const target = options.find(li => li.textContent.trim() === label);
+if (!target) return false;
+target.click();
+
+const firstRow = await waitForElement('tr[ng-repeat="camp in campaigns"]', 15000);
+if (!firstRow) return false;
+// ng-repeat renders every row for a digest in one batch, but with
+// ~300 rows a short settle delay is cheap insurance against reading
+// mid-render.
+await sleep(400);
+return true;
+}
+
+// Column index 9 is In Progress specifically because this always
+// navigates via a fixed showSLA=true/deferred=false URL - that URL
+// guarantees the column layout (the 4 SLA columns and the Deferred
+// column are both present, not conditionally missing), confirmed
+// against two independent sample rows before writing this.
+function extractInProgressData() {
+const totalTh = document.querySelector('th[title="Items that have had one or more attempts (total)"]');
+const totalMatch = totalTh ? totalTh.textContent.match(/\((\d+)\)/) : null;
+const total = totalMatch ? Number(totalMatch[1]) : null;
+
+const rows = Array.from(document.querySelectorAll('tr[ng-repeat="camp in campaigns"]'));
+const breakdown = [];
+let sum = 0;
+rows.forEach((row) => {
+const cells = row.querySelectorAll('td');
+if (cells.length < 13) return;
+const name = cells[3]?.textContent?.trim() || '(unnamed)';
+const inProgress = Number(cells[9]?.textContent?.trim()) || 0;
+sum += inProgress;
+if (inProgress > 0) breakdown.push({ name, inProgress });
+});
+breakdown.sort((a, b) => b.inProgress - a.inProgress);
+return { total, sum, breakdown };
+}
+
+// skipRestore lets window._runAllMorningChecks chain straight into the
+// next check's own navigation instead of bouncing back through the
+// page morning checks started from and back out again - standalone use
+// (the console/a future single-check button) always restores as before.
+window._checkInProgress = async function(skipRestore) {
+const originalHash = window.location.hash;
+try {
+window.location.hash = '#/onGoingCampaigns/module/-6/deferred/false/showSLA/true';
+const loaded = await reloadCurrentMonthCampaigns();
+if (!loaded) {
+return { ok: null, summary: 'Could not load the current month\'s campaigns - aborted.' };
+}
+const { total, sum, breakdown } = extractInProgressData();
+if (total === null) {
+return { ok: null, summary: 'Could not find the In Progress total - aborted.' };
+}
+if (sum === total) {
+return { ok: true, summary: `OK (${total})` };
+}
+const diff = total - sum;
+return {
+ok: false,
+summary: `MISMATCH - top total ${total}, rows sum to ${sum} (off by ${diff})`,
+details: breakdown.length > 0 ? breakdown.map(b => `${b.name}: ${b.inProgress}`) : ['(no rows have any In Progress)']
+};
+} finally {
+if (!skipRestore) window.location.hash = originalHash;
+}
+};
+
+// Counts today's (or, with filterDate, a filtered subset of) rows by
+// Source column, feeding both the Lead Type Check's OK/MISSING verdict
+// and its secondary "what sources there are" detail listing.
+//
+// "Yesterday" makes a real network request (getYesterdaysData() calls
+// the API and replaces $scope.leads - it's not a client-side filter on
+// already-rendered rows), so this waits for the date label itself to
+// change rather than assuming the click took effect instantly.
+// Lead Created (column index 5, confirmed as "Sat, 26 Sep 2026 15:55" -
+// the same weekday-prefixed format parseKonnectDate already handles
+// elsewhere in this file) lets rows be filtered by time of day, used
+// for the 7pm-8am overnight-window rule on the Lead Type Check's
+// yesterday fallback. filterDate is optional - the Lead Type Check's
+// today scan passes none, since that's meant to show the whole day.
+function extractSourceCounts(filterDate) {
+const rows = Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length > 0);
+const counts = {};
+rows.forEach((row) => {
+const cells = row.querySelectorAll('td');
+if (cells.length < 9) return;
+if (filterDate) {
+const leadCreated = parseKonnectDate(cells[5]?.textContent?.trim() || '');
+if (!filterDate(leadCreated)) return;
+}
+const source = cells[8]?.textContent?.trim() || '(blank)';
+counts[source] = (counts[source] || 0) + 1;
+});
+return counts;
+}
+
+// The 7pm-8am rule only actually narrows the YESTERDAY fallback, not
+// today: midnight-8am is already inside "today", which the check scans
+// with no time restriction at all, so a source arriving at 2am today
+// already counts as found without needing this filter. This is applied
+// only to yesterday's data, keeping just the 7pm-to-midnight slice of
+// that calendar day.
+function isInOvernightWindow(date) {
+if (!date) return false;
+return date.getHours() >= 19;
+}
+
+function currentInboundDateLabel() {
+return document.querySelector('div[title="Select A Date"] span.ng-binding')?.textContent?.trim();
+}
+
+function waitForInboundDateChange(previousLabel, timeout = 8000) {
+return new Promise((resolve) => {
+const target = document.querySelector('div[title="Select A Date"]');
+if (!target) {
+resolve(false);
+return;
+}
+if (currentInboundDateLabel() && currentInboundDateLabel() !== previousLabel) {
+resolve(true);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(false);
+}, timeout);
+const observer = new MutationObserver(() => {
+if (currentInboundDateLabel() && currentInboundDateLabel() !== previousLabel) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(true);
+}
+});
+observer.observe(target, { childList: true, subtree: true, characterData: true });
+});
+}
+
+// This table doesn't render in one atomic batch the way Live Campaigns'
+// ng-repeat does - confirmed live: a check read back 28 rows and reported
+// (wrongly) that every expected source was missing, then the rest of the
+// day's leads kept arriving and rendering into the SAME table for a
+// while AFTER the check had already finished and moved on. So neither
+// "does the table element exist" nor "does at least one full row exist"
+// (both tried previously) can ever be a reliable signal here - a
+// perfectly well-formed 12-cell row is no guarantee at all that loading
+// is actually finished, since more of them keep arriving behind it.
+// The only signal that's actually true regardless of however this loads
+// under the hood (one paginated fetch, several sequential ones,
+// whatever) is that the DOM stops changing - this resolves once no new
+// rows have appeared for a full quiet window, not the instant any
+// appear, with a hard cap so a page that's genuinely stuck doesn't hang
+// a check forever. Returns the settled row count (12+ cells each, same
+// column requirement as before) rather than a bare boolean, so callers
+// can tell "definitely still zero after the whole wait" apart from
+// "read something, hopefully everything."
+const INBOUND_MIN_CELLS = 12;
+function countInboundRows() {
+return Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length >= INBOUND_MIN_CELLS).length;
+}
+
+function waitForInboundRowsSettled(timeout = 20000, quietMs = 1500) {
+return new Promise((resolve) => {
+let settleTimer = null;
+let hardTimer = null;
+
+function finish() {
+clearTimeout(settleTimer);
+clearTimeout(hardTimer);
+observer.disconnect();
+resolve(countInboundRows());
+}
+
+function armSettleTimer() {
+clearTimeout(settleTimer);
+settleTimer = setTimeout(finish, quietMs);
+}
+
+const observer = new MutationObserver(armSettleTimer);
+observer.observe(document.body, { childList: true, subtree: true });
+
+// Armed immediately too, in case the data was already fully loaded
+// before this even started watching (no further mutations coming).
+armSettleTimer();
+hardTimer = setTimeout(finish, timeout);
+});
+}
+
+// Today's source counts, formatted as "Source: count" lines sorted by
+// count - the secondary "what sources there are" display the user
+// wants shown alongside the OK/MISSING verdict without dominating it,
+// so this is returned as the check's `details` (collapsed by default),
+// not merged into the summary itself.
+function sourceCountLines(counts) {
+const total = Object.values(counts).reduce((a, b) => a + b, 0);
+const lines = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([source, count]) => `${source}: ${count}`);
+return [`Today (${total} total):`, ...(lines.length > 0 ? lines : ['(no rows)'])];
+}
+
+// The real Lead Type Check: does every expected daily source actually
+// appear today; for any that don't, check yesterday (7pm-8am overnight
+// window only) before calling it actually missing. Originally
+// mislabeled as "All leads are Routed to" - that name belongs to a
+// different, later check (a per-row check of the Routed To column, see
+// window._checkRoutedTo), not this one. This also folds in what used
+// to be a separate "scan sources" step - the user only wants one check
+// here, with the raw source counts available as a secondary detail
+// rather than a standalone action.
+const EXPECTED_DAILY_SOURCES = ['Robins & Day Website', 'Customer First', 'Autotrader - Deal Builder', 'Cargurus'];
+
+window._checkLeadTypes = async function(skipRestore) {
+const originalHash = window.location.hash;
+try {
+window.location.hash = '#/Queue/InboundAPI';
+const table = await waitForElement('table.table-striped', 15000);
+if (!table) {
+return { ok: null, summary: 'Could not load the Inbound API table - aborted.' };
+}
+const settledCount = await waitForInboundRowsSettled();
+if (settledCount === 0) {
+return { ok: null, summary: 'Inbound API table loaded but no rows appeared - aborted.' };
+}
+const todayLabel = currentInboundDateLabel();
+const todayCounts = extractSourceCounts();
+const details = sourceCountLines(todayCounts);
+
+// Zero of ANY source (not just the expected ones) is a load problem,
+// not a real result - reporting every expected source as missing on
+// the back of an empty read is exactly the false alarm this is meant
+// to catch, rather than confidently declaring a real problem off a
+// read that likely just didn't work.
+if (Object.keys(todayCounts).length === 0) {
+return { ok: null, summary: 'Inbound API table read back with zero rows for Today - likely not fully loaded, re-run to confirm.', details };
+}
+
+const missingToday = EXPECTED_DAILY_SOURCES.filter(s => !todayCounts[s]);
+if (missingToday.length === 0) {
+return { ok: true, summary: 'OK', details };
+}
+
+const yesterdayLink = document.querySelector('li[ng-click="getYesterdaysData()"]');
+if (!yesterdayLink) {
+return { ok: false, summary: `MISSING - ${missingToday.join(', ')} (could not check yesterday - control not found)`, details };
+}
+yesterdayLink.click();
+const changed = await waitForInboundDateChange(todayLabel, 15000);
+if (!changed) {
+return { ok: false, summary: `MISSING - ${missingToday.join(', ')} (could not confirm yesterday's data loaded)`, details };
+}
+await waitForInboundRowsSettled();
+const yesterdayCounts = extractSourceCounts(isInOvernightWindow);
+const stillMissing = missingToday.filter(s => !yesterdayCounts[s]);
+
+if (stillMissing.length === 0) {
+return { ok: true, summary: `OK (found overnight yesterday: ${missingToday.join(', ')})`, details };
+}
+return { ok: false, summary: `MISSING - ${stillMissing.join(', ')}`, details };
+} finally {
+// No need to explicitly restore Today here - the page's own
+// controller calls getTodaysData() in its constructor, so the next
+// fresh visit to this page loads Today automatically regardless of
+// whatever this check left it on.
+if (!skipRestore) window.location.hash = originalHash;
+}
+};
+
+// "All leads are Routed to" - the real one, distinct from Lead Type
+// Check above despite the earlier mix-up. Per-row, today only: every
+// lead's own Routed To cell (index 11) should have something in it.
+// Genuinely-unrouted rows are rare enough that a confirmed real
+// example wasn't available to check against, so this treats a cell as
+// unrouted if it's blank OR if its entire trimmed content exactly
+// matches a known "no value" word - matched as a whole-cell equality,
+// not a substring search, so a legitimate agent/team name that merely
+// contains "no" (or similar) can't misfire this.
+const UNROUTED_PLACEHOLDER_WORDS = ['no', 'not', 'n/a', 'na', 'none', 'not routed', 'not applicable', 'unrouted'];
+
+function isUnroutedCell(text) {
+const t = (text || '').trim();
+if (t === '') return true;
+return UNROUTED_PLACEHOLDER_WORDS.includes(t.toLowerCase());
+}
+
+// Run before Lead Type Check when both are chained back-to-back in
+// window._runAllMorningChecks (execution order there differs from the
+// fixed display order): this always does its own fresh hash navigation,
+// which is what guarantees the page is showing Today rather than
+// whatever Yesterday state a *previous* check might have left it on -
+// Lead Type Check reusing this same already-loaded page afterwards is
+// only safe because this one runs first and only ever reads Today.
+window._checkRoutedTo = async function(skipRestore) {
+const originalHash = window.location.hash;
+try {
+window.location.hash = '#/Queue/InboundAPI';
+const table = await waitForElement('table.table-striped', 15000);
+if (!table) {
+return { ok: null, summary: 'Could not load the Inbound API table - aborted.' };
+}
+const settledCount = await waitForInboundRowsSettled();
+if (settledCount === 0) {
+return { ok: null, summary: 'Inbound API table read back with zero usable rows for Today - likely not fully loaded, re-run to confirm.' };
+}
+
+const rows = Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length >= INBOUND_MIN_CELLS);
+const problems = [];
+rows.forEach((row) => {
+const cells = row.querySelectorAll('td');
+const routedTo = cells[11]?.textContent?.trim() || '';
+if (isUnroutedCell(routedTo)) {
+problems.push({
+apiReference: cells[0]?.textContent?.trim() || '(blank)',
+source: cells[8]?.textContent?.trim() || '(blank)',
+enquiryType: cells[9]?.textContent?.trim() || '(blank)'
+});
+}
+});
+
+if (problems.length === 0) {
+return { ok: true, summary: 'OK' };
+}
+return {
+ok: false,
+summary: `${problems.length} NOT ROUTED`,
+details: problems.map(p => `Api Ref: ${p.apiReference} | Source: ${p.source} | Enquiry: ${p.enquiryType}`)
+};
+} finally {
+if (!skipRestore) window.location.hash = originalHash;
+}
+};
+
+// Voicemail count - a plain number, no OK/report judgment (same nature
+// as the SLA count). The queue-count element itself is always present
+// on page load (no ng-if wraps it), but its value is filled in
+// asynchronously after a separate stats API call resolves - waiting
+// for the element to merely exist would risk reading it before
+// Angular has actually populated a number, so this waits for a digit
+// to appear in its text specifically.
+function readVoicemailQueueCount() {
+const el = document.querySelector('span[title="Number in Queue waiting to be processed"]');
+if (!el) return null;
+const match = el.textContent.trim().match(/(\d+)/);
+return match ? Number(match[1]) : null;
+}
+
+function waitForVoicemailCount(timeout = 15000) {
+return new Promise((resolve) => {
+const existing = readVoicemailQueueCount();
+if (existing !== null) {
+resolve(existing);
+return;
+}
+const timer = setTimeout(() => {
+observer.disconnect();
+resolve(null);
+}, timeout);
+const observer = new MutationObserver(() => {
+const val = readVoicemailQueueCount();
+if (val !== null) {
+clearTimeout(timer);
+observer.disconnect();
+resolve(val);
+}
+});
+observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+});
+}
+
+window._checkVoicemails = async function(skipRestore) {
+const originalHash = window.location.hash;
+try {
+window.location.hash = '#/Queue/Voicemails';
+// Same Customer Hub / Service Booking module filter as the Queue by
+// Agent page (see ensureCustomerHubModule) - the queue count is
+// module-scoped, so if this page was left on a different module the
+// number read below would be for the wrong queue entirely. Assumes
+// (not yet confirmed against a real "wrong module selected" case)
+// that switching modules re-triggers the same async count fetch
+// waitForVoicemailCount already waits out below.
+const moduleTrigger = await waitForElement('div[title="Filter by Module"]', 15000);
+if (!moduleTrigger) {
+return { ok: null, summary: 'Could not find the module filter after navigating - aborted.' };
+}
+const moduleOk = await ensureCustomerHubModule();
+if (!moduleOk) {
+return { ok: null, summary: 'Could not confirm the Customer Hub module is selected - aborted.' };
+}
+const count = await waitForVoicemailCount();
+if (count === null) {
+return { ok: null, summary: 'Could not read the voicemail queue count - aborted.' };
+}
+// Plain count, same nature as the SLA count - no OK/problem judgment,
+// it's often legitimately 0.
+return { ok: null, summary: `${count}` };
+} finally {
+if (!skipRestore) window.location.hash = originalHash;
+}
+};
+
+// SLA count - the total leads in the SLA queue, exactly what the panel
+// already shows when opened from that page (per the user: "this isn't
+// a separate page nor details other than what we already have"). Since
+// Morning Checks can be entered from whatever page the user happened to
+// be on, this only navigates if the SLA table isn't already showing -
+// normally it will be, since that's the page the panel is opened from.
+window._checkSlaCount = async function(returnHash) {
+if (detectPageType() !== PAGE_SLA) {
+window.location.hash = returnHash;
+await waitForElement('table', 15000);
+await sleep(300);
+}
+if (detectPageType() !== PAGE_SLA) {
+return { ok: null, summary: 'Could not find the SLA queue table - aborted.' };
+}
+// isEmailOnly is already computed per-lead by collectAssignableLeads
+// (same field the Assign section's own "Email only" checkbox count
+// uses) - the Email Only Count row above this one is populated from
+// this same call rather than running its own separate check.
+const leads = collectAssignableLeads();
+const emailOnlyCount = leads.filter(l => l.isEmailOnly).length;
+return { ok: null, summary: `${leads.length}`, emailOnlyCount };
+};
+
+// Persisted (not just in-memory) so "last run" survives a bookmarklet
+// re-invocation later in the shift, same reasoning as ASSIGN_LOG_KEY.
+// Scoped to today only - same lesson as the assignment log's own
+// day-pruning: a stale run from yesterday showing up as "last run" this
+// morning would be actively misleading rather than just unhelpful.
+const MORNING_CHECKS_LAST_RUN_KEY = '_slaMorningChecksLastRun';
+
+function saveMorningChecksLastRun(results, elapsedMs) {
+try {
+localStorage.setItem(MORNING_CHECKS_LAST_RUN_KEY, JSON.stringify({
+time: new Date().toISOString(),
+elapsedMs,
+failedLabels: results.filter(r => r.ok === false).map(r => r.label),
+results
+}));
+} catch (error) {
+// ignore
+}
+}
+
+function loadMorningChecksLastRun() {
+try {
+const raw = JSON.parse(localStorage.getItem(MORNING_CHECKS_LAST_RUN_KEY) || 'null');
+if (!raw || new Date(raw.time).toDateString() !== new Date().toDateString()) return null;
+return raw;
+} catch (error) {
+return null;
+}
+}
+
+function formatElapsed(ms) {
+return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function renderLastRunLine(lastRun) {
+if (!lastRun) return '';
+const issueText = lastRun.failedLabels.length === 0
+? 'All OK'
+: `${lastRun.failedLabels.length} issue${lastRun.failedLabels.length > 1 ? 's' : ''} (${escapeHtml(lastRun.failedLabels.join(', '))})`;
+return `<div style="font-size: 11px; color: #94a3b8; margin-top: 8px;">Last run today at ${formatTimeForInput(new Date(lastRun.time))} &middot; ${issueText} &middot; ${formatElapsed(lastRun.elapsedMs)}</div>`;
+}
+
+function morningCheckStatusColor(row) {
+if (row.status === 'pending') return '#cbd5e1';
+if (row.status === 'running') return '#d97706';
+if (row.ok === true) return '#16a34a';
+if (row.ok === false) return '#dc2626';
+return '#2563eb';
+}
+
+// Only rendered once every check has actually settled (the 5 rows below
+// already show live progress while a run is in flight) - a colored
+// banner as the very first thing on the page is what answers "did
+// anything go wrong" at a glance, without reading all 5 rows individually.
+function renderMorningChecksSummaryBanner(results) {
+const allDone = results.every(r => r.status === 'done');
+if (!allDone) {
+const doneCount = results.filter(r => r.status === 'done').length;
+return `<div style="padding: 8px 12px; border-radius: 8px; background: #eef2ff; color: #4338ca; font-size: 12px; font-weight: 600; text-align: center; margin-bottom: 10px;">Running check ${doneCount + 1} of ${results.length}…</div>`;
+}
+// ok:null (SLA Count, Voicemail) is a plain count, not a pass/fail
+// judgment - only an explicit ok:false counts as an issue here.
+const failed = results.filter(r => r.ok === false);
+if (failed.length === 0) {
+return `<div style="padding: 10px 12px; border-radius: 8px; background: #d1fae5; color: #059669; font-size: 13px; font-weight: 700; text-align: center; margin-bottom: 10px;">${svgIcon('checklist', 14)} All checks passed</div>`;
+}
+return `<div style="padding: 10px 12px; border-radius: 8px; background: #fee2e2; color: #dc2626; font-size: 13px; font-weight: 700; text-align: center; margin-bottom: 10px;">${svgIcon('warning', 14)} ${failed.length} issue${failed.length > 1 ? 's' : ''} found - ${escapeHtml(failed.map(f => f.label).join(', '))}</div>`;
+}
+
+function renderMorningCheckRow(row) {
+const color = morningCheckStatusColor(row);
+const isSettled = row.status === 'done';
+const isRunning = row.status === 'running';
+const isPending = row.status === 'pending';
+const rightText = isSettled ? (row.summary || '') : (isRunning ? 'Running…' : 'Waiting');
+const hasDetails = isSettled && Array.isArray(row.details) && row.details.length > 0;
+const detailsId = `_mcDetails_${row.key}`;
+const chevronId = `_mcChevron_${row.key}`;
+// Status reads through three visual states, not just the dot color:
+// pending rows sit dimmed/dashed since there's nothing to report yet,
+// running gets a light indigo highlight so it's obvious at a glance
+// which check is currently in flight, and done settles to a solid
+// white card - the left accent border (colored per status, same
+// pattern as the tier/callback-type section borders elsewhere in this
+// panel) is what carries the OK/issue/count signal once settled.
+const background = isPending ? '#f8fafc' : (isRunning ? '#eef2ff' : 'white');
+const borderColor = isRunning ? '#c7d2fe' : '#e2e8f0';
+const borderStyle = isPending ? 'dashed' : 'solid';
+
+return `
+<div style="border: 1px ${borderStyle} ${borderColor}; border-left: 3px solid ${color}; border-radius: 8px; padding: 10px 12px; background: ${background}; opacity: ${isPending ? '0.65' : '1'}; transition: background 0.2s ease, opacity 0.2s ease;">
+<div style="display: flex; align-items: center; gap: 8px; ${hasDetails ? 'cursor: pointer;' : ''}" ${hasDetails ? `onclick="window._toggleMorningCheckDetails('${row.key}')"` : ''}>
+<span style="width: 8px; height: 8px; border-radius: 50%; background: ${color}; flex-shrink: 0;"></span>
+<span style="font-size: 12px; font-weight: 600; color: #1e293b; flex-shrink: 0;">${row.label}</span>
+<span style="font-size: 12px; color: #64748b; flex: 1; text-align: right;">${escapeHtml(rightText)}</span>
+${hasDetails ? chevronIcon(true, chevronId) : ''}
+</div>
+${hasDetails ? `
+<div id="${detailsId}" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f1f5f9; font-size: 11px; color: #475569; line-height: 1.6;">
+${row.details.map(d => `<div>${escapeHtml(d)}</div>`).join('')}
+</div>` : ''}
+</div>`;
+}
+
+// Separate page/section reached only via the header toggle - never
+// something the background auto-detect poll enters or leaves on its
+// own (see currentPanelMode), since that poll's silent rebuilds on a
+// page switch would otherwise yank the user out of this view every
+// time a check navigates to a different Konnect page mid-run.
+function renderMorningChecksBody() {
+const lastRun = loadMorningChecksLastRun();
+
+if (morningChecksResults.length === 0) {
+return `
+<div style="padding: 24px 4px; text-align: center;">
+<div style="color: #cbd5e1; margin-bottom: 12px;">${svgIcon('checklist', 40, ' stroke-width: 1.5;')}</div>
+<p style="color: #64748b; margin: 0 0 20px 0; font-size: 14px; line-height: 1.6;">Runs the five morning checks in order - SLA Count, In Progress, Lead Type Check, All Leads Are Routed To, Voicemail - and reports each result here.</p>
+<button onclick="window._runAllMorningChecks();" style="padding: 10px 20px; background: #1e293b; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;">Run All Checks</button>
+${renderLastRunLine(lastRun)}
+</div>`;
+}
+
+const banner = renderMorningChecksSummaryBanner(morningChecksResults);
+const rows = morningChecksResults.map(renderMorningCheckRow).join('');
+const allDone = morningChecksResults.every(r => r.status === 'done');
+
+return `
+${banner}
+<div style="display: flex; flex-direction: column; gap: 8px;">
+${rows}
+</div>
+<div style="margin-top: 16px; text-align: center;">
+<button onclick="window._runAllMorningChecks();" ${runningMorningChecks ? 'disabled' : ''}
+style="padding: 8px 18px; background: ${runningMorningChecks ? '#cbd5e1' : '#1e293b'}; color: white; border: none; border-radius: 8px; cursor: ${runningMorningChecks ? 'default' : 'pointer'}; font-size: 13px; font-weight: 600;">
+${runningMorningChecks ? 'Running…' : (allDone ? 'Run Again' : 'Run All Checks')}
+</button>
+${allDone && !runningMorningChecks ? `<span onclick="window._clearMorningChecks();" style="margin-left: 10px; font-size: 12px; color: #94a3b8; cursor: pointer; text-decoration: underline;">Clear</span>` : ''}
+${allDone ? renderLastRunLine(lastRun) : ''}
+</div>`;
+}
+
+// Results otherwise persist until end of day or the next run (see
+// morningChecksResults' own init) - this is the explicit third way to
+// get back to "hasn't been run yet", per instruction.
+window._clearMorningChecks = function() {
+morningChecksResults = [];
+try {
+localStorage.removeItem(MORNING_CHECKS_LAST_RUN_KEY);
+} catch (error) {
+// ignore
+}
+displayMorningChecks();
+};
+
+function displayMorningChecks() {
+mountPanel(renderPanelShell({
+title: 'Morning Checks',
+count: '',
+newCount: 0,
+removedCount: 0,
+summaryHtml: '',
+assignSectionHtml: '',
+bodyHtml: renderMorningChecksBody(),
+hideSearch: true
+}));
+}
+
+window._toggleMorningCheckDetails = function(key) {
+const el = document.getElementById(`_mcDetails_${key}`);
+if (!el) return;
+const opening = el.style.display === 'none';
+el.style.display = opening ? 'block' : 'none';
+const chevron = document.getElementById(`_mcChevron_${key}`);
+if (chevron) chevron.style.transform = `rotate(${opening ? 0 : -90}deg)`;
+};
+
+// Leaves morningChecksResults untouched on both the way out and the
+// way back in - the last run's results should still be sitting there
+// after switching to the normal queue view and back, not just while
+// the panel itself happens to stay mounted. They're only ever replaced
+// by an actual re-run (window._runAllMorningChecks resets the array
+// itself right before it starts).
+//
+// Switching back used to go through runExtraction(), which depends on
+// detectPageType() recognizing whatever page is CURRENTLY loaded - but
+// Morning Checks routinely leaves the visible tab on Live Campaigns/
+// Inbound API/Voicemails/Queue by Agent, none of which detectPageType()
+// recognizes, so that press did nothing at all until the user happened
+// to be back on the SLA or Pending page (needing a second, sometimes a
+// third, press to actually take effect). currentCustomers/
+// currentPendingCustomers already hold the last real scan from before
+// Morning Checks was entered - showing that straight back is both
+// instant (no fresh re-scrape, including any slow per-lead detail
+// scraping) and independent of whatever page is currently on screen.
+// Falls back to a live scan only if there's genuinely no prior normal
+// view yet this session.
+window._toggleMorningChecks = function() {
+if (runningMorningChecks) return;
+if (currentPanelMode === 'morningChecks') {
+currentPanelMode = 'normal';
+if (currentPageType === PAGE_PENDING) {
+displayPendingPanel(currentPendingCustomers);
+} else if (currentPageType === PAGE_SLA) {
+displayPanel(currentCustomers);
+} else {
+runExtraction();
+}
+return;
+}
+currentPanelMode = 'morningChecks';
+displayMorningChecks();
+};
+
+// Fastest order to actually RUN the checks in - independent of
+// MORNING_CHECKS_ORDER, which is only the fixed order they're DISPLAYED
+// in (renderMorningChecksBody always renders by that order regardless
+// of what order results actually arrive in). sla costs nothing (no
+// navigation, it's already sitting on the page it needs). routedTo and
+// leadType both live on the Inbound API page, so running them back to
+// back means leadType's own navigation to that page is a same-hash
+// no-op and its waitForElement resolves instantly - one page load
+// instead of two. routedTo has to go first in that pair: it always
+// does a fresh navigation (guaranteeing Today's data), whereas leadType
+// can end on Yesterday if it needed the overnight fallback, and reusing
+// the page without a fresh navigation only stays correct because
+// nothing after leadType depends on it being back on Today (see the
+// comment on window._checkRoutedTo).
+const MORNING_CHECKS_EXECUTION_ORDER = ['sla', 'routedTo', 'leadType', 'inProgress', 'voicemail'];
+
+// Runs the five real checks (see MORNING_CHECKS_EXECUTION_ORDER for why
+// that order, not the display order, is used to actually run them) -
+// Email Only Count is a sixth displayed row but has no check function
+// of its own, populated as a side effect of "sla" instead (see below).
+// Updates the page after each check completes so results appear progressively
+// rather than all at once at the end. Each check function saves/
+// restores its own hash internally, but skipRestore=true is passed here
+// so a check leaves the browser wherever it landed instead of bouncing
+// back through the page morning checks started from between every
+// single step - originalHash is only restored once, at the very end.
+// Konnect's own pages re-rendering mid-navigation (a big table's rows
+// all populating at once, etc.) is what the user described as making
+// the screen look like it's glitching - showPageFlashOverlay dims
+// the real page for the whole run so none of that is visible, without
+// slowing anything down (it's purely cosmetic, nothing waits on it).
+window._runAllMorningChecks = async function() {
+if (runningMorningChecks) return;
+runningMorningChecks = true;
+const originalHash = window.location.hash;
+const runStartedAt = Date.now();
+showPageFlashOverlay('Running morning checks…');
+
+const checkFns = {
+sla: () => window._checkSlaCount(originalHash),
+inProgress: () => window._checkInProgress(true),
+leadType: () => window._checkLeadTypes(true),
+routedTo: () => window._checkRoutedTo(true),
+voicemail: () => window._checkVoicemails(true)
+};
+
+morningChecksResults = MORNING_CHECKS_ORDER.map(step => ({ ...step, status: 'pending' }));
+displayMorningChecks();
+
+try {
+for (const key of MORNING_CHECKS_EXECUTION_ORDER) {
+morningChecksResults = morningChecksResults.map(r => r.key === key ? { ...r, status: 'running' } : r);
+displayMorningChecks();
+
+let result;
+try {
+result = await checkFns[key]();
+} catch (err) {
+result = { ok: null, summary: `Error - ${err && err.message ? err.message : err}` };
+}
+
+morningChecksResults = morningChecksResults.map(r => r.key === key ? { ...r, status: 'done', ...result } : r);
+// Email Only Count has no check function of its own (see
+// MORNING_CHECKS_EXECUTION_ORDER, which doesn't list it) - it's
+// populated here as a side effect of the SLA check, which already
+// collects every lead's isEmailOnly flag while it's on the page.
+// Always settled alongside "sla" (even on failure, when
+// emailOnlyCount is absent) so it never dangles in "Waiting" forever.
+if (key === 'sla') {
+const emailSummary = typeof result.emailOnlyCount === 'number' ? `${result.emailOnlyCount}` : 'Could not be determined (SLA check failed).';
+morningChecksResults = morningChecksResults.map(r => r.key === 'emailOnly' ? { ...r, status: 'done', ok: null, summary: emailSummary } : r);
+}
+displayMorningChecks();
+}
+} finally {
+runningMorningChecks = false;
+window.location.hash = originalHash;
+hidePageFlashOverlay();
+saveMorningChecksLastRun(morningChecksResults, Date.now() - runStartedAt);
+// The loop's own last displayMorningChecks() call (right after the
+// final check's result lands) still had runningMorningChecks === true
+// at render time - that flag only flips above, after the loop exits -
+// so without this the button stayed stuck on disabled "Running…"
+// until something else (leaving and re-entering the page) forced a
+// fresh render.
+displayMorningChecks();
+}
+};
+
+// ===================================================================
+// LEAD DETAIL RENDERING HELPERS
+//
+// Shared by both the SLA and Pending Customers panels - customer detail
+// modal scraping, clipboard copy, and the per-lead assignment cell/badge/
+// picker markup used in both tier and callback-type sections.
+// ===================================================================
+
+// Confirmed live: the modal's Customer tab (open by default) holds its
+// own labeled table - <tr><td>Email</td><td>value</td></tr>, likewise
+// Mobiles/Landlines (both plural - a customer can have more than one on
+// file, comma-separated, matching the confirmed "07932064637," shape).
+// Reading by the field's own label is more reliable than the old
+// approach of pattern-matching a phone/email shape out of the modal's
+// whole text, which could in principle misfire on some other number or
+// address incidentally present in the modal. Scoped to .tab-pane.active
+// so the Vehicles Owned tab's own <table class="table"> (uib-tab keeps
+// every tab's markup in the DOM at once, just toggling which one is
+// "active" - confirmed both tabs share the exact same table class)
+// could never get matched by accident.
+function readModalTabField(modal, label) {
+const rows = Array.from(modal.querySelectorAll('.tab-pane.active table.table tr'));
+const row = rows.find(r => r.querySelector('td')?.textContent?.trim() === label);
+if (!row) return '';
+return row.querySelectorAll('td')[1]?.textContent?.trim() || '';
+}
+
+function firstFromCommaList(raw) {
+return (raw || '').split(',').map(s => s.trim()).find(s => s.length > 0) || '';
+}
+
 async function extractCustomerDetails(customerElement) {
 const nameLink = customerElement.querySelector('a');
 if (!nameLink) {
@@ -190,13 +1851,25 @@ return { phone: '', email: '' };
 await new Promise(resolve => setTimeout(resolve, 150));
 
 try {
+let phone = (firstFromCommaList(readModalTabField(modal, 'Mobiles')) || firstFromCommaList(readModalTabField(modal, 'Landlines'))).replace(/\s+/g, '');
+let email = readModalTabField(modal, 'Email');
+
+// Falls back to the old whole-modal regex scrape only if the labeled
+// lookup came back completely empty - in case some other customer's
+// modal ever renders with a different table shape than the one
+// confirmed here, rather than silently losing data the old approach
+// would have caught.
+if (!phone || !email) {
 const modalText = modal.innerText || modal.textContent;
-
+if (!phone) {
 const phoneMatch = modalText.match(/\b(07\d{9}|0\d{3}\s?\d{3}\s?\d{3,4}|0\d{10})\b/);
-const phone = phoneMatch ? phoneMatch[1].replace(/\s/g, '') : '';
-
+phone = phoneMatch ? phoneMatch[1].replace(/\s/g, '') : '';
+}
+if (!email) {
 const emailMatch = modalText.match(/([\w\.-]+@[\w\.-]+\.\w+)/);
-const email = emailMatch ? emailMatch[1] : '';
+email = emailMatch ? emailMatch[1] : '';
+}
+}
 
 const closeBtn = modal.querySelector('.close, [aria-label*="close"], [aria-label*="Close"]')
 || modal.querySelector('button:last-child');
@@ -262,6 +1935,25 @@ return `<span style="padding: 4px 6px; border-radius: 4px; background: #e2e8f0; 
 }
 const display = escapeHtml(value);
 return `<span class="sla-copyable" data-value="${display}" style="cursor: pointer; padding: 4px 6px; border-radius: 4px; background: #eef2ff; color: #1e293b; display: inline-block; font-size: 13px;">${display}</span>`;
+}
+
+// Wraps a customer card's contact-info grid (phone/email, or mobile/
+// email/landline on the Pending Customers side) behind a collapsed-by-
+// default disclosure - these fields matter for the moment you're about
+// to make contact, not for scanning/triaging the list, and showing them
+// unconditionally on every card was a lot of the visual clutter in what
+// was otherwise meant to be a quick scan. Toggled relative to the
+// clicked element (nextElementSibling) rather than by a per-card id,
+// since there's no natural unique id to hang one off here and DOM
+// traversal avoids needing one.
+function renderContactToggle(gridInnerHtml) {
+return `
+<div onclick="window._toggleCustomerContact(this)" style="cursor: pointer; display: flex; align-items: center; gap: 4px; font-size: 11px; color: #4f46e5; margin-bottom: 8px;">
+${svgIcon('chevron', 12, ' transition: transform 0.15s ease; transform: rotate(-90deg);')} Contact details
+</div>
+<div style="display: none; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
+${gridInnerHtml}
+</div>`;
 }
 
 function renderAssignmentBadge(assigned, agentName) {
@@ -355,19 +2047,41 @@ raw: agent
 };
 }
 
+// The only way to read the agent list is scraping it out of a live
+// unassigned-lead's dropdown - there's no other element on the page
+// that exposes the same Angular scope data. So the moment every lead in
+// the current table is already assigned, there's no dropdown left to
+// read from at all, and this comes back empty - not because agents are
+// actually offline, but because there's nothing left to check against.
+// Caching the last successful read means that gap only shows up on a
+// session's very first scan if it happens to land on an all-assigned
+// table; any read that DOES succeed keeps the roster usable afterward,
+// same tradeoff the rest of this panel already accepts for agent status
+// (a snapshot, not a live feed).
+let cachedAgentRoster = null;
+
 function getAgentRoster() {
 // Scoped to the SLA table first so an unrelated page dropdown sharing
 // the same classes can't get picked up by accident.
 const scopeHost = document.querySelector('table .dropdown.ng-scope') || document.querySelector('.dropdown.ng-scope');
-if (!scopeHost || typeof angular === 'undefined') return [];
+if (!scopeHost || typeof angular === 'undefined') return cachedAgentRoster || [];
 try {
 const scope = angular.element(scopeHost).scope();
-const agents = (scope && scope.agents) || [];
-return agents.map(normalizeAgent);
+const agents = ((scope && scope.agents) || []).map(normalizeAgent);
+if (agents.length > 0) cachedAgentRoster = agents;
+return agents.length > 0 ? agents : (cachedAgentRoster || []);
 } catch (error) {
 console.warn('Could not read agent roster:', error);
-return [];
+return cachedAgentRoster || [];
 }
+}
+
+// Whether there's currently anything on the page to read the agent
+// roster from at all - lets callers tell "genuinely no agents online"
+// apart from "can't check right now" when deciding what to say, rather
+// than reporting the same confident "No agents online" for both.
+function canCheckAgentRoster() {
+return !!(document.querySelector('table .dropdown.ng-scope') || document.querySelector('.dropdown.ng-scope'));
 }
 
 // The live "N leads match" preview re-runs on every checkbox/wheel
@@ -400,6 +2114,58 @@ cachedLeadsSnapshot = { pageType: PAGE_PENDING, leads: collectPendingCustomers()
 }
 return cachedLeadsSnapshot.leads;
 }
+
+// Directly tests the actual mechanism displayPanel/displayPendingPanel's
+// invalidateCache=false argument depends on (see their own comments) -
+// that repeated getCached*() calls do NOT touch the live DOM again
+// unless invalidateLeadsCache() ran in between. This is the part of the
+// queue-refresh-race fix that's genuinely testable without a live
+// browser: whether the cache-skip mechanism itself works. It does NOT
+// (and can't, from here) verify the other half - that
+// waitForLeadsTableRows' MutationObserver-based wait actually resolves
+// at the right moment against Konnect's real Angular re-render timing.
+// That half only a live re-test can confirm.
+(function leadsCacheSelfTest() {
+const originalQuerySelector = document.querySelector.bind(document);
+let scrapeCount = 0;
+document.querySelector = function(selector) {
+if (selector === 'table') {
+scrapeCount++;
+return { querySelectorAll: () => [] };
+}
+return originalQuerySelector(selector);
+};
+try {
+const failures = [];
+
+invalidateLeadsCache();
+getCachedAssignableLeads();
+getCachedAssignableLeads();
+getCachedAssignableLeads();
+if (scrapeCount !== 1) failures.push(`getCachedAssignableLeads: expected exactly 1 DOM scrape across 3 uninvalidated calls, got ${scrapeCount}`);
+
+scrapeCount = 0;
+invalidateLeadsCache();
+getCachedPendingCustomers();
+getCachedPendingCustomers();
+if (scrapeCount !== 1) failures.push(`getCachedPendingCustomers: expected exactly 1 DOM scrape across 2 uninvalidated calls, got ${scrapeCount}`);
+
+scrapeCount = 0;
+invalidateLeadsCache();
+getCachedAssignableLeads();
+invalidateLeadsCache();
+getCachedAssignableLeads();
+if (scrapeCount !== 2) failures.push(`invalidateLeadsCache: expected a fresh scrape after each explicit invalidation (2 calls), got ${scrapeCount}`);
+
+if (failures.length > 0) {
+console.error('SLA Extract leads-cache self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract leads-cache self-test passed (3/3)');
+}
+} finally {
+document.querySelector = originalQuerySelector;
+}
+})();
 
 // Static "last scanned at HH:MM" rather than a live-ticking "Xm ago" -
 // deliberately not using an interval to keep this updating, given
@@ -682,6 +2448,31 @@ function sleep(ms) {
 return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Browsers throttle setTimeout-based waits heavily in a backgrounded
+// tab - reported live as detail-modal scraping (extractCustomerDetails,
+// below) becoming slower and unreliable while a different browser tab
+// was active. waitForModal and every other wait this touches is
+// setTimeout/MutationObserver-based, so a throttled tab risks reading a
+// modal as never having opened purely because of throttling, not a
+// real failure. Resolves immediately if already visible (the common
+// case costs nothing); otherwise waits for the tab to actually become
+// the active one again before letting a new modal-open attempt start -
+// same cooperative-checkpoint idea as the extracting/assigning/
+// runningMorningChecks/refreshingLeads guards already used throughout
+// this file, just for a condition none of those cover.
+function waitForTabVisible() {
+if (!document.hidden) return Promise.resolve();
+return new Promise((resolve) => {
+function onVisible() {
+if (!document.hidden) {
+document.removeEventListener('visibilitychange', onVisible);
+resolve();
+}
+}
+document.addEventListener('visibilitychange', onVisible);
+});
+}
+
 // Waiting for each lead's confirmation before clicking the next one made
 // the whole run strictly sequential - slower than doing it by hand, since
 // a person just fires off click after click without watching each row
@@ -804,7 +2595,7 @@ const text = failed === 0
 const retryLink = failed > 0
 ? ` <span onclick="window._retryFailedAssignments()" style="text-decoration: underline; cursor: pointer;">Retry Failed</span>`
 : '';
-el.innerHTML = `<div style="margin-top: 8px; padding: 8px 10px; border-radius: 4px; background: ${color}20; color: ${color}; font-size: 12px; font-weight: 700; text-align: center;">${text}${retryLink}</div>`;
+el.innerHTML = `<div style="margin-top: 8px; padding: 8px 10px; border-radius: 4px; background: ${color}20; color: ${color}; font-size: 13px; font-weight: 700; text-align: center;">${text}${retryLink}</div>`;
 }
 
 // Retrying re-runs only the leads that actually failed, keeping each one
@@ -818,14 +2609,26 @@ window._retryFailedAssignments = async function() {
 if (!lastFailedAssignmentPlan || lastFailedAssignmentPlan.length === 0) return;
 const plan = lastFailedAssignmentPlan;
 const locateCellFn = lastFailedLocateCellFn;
+const pageType = lastFailedPageType;
 lastFailedAssignmentPlan = null;
 lastFailedLocateCellFn = null;
-await executeAssignmentRun(plan, locateCellFn);
+lastFailedPageType = null;
+await executeAssignmentRun(plan, locateCellFn, pageType);
 };
 
+// Only ever holds today's entries - a stale entry from a previous day
+// sitting in this log (surviving a bookmarklet re-invocation, since
+// localStorage isn't cleared by that) made the History panel
+// impossible to trust: there was no way to tell whether a count
+// included today's shift only or leftover days too. Pruning anything
+// not from today on every write, rather than just filtering at display
+// time, also keeps the whole ASSIGN_LOG_MAX cap spent on today's data
+// instead of old days quietly eating into it on a busy week.
 function appendAssignmentLog(results) {
 try {
-const existing = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]');
+const today = new Date().toDateString();
+const existing = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]')
+.filter(e => new Date(e.time).toDateString() === today);
 const now = new Date().toISOString();
 const entries = results.filter(r => r.ok).map(r => ({
 time: now,
@@ -839,16 +2642,21 @@ console.warn('Failed to persist assignment log', error);
 }
 }
 
+// Filters to today defensively (appendAssignmentLog already prunes on
+// write) so this never shows a stale count even if the day rolled over
+// mid-session without a new assignment triggering that prune.
 function renderAssignmentHistoryHtml() {
 let entries = [];
 try { entries = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]'); } catch (error) { /* ignore */ }
-if (entries.length === 0) return '<div style="color:#94a3b8;">No assignments recorded yet.</div>';
+const today = new Date().toDateString();
+entries = entries.filter(e => new Date(e.time).toDateString() === today);
+if (entries.length === 0) return '<div style="color:#94a3b8;">No assignments recorded today yet.</div>';
 const tally = {};
 entries.forEach(e => { tally[e.agent] = (tally[e.agent] || 0) + 1; });
 const rows = Object.entries(tally).sort((a, b) => b[1] - a[1])
 .map(([name, count]) => `<div style="display:flex;justify-content:space-between;"><span>${escapeHtml(name)}</span><span style="font-weight:700;">${count}</span></div>`).join('');
 const last = entries[entries.length - 1];
-return `<div style="font-size:11px;color:#64748b;margin-bottom:4px;">Assigned counts (all-time, this browser):</div>${rows}
+return `<div style="font-size:11px;color:#64748b;margin-bottom:4px;">Assigned counts (today's shift):</div>${rows}
 <div style="font-size:10px;color:#cbd5e1;margin-top:6px;">Last: ${escapeHtml(last.lead)} → ${escapeHtml(last.agent)} at ${new Date(last.time).toLocaleTimeString()}</div>`;
 }
 
@@ -880,7 +2688,15 @@ function ensureWheelStyles() {
 if (document.getElementById('_slaWheelStyles')) return;
 const style = document.createElement('style');
 style.id = '_slaWheelStyles';
-style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #4f46e5; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef2ff !important; }';
+// Tier/callback-type/special-filter toggles were plain label+checkbox
+// rows - a bare HTML form look. Styled as chips instead via :has(), so
+// the underlying <input> stays a real checkbox (every existing
+// :checked/:not(:checked) query elsewhere in the file keeps working
+// unchanged) while only the *label* wrapping it changes appearance -
+// the input itself is visually hidden (opacity/size, not display:none,
+// so it stays focusable/clickable) rather than replaced with a custom
+// control.
+style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #4f46e5; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef2ff !important; } .chip-label { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 14px; border: 1px solid #cbd5e1; background: white; color: #64748b; font-size: 12px; cursor: pointer; user-select: none; transition: background 0.15s, border-color 0.15s, color 0.15s; } .chip-label input { position: absolute; opacity: 0; width: 0; height: 0; } .chip-label:has(input:checked) { background: #eef2ff; border-color: #4f46e5; color: #4338ca; font-weight: 600; }';
 document.head.appendChild(style);
 }
 
@@ -1115,6 +2931,21 @@ const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 return panelSize === 'full' ? '55vh' : '280px';
 }
 
+// Same reasoning as assignSectionBodyMaxHeight, one level up: that cap
+// only applied to FILTERS, but ASSIGN (agents/limit/preview/button/
+// results, with FILTERS nested inside it) can independently grow tall
+// enough on its own - a long agent list plus a full results log plus
+// FILTERS expanded - to push the footer (Clear & Stop, etc.) out past
+// the panel box's own overflow:hidden boundary, making it disappear
+// entirely rather than just becoming unreachable via scroll. Capped
+// looser than the inner FILTERS cap since it has to fit everything
+// FILTERS already accounts for, plus the agents list/button/results
+// around it.
+function assignFullSectionMaxHeight() {
+const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
+return panelSize === 'full' ? '65vh' : '320px';
+}
+
 // Reads whichever wheels are actually present in the currently-mounted
 // assign section (SLA's single minutes wheel, or Pending Customers' hour
 // + minute pair) and wires them up, seeding each from its hidden input's
@@ -1171,25 +3002,47 @@ return '#94a3b8';
 
 function renderAgentCheckboxes(agents, excludedAgentIds) {
 if (agents.length === 0) {
-return `<div style="font-size: 12px; color: #94a3b8;">No agents online</div>`;
+const label = canCheckAgentRoster()
+? 'No agents online'
+: "Can't check agents right now (no unassigned lead to read from)";
+return `<div style="font-size: 13px; color: #94a3b8;">${label}</div>`;
 }
-return agents.map(a => `
-<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;" ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
+// Not-done count comes from the last window._checkAgentQueuePositions
+// snapshot (a point-in-time read of Konnect's own Queue by Agent page,
+// scoped to the last 10 queued items per agent) - matched by name
+// since that snapshot has no agent id, only the plain name Konnect
+// itself displays there.
+const queueSnapshot = loadAgentQueueSnapshot();
+const queueByName = new Map(queueSnapshot.agents.map((q) => [normalizeAgentName(q.agentName), q]));
+return agents.map(a => {
+const queueInfo = queueByName.get(normalizeAgentName(a.name));
+const queueBadge = queueInfo
+? `<span title="${queueInfo.notDoneCount} not yet called, out of the last ${queueInfo.totalShown} queued (as of ${escapeHtml(new Date(queueSnapshot.scannedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))})" style="margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 700; background: #eef2ff; color: #4338ca;">${queueInfo.notDoneCount}</span>`
+: '';
+return `
+<label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #1e293b;" ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
 <input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()">
 <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${statusDotColor(a.status)}; flex-shrink: 0;"></span>
-${escapeHtml(a.name)}
-</label>`).join('');
+${escapeHtml(a.name)}${queueBadge}
+</label>`;
+}).join('');
 }
 
 // Shared by both assign sections - a plain number input capping how many
 // leads a run actually touches, applied via applyAssignLimit() right
 // before roundRobinAssign() in every entry point. Blank means no cap.
 function renderAssignLimitControl(settings) {
-return `<label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;">
+return `<div style="display: flex; align-items: center; gap: 10px;">
+<label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;">
 LIMIT
 <input type="number" id="assignLimitInput" min="1" placeholder="all" value="${settings.assignLimit || ''}" oninput="window._updateAssignPreview()"
-style="width: 48px; padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 12px; font-weight: 400; color: #1e293b;">
-</label>`;
+style="width: 48px; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; font-weight: 400; color: #1e293b;">
+</label>
+<label for="assignLimitPerAgent" title="When on, LIMIT is the number of leads EACH selected agent gets, not the total across all of them" style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #64748b; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap; cursor: pointer;">
+<input type="checkbox" id="assignLimitPerAgent" ${settings.assignLimitPerAgent ? 'checked' : ''} onchange="window._updateAssignPreview()">
+per agent
+</label>
+</div>`;
 }
 
 // `accent` can be a boolean (true -> the standard red urgency accent, for
@@ -1242,13 +3095,13 @@ renderStatTile(`${m}m`, customerFirstDueCounts[i], customerFirstDueCounts[i] > 0
 ).join('');
 
 return `
-<div id="slaDueSummary" style="padding: 10px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-size: 12px; color: #1e293b;">
+<div id="slaDueSummary" style="padding: 12px 20px 0; background: #f8fafc; font-size: 13px; color: #1e293b;">
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
 <div style="font-size: 11px; font-weight: 700; color: ${CUSTOMER_FIRST_ACCENT}; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Customer First</div>
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${cfTiles}</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span style="font-size: 11px; color: #94a3b8;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
-<button onclick="window._quickAssign()" style="background: #059669; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0;">⚡ Quick Assign</button>
+<button onclick="window._clearWholeQueue()" style="background: #dc2626; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('warning', 11)} Clear Queue</button>
 </div>
 </div>`;
 }
@@ -1272,6 +3125,760 @@ function saveAssignSettings(partial) {
 localStorage.setItem(ASSIGN_SETTINGS_KEY, JSON.stringify({ ...loadAssignSettings(), ...partial }));
 }
 
+// Scope for the "Copy for Lead Checker" export (feeds a separate,
+// external bookmarklet on a different site - see the header popover
+// below) - kept entirely separate from ASSIGN_SETTINGS_KEY since this
+// is a one-off export scope, not part of the assign filters, and
+// deliberately not surfaced anywhere in the main Assign flow at all.
+//
+// Restored here - this was accidentally deleted along with the
+// duplicate Lead Checker classifier (a separate, unrelated feature
+// that happened to sit inside the same line range removed for that
+// cleanup, past where the classifier itself actually ended). Its
+// absence broke renderPanelShell unconditionally: every single panel
+// render (not just the queue-check-triggered ones this was chased
+// through several rounds of live reports for) called the now-missing
+// renderLeadCheckerExportPopover and threw a ReferenceError, caught
+// silently inside extractAndExportSla's own try/catch (logged as "SLA
+// Export Error", never surfaced) - and completely uncaught in the
+// handful of call sites that render a second time after a Queue by
+// Agent check, which is what actually made this visible as "leads
+// ingest fine, the queue check runs, then nothing loads." Confirmed
+// via a live console/error capture, not guessed.
+const LEAD_CHECKER_EXPORT_KEY = '_slaLeadCheckerExportSettings';
+
+function loadLeadCheckerExportSettings() {
+try {
+const raw = JSON.parse(localStorage.getItem(LEAD_CHECKER_EXPORT_KEY));
+if (raw && Array.isArray(raw.tiers)) return raw;
+} catch (error) {
+// ignore
+}
+return { tiers: [2], customerFirstOnly: true };
+}
+
+function saveLeadCheckerExportSettings(settings) {
+try {
+localStorage.setItem(LEAD_CHECKER_EXPORT_KEY, JSON.stringify(settings));
+} catch (error) {
+// ignore
+}
+}
+
+// Tabs/newlines within a field would corrupt the TSV structure the
+// receiving bookmarklet parses by splitting on tabs - stripped rather
+// than escaped, since none of these fields should ever legitimately
+// contain one.
+function tsvSafe(value) {
+return String(value || '').replace(/[\t\r\n]+/g, ' ').trim();
+}
+
+// Reads from currentCustomers (the same cache the panel itself is
+// already showing) rather than re-scanning the table - this is a
+// point-in-time snapshot of whatever's already been ingested, not a
+// fresh extraction. Name is stripped of its title (Mr./Mrs./etc,
+// same as the existing copy-to-clipboard fields elsewhere in this
+// panel) since the receiving tool only uses it as supporting
+// confirmation, not as a search key.
+function buildLeadCheckerTsv(tiers, customerFirstOnly) {
+const tierSet = new Set(tiers);
+const importResults = loadLeadCheckerImportState().results;
+let excludedCount = 0;
+const rows = currentCustomers.filter((c) => {
+if (!tierSet.has(c.tier)) return false;
+if (customerFirstOnly && !(c.source || '').toLowerCase().includes('customer first')) return false;
+if (isAlreadyClassifiedForContact(c, importResults)) { excludedCount++; return false; }
+return true;
+});
+// Registration dropped per instruction - not something that needs
+// copying, and not something the receiving tool can reliably search by
+// either (it's often a SALESLEAD-style placeholder rather than a real
+// plate, not present on Konnect Live's own customer records to match
+// against).
+const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'].join('\t');
+const lines = rows.map((c) => [
+tsvSafe(stripTitle(c.name)), tsvSafe(c.phone), tsvSafe(c.email), tsvSafe(c.source), tsvSafe(c.campaign), tsvSafe(c.createdText)
+].join('\t'));
+return { tsv: [header, ...lines].join('\n'), count: rows.length, excludedCount };
+}
+
+// Deliberately a small popover toggled from a single header icon, not a
+// permanent section in the main Assign flow - this only matters
+// occasionally (feeding a separate bookmarklet on another site), so it
+// shouldn't cost any visible space the rest of the time. Positioned
+// absolutely against PANEL_BOX_ID (the nearest positioned ancestor,
+// since that box itself is position:fixed) rather than pushing any
+// other content down when open.
+// Pending Customers has no Tier 1-4 concept (that's an SLA-queue-only
+// categorization - collectPendingCustomers never computes one) and no
+// Source column at all, so its own export settings/filter/TSV-builder
+// are genuinely different shapes, not just a different filter value -
+// kept as their own functions rather than forcing collectAssignableLeads'
+// SLA-specific shape to fit. 'New' is deliberately excluded from the
+// selectable callback types - per instruction, a callback type of 'New'
+// means never actioned yet, so it has no lastActionText (see
+// buildPendingLeadCheckerTsv) and is already covered by the SLA page's
+// own export anyway.
+const PENDING_LEAD_CHECKER_CALLBACK_TYPES = ['Auto Rescheduled', 'Manual Rescheduled', 'Post Closure'];
+const LEAD_CHECKER_EXPORT_PENDING_KEY = '_slaLeadCheckerExportSettingsPending';
+
+function loadPendingLeadCheckerExportSettings() {
+try {
+const raw = JSON.parse(localStorage.getItem(LEAD_CHECKER_EXPORT_PENDING_KEY));
+if (raw && Array.isArray(raw.callbackTypes)) return raw;
+} catch (error) {
+// ignore
+}
+return { callbackTypes: PENDING_LEAD_CHECKER_CALLBACK_TYPES.slice() };
+}
+
+function savePendingLeadCheckerExportSettings(settings) {
+try {
+localStorage.setItem(LEAD_CHECKER_EXPORT_PENDING_KEY, JSON.stringify(settings));
+} catch (error) {
+// ignore
+}
+}
+
+// Source is left blank - Pending Customers' own table has no Source
+// column to draw a real value from (unlike the SLA queue), and
+// Konnect-Lead-Checker.js's own classifier now falls back to the lead
+// modal's own confirmed Source once it finds the right lead (see its
+// processLeadRow comment on this exact handoff) - this is the intended
+// design, not a gap to paper over with a guessed value. Created uses
+// lastActionText (the RAW cell text, not the parsed Date - Booking
+// Check's own parseSlaCreated needs the same "D Mon YYYY HH:mm" shaped
+// string every other Created value already is, not a reformatted one)
+// - confirmed live: for a lead that's been actioned before, this
+// matches the timestamp on its own pink timeline entry on Konnect Live
+// to the minute, the same precision the SLA queue's Created column
+// already provides.
+function buildPendingLeadCheckerTsv(callbackTypes) {
+const typeSet = new Set(callbackTypes);
+const importResults = loadLeadCheckerImportState().results;
+let excludedCount = 0;
+const rows = currentPendingCustomers.filter((c) => {
+if (!typeSet.has(c.callbackType)) return false;
+if (!c.lastActionText) return false;
+// isAlreadyClassifiedForContact compares against c.createdText - alias
+// lastActionText (Pending Customers' own equivalent "which contact is
+// this" timestamp, used as the Created column below) onto that field
+// rather than forking the matching logic for this page.
+if (isAlreadyClassifiedForContact({ ...c, createdText: c.lastActionText }, importResults)) { excludedCount++; return false; }
+return true;
+});
+const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'].join('\t');
+const lines = rows.map((c) => [
+// Source is otherwise genuinely blank (this page has no Source column
+// of its own to draw a real value from, see the comment this used to
+// carry) - except for the Post Closure callback type specifically,
+// where we already know for certain what it is at export time, the
+// same label Konnect's own timeline uses ("Manually Created Sales Lead
+// from Post Closure Processing"). Without this, Konnect-Lead-Checker.js's
+// own Post Closure detection (classifyLead's Step 13) could never
+// trigger for a lead routed through this page at all - its Source
+// falls back to the lead modal's own ORIGINAL enquiry source (e.g.
+// "Customer First"), which is never "Post Closure Processing" - a real
+// reported case was wrongly left classified by tier because of this.
+tsvSafe(stripTitle(c.name)), tsvSafe(c.mobile || c.landline), tsvSafe(c.email), c.callbackType === 'Post Closure' ? 'Post Closure Processing' : '', tsvSafe(c.campaign), tsvSafe(c.lastActionText)
+].join('\t'));
+return { tsv: [header, ...lines].join('\n'), count: rows.length, excludedCount };
+}
+
+// Shared shell (same popover DOM id/position/Copy button) between the
+// SLA and Pending pages - genuinely just different filter checkboxes
+// and a different TSV builder underneath, not different enough to
+// justify a second copy of the popover chrome itself the way the
+// Assign section's own SLA/Pending split is (that one's internal
+// filtering logic is far more involved on both sides).
+// Combined into one popover, one icon, one toggle (previously two
+// separate icons/popovers, Copy and Classify) - per instruction, this
+// is one round-trip workflow with Konnect Lead Checker (send leads
+// out, get results back), not two unrelated features, so it doesn't
+// need two separate entry points in the panel header. The underlying
+// settings/state stay genuinely separate (export filter settings vs.
+// import paste state - different data, different purposes), only the
+// two are now presented together in one place.
+function renderLeadCheckerPopover() {
+const exportSectionHtml = (() => {
+if (currentPageType === PAGE_PENDING) {
+const settings = loadPendingLeadCheckerExportSettings();
+const selectedTypes = new Set(settings.callbackTypes);
+const { count, excludedCount } = buildPendingLeadCheckerTsv(settings.callbackTypes);
+const typeCheckboxes = PENDING_LEAD_CHECKER_CALLBACK_TYPES.map(t => `
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;">
+<input type="checkbox" class="booking-export-callback-type" value="${escapeHtml(t)}" ${selectedTypes.has(t) ? 'checked' : ''} onchange="window._updateLeadCheckerExportPreview()">
+${escapeHtml(t)}
+</label>`).join('');
+return `
+<div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${typeCheckboxes}</div>
+<div style="font-size: 10.5px; color: #94a3b8; margin-bottom: 10px;">New (never-actioned) leads are excluded - check the SLA queue for those.</div>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+<span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}</span>
+<button onclick="window._copyLeadCheckerExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
+</div>`;
+}
+const settings = loadLeadCheckerExportSettings();
+const selectedTiers = new Set(settings.tiers);
+const { count, excludedCount } = buildLeadCheckerTsv(settings.tiers, settings.customerFirstOnly);
+const tierCheckboxes = [1, 2, 3, 4].map(t => `
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;">
+<input type="checkbox" class="booking-export-tier" value="${t}" ${selectedTiers.has(t) ? 'checked' : ''} onchange="window._updateLeadCheckerExportPreview()">
+Tier ${t}
+</label>`).join('');
+return `
+<div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${tierCheckboxes}</div>
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b; margin-bottom: 10px;">
+<input type="checkbox" id="bookingExportCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateLeadCheckerExportPreview()">
+Customer First only
+</label>
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+<span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}</span>
+<button onclick="window._copyLeadCheckerExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
+</div>`;
+})();
+
+const importState = loadLeadCheckerImportState();
+// currentPendingCustomers, not currentCustomers, while on the Pending
+// page - this popover is now shown on both pages, and the matched-count
+// summary was always checking against the SLA list regardless.
+const customersForMatching = currentPageType === PAGE_PENDING ? currentPendingCustomers : currentCustomers;
+const matchedCount = importState.results.filter((r) => customersForMatching.some((c) => findLeadCheckerResultForCustomer(c, [r]))).length;
+const importSummary = importState.results.length === 0
+? `<div style="font-size: 12px; color: #94a3b8; padding: 8px 0 0;">Paste results from Konnect Lead Checker's "Copy raw for Extract" button, then press Classify - they'll show up as a badge on the matching lead card below.</div>`
+: `<div style="font-size: 12px; color: #64748b; padding: 8px 0 0;">${importState.results.length} classified, ${matchedCount} matched to a lead in the current list below.${importState.results.length !== matchedCount ? ' The rest aren\'t in the current SLA list (already assigned, expired, or a different queue).' : ''}</div>`;
+
+return `
+<div id="leadCheckerPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 280px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
+<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">COPY LEADS TO LEAD CHECKER</div>
+${exportSectionHtml}
+<hr style="border: none; border-top: 1px solid #e2e8f0; margin: 14px 0;">
+<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">CLASSIFY RESULTS BACK IN</div>
+<div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">Use the "Paste & Classify from Lead Checker" button above the list - or paste manually here if clipboard access is blocked:</div>
+<textarea id="leadCheckerImportBox" placeholder="Paste TSV from Konnect Lead Checker" oninput="window._updateLeadCheckerImportInput(this.value)" style="width: 100%; height: 60px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px;">${escapeHtml(importState.rawInput)}</textarea>
+<div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+<button onclick="window._classifyLeadCheckerImport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Classify</button>
+</div>
+${importSummary}
+</div>`;
+}
+
+window._toggleLeadCheckerPopover = function() {
+const popover = document.getElementById('leadCheckerPopover');
+if (!popover) return;
+popover.style.display = popover.style.display === 'none' ? 'block' : 'none';
+};
+
+window._updateLeadCheckerExportPreview = function() {
+if (currentPageType === PAGE_PENDING) {
+const callbackTypes = Array.from(document.querySelectorAll('.booking-export-callback-type:checked')).map(el => el.value);
+savePendingLeadCheckerExportSettings({ callbackTypes });
+const { count, excludedCount } = buildPendingLeadCheckerTsv(callbackTypes);
+const countEl = document.getElementById('bookingExportRowCount');
+if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}`;
+return;
+}
+const tiers = Array.from(document.querySelectorAll('.booking-export-tier:checked')).map(el => Number(el.value));
+const customerFirstOnly = document.getElementById('bookingExportCustomerFirstOnly')?.checked || false;
+saveLeadCheckerExportSettings({ tiers, customerFirstOnly });
+const { count, excludedCount } = buildLeadCheckerTsv(tiers, customerFirstOnly);
+const countEl = document.getElementById('bookingExportRowCount');
+if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}`;
+};
+
+window._copyLeadCheckerExport = function(buttonEl) {
+const original = buttonEl.textContent;
+const { tsv, count } = currentPageType === PAGE_PENDING
+? buildPendingLeadCheckerTsv(loadPendingLeadCheckerExportSettings().callbackTypes)
+: (() => { const s = loadLeadCheckerExportSettings(); return buildLeadCheckerTsv(s.tiers, s.customerFirstOnly); })();
+if (count === 0) {
+buttonEl.textContent = 'No leads';
+setTimeout(() => { buttonEl.textContent = original; }, 1200);
+return;
+}
+navigator.clipboard.writeText(tsv).then(() => {
+buttonEl.textContent = `✓ Copied ${count}`;
+// Closes itself on a successful copy - per instruction, this is a
+// "copy here, go paste in the other tool" handoff, not a dashboard to
+// linger on, so leaving it open just adds a manual close click to
+// every single round-trip. Only on success - left open on failure
+// (below) so the error is visible and the user can retry without
+// reopening the popover from scratch.
+setTimeout(() => {
+buttonEl.textContent = original;
+const popover = document.getElementById('leadCheckerPopover');
+if (popover) popover.style.display = 'none';
+}, 900);
+}).catch(() => {
+buttonEl.textContent = '✗ Failed';
+setTimeout(() => { buttonEl.textContent = original; }, 1500);
+});
+};
+
+// ===================================================================
+// CLASSIFY LEAD CHECKER RESULTS - the reverse handoff. Konnect
+// Lead Checker's own "Copy raw for Extract" button copies this exact
+// column shape to the clipboard; pasted here, it's shown right next to
+// the assign-criteria/tier features, instead of round-tripping back
+// through Lead Checker's own UI for every batch. Deliberately a
+// small popover like the export one above, not a permanent section -
+// this is an occasional batch operation, not part of the main Assign
+// flow. State (raw paste + last results) is persisted so an in-
+// progress paste survives a panel rebuild (the same reason the export
+// popover's own settings are persisted, not just kept in the DOM).
+//
+// This used to re-classify every row here too, from a second, ~600-line
+// copy of Konnect-Lead-Checker.js's own classifier (parseInitialNotes
+// Fields, the keyword lists, classifyInitialNotes, bookingPriorityRank -
+// "ported verbatim... do not edit one without the other"). That's a real
+// drift risk, not a hypothetical one - this copy never got that file's
+// later dual-raw-notes-format parser fix before being deleted in favor
+// of this. Lead Checker now exports its own already-computed Tier/
+// SubCategory/Flags/Reason/PriorityRank columns directly (see its own
+// buildRawNotesTsvForExtract) - trusted as-is below, no second
+// classifier needed.
+// ===================================================================
+
+const LEAD_CHECKER_IMPORT_KEY = '_slaLeadCheckerImportState';
+// Matches Konnect-Lead-Checker.js's own buildRawNotesTsvForExtract
+// header exactly (lead-classification-spec.md v1.10 - 6 tiers with
+// sub-categories/flags/dedupe, not the old 4-category scheme) - kept
+// in lockstep since the two files can't share a module.
+const LEAD_CHECKER_IMPORT_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank'];
+
+function loadLeadCheckerImportState() {
+try {
+const raw = JSON.parse(localStorage.getItem(LEAD_CHECKER_IMPORT_KEY));
+if (raw && typeof raw === 'object') {
+return { rawInput: raw.rawInput || '', results: Array.isArray(raw.results) ? raw.results : [] };
+}
+} catch (error) {
+// ignore
+}
+return { rawInput: '', results: [] };
+}
+
+function saveLeadCheckerImportState(state) {
+try {
+localStorage.setItem(LEAD_CHECKER_IMPORT_KEY, JSON.stringify(state));
+} catch (error) {
+// ignore
+}
+}
+
+// Lead Checker's own export sanitizes Initial Notes and Reason (tabs ->
+// spaces, newlines -> " | ") before copying, so a plain split on tab
+// always yields exactly 10 cells here - no special last-column joining
+// needed.
+function parseLeadCheckerImportTsv(rawText) {
+const lines = String(rawText || '').split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0);
+if (lines.length === 0) return { rows: [], headerOk: false, error: 'No input.' };
+
+const header = lines[0].split('\t').map((h) => h.trim());
+const headerOk = header.length === LEAD_CHECKER_IMPORT_HEADER.length && header.every((h, i) => h === LEAD_CHECKER_IMPORT_HEADER[i]);
+if (!headerOk) {
+return { rows: [], headerOk: false, error: `Header does not match expected columns: ${LEAD_CHECKER_IMPORT_HEADER.join('\t')}` };
+}
+
+const rows = lines.slice(1).map((line) => {
+const cells = line.split('\t');
+// Number('') is 0, not NaN - a blank/malformed rank must NOT silently
+// become top priority, so blankness is checked before parsing, not
+// left to Number.isFinite alone (confirmed by this file's own self-
+// test below, which caught exactly this on the first pass).
+const rawRank = (cells[16] || '').trim();
+const parsedRank = rawRank === '' ? NaN : Number(rawRank);
+const rawTier = (cells[7] || '').trim();
+const parsedTier = rawTier === '' ? NaN : Number(rawTier);
+return {
+name: (cells[0] || '').trim(),
+phone: (cells[1] || '').trim(),
+email: (cells[2] || '').trim(),
+source: (cells[3] || '').trim(),
+campaign: (cells[4] || '').trim(),
+created: (cells[5] || '').trim(),
+initialNotes: (cells[6] || '').trim(),
+tier: Number.isFinite(parsedTier) ? parsedTier : null,
+tierName: (cells[8] || '').trim(),
+subCategory: (cells[9] || '').trim(),
+subRank: (cells[10] || '').trim(),
+flags: (cells[11] || '').trim(),
+confidence: (cells[12] || '').trim(),
+reason: (cells[13] || '').trim(),
+dedupeKey: (cells[14] || '').trim(),
+postClosureAction: (cells[15] || '').trim(),
+priorityRank: Number.isFinite(parsedRank) ? parsedRank : 700
+};
+});
+return { rows, headerOk: true, error: null };
+}
+
+// Lead Checker has already classified and ranked every row before
+// exporting - this just orders by the rank it computed, no
+// classification of its own left to do.
+function classifyLeadCheckerImportRows(rows) {
+return [...rows].sort((a, b) => a.priorityRank - b.priorityRank);
+}
+
+// Confirms the header contract and the trust-not-reclassify behavior -
+// this file no longer has a classifier of its own to get out of sync,
+// so what's actually worth guarding here is that parsing reads the
+// right columns and that sort order follows the imported rank exactly,
+// not any re-derivation from category/notes.
+(function leadCheckerImportSelfTest() {
+const failures = [];
+// Columns: Name Phone Email Source Campaign Created InitialNotes Tier
+// TierName SubCategory SubRank Flags Confidence Reason DedupeKey
+// PostClosureAction PriorityRank - matches Konnect-Lead-Checker.js's
+// own buildRawNotesTsvForExtract (lead-classification-spec.md v1.10).
+const sampleTsv = [
+LEAD_CHECKER_IMPORT_HEADER.join('\t'),
+['Amy Adams', '07700900001', 'amy@example.com', 'Customer First', 'Citroen - Enquiry - New', '01/09/2026', 'Customer Comments: -', '5', 'NURTURE', 'Enquiry: Blank', '9', '', 'low', 'Nothing matched.', '', '', '509'].join('\t'),
+['Ben Brown', '07700900002', 'ben@example.com', 'Customer First', 'Citroen - Enquiry - New', '02/09/2026', 'Customer Comments: See you at 3pm', '1', 'CONFIRMED DATE & TIME', 'Customer-Stated Slot', '3', '', 'medium', 'Exact time in comments.', '', '', '103'].join('\t'),
+['Cara Chen', '07700900003', 'cara@example.com', 'Customer First', 'Citroen - Enquiry - New', '03/09/2026', 'Customer Comments: possibly interested in a C3', '4', 'WARM ENQUIRY', 'Valuation + VOI Stated', '9', '', 'medium', 'Genuine interest, no visit intent.', '', '', '409'].join('\t')
+].join('\n');
+
+const parsed = parseLeadCheckerImportTsv(sampleTsv);
+if (!parsed.headerOk) failures.push(`Expected the real export header to parse OK, got error: ${parsed.error}`);
+if (parsed.rows.length !== 3) failures.push(`Expected 3 parsed rows, got ${parsed.rows.length}`);
+if (parsed.rows[1] && parsed.rows[1].tierName !== 'CONFIRMED DATE & TIME') failures.push(`Expected row 2's tierName to be read straight from the TierName column, got "${parsed.rows[1].tierName}"`);
+if (parsed.rows[1] && parsed.rows[1].priorityRank !== 103) failures.push(`Expected row 2's priorityRank to be read straight from the PriorityRank column, got ${parsed.rows[1].priorityRank}`);
+
+const ordered = classifyLeadCheckerImportRows(parsed.rows);
+if (!(ordered[0] && ordered[0].name === 'Ben Brown')) failures.push(`Expected Ben Brown (rank 103) to sort first, got "${ordered[0] && ordered[0].name}"`);
+if (!(ordered[1] && ordered[1].name === 'Cara Chen')) failures.push(`Expected Cara Chen (rank 409) to sort second, got "${ordered[1] && ordered[1].name}"`);
+if (!(ordered[2] && ordered[2].name === 'Amy Adams')) failures.push(`Expected Amy Adams (rank 509) to sort third, got "${ordered[2] && ordered[2].name}"`);
+
+const badHeader = parseLeadCheckerImportTsv('Name\tPhone\tEmail');
+if (badHeader.headerOk) failures.push('Expected a mismatched/old-shape header to be rejected, not accepted');
+
+const missingRank = parseLeadCheckerImportTsv([
+LEAD_CHECKER_IMPORT_HEADER.join('\t'),
+['Dee Dixon', '07700900004', 'dee@example.com', 'Customer First', 'Citroen - Enquiry - New', '04/09/2026', '-', '', '', '', '', '', '', '', '', '', ''].join('\t')
+].join('\n'));
+if (!(missingRank.rows[0] && missingRank.rows[0].priorityRank === 700)) failures.push(`Expected a blank/malformed PriorityRank to default to 700 (lowest priority), got ${missingRank.rows[0] && missingRank.rows[0].priorityRank}`);
+
+if (failures.length > 0) {
+console.error('SLA Extract lead-checker-import self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract lead-checker-import self-test passed (9/9)');
+}
+})();
+
+(function postClosureActionColorSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
+}
+check('send back through gets the confident colour', postClosureActionColor('send back through'), '#0891b2');
+check('the uncertain "check" bucket gets the warning colour', postClosureActionColor('check: needs contact?'), '#d97706');
+if (failures.length > 0) {
+console.error('SLA Extract postClosureActionColor self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract postClosureActionColor self-test passed (2/2)');
+}
+})();
+
+(function pendingLeadCheckerExportSelfTest() {
+const failures = [];
+const originalPendingCustomers = currentPendingCustomers;
+currentPendingCustomers = [
+// Never actioned - callbackType 'New', no lastActionText. Must be
+// excluded even if 'New' were ever passed in as a selected type,
+// since the actual filter is the real data (has this lead been
+// actioned before), not just the label.
+{ name: 'Amy Adams', mobile: '07700900001', landline: '', email: 'amy@example.com', campaign: 'Citroen - Enquiry - New', callbackType: 'New', lastActionText: '' },
+// Actioned before, matching callback type, real lastActionText -
+// should be included.
+{ name: 'Ben Brown', mobile: '', landline: '01234567890', email: '', campaign: 'Citroen - Enquiry - New', callbackType: 'Auto Rescheduled', lastActionText: 'Sat, 26 Sep 2026 18:05' },
+// Actioned before but a callback type not in the selected set -
+// should be excluded.
+{ name: 'Cara Chen', mobile: '07700900003', landline: '', email: 'cara@example.com', campaign: 'Citroen - Enquiry - New', callbackType: 'Post Closure', lastActionText: 'Sat, 26 Sep 2026 19:05' }
+];
+
+const { tsv, count } = buildPendingLeadCheckerTsv(['Auto Rescheduled', 'Manual Rescheduled']);
+const lines = tsv.split('\n');
+if (count !== 1) failures.push(`Expected exactly 1 matching lead (Ben Brown), got ${count}`);
+if (lines[0] !== 'Name\tPhone\tEmail\tSource\tCampaign\tCreated') failures.push(`Unexpected header shape: ${lines[0]}`);
+if (lines.length !== 2) failures.push(`Expected exactly 1 data row, got ${lines.length - 1}`);
+else {
+const cells = lines[1].split('\t');
+if (cells[0] !== 'Ben Brown') failures.push(`Expected Ben Brown, got "${cells[0]}"`);
+if (cells[1] !== '01234567890') failures.push(`Expected mobile-or-landline fallback to use landline when mobile is blank, got "${cells[1]}"`);
+if (cells[3] !== '') failures.push(`Expected Source to be deliberately blank (no Source data exists on this page), got "${cells[3]}"`);
+if (cells[5] !== 'Sat, 26 Sep 2026 18:05') failures.push(`Expected Created to be the raw lastActionText verbatim, got "${cells[5]}"`);
+}
+
+const neverActionedResult = buildPendingLeadCheckerTsv(['New', 'Auto Rescheduled', 'Manual Rescheduled', 'Post Closure']);
+if (neverActionedResult.count !== 2) failures.push(`Expected never-actioned leads to stay excluded even if their callback type were selectable, got count ${neverActionedResult.count}`);
+// Source must say "Post Closure Processing" explicitly for this one
+// callback type - otherwise Konnect-Lead-Checker.js's own Step 13 can
+// never detect these leads at all, since its fallback (the lead
+// modal's own Source field) shows the customer's ORIGINAL enquiry
+// source instead, never this label. A real reported case was wrongly
+// left classified by tier because of exactly this gap.
+const caraRow = neverActionedResult.tsv.split('\n').find((line) => line.startsWith('Cara Chen'));
+if (!caraRow) failures.push('Expected Cara Chen (callbackType Post Closure) to appear in the export');
+else if (caraRow.split('\t')[3] !== 'Post Closure Processing') failures.push(`Expected Cara Chen's Source to read "Post Closure Processing", got "${caraRow.split('\t')[3]}"`);
+
+currentPendingCustomers = originalPendingCustomers;
+
+if (failures.length > 0) {
+console.error('SLA Extract pending-lead-checker-export self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract pending-lead-checker-export self-test passed (10/10)');
+}
+})();
+
+// ===================================================================
+// Self-test for isAlreadyClassifiedForContact and its use in both TSV
+// builders - a customer already classified for this EXACT contact
+// (same identity, same created/lastActionText) should drop out of the
+// next "Copy leads to Lead Checker" export so repeat auto contacts
+// and SLA-leads-turned-autos stop being re-copied/re-scanned every
+// round, while a genuinely new contact (different created time, or no
+// prior result at all) must still be exported as usual.
+// ===================================================================
+(function leadCheckerExportDedupeSelfTest() {
+const failures = [];
+const originalCustomers = currentCustomers;
+const originalPendingCustomers = currentPendingCustomers;
+const originalImportState = localStorage.getItem(LEAD_CHECKER_IMPORT_KEY);
+
+saveLeadCheckerImportState({
+rawInput: '',
+results: [
+{ name: 'Dan Davis', email: 'dan@example.com', phone: '', created: 'Sat, 26 Sep 2026 10:00', tier: 2 },
+{ name: 'Eve Evans', email: 'eve@example.com', phone: '', created: 'Sat, 26 Sep 2026 09:00', tier: 2 }
+]
+});
+
+currentCustomers = [
+// Already classified for this exact contact - must be excluded.
+{ name: 'Dan Davis', tier: 2, source: 'Autos', campaign: 'X', phone: '', email: 'dan@example.com', createdText: 'Sat, 26 Sep 2026 10:00' },
+// Same person, but this is a NEW contact (different created time than
+// the stored result) - a real auto re-contact, must still be included.
+{ name: 'Eve Evans', tier: 2, source: 'Autos', campaign: 'X', phone: '', email: 'eve@example.com', createdText: 'Sat, 26 Sep 2026 11:00' },
+// Never classified before - included.
+{ name: 'Fay Fields', tier: 2, source: 'Autos', campaign: 'X', phone: '', email: 'fay@example.com', createdText: 'Sat, 26 Sep 2026 12:00' }
+];
+const slaResult = buildLeadCheckerTsv([2], false);
+if (slaResult.count !== 2) failures.push(`SLA export: expected 2 included (Eve, Fay), got ${slaResult.count}`);
+if (slaResult.excludedCount !== 1) failures.push(`SLA export: expected 1 excluded (Dan), got ${slaResult.excludedCount}`);
+if (slaResult.tsv.includes('Dan Davis')) failures.push('SLA export: Dan Davis (already classified for this exact contact) should not appear in the TSV');
+if (!slaResult.tsv.includes('Eve Evans')) failures.push('SLA export: Eve Evans (new contact, different created time) should still appear');
+
+currentPendingCustomers = [
+{ name: 'Dan Davis', mobile: '', landline: '', email: 'dan@example.com', campaign: 'X', callbackType: 'Auto Rescheduled', lastActionText: 'Sat, 26 Sep 2026 10:00' },
+{ name: 'Fay Fields', mobile: '', landline: '', email: 'fay@example.com', campaign: 'X', callbackType: 'Auto Rescheduled', lastActionText: 'Sat, 26 Sep 2026 12:00' }
+];
+const pendingResult = buildPendingLeadCheckerTsv(['Auto Rescheduled']);
+if (pendingResult.count !== 1) failures.push(`Pending export: expected 1 included (Fay), got ${pendingResult.count}`);
+if (pendingResult.excludedCount !== 1) failures.push(`Pending export: expected 1 excluded (Dan), got ${pendingResult.excludedCount}`);
+
+currentCustomers = originalCustomers;
+currentPendingCustomers = originalPendingCustomers;
+if (originalImportState === null) localStorage.removeItem(LEAD_CHECKER_IMPORT_KEY);
+else localStorage.setItem(LEAD_CHECKER_IMPORT_KEY, originalImportState);
+
+if (failures.length > 0) {
+console.error('SLA Extract lead-checker-export-dedupe self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract lead-checker-export-dedupe self-test passed (4/4)');
+}
+})();
+
+// Same TIER_COLORS palette Konnect-Lead-Checker.js's own panel uses
+// for these exact 6 tiers (lead-classification-spec.md v1.10), so a
+// lead reads the same color whichever tool it's looked at in.
+const LEAD_CHECKER_TIER_COLORS = { 1: '#059669', 2: '#d97706', 3: '#2563eb', 4: '#7c3aed', 5: '#64748b', 6: '#94a3b8' };
+
+function leadCheckerImportCategoryColor(tier) {
+return LEAD_CHECKER_TIER_COLORS[tier] || '#1e293b';
+}
+
+// Matches Konnect-Lead-Checker.js's own postClosureBadge colouring -
+// kept in lockstep the same way LEAD_CHECKER_TIER_COLORS already is,
+// since the same two values can show up on either tool's card for the
+// same lead.
+function postClosureActionColor(action) {
+return action === 'send back through' ? '#0891b2' : '#d97706';
+}
+
+// Same normalization as Konnect-Lead-Checker.js's own normalizeEmail/
+// normalizePhone, so a lead classified there matches back to the exact
+// same customer here regardless of formatting differences (spacing,
+// +44 vs leading 0, etc).
+function normalizeEmailForLeadCheckerMatch(value) {
+return String(value || '').trim().toLowerCase();
+}
+
+function normalizePhoneForLeadCheckerMatch(value) {
+const digits = String(value || '').replace(/\D+/g, '');
+if (digits.startsWith('44')) return '0' + digits.slice(2);
+return digits;
+}
+
+// The whole point of classifying here instead of in Konnect Booking
+// Check's own UI is to see the result on the SAME card used to assign/
+// view contact details - not a second, disconnected flat list. Matched
+// by email (preferred) or phone, since Lead Checker's raw export
+// never carries Registration or this panel's own `key`; Created
+// disambiguates the rare case of multiple rows sharing one contact
+// (the same customer with two separate leads).
+// c.phone falls back to c.mobile/c.landline - SLA rows have a single
+// unified phone field, but Pending Customers rows (collectPendingCustomers)
+// have separate mobile/landline fields instead and no .phone at all, so
+// without this fallback every phone-only Pending Customers lead (no
+// email) would never match a Lead Checker result here, even though
+// this same popover is now shown on both pages.
+function findLeadCheckerResultForCustomer(c, results) {
+if (!results || results.length === 0) return null;
+const emailKey = normalizeEmailForLeadCheckerMatch(c.email);
+const phoneKey = normalizePhoneForLeadCheckerMatch(c.phone || c.mobile || c.landline);
+const candidates = results.filter((r) => {
+const rEmailKey = normalizeEmailForLeadCheckerMatch(r.email);
+if (emailKey && rEmailKey) return emailKey === rEmailKey;
+const rPhoneKey = normalizePhoneForLeadCheckerMatch(r.phone);
+if (phoneKey && rPhoneKey) return phoneKey === rPhoneKey;
+return false;
+});
+if (candidates.length <= 1) return candidates[0] || null;
+return candidates.find((r) => r.created === c.createdText) || candidates[0];
+}
+
+// A customer contacted repeatedly (autos typically reach the same
+// person 3-5 times, and an SLA lead can later turn into an auto) kept
+// forcing a re-copy to Lead Checker and a re-scan there every round,
+// even when nothing about that specific contact had changed since it
+// was last classified. Reuses findLeadCheckerResultForCustomer's own
+// identity matching (email/phone) rather than a second matching
+// implementation - "already classified for THIS contact" is exactly
+// its existing exact-`created`-match case, just checked independently
+// here since that function falls back to a looser match when there's
+// no exact one (which must NOT count as "already classified" - a
+// different created time means a genuinely new contact/lead).
+function isAlreadyClassifiedForContact(c, importResults) {
+if (!importResults || importResults.length === 0) return false;
+const match = findLeadCheckerResultForCustomer(c, importResults);
+return !!match && match.created === c.createdText;
+}
+
+// The point of classifying here (rather than reading results in
+// Konnect Lead Checker's own UI) is to see them on the real lead
+// cards below - alongside Assign, contact details, everything already
+// built for that - not a second flat list duplicating what Booking
+// Check already shows. The actual results render as a badge on each
+// matching card via findLeadCheckerResultForCustomer, and the panel
+// re-renders immediately after classifying so they show up right away.
+// (Rendering itself now lives in renderLeadCheckerPopover, combined
+// with the export/Copy section into one popover.)
+
+window._updateLeadCheckerImportInput = function(value) {
+const state = loadLeadCheckerImportState();
+saveLeadCheckerImportState({ rawInput: value, results: state.results });
+};
+
+// Shared by the manual textarea+Classify button and the one-click
+// Paste-from-clipboard button - both end up needing the exact same
+// parse/classify/save/re-render sequence, just sourced from a
+// different place (the textarea's current value vs a fresh clipboard
+// read). buttonEl's feedback text is restored via a caller-supplied
+// label so each entry point's own idle state (a plain icon+label
+// button in one case) survives round-tripping through this.
+function runLeadCheckerClassification(rawInput, buttonEl, originalLabel) {
+// Captured before the panel gets rebuilt below (which replaces this
+// element along with everything else) - reopening it unconditionally
+// afterward was fine when Classify only ever lived inside the popover
+// itself (it was already open, by definition, to have been clicked).
+// Now that Paste & Classify is also a top-level button outside the
+// popover, that same unconditional reopen was forcing the popover
+// (with its manual-paste textarea) open every time, even when the user
+// never opened it - reported as an unwanted extra UI appearing.
+const popoverBeforeEl = document.getElementById('leadCheckerPopover');
+const popoverWasOpen = !!popoverBeforeEl && popoverBeforeEl.style.display !== 'none';
+const parsed = parseLeadCheckerImportTsv(rawInput);
+if (!parsed.headerOk) {
+buttonEl.textContent = 'Bad header';
+setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 1500);
+return false;
+}
+if (parsed.rows.length === 0) {
+buttonEl.textContent = 'No rows';
+setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 1200);
+return false;
+}
+const results = classifyLeadCheckerImportRows(parsed.rows);
+// rawInput cleared, not saved back - once a batch has been classified,
+// its results already live in `results` and show up on the real lead
+// cards; leaving the just-used text sitting in the box just reads as
+// stale/already-handled the next time this popover is opened, per
+// instruction that it should go blank automatically.
+saveLeadCheckerImportState({ rawInput: '', results });
+// Full panel re-render, not just this popover - the whole point is
+// getting results onto the real lead cards (findLeadCheckerResultFor
+// Customer, rendered per-card in renderTierSection), not just updating
+// this popover's own summary text. buttonEl itself is about to be
+// replaced along with the rest of the panel, so nothing below
+// references it again.
+//
+// displayPendingPanel, not always displayPanel - this popover is shown
+// on both the SLA and Pending pages now; calling displayPanel while on
+// Pending would re-render the wrong page's panel entirely.
+//
+// Explicit lastSlaDiffCounts/lastPendingDiffCounts + invalidateCache:
+// false, not the defaults (0/0/true) - classifying doesn't change which
+// leads exist, it only attaches result badges to already-known ones, so
+// it must neither wipe the real +N/-N diff from the last actual scan
+// nor force another live re-scan of the queue table. Confirmed live:
+// with paste & classify now a one-click top-level button used far more
+// often, the defaults were wiping the +/- indicator and re-scanning the
+// queue on every single classify.
+if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, lastPendingDiffCounts.newCount, lastPendingDiffCounts.removedCount, false);
+else displayPanel(currentCustomers, lastSlaDiffCounts.newCount, lastSlaDiffCounts.removedCount, false);
+if (popoverWasOpen) {
+const reopened = document.getElementById('leadCheckerPopover');
+if (reopened) reopened.style.display = 'block';
+}
+return true;
+}
+
+window._classifyLeadCheckerImport = function(buttonEl) {
+const box = document.getElementById('leadCheckerImportBox');
+const rawInput = box ? box.value : '';
+runLeadCheckerClassification(rawInput, buttonEl, buttonEl.textContent);
+};
+
+// One click instead of three (switch to the other tab/window, copy,
+// switch back, paste into the textarea, click Classify) - reads the
+// clipboard directly via the async Clipboard API. That API requires
+// clipboard-read permission and can be blocked entirely in some
+// contexts (exactly the kind of restricted, third-party-injected-
+// iframe context copyTextToClipboard's own history in this file's
+// sibling already flagged as real for the WRITE side) - falls back to
+// telling the user to paste manually rather than failing silently, so
+// the existing textarea+Classify path always still works regardless.
+window._pasteAndClassifyLeadChecker = async function(buttonEl) {
+const originalLabel = buttonEl.innerHTML;
+if (!navigator.clipboard || !navigator.clipboard.readText) {
+buttonEl.textContent = 'Paste manually below';
+setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 1800);
+return;
+}
+buttonEl.textContent = 'Reading…';
+try {
+const rawInput = await navigator.clipboard.readText();
+const box = document.getElementById('leadCheckerImportBox');
+if (box) box.value = rawInput;
+saveLeadCheckerImportState({ rawInput, results: loadLeadCheckerImportState().results });
+const ok = runLeadCheckerClassification(rawInput, buttonEl, originalLabel);
+if (ok) return; // displayPanel already rebuilt this button with a fresh label
+} catch (error) {
+buttonEl.textContent = 'Clipboard blocked - paste manually';
+setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 2000);
+}
+};
+
 // Tier/callback-type section open-closed state used to live only in the
 // DOM (a plain style.display toggle), which meant it reset to fully-open
 // on every panel rebuild - collapsing sections you don't care about, to
@@ -1291,6 +3898,233 @@ return new Set();
 function isSectionCollapsed(sectionId) {
 return loadCollapsedSections().has(sectionId);
 }
+
+// Off by default, per instruction that this shouldn't clutter the
+// screen or disrupt the existing tier/callback-type layout unless
+// explicitly turned on - a fresh page load (or a Clear & Stop) always
+// starts with today's default order, and the toggle only changes the
+// order of cards already visible within their existing sections, never
+// adds new ones.
+const LEAD_CHECKER_PRIORITY_SORT_KEY = '_slaLeadCheckerPrioritySort';
+
+function isLeadCheckerPrioritySortEnabled() {
+return localStorage.getItem(LEAD_CHECKER_PRIORITY_SORT_KEY) === '1';
+}
+
+// Sorts ascending by the imported tier number directly (1 =
+// CONFIRMED DATE & TIME ... 6 = REDIRECT/NO CALL, per lead-
+// classification-spec.md v1.10) - simpler than the old hardcoded
+// two-category special case, and it naturally extends to all 6 tiers
+// instead of only distinguishing two of them. Customers with no
+// Lead Checker result at all (or an unresolved tier) sort after
+// every real tier, keeping their existing relative order - a stable
+// sort on this rank alone, not a full re-sort, so within "no result"
+// the section's own existing order (urgency for SLA, current order
+// for Pending) is left exactly as-is. Array.prototype.sort has been a
+// stable sort in every engine this bookmarklet runs in for years, so
+// this rank-only comparator is enough on its own.
+// Post Closure leads never really get a meaningful tier of their own
+// here - per instruction, they don't appear on the SLA queue at all
+// (not genuinely new leads), and Pending's own "Post Closure" callback
+// type already isolates them into their own section on its own, no
+// separate grouping needed. Within that existing section though, a
+// "Send back through" result should sort ahead of a "Check: needs
+// contact?" one, both ahead of anyone not yet classified by Booking
+// Check at all, regardless of whatever tier the classifier's own
+// pipeline happened to land the lead on underneath.
+function leadCheckerPriorityRank(customer, leadCheckerResults) {
+const result = findLeadCheckerResultForCustomer(customer, leadCheckerResults);
+if (!result) return 7;
+if (result.postClosureAction === 'send back through') return -2;
+if (result.postClosureAction) return -1;
+if (!result.tier) return 7;
+return result.tier;
+}
+
+// Bucket 0 = due before the next clock hour (matches defaultHourCutoff/
+// renderPendingDueSummary's own "This hour", which already folds
+// anything overdue into that same bucket), bucket 1 = the hour after
+// that, and so on - same boundary definition used everywhere else in
+// this file that talks about due-hour blocks, so "this hour" means the
+// same thing here as it does on the stat tiles. No due date at all
+// sorts last, in its own bucket, rather than being guessed into "now".
+function hourBucketIndex(dueDate) {
+if (!dueDate) return Infinity;
+const thisHourCutoff = defaultHourCutoff();
+if (dueDate.getTime() < thisHourCutoff.getTime()) return 0;
+return 1 + Math.floor((dueDate.getTime() - thisHourCutoff.getTime()) / (60 * 60000));
+}
+
+// getDueDate is optional (existing callers/tests that don't pass one
+// get every customer into the same bucket, i.e. pure rank+original-
+// order, same as before this existed) - when given, priority only ever
+// reorders WITHIN a due-hour bucket. Per instruction: booking-likelihood
+// must not let a lead due hours from now jump ahead of one due within
+// the next few minutes just because it has a "more likely" result -
+// the hour-to-contact grouping stays the dominant sort key, likelihood
+// is the tie-break inside it.
+function sortByLeadCheckerPriority(customers, leadCheckerResults, getDueDate) {
+return customers
+.map((c, index) => ({
+c, index,
+hourBucket: getDueDate ? hourBucketIndex(getDueDate(c)) : 0,
+rank: leadCheckerPriorityRank(c, leadCheckerResults)
+}))
+.sort((a, b) => a.hourBucket - b.hourBucket || a.rank - b.rank || a.index - b.index)
+.map((entry) => entry.c);
+}
+
+(function sortByLeadCheckerPrioritySelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
+}
+
+const customers = [
+{ name: 'Alice (no result)', email: 'alice@example.com', phone: '' },
+{ name: 'Bob (tier 4)', email: 'bob@example.com', phone: '' },
+{ name: 'Carol (no result)', email: 'carol@example.com', phone: '' },
+{ name: 'Dee (tier 1)', email: 'dee@example.com', phone: '' },
+{ name: 'Eve (tier 5)', email: 'eve@example.com', phone: '' },
+{ name: 'Fay (tier 3)', email: 'fay@example.com', phone: '' }
+];
+const leadCheckerResults = [
+{ email: 'bob@example.com', phone: '', tier: 4, tierName: 'WARM ENQUIRY' },
+{ email: 'dee@example.com', phone: '', tier: 1, tierName: 'CONFIRMED DATE & TIME' },
+{ email: 'eve@example.com', phone: '', tier: 5, tierName: 'NURTURE' },
+{ email: 'fay@example.com', phone: '', tier: 3, tierName: 'LIKELY BOOKING' }
+];
+
+const sorted = sortByLeadCheckerPriority(customers, leadCheckerResults).map((c) => c.name);
+check('Tier 1 comes first', sorted[0], 'Dee (tier 1)');
+check('Tier 3 comes second - generalises to every tier, not just two hardcoded ones', sorted[1], 'Fay (tier 3)');
+check('Tier 4 comes third', sorted[2], 'Bob (tier 4)');
+check('Tier 5 comes fourth', sorted[3], 'Eve (tier 5)');
+check('No-result customers sort after every real tier, keeping their original relative order', sorted.slice(4).join(', '), 'Alice (no result), Carol (no result)');
+
+const untouched = sortByLeadCheckerPriority(customers, []);
+check('With no Lead Checker results at all, original order is preserved entirely', untouched.map((c) => c.name).join(', '), customers.map((c) => c.name).join(', '));
+
+check('Disabled by default (LEAD_CHECKER_PRIORITY_SORT_KEY unset)', isLeadCheckerPrioritySortEnabled(), false);
+
+if (failures.length > 0) {
+console.error('SLA Extract sortByLeadCheckerPriority self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract sortByLeadCheckerPriority self-test passed (7/7)');
+}
+})();
+
+// ===================================================================
+// Self-test for leadCheckerPriorityRank's Post Closure ordering - per
+// instruction, within the Post Closure section, Send back through must
+// sort ahead of Check: needs contact, both ahead of anyone not yet
+// classified at all, regardless of whatever tier each one's classifier
+// pipeline happened to land on underneath.
+// ===================================================================
+(function leadCheckerPriorityRankPostClosureSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+
+const customers = [
+{ name: 'Not Yet Classified', email: 'nyc@example.com', phone: '', createdText: '' },
+{ name: 'Check Needed', email: 'check@example.com', phone: '', createdText: 'Sat, 26 Sep 2026 11:00' },
+{ name: 'Send Back', email: 'sendback@example.com', phone: '', createdText: 'Sat, 26 Sep 2026 10:00' }
+];
+const leadCheckerResults = [
+{ email: 'check@example.com', phone: '', tier: 4, postClosureAction: 'check: needs contact?' },
+{ email: 'sendback@example.com', phone: '', tier: 6, postClosureAction: 'send back through' }
+];
+const sorted = sortByLeadCheckerPriority(customers, leadCheckerResults).map((c) => c.name);
+check('Send back through comes first, even though its underlying tier (6) is the least urgent one', sorted[0], 'Send Back');
+check('Check: needs contact comes second', sorted[1], 'Check Needed');
+check('Not yet classified comes last', sorted[2], 'Not Yet Classified');
+
+if (failures.length > 0) {
+console.error('SLA Extract leadCheckerPriorityRank-postClosure self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract leadCheckerPriorityRank-postClosure self-test passed (3/3)');
+}
+})();
+
+// ===================================================================
+// Self-test for the card badge - per instruction, a Post Closure lead
+// stays in its normal tier/callback-type section (no separate section),
+// but its badge shows ONLY the Post Closure decision, replacing the
+// tier badge entirely rather than showing both side by side.
+// ===================================================================
+(function postClosureBadgeReplacementSelfTest() {
+const failures = [];
+const originalImportState = localStorage.getItem(LEAD_CHECKER_IMPORT_KEY);
+saveLeadCheckerImportState({
+rawInput: '',
+results: [{ name: 'Sendback Sam', email: 'sam@example.com', phone: '', created: 'Sat, 26 Sep 2026 10:00', tier: 4, tierName: 'WARM ENQUIRY', postClosureAction: 'send back through' }]
+});
+
+const html = renderTierSection('Tier 1 - Priority', [
+{ name: 'Sendback Sam', email: 'sam@example.com', phone: '', createdText: 'Sat, 26 Sep 2026 10:00', tier: 1, key: 'k1' }
+], '#dc2626', 'tier1-badge-test');
+
+if (!html.includes('send back through')) failures.push('Expected the Post Closure badge text to appear on the card');
+if (html.includes('WARM ENQUIRY')) failures.push('Expected the underlying tier badge (WARM ENQUIRY) to be replaced, not shown alongside the Post Closure badge');
+
+if (originalImportState === null) localStorage.removeItem(LEAD_CHECKER_IMPORT_KEY);
+else localStorage.setItem(LEAD_CHECKER_IMPORT_KEY, originalImportState);
+
+if (failures.length > 0) {
+console.error('SLA Extract postClosureBadgeReplacement self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract postClosureBadgeReplacement self-test passed (2/2)');
+}
+})();
+
+// ===================================================================
+// Self-test for the hour-bucket grouping in sortByLeadCheckerPriority -
+// booking-likelihood must only ever reorder WITHIN a due hour, never
+// let a lead due hours from now outrank one due within the next few
+// minutes. Uses real relative times (defaultHourCutoff's own "top of
+// the next clock hour" boundary), not fixed clock times, so this stays
+// correct regardless of what time it's actually run.
+// ===================================================================
+(function sortByLeadCheckerPriorityHourBucketSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
+}
+
+const thisHourCutoff = defaultHourCutoff();
+const dueThisHourSoon = new Date(thisHourCutoff.getTime() - 5 * 60000);
+const dueThisHourLater = new Date(thisHourCutoff.getTime() - 2 * 60000);
+const dueNextHour = new Date(thisHourCutoff.getTime() + 10 * 60000);
+
+const customers = [
+{ name: 'Amy (this hour, no result)', email: 'amy@example.com', phone: '', slaDate: dueThisHourSoon },
+{ name: 'Ben (next hour, tier 1 - highest likelihood)', email: 'ben@example.com', phone: '', slaDate: dueNextHour },
+{ name: 'Cat (this hour, tier 1)', email: 'cat@example.com', phone: '', slaDate: dueThisHourLater },
+{ name: 'Dee (this hour, no result)', email: 'dee@example.com', phone: '', slaDate: dueThisHourSoon }
+];
+const leadCheckerResults = [
+{ email: 'ben@example.com', phone: '', tier: 1, tierName: 'CONFIRMED DATE & TIME' },
+{ email: 'cat@example.com', phone: '', tier: 1, tierName: 'CONFIRMED DATE & TIME' }
+];
+
+const sorted = sortByLeadCheckerPriority(customers, leadCheckerResults, (c) => c.slaDate).map((c) => c.name);
+check('Ben (next hour) never outranks anyone due this hour, despite the highest likelihood result', sorted[3], 'Ben (next hour, tier 1 - highest likelihood)');
+check('Within this hour, Cat (tier 1) sorts first', sorted[0], 'Cat (this hour, tier 1)');
+check('Within this hour, no-result customers keep their original relative order (Amy before Dee)', sorted.slice(1, 3).join(', '), 'Amy (this hour, no result), Dee (this hour, no result)');
+
+const noGetter = sortByLeadCheckerPriority(customers, leadCheckerResults).map((c) => c.name);
+check('With no getDueDate passed, hour bucketing is skipped entirely (backward compatible) - Ben (tier 1) sorts to the very top', noGetter[0], 'Ben (next hour, tier 1 - highest likelihood)');
+
+if (failures.length > 0) {
+console.error('SLA Extract sortByLeadCheckerPriority-hour-bucket self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Extract sortByLeadCheckerPriority-hour-bucket self-test passed (4/4)');
+}
+})();
 
 function setSectionCollapsed(sectionId, collapsed) {
 const set = loadCollapsedSections();
@@ -1314,6 +4148,7 @@ const windowMinutes = document.getElementById('assignWindowMinutes')?.value ?? n
 const cutoffTime = document.getElementById('assignCutoffTime')?.value ?? null;
 const advancedOpen = document.getElementById('advancedCallbackTypes')?.style.display === 'flex';
 const assignLimit = document.getElementById('assignLimitInput')?.value || null;
+const assignLimitPerAgent = document.getElementById('assignLimitPerAgent')?.checked || false;
 
 // Primary callback types default ON (opt-out, mirrors tiers); Advanced
 // ones default OFF (opt-in) - so unlike everything else here, "excluded"
@@ -1328,7 +4163,7 @@ const includedAdvancedCallbackTypes = allCallbackCheckboxes
 
 saveAssignSettings({
 excludedTiers, excludedCallbackTypes, includedAdvancedCallbackTypes, excludedAgentIds,
-customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen, assignLimit
+customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen, assignLimit, assignLimitPerAgent
 });
 }
 
@@ -1338,11 +4173,20 @@ customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen, assignLim
 // and drops the rest for this run, rather than an arbitrary subset. Used
 // by every run-building entry point (manual button, Quick Assign, tile
 // clicks) so "just do 10 of these" works no matter which one is used.
-function applyAssignLimit(prioritized) {
-const raw = loadAssignSettings().assignLimit;
+// agents is required, not optional - every call site already knows its
+// agent list by this point (all four guard "select at least one agent"
+// beforehand), and it's what makes the "per agent" mode possible: with
+// it checked, LIMIT means "this many EACH", so the actual cap is
+// LIMIT * agents.length rather than LIMIT itself - per instruction,
+// so assigning a fixed count per agent doesn't require doing that
+// multiplication by hand first.
+function applyAssignLimit(prioritized, agents) {
+const settings = loadAssignSettings();
+const raw = settings.assignLimit;
 const limit = raw ? Number(raw) : null;
 if (!limit || limit <= 0) return prioritized;
-return prioritized.slice(0, limit);
+const effectiveLimit = settings.assignLimitPerAgent ? limit * agents.length : limit;
+return prioritized.slice(0, effectiveLimit);
 }
 
 // Shared by renderAssignSection/renderPendingAssignSection - the two
@@ -1353,26 +4197,38 @@ return prioritized.slice(0, limit);
 // in both functions; factored out once both were stable rather than
 // during initial development, since the shared shape only became
 // obvious after both existed.
+// Two independent collapse levels, not one: ASSIGN (agents/limit/
+// preview/button/results) is the bulk of this zone's height, and an
+// earlier pass made it permanently visible on the assumption that
+// "always visible" was strictly better - it isn't, especially at the
+// compact/mini panel size, where that alone can push the actual lead
+// list out of view. Collapsible again, defaulting open so nothing
+// changes for anyone who hasn't touched it yet. FILTERS nests inside
+// it (collapsed independently, and only reachable at all while ASSIGN
+// is open) since tier/callback-type/time-window filters only matter
+// when you're about to run a manual assign.
 function renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, runHandlerName, filtersZoneHtml) {
+const filtersOpen = !!settings.filtersOpen;
+const assignOpen = settings.assignOpen !== false;
 return `
-<div id="assignSectionContainer" style="padding: 16px 20px; background: white; border-bottom: 1px solid #e2e8f0;">
-<div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
-<span style="font-weight: 700; color: #1e293b; font-size: 14px;">⚡ Assign Leads</span>
-<span id="assignSectionToggle" style="font-size: 14px; color: #1e293b;">${settings.sectionOpen ? '▼' : '▶'}</span>
+<div id="assignSectionContainer" style="padding: 0 20px 16px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
+<div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; align-items: center; gap: 6px; padding: 6px 0; font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px;">
+${chevronIcon(!assignOpen, 'assignSectionToggle')} ASSIGN
 </div>
-<div id="assignSectionBody" style="margin-top: 12px; display: ${settings.sectionOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
+<div id="assignSectionBody" style="display: ${assignOpen ? 'block' : 'none'}; max-height: ${assignFullSectionMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="margin-bottom: 10px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
 <span style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px;">AGENTS ONLINE</span>
 <span style="display: flex; gap: 8px;">
 <span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #4f46e5; cursor: pointer;">All</span>
 <span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #4f46e5; cursor: pointer;">None</span>
-<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #4f46e5; cursor: pointer;">↻ Refresh</span>
-<span onclick="window._toggleAssignHistory()" style="font-size: 11px; color: #4f46e5; cursor: pointer;">📊 History</span>
+<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('refresh', 11)} Refresh</span>
+<span onclick="window._toggleAssignHistory()" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('history', 11)} History</span>
+<span onclick="window._checkAgentQueuePositions(this)" title="Reads each agent's live call queue from Konnect's own Queue by Agent page - shows how many leads each agent hasn't called yet, and where a given lead sits in that queue" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('checklist', 11)} Queue</span>
 </span>
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
-<div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: #f8fafc; border-radius: 4px; font-size: 11px; color: #1e293b;"></div>
+<div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: white; border-radius: 4px; font-size: 11px; color: #1e293b;"></div>
 </div>
 <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px;">
 ${renderAssignLimitControl(settings)}
@@ -1380,11 +4236,14 @@ ${renderAssignLimitControl(settings)}
 </div>
 <button id="assignRunButton" onclick="window.${runHandlerName}()" ${buttonDisabled ? 'disabled' : ''}
 style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#cbd5e1' : '#059669'}; color: white; border: none; border-radius: 8px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
-${buttonDisabled ? 'No agents online' : 'Assign Unassigned Leads'}
+${buttonDisabled ? (canCheckAgentRoster() ? 'No agents online' : "Can't check agents right now") : 'Assign Unassigned Leads'}
 </button>
 <div id="assignResultsSummary"></div>
 <div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: #64748b; max-height: 100px; overflow-y: auto;"></div>
-<div style="background: #f1f5f9; border-radius: 6px; padding: 12px; margin-top: 16px;">
+<div onclick="window._toggleFiltersZone()" style="cursor: pointer; display: flex; align-items: center; gap: 6px; margin-top: 14px; font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px;">
+${chevronIcon(!filtersOpen, 'filtersZoneToggle')} FILTERS
+</div>
+<div id="filtersZoneBody" style="display: ${filtersOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; margin-top: 10px; padding-right: 6px;">
 ${filtersZoneHtml}
 </div>
 </div>
@@ -1404,8 +4263,9 @@ const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).l
 const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
 
 const tierCheckboxes = [1, 2, 3, 4].map(t => `
-<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #1e293b;">
-<input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()"> Tier ${t} <span id="tier-count-${t}" style="color:#94a3b8;">(${tierCounts[t - 1]})</span>
+<label class="chip-label">
+<input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()">
+Tier ${t} <span id="tier-count-${t}" style="opacity: 0.7;">(${tierCounts[t - 1]})</span>
 </label>`).join('');
 
 const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
@@ -1414,16 +4274,18 @@ const buttonDisabled = agents.length === 0;
 const filtersZoneHtml = `
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">TIERS</div>
-<div style="display: flex; gap: 10px; flex-wrap: wrap;">${tierCheckboxes}</div>
+<div style="display: flex; gap: 6px; flex-wrap: wrap;">${tierCheckboxes}</div>
 </div>
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">SPECIAL FILTERS</div>
-<div style="display: flex; flex-direction: column; gap: 6px;">
-<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #1e293b;">
-<input type="checkbox" id="assignCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateAssignPreview()"> Customer First only <span style="color:#94a3b8;">(${customerFirstCount})</span>
+<div style="display: flex; gap: 6px; flex-wrap: wrap;">
+<label class="chip-label">
+<input type="checkbox" id="assignCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateAssignPreview()">
+Customer First <span style="opacity: 0.7;">(${customerFirstCount})</span>
 </label>
-<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #1e293b;">
-<input type="checkbox" id="assignEmailOnly" ${settings.emailOnly ? 'checked' : ''} onchange="window._updateAssignPreview()"> Email only (no phone) <span style="color:#94a3b8;">(${emailOnlyCount})</span>
+<label class="chip-label">
+<input type="checkbox" id="assignEmailOnly" ${settings.emailOnly ? 'checked' : ''} onchange="window._updateAssignPreview()">
+Email only <span style="opacity: 0.7;">(${emailOnlyCount})</span>
 </label>
 </div>
 </div>
@@ -1471,14 +4333,15 @@ const landline = cells[PC_COL_LANDLINE]?.textContent?.trim();
 const campaign = cells[PC_COL_CAMPAIGN]?.textContent?.trim();
 const callbackType = cells[PC_COL_CALLBACK_TYPE]?.textContent?.trim();
 const nextActionText = cells[PC_COL_NEXT_ACTION]?.textContent?.trim() || '';
-const lastActionDate = parseKonnectDate(cells[PC_COL_LAST_ACTION]?.textContent?.trim() || '');
+const lastActionText = cells[PC_COL_LAST_ACTION]?.textContent?.trim() || '';
+const lastActionDate = parseKonnectDate(lastActionText);
 const nextActionDate = parseKonnectDate(nextActionText);
 const assignState = getAssignCellState(cells[PC_COL_ASSIGN]);
 
 leads.push({
 key: `${name}||${reg}||${campaign}||${callbackType}||${nextActionText}`,
 name, dealer, brand, reg, email, mobile, landline, campaign,
-callbackType, lastActionDate, nextActionDate,
+callbackType, lastActionText, lastActionDate, nextActionDate,
 assigned: assignState.assigned,
 agentName: assignState.agentName
 });
@@ -1577,12 +4440,12 @@ renderStatTile('Next hour', dueNextHour, false, `window._quickAssignPendingTile(
 ].join('');
 
 return `
-<div id="pendingDueSummary" style="padding: 10px 20px; background: #f8fafc; border-bottom: 1px solid #e2e8f0; font-size: 12px; color: #1e293b;">
+<div id="pendingDueSummary" style="padding: 12px 20px 0; background: #f8fafc; font-size: 13px; color: #1e293b;">
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
 <div style="font-size: 11px; color: #64748b; margin-bottom: 6px;">${callbackLine}</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span style="font-size: 11px; color: #94a3b8;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
-<button onclick="window._quickAssign()" style="background: #059669; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0;">⚡ Quick Assign</button>
+<button onclick="window._clearWholeQueue()" style="background: #dc2626; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('warning', 11)} Clear Queue</button>
 </div>
 </div>`;
 }
@@ -1600,29 +4463,30 @@ const callbackCounts = computePendingCallbackCounts(leads, initialCutoffDate);
 const countFor = (type) => callbackCounts[type] || 0;
 
 const primaryCheckboxes = CALLBACK_TYPES_PRIMARY.map(type => `
-<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #1e293b;">
-<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${excludedCallbackTypes.has(type) ? '' : 'checked'} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="color:#94a3b8;">(${countFor(type)})</span>
+<label class="chip-label">
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${excludedCallbackTypes.has(type) ? '' : 'checked'} onchange="window._updateAssignPreview()">
+${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="opacity: 0.7;">(${countFor(type)})</span>
 </label>`).join('');
 
 const advancedCheckboxes = CALLBACK_TYPES_ADVANCED.map(type => `
-<label style="display: flex; align-items: center; gap: 4px; font-size: 12px; color: #1e293b;">
-<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${includedAdvancedCallbackTypes.has(type) ? 'checked' : ''} onchange="window._updateAssignPreview()"> ${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="color:#94a3b8;">(${countFor(type)})</span>
+<label class="chip-label">
+<input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${includedAdvancedCallbackTypes.has(type) ? 'checked' : ''} onchange="window._updateAssignPreview()">
+${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="opacity: 0.7;">(${countFor(type)})</span>
 </label>`).join('');
 
 const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
 const buttonDisabled = agents.length === 0;
 const defaultCutoff = settings.cutoffTime || formatTimeForInput(defaultHourCutoff());
 const advancedOpenStyle = settings.advancedOpen ? 'display: flex;' : 'display: none;';
-const advancedToggleArrow = settings.advancedOpen ? '▼' : '▶';
 
 const filtersZoneHtml = `
 <div style="margin-bottom: 10px;">
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">CALLBACK TYPE</div>
-<div style="display: flex; gap: 10px; flex-wrap: wrap;">${primaryCheckboxes}</div>
+<div style="display: flex; gap: 6px; flex-wrap: wrap;">${primaryCheckboxes}</div>
 <div onclick="window._toggleAdvancedCallbackTypes()" style="margin-top: 6px; font-size: 11px; color: #4f46e5; cursor: pointer;">
-<span id="advancedCallbackToggle">${advancedToggleArrow}</span> Advanced (Manual Rescheduled, Post Closure)
+${chevronIcon(!settings.advancedOpen, 'advancedCallbackToggle')} Advanced (Manual Rescheduled, Post Closure)
 </div>
-<div id="advancedCallbackTypes" style="${advancedOpenStyle} gap: 10px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
+<div id="advancedCallbackTypes" style="${advancedOpenStyle} gap: 6px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
 </div>
 <div>
 <div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">DUE BEFORE</div>
@@ -1641,31 +4505,56 @@ function renderCallbackTypeSection(typeName, customers, color) {
 const sectionId = 'cb-' + slugify(typeName);
 
 if (customers.length === 0) {
-return `<div style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 8px;
-border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
-<h3 style="margin: 0; color: ${color}; font-size: 14px; font-weight: 600;">${escapeHtml(typeName)}</h3>
-<p style="margin: 8px 0 0 0; color: #94a3b8; font-size: 13px;">No customers</p>
+return `<div style="margin-bottom: 16px; padding: 10px 4px; border-bottom: 2px solid ${color};">
+<span style="color: ${color}; font-size: 15px; font-weight: 700;">${escapeHtml(typeName)}</span>
+<span style="margin-left: 10px; color: #94a3b8; font-size: 13px;">No customers</span>
 </div>`;
 }
 
 const collapsed = isSectionCollapsed(sectionId);
-return `<div style="margin-bottom: 20px;">
-<div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 14px; background: white; border-radius: 8px 8px 0 0;
-display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
-border-bottom: 2px solid #e2e8f0;">
+// Loaded once per section (not per card) - same pattern as
+// renderTierSection's own leadCheckerResults.
+const leadCheckerResults = loadLeadCheckerImportState().results;
+// No hour-bucketing for the Post Closure callback type specifically -
+// per instruction, within that section a Send-back-through result must
+// sort ahead of a Check-needs-contact one, both ahead of anyone not yet
+// classified, full stop, regardless of which hour each happens to be
+// due in. Every other callback type still gets the hour-to-contact
+// grouping as the dominant key (see sortByLeadCheckerPriority's own
+// comment on why booking-likelihood can't override that).
+const orderedCustomers = isLeadCheckerPrioritySortEnabled()
+? sortByLeadCheckerPriority(customers, leadCheckerResults, typeName === 'Post Closure' ? null : (c) => c.nextActionDate)
+: customers;
+return `<div style="margin-bottom: 16px;">
+<div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 10px 4px;
+display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
 <div>
-<span style="font-weight: 700; color: #1e293b; font-size: 14px;">${escapeHtml(typeName)}</span>
-<span style="font-size: 12px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
+<span style="font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(typeName)}</span>
+<span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
 </div>
-<span id="toggle-${sectionId}" style="font-size: 14px; color: ${color};">${collapsed ? '▶' : '▼'}</span>
+<span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + sectionId)}</span>
 </div>
-<div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
-${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f1f5f9;">
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #1e293b; font-weight: 700; font-size: 14px;">${escapeHtml(c.name)}</span>
+<div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
+${orderedCustomers.map(c => {
+const queuePosition = findAgentQueuePositionForLead({ email: c.email, phone: c.mobile });
+// c directly, not a remapped {email, phone: c.mobile} object - that
+// remapping predates findLeadCheckerResultForCustomer's own mobile/
+// landline fallback and was incomplete anyway (dropped landline
+// entirely). The function now handles both fields itself.
+const leadChecker = findLeadCheckerResultForCustomer(c, leadCheckerResults);
+const leadCheckerTitle = leadChecker ? [leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
+return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px; border-bottom: 1px solid #e2e8f0;">
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
 ${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
 </div>
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
+<div style="margin-bottom: 10px;">
+<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
+<span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
+</div>
+${leadChecker ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(leadCheckerTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${leadChecker.postClosureAction ? postClosureActionColor(leadChecker.postClosureAction) : leadCheckerImportCategoryColor(leadChecker.tier)}1a; color: ${leadChecker.postClosureAction ? postClosureActionColor(leadChecker.postClosureAction) : leadCheckerImportCategoryColor(leadChecker.tier)};">${escapeHtml(leadChecker.postClosureAction || leadChecker.tierName || String(leadChecker.tier || ''))}</span></div>` : ''}
+${renderQueuePositionBadge(c.assigned, queuePosition)}
+${renderContactToggle(`
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">MOBILE</div>
 ${renderCopyableField(c.mobile)}
@@ -1674,100 +4563,156 @@ ${renderCopyableField(c.mobile)}
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
 ${renderCopyableField(c.email)}
 </div>
-</div>
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">LANDLINE</div>
 ${renderCopyableField(c.landline)}
 </div>
-<div>
-<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
-<span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
+`)}
+<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
+<span style="color: #64748b;">${escapeHtml(c.brand || '')}</span>
+<span style="color: #059669;">${escapeHtml(c.campaign || '')}</span>
 </div>
-</div>
-<div style="padding-top: 10px; border-top: 1px solid #e2e8f0; display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
-<span style="background: #e2e8f0; color: #1e293b; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.brand || '')}</span>
-<span style="background: #d1fae5; color: #059669; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.campaign || '')}</span>
-</div>
-</div>`).join('')}
+</div>`;
+}).join('')}
 </div>
 </div>`;
 }
 
-function resetBookmarklet() {
-currentCustomers = [];
-currentPendingCustomers = [];
-currentPageType = null;
-extracting = false;
-
-if (panelElement) {
-panelElement.remove();
-panelElement = null;
+function renderTierSection(tierName, customers, color, tierId) {
+if (customers.length === 0) {
+return `<div style="margin-bottom: 16px; padding: 10px 4px; border-bottom: 2px solid ${color};">
+<span style="color: ${color}; font-size: 15px; font-weight: 700;">${tierName}</span>
+<span style="margin-left: 10px; color: #94a3b8; font-size: 13px;">No customers</span>
+</div>`;
 }
 
-if (badge) {
-// Badge now lives inside a wrapping <li> in the host navbar (see
-// createBadge) - remove that wrapper too, or the fallback fixed-position
-// case's plain badge.remove(), so nothing gets left behind either way.
-const navItem = document.getElementById('_slaBadgeNavItem');
-if (navItem) navItem.remove();
-else badge.remove();
-badge = null;
+const collapsed = isSectionCollapsed(tierId);
+// Loaded once per tier section (not per card) - the whole point of
+// classifying in this panel rather than Konnect Lead Checker's own
+// UI is to see the result on this exact card, next to Assign/contact
+// details, instead of a second disconnected list.
+const leadCheckerResults = loadLeadCheckerImportState().results;
+const orderedCustomers = isLeadCheckerPrioritySortEnabled()
+? sortByLeadCheckerPriority(customers, leadCheckerResults, (c) => c.slaDate)
+: customers;
+return `<div style="margin-bottom: 16px;">
+<div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 10px 4px;
+display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
+<div>
+<span style="font-weight: 700; color: #1e293b; font-size: 15px;">${tierName}</span>
+<span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
+</div>
+<span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + tierId)}</span>
+</div>
+<div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
+${orderedCustomers.map(c => {
+const urgency = slaUrgencyInfo(c);
+const leadChecker = findLeadCheckerResultForCustomer(c, leadCheckerResults);
+const leadCheckerTitle = leadChecker ? [leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
+const queuePosition = findAgentQueuePositionForLead(c);
+return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px 12px 10px; border-bottom: 1px solid #e2e8f0; ${urgency.emphasize ? `border-left: 3px solid ${urgency.color}; background: ${urgency.color}0d;` : ''}">
+<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
+${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
+</div>
+${urgency.label ? `<div style="margin-bottom: 10px;"><span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${urgency.color}1a; color: ${urgency.color};">${urgency.label}</span></div>` : ''}
+${leadChecker ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(leadCheckerTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${leadChecker.postClosureAction ? postClosureActionColor(leadChecker.postClosureAction) : leadCheckerImportCategoryColor(leadChecker.tier)}1a; color: ${leadChecker.postClosureAction ? postClosureActionColor(leadChecker.postClosureAction) : leadCheckerImportCategoryColor(leadChecker.tier)};">${escapeHtml(leadChecker.postClosureAction || leadChecker.tierName || String(leadChecker.tier || ''))}</span></div>` : ''}
+${renderQueuePositionBadge(c.assigned, queuePosition)}
+${renderContactToggle(`
+<div>
+<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
+${renderCopyableField(c.phone)}
+</div>
+<div>
+<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
+${renderCopyableField(c.email)}
+</div>
+`)}
+<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
+<span style="color: #64748b;">${escapeHtml(c.source)}</span>
+<span style="color: #059669;">${escapeHtml(c.campaign)}</span>
+</div>
+</div>`;
+}).join('')}
+</div>
+</div>`;
 }
 
-console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
-}
-
-// Shared panel chrome (positioning, header, footer) for both pages - only
-// the title/counts, the assign section, and the body content differ.
-function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml }) {
+function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml, hideSearch, onTitleClick, showLeadChecker }) {
 const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 const isFull = panelSize === 'full';
 const positionStyle = isFull
 ? 'top: 0; right: 0; bottom: 0; height: 100vh; width: 450px; border-radius: 0;'
 : 'bottom: 20px; right: 20px; width: 400px; height: min(560px, calc(100vh - 90px)); border-radius: 16px;';
 
+// PANEL_STATE_KEY was being written on every minimize but never read
+// back - a page-switch triggers the auto-detect poll, which rebuilds
+// this whole shell from scratch (mountPanel replaces the DOM node
+// entirely), and a fresh render had no idea the panel was minimized,
+// so it always came back full size. Reading it here and applying the
+// same transform/icon a manual minimize would have set is what makes
+// "stay minimized across a rebuild" actually true.
+const isMinimized = localStorage.getItem(PANEL_STATE_KEY) === 'hidden';
+
 return `
 <div id="${PANEL_BOX_ID}" style="position: fixed; ${positionStyle}
-background: #f8fafc; box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+background: #f8fafc; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.25), 0 4px 12px rgba(15,23,42,0.08);
 z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-display: flex; flex-direction: column; transition: transform 0.3s ease;">
+display: flex; flex-direction: column; transition: transform 0.3s ease; ${isMinimized ? 'transform: translateX(150%);' : ''}">
 
-<div style="position: sticky; top: 0; background: linear-gradient(135deg, #1e293b 0%, #334155 100%); color: white; padding: 20px;
-display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #059669;
+<div style="position: sticky; top: 0; background: #1e293b; color: white; padding: 10px 14px;
+display: flex; justify-content: space-between; align-items: center;
 flex-shrink: 0;">
-<div style="display: flex; align-items: center; gap: 12px;">
-<h2 style="margin: 0; font-size: 18px; font-weight: 700;">${title}</h2>
-<span style="background: #059669; color: white; padding: 4px 10px; border-radius: 16px; font-size: 13px; font-weight: 600;">${count}</span>
-${newCount > 0 ? `<span style="background: #d97706; color: white; padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;">+${newCount}</span>` : ''}
-${removedCount > 0 ? `<span style="background: #64748b; color: white; padding: 4px 10px; border-radius: 16px; font-size: 12px; font-weight: 600;">−${removedCount}</span>` : ''}
+<div style="display: flex; align-items: center; gap: 8px;">
+<h2 ${onTitleClick ? `onclick="${onTitleClick}" title="Click to refresh the leads and this panel" style="margin: 0; font-size: 15px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 4px;"` : `style="margin: 0; font-size: 15px; font-weight: 700;"`}>${title}${onTitleClick ? svgIcon('refresh', 12, ' opacity: 0.55;') : ''}</h2>
+<span style="color: #94a3b8; font-size: 13px;">${count}</span>
+${newCount > 0 ? `<span style="color: #d97706; font-size: 13px; font-weight: 600;">+${newCount}</span>` : ''}
+${removedCount > 0 ? `<span style="color: #94a3b8; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
 </div>
-<div style="display: flex; gap: 8px;">
-<button onclick="window._togglePanelSize();"
-style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
-title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${isFull ? '⤡' : '⤢'}</button>
+<div style="display: flex; gap: 2px;">
+${showLeadChecker ? `<button onclick="window._toggleLeadCheckerPopover();"
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
+title="Lead Checker - copy leads out, classify results back in">${svgIcon('inbox', 14)}</button>` : ''}
+${showLeadChecker ? `<button id="_slaPrioritySortBtn" onclick="window._toggleLeadCheckerPrioritySort();"
+style="background: ${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#94a3b8'}; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#94a3b8'}';"
+title="${isLeadCheckerPrioritySortEnabled() ? 'Lead Checker priority sort: ON - click to turn off' : 'Lead Checker priority sort: OFF - click to bring Confirmed/Warm leads to the top of each section'}">${svgIcon('bolt', 14)}</button>` : ''}
+<button onclick="window._toggleMorningChecks();"
+style="background: ${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='#94a3b8';"
+title="${currentPanelMode === 'morningChecks' ? 'Back to queue view' : 'Morning Checks'}">${svgIcon('checklist', 14)}</button>
+<button id="_slaSizeBtn" onclick="window._togglePanelSize();"
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
+title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${svgIcon(isFull ? 'shrink' : 'expand', 14)}</button>
 <button onclick="document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0;"
-style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
-title="Top">↑</button>
-<button onclick="(function() { const panel = document.getElementById('${PANEL_BOX_ID}'); if (!panel) return; const btn = event.target; const isHidden = panel.style.transform === 'translateX(150%)'; panel.style.transform = isHidden ? '' : 'translateX(150%)'; btn.textContent = isHidden ? '−' : '□'; localStorage.setItem('${PANEL_STATE_KEY}', isHidden ? 'visible' : 'hidden'); })();"
-style="background: rgba(255,255,255,0.2); border: none; color: white; cursor: pointer; padding: 6px 10px; font-size: 16px; border-radius: 4px; transition: all 0.2s;"
-title="Minimize">−</button>
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
+title="Top">${svgIcon('arrowUp', 14)}</button>
+<button id="_slaMinimizeBtn" onclick="window._toggleMinimizePanel();"
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
+title="Minimize">${svgIcon(isMinimized ? 'restore' : 'minimize', 14)}</button>
 </div>
 </div>
 
+${showLeadChecker ? renderLeadCheckerPopover() : ''}
 ${summaryHtml || ''}
 ${assignSectionHtml}
 
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
+${hideSearch ? '' : `
+${showLeadChecker ? `<button onclick="window._pasteAndClassifyLeadChecker(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 10px;" title="Reads Konnect Lead Checker's &quot;Copy raw for Extract&quot; result straight off the clipboard and classifies it">${svgIcon('copy', 13)}Paste & Classify from Lead Checker</button>` : ''}
 <div style="position: sticky; top: 0; z-index: 2; background: #f8fafc; padding-bottom: 10px; margin-bottom: 10px;">
 <input type="text" id="customerSearchInput" placeholder="Search by name…" oninput="window._filterCustomerSearch(this.value)"
 style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; color: #1e293b; background: white;">
-</div>
+</div>`}
 ${bodyHtml}
 </div>
 
-<div style="border-top: 1px solid #cbd5e1; padding: 8px 14px; background: white; flex-shrink: 0; display: flex; justify-content: flex-end; box-shadow: 0 -2px 8px rgba(0,0,0,0.05);">
-<button onclick="(function() { if (confirm('Clear all data and stop?')) { window._slaResetBookmarklet(); } })();"
+<div style="border-top: 1px solid #cbd5e1; padding: 8px 14px; background: white; flex-shrink: 0; display: flex; justify-content: flex-end; align-items: center; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
+<button onclick="window._slaResetBookmarklet();"
 style="padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
 </div>
 </div>
@@ -1807,22 +4752,35 @@ window._manualAssignLead(el.dataset.pageType, el.dataset.leadKey, el.value, el);
 initAssignSectionWheels();
 }
 
-function displayPanel(customers, newCount = 0, removedCount = 0) {
+// invalidateCache defaults to true (every existing caller relies on
+// this forcing a fresh collectAssignableLeads() scrape when genuinely
+// new table data just landed) - but the queue-position-only re-renders
+// (handleBadgeClick's second render, the post-assign auto re-scan,
+// _checkAgentQueuePositions, _clearWholeQueue) pass false, since none
+// of them changed what's actually in the SLA/Pending table - only the
+// Queue by Agent badges - and forcing a fresh live-DOM scrape right
+// after navigating away and back to get those badges was exactly the
+// race that kept reading the table before Angular had repopulated it
+// (a wait alone couldn't fully close this - reusing the already-correct
+// cache/currentCustomers instead avoids touching the live DOM at all
+// for this render).
+function displayPanel(customers, newCount = 0, removedCount = 0, invalidateCache = true) {
 currentCustomers = customers;
 currentPageType = PAGE_SLA;
-invalidateLeadsCache();
+currentPanelMode = 'normal';
+if (invalidateCache) invalidateLeadsCache();
 const tiered = {
-tier1: customers.filter(c => c.tier === 1),
-tier2: customers.filter(c => c.tier === 2),
-tier3: customers.filter(c => c.tier === 3),
-tier4: customers.filter(c => c.tier === 4)
+tier1: sortByUrgency(customers.filter(c => c.tier === 1)),
+tier2: sortByUrgency(customers.filter(c => c.tier === 2)),
+tier3: sortByUrgency(customers.filter(c => c.tier === 3)),
+tier4: sortByUrgency(customers.filter(c => c.tier === 4))
 };
 
 const bodyHtml = customers.length === 0 ? `
 <div style="padding: 40px 20px; text-align: center;">
-<div style="font-size: 56px; margin-bottom: 16px;">📭</div>
+<div style="color: #cbd5e1; margin-bottom: 16px;">${svgIcon('inbox', 48, ' stroke-width: 1.5;')}</div>
 <h3 style="color: #1e293b; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Leads in Queue</h3>
-<p style="color: #64748b; margin: 0; font-size: 14px; line-height: 1.6;">The SLA queue is empty. Check back when new leads arrive.</p>
+<p style="color: #64748b; margin: 0; font-size: 15px; line-height: 1.6;">The SLA queue is empty. Check back when new leads arrive.</p>
 </div>
 ` : `
 ${renderTierSection('Tier 1 - Priority', tiered.tier1, '#dc2626', 'tier1')}
@@ -1837,14 +4795,18 @@ count: customers.length,
 newCount, removedCount,
 summaryHtml: renderSlaDueSummary(),
 assignSectionHtml: renderAssignSection(),
-bodyHtml
+bodyHtml,
+onTitleClick: 'window._refreshLeadsAndPanel()',
+showLeadChecker: true
 }));
 }
 
-function displayPendingPanel(customers, newCount = 0, removedCount = 0) {
+// See displayPanel's own comment on invalidateCache - same reasoning.
+function displayPendingPanel(customers, newCount = 0, removedCount = 0, invalidateCache = true) {
 currentPendingCustomers = customers;
 currentPageType = PAGE_PENDING;
-invalidateLeadsCache();
+currentPanelMode = 'normal';
+if (invalidateCache) invalidateLeadsCache();
 
 const grouped = CALLBACK_TYPE_ORDER.map(type => ({
 type,
@@ -1854,9 +4816,9 @@ customers: customers.filter(c => c.callbackType === type)
 
 const bodyHtml = customers.length === 0 ? `
 <div style="padding: 40px 20px; text-align: center;">
-<div style="font-size: 56px; margin-bottom: 16px;">📭</div>
+<div style="color: #cbd5e1; margin-bottom: 16px;">${svgIcon('inbox', 48, ' stroke-width: 1.5;')}</div>
 <h3 style="color: #1e293b; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Pending Customers</h3>
-<p style="color: #64748b; margin: 0; font-size: 14px; line-height: 1.6;">Nothing in the queue right now.</p>
+<p style="color: #64748b; margin: 0; font-size: 15px; line-height: 1.6;">Nothing in the queue right now.</p>
 </div>
 ` : grouped.map(g => renderCallbackTypeSection(g.type, g.customers, g.color)).join('');
 
@@ -1866,57 +4828,14 @@ count: customers.length,
 newCount, removedCount,
 summaryHtml: renderPendingDueSummary(),
 assignSectionHtml: renderPendingAssignSection(),
-bodyHtml
+bodyHtml,
+onTitleClick: 'window._refreshLeadsAndPanel()',
+showLeadChecker: true
 }));
 }
 
-function renderTierSection(tierName, customers, color, tierId) {
-if (customers.length === 0) {
-return `<div style="margin-bottom: 20px; padding: 16px; background: white; border-radius: 8px;
-border-left: 4px solid ${color}; box-shadow: 0 1px 3px rgba(0,0,0,0.08);">
-<h3 style="margin: 0; color: ${color}; font-size: 14px; font-weight: 600;">${tierName}</h3>
-<p style="margin: 8px 0 0 0; color: #94a3b8; font-size: 13px;">No customers</p>
-</div>`;
-}
-
-const collapsed = isSectionCollapsed(tierId);
-return `<div style="margin-bottom: 20px;">
-<div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 14px; background: white; border-radius: 8px 8px 0 0;
-display: flex; justify-content: space-between; align-items: center; border-left: 4px solid ${color};
-border-bottom: 2px solid #e2e8f0;">
-<div>
-<span style="font-weight: 700; color: #1e293b; font-size: 14px;">${tierName}</span>
-<span style="font-size: 12px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
-</div>
-<span id="toggle-${tierId}" style="font-size: 14px; color: ${color};">${collapsed ? '▶' : '▼'}</span>
-</div>
-<div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'grid'}; gap: 12px; padding: 12px; background: white; border-radius: 0 0 8px 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.08);">
-${customers.map(c => `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #f1f5f9;">
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 10px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; padding: 2px 6px; border-radius: 4px; background: #e2e8f0; color: #1e293b; font-weight: 700; font-size: 14px;">${escapeHtml(c.name)}</span>
-${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
-</div>
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
-<div>
-<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
-${renderCopyableField(c.phone)}
-</div>
-<div>
-<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
-${renderCopyableField(c.email)}
-</div>
-</div>
-<div style="padding-top: 10px; border-top: 1px solid #e2e8f0; display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
-<span style="background: #e2e8f0; color: #1e293b; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.source)}</span>
-<span style="background: #d1fae5; color: #059669; padding: 4px 8px; border-radius: 4px;">${escapeHtml(c.campaign)}</span>
-</div>
-</div>`).join('')}
-</div>
-</div>`;
-}
-
 async function extractAndExportSla() {
-if (extracting || assigning) return;
+if (extracting || assigning || runningMorningChecks) return;
 extracting = true;
 
 try {
@@ -1925,6 +4844,7 @@ if (!table) {
 console.error('SLA Table not found');
 return;
 }
+await waitForLeadsTableRows(table);
 
 const previousByKey = new Map(currentCustomers.map(c => [c.key, c]));
 const seenKeys = new Set();
@@ -1946,32 +4866,58 @@ if (!name || !campaign) continue;
 // leads from the same source/campaign don't collide with each other.
 const key = `${name}||${registration}||${source}||${campaign}`;
 seenKeys.add(key);
-// Assign state is read fresh every scan, even for cached leads below -
-// unlike phone/email, it changes constantly and must never be stale.
+// Assign state, SLA date and status are all read fresh every scan,
+// even for cached leads below - unlike phone/email, due/status change
+// (or at least need re-evaluating against the current time) and must
+// never be stale.
 const assignState = getAssignCellState(cells[COL_ASSIGN]);
-rowDescriptors.push({ cells, name, source, campaign, key, assigned: assignState.assigned, agentName: assignState.agentName });
+const slaDate = parseKonnectDate(cells[COL_SLA_DATE]?.textContent?.trim() || '');
+const status = cells[COL_STATUS]?.textContent?.trim();
+// Kept as the raw displayed text, not parsed into a Date - this is
+// only ever surfaced verbatim (the Lead Checker export), where the
+// receiving tool needs to parse it itself against Konnect Live's own
+// displayed format, not a value that's already been through a second
+// layer of reformatting here.
+const createdText = cells[COL_CREATED]?.textContent?.trim() || '';
+rowDescriptors.push({ cells, name, registration, source, campaign, key, assigned: assignState.assigned, agentName: assignState.agentName, slaDate, status, createdText });
 }
 
 const pendingCount = rowDescriptors.filter(d => !previousByKey.has(d.key)).length;
 let remaining = pendingCount;
 setBadgeProgress(remaining);
+// Only the newly-seen leads below actually click into a detail modal
+// (cached ones are skipped entirely) - that's what pops the modal
+// open/closed rapidly per row and reads as the screen glitching, so
+// the overlay is only worth showing when there's actually one or more
+// of those, not on every routine scan. The badge's own countdown
+// (setBadgeProgress) is what used to show this - it's still updated
+// the same way below, but the overlay now sits on top of it (same
+// z-index, later in the DOM) for the exact pages this most often runs
+// on, so the remaining count needs to live in the overlay text too or
+// it's invisible for the whole ingestion.
+if (pendingCount > 0) showPageFlashOverlay(`Loading new leads… (${remaining} left)`);
 
 for (const d of rowDescriptors) {
 const existing = previousByKey.get(d.key);
 if (existing) {
-// Keep cached phone/email, but never the cached assigned/agentName -
-// that's re-read fresh above on every scan regardless of cache hit.
-customers.push({ ...existing, assigned: d.assigned, agentName: d.agentName });
+// Keep cached phone/email, but never the cached assigned/agentName/
+// slaDate/status/createdText - those are re-read fresh above on every
+// scan regardless of cache hit. registration is folded into the key
+// itself, so it can't change without also changing d.key, but it's
+// re-taken from d anyway for consistency with everything else here.
+customers.push({ ...existing, registration: d.registration, assigned: d.assigned, agentName: d.agentName, slaDate: d.slaDate, status: d.status, createdText: d.createdText });
 continue;
 }
 
 try {
+await waitForTabVisible();
 const tierInfo = categorizeTier(d.campaign, d.source);
 const details = await extractCustomerDetails(d.cells[0]);
 
 customers.push({
 key: d.key,
 name: d.name,
+registration: d.registration,
 campaign: d.campaign,
 source: d.source,
 tier: tierInfo.tier,
@@ -1979,7 +4925,10 @@ reason: tierInfo.reason,
 phone: details.phone,
 email: details.email,
 assigned: d.assigned,
-agentName: d.agentName
+agentName: d.agentName,
+slaDate: d.slaDate,
+status: d.status,
+createdText: d.createdText
 });
 addedCount++;
 } catch (error) {
@@ -1987,10 +4936,12 @@ console.warn('Error processing row:', error);
 } finally {
 remaining--;
 setBadgeProgress(remaining);
+showPageFlashOverlay(`Loading new leads… (${remaining} left)`);
 }
 }
 
 const removedCount = currentCustomers.filter(c => !seenKeys.has(c.key)).length;
+lastSlaDiffCounts = { newCount: addedCount, removedCount };
 
 const startTime = Date.now();
 displayPanel(customers, addedCount, removedCount);
@@ -1999,17 +4950,16 @@ console.info(`✅ SLA Report generated in ${totalTime}s (${customers.length} cus
 } catch (error) {
 console.error('SLA Export Error:', error);
 } finally {
-const panelBox = document.getElementById(PANEL_BOX_ID);
-if (panelBox) panelBox.style.transform = '';
 setBadgeProgress(0);
 extracting = false;
+hidePageFlashOverlay();
 }
 }
 
 // No modal click-and-wait needed here - Email/Mobile/Landline are plain
 // text columns, so this is a single synchronous pass over the table.
 async function extractAndExportPending() {
-if (extracting || assigning) return;
+if (extracting || assigning || runningMorningChecks) return;
 extracting = true;
 
 try {
@@ -2018,20 +4968,20 @@ if (!table) {
 console.error('Pending Customers table not found');
 return;
 }
+await waitForLeadsTableRows(table);
 
 const previousByKey = new Map(currentPendingCustomers.map(c => [c.key, c]));
 const leads = collectPendingCustomers();
 const seenKeys = new Set(leads.map(l => l.key));
 const addedCount = leads.filter(l => !previousByKey.has(l.key)).length;
 const removedCount = currentPendingCustomers.filter(c => !seenKeys.has(c.key)).length;
+lastPendingDiffCounts = { newCount: addedCount, removedCount };
 
 displayPendingPanel(leads, addedCount, removedCount);
 console.info(`✅ Pending Customers report generated (${leads.length} customers, +${addedCount}/-${removedCount})`);
 } catch (error) {
 console.error('Pending Customers Export Error:', error);
 } finally {
-const panelBox = document.getElementById(PANEL_BOX_ID);
-if (panelBox) panelBox.style.transform = '';
 setBadgeProgress(0);
 extracting = false;
 }
@@ -2042,16 +4992,17 @@ extracting = false;
 function runExtraction() {
 const pageType = detectPageType();
 if (pageType === PAGE_SLA) {
-extractAndExportSla();
+return extractAndExportSla();
 } else if (pageType === PAGE_PENDING) {
-extractAndExportPending();
+return extractAndExportPending();
 } else {
 console.error('SLA Manager: unrecognized page - expected the SLA queue or Pending Customers queue.');
 if (badge) {
-const original = badge.textContent;
-badge.textContent = '❓';
-setTimeout(() => { badge.textContent = original; }, 1500);
+const original = badge.innerHTML;
+badge.innerHTML = svgIcon('warning', 22);
+setTimeout(() => { badge.innerHTML = original; }, 1500);
 }
+return Promise.resolve();
 }
 }
 
@@ -2059,21 +5010,93 @@ function setBadgeProgress(remaining) {
 if (!badge) return;
 if (remaining > 0) {
 badge.textContent = String(remaining);
-badge.style.fontSize = '18px';
+badge.style.fontSize = '13px';
 } else {
-badge.textContent = '📋';
-badge.style.fontSize = '22px';
+badge.innerHTML = svgIcon('clipboard', 14);
+badge.style.fontSize = '14px';
+}
+}
+
+// Clicking the badge is a deliberate "show me the panel" request, unlike
+// the background auto-detect poll's silent rebuilds on a page switch -
+// those are meant to preserve whatever minimized state already exists
+// (see renderPanelShell), but a real click should always win over a
+// leftover minimized state from earlier in the session, or the panel
+// has no way back: it carries its own restore button, so once it's
+// off-screen, that button is off-screen with it, and only an explicit
+// "show it" action - not a rebuild that merely preserves state - can
+// recover from that.
+async function handleBadgeClick() {
+localStorage.setItem(PANEL_STATE_KEY, 'visible');
+// Morning Checks routinely leaves the visible tab sitting on pages
+// runExtraction()/detectPageType() don't recognize at all (Live
+// Campaigns, Inbound API, Voicemails, Queue by Agent) - previously,
+// minimizing while on one of those meant the badge (the only way back,
+// since a minimized panel's own restore button is off-screen with the
+// rest of it) just flashed a warning icon and did nothing, with no way
+// to reopen the panel until navigating back to the SLA/Pending page.
+if (currentPanelMode === 'morningChecks') {
+displayMorningChecks();
+return;
+}
+// Also forces Konnect's own native refresh rather than just re-reading
+// whatever's currently sitting in the DOM (same flow as clicking the
+// panel title - see window._refreshLeadsAndPanel) - "show me the
+// panel" and "make sure it's actually current" are the same ask when
+// you're the one pressing the button to bring it up.
+await window._refreshLeadsAndPanel();
+// Per instruction: activating the panel this way should also scan
+// Queue by Agent for fresh queue positions, same as already happens
+// automatically after a successful assign run. Sequenced after the
+// above (not run alongside it) since both navigate/manipulate the
+// page - running them concurrently would race.
+showPageFlashOverlay('Checking agent queues…');
+try {
+try {
+await refreshAgentQueueSnapshot();
+// Same gap as window._checkAgentQueuePositions/_clearWholeQueue: the
+// navigate-away-and-back this just did only changes the route -
+// Angular still needs a moment to actually repopulate the SLA/Pending
+// table afterward. Rendering immediately here (this is the actual
+// floating-badge "activate" path) was the real source of the reported
+// "no leads match search"/tiles briefly going to zero on Pending
+// Customers - this function has its own inline render call, so it
+// never went through the fix already made in the other two functions.
+await waitForLeadsTableReady();
+} catch (error) {
+// The queue check is a nice-to-have layered on top of an otherwise-
+// good leads refresh; it failing outright is not a reason to also
+// withhold the panel the user actually asked to see.
+console.warn('[SLA Extract] Queue check failed during badge activation - showing the panel anyway:', error);
+}
+// This previous try/catch only covered the queue check above - it
+// did NOT cover the render calls themselves, so if displayPanel/
+// displayPendingPanel (or anything inside them - renderAssignSection,
+// mountPanel, etc) throws, that would propagate out uncaught exactly
+// the same way and the panel would still never appear, just one step
+// later than what the last fix actually guarded. Reported live as
+// still happening after that fix, which is what exposed this gap -
+// wrapping the actual render too, and surfacing the error visibly
+// (an alert, not just a console message this session hasn't been able
+// to see) rather than guessing blind a third time.
+if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, 0, 0, false);
+else displayPanel(currentCustomers, 0, 0, false);
+} catch (error) {
+console.error('[SLA Extract] Panel failed to render after badge activation:', error);
+alert('SLA Manager: the panel failed to load after activating.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
+} finally {
+hidePageFlashOverlay();
 }
 }
 
 function attachBadgeHoverEffects() {
 badge.addEventListener('mouseenter', () => {
-badge.style.transform = 'scale(1.15)';
-badge.style.boxShadow = '0 6px 16px rgba(39, 174, 96, 0.5)';
+badge.style.transform = 'scale(1.12)';
+badge.style.boxShadow = '0 3px 8px rgba(34, 54, 93, 0.45)';
 });
 badge.addEventListener('mouseleave', () => {
 badge.style.transform = 'scale(1)';
-badge.style.boxShadow = '0 4px 12px rgba(39, 174, 96, 0.3)';
+badge.style.boxShadow = '0 2px 6px rgba(34, 54, 93, 0.3)';
 });
 }
 
@@ -2093,16 +5116,16 @@ if (!targetUl) {
 console.warn('SLA Manager: navbar structure not found, falling back to fixed position');
 badge = document.createElement('div');
 badge.id = BADGE_ID;
-badge.onclick = runExtraction;
+badge.onclick = handleBadgeClick;
 document.documentElement.appendChild(badge);
 Object.assign(badge.style, {
-position: 'fixed', right: '12px', top: '12px', width: '48px', height: '48px',
-background: BADGE_COLOR, border: `2px solid ${BADGE_BORDER_COLOR}`, borderRadius: '50%',
-boxShadow: '0 4px 12px rgba(39, 174, 96, 0.3)', zIndex: 99999, cursor: 'pointer',
-display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px',
+position: 'fixed', right: '12px', top: '12px', width: '32px', height: '32px',
+background: BADGE_COLOR, border: `1px solid ${BADGE_BORDER_COLOR}`, borderRadius: '50%',
+boxShadow: '0 2px 6px rgba(34, 54, 93, 0.3)', zIndex: 99999, cursor: 'pointer',
+display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px',
 fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
-badge.textContent = '📋';
+badge.innerHTML = svgIcon('clipboard', 14);
 badge.title = 'Extract leads (SLA queue or Pending Customers)';
 attachBadgeHoverEffects();
 return;
@@ -2119,30 +5142,113 @@ display: 'flex', alignItems: 'center', height: '50px', padding: '0 8px'
 badge = document.createElement('div');
 badge.id = BADGE_ID;
 Object.assign(badge.style, {
-boxSizing: 'border-box', width: '48px', height: '48px',
-background: BADGE_COLOR, border: `2px solid ${BADGE_BORDER_COLOR}`, borderRadius: '50%',
-boxShadow: '0 4px 12px rgba(39, 174, 96, 0.3)', cursor: 'pointer',
-display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px',
+boxSizing: 'border-box', width: '32px', height: '32px',
+background: BADGE_COLOR, border: `1px solid ${BADGE_BORDER_COLOR}`, borderRadius: '50%',
+boxShadow: '0 2px 6px rgba(34, 54, 93, 0.3)', cursor: 'pointer',
+display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px',
 fontWeight: 'bold', color: BADGE_BORDER_COLOR, transition: 'all 0.3s ease'
 });
-badge.textContent = '📋';
+badge.innerHTML = svgIcon('clipboard', 14);
 badge.title = 'Extract leads (SLA queue or Pending Customers)';
-badge.onclick = runExtraction;
+badge.onclick = handleBadgeClick;
 attachBadgeHoverEffects();
 
 navItem.appendChild(badge);
 targetUl.appendChild(navItem); // last item in the left nav = immediately after "Client Config"
 }
 
-window._slaResetBookmarklet = resetBookmarklet;
-window._togglePanelSize = function() {
-const current = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
-localStorage.setItem(PANEL_SIZE_KEY, current === 'full' ? 'compact' : 'full');
-if (currentPageType === PAGE_PENDING) {
-displayPendingPanel(currentPendingCustomers);
-} else {
-displayPanel(currentCustomers);
+function resetBookmarklet() {
+currentCustomers = [];
+currentPendingCustomers = [];
+currentPageType = null;
+extracting = false;
+
+// Lead Checker's own paste-and-classify box (rawInput + results) is
+// persisted separately from currentCustomers/currentPendingCustomers,
+// so clearing just those left it showing the last scan's leads and
+// classifications the moment the panel was reopened - confirmed live,
+// reported repeatedly: Clear & Stop must genuinely start from nothing,
+// the same discipline Konnect-Lead-Checker.js's own Clear & Stop
+// already follows (clearStoredSession there).
+try { localStorage.removeItem(LEAD_CHECKER_IMPORT_KEY); } catch (error) { /* ignore */ }
+
+if (panelElement) {
+panelElement.remove();
+panelElement = null;
 }
+
+if (badge) {
+// Badge now lives inside a wrapping <li> in the host navbar (see
+// createBadge) - remove that wrapper too, or the fallback fixed-position
+// case's plain badge.remove(), so nothing gets left behind either way.
+const navItem = document.getElementById('_slaBadgeNavItem');
+if (navItem) navItem.remove();
+else badge.remove();
+badge = null;
+}
+
+console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
+}
+
+// Shared panel chrome (positioning, header, footer) for both pages - only
+// the title/counts, the assign section, and the body content differ.
+window._slaResetBookmarklet = resetBookmarklet;
+// Patches the existing panel box's position/size directly instead of
+// tearing it down and rebuilding it through displayPanel/
+// displayPendingPanel - a full rebuild re-derives everything (including
+// the minimized-state transform) from scratch, and this is purely a
+// dimension change that has no reason to touch any of that. Sets every
+// relevant property for both states explicitly (clearing the ones the
+// other state doesn't use, e.g. `top`) rather than only setting what
+// changes, since compact and full use different property sets to
+// position the box.
+// Full displayPanel/displayPendingPanel rebuild, not a DOM-only tweak
+// like _togglePanelSize above - this changes which cards appear where
+// within each section's bodyHtml, not just a style property, so the
+// section markup itself has to be regenerated. invalidateCache: false
+// throughout - nothing about the underlying table data changed, only
+// the display order, so there's no reason to force a fresh live-DOM
+// scrape (see displayPanel's own comment on that flag).
+window._toggleLeadCheckerPrioritySort = function() {
+const next = !isLeadCheckerPrioritySortEnabled();
+localStorage.setItem(LEAD_CHECKER_PRIORITY_SORT_KEY, next ? '1' : '0');
+if (currentPageType === PAGE_PENDING) {
+displayPendingPanel(currentPendingCustomers, 0, 0, false);
+} else if (currentPageType === PAGE_SLA) {
+displayPanel(currentCustomers, 0, 0, false);
+}
+};
+
+window._togglePanelSize = function() {
+const panel = document.getElementById(PANEL_BOX_ID);
+const btn = document.getElementById('_slaSizeBtn');
+if (!panel) return;
+const current = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
+const next = current === 'full' ? 'compact' : 'full';
+localStorage.setItem(PANEL_SIZE_KEY, next);
+const isFull = next === 'full';
+Object.assign(panel.style, {
+top: isFull ? '0' : '',
+bottom: isFull ? '0' : '20px',
+right: isFull ? '0' : '20px',
+width: isFull ? '450px' : '400px',
+height: isFull ? '100vh' : 'min(560px, calc(100vh - 90px))',
+borderRadius: isFull ? '0' : '16px'
+});
+if (btn) {
+btn.innerHTML = svgIcon(isFull ? 'shrink' : 'expand', 14);
+btn.title = isFull ? 'Shrink to box' : 'Expand to full height';
+}
+};
+
+window._toggleMinimizePanel = function() {
+const panel = document.getElementById(PANEL_BOX_ID);
+const btn = document.getElementById('_slaMinimizeBtn');
+if (!panel) return;
+const isHidden = panel.style.transform === 'translateX(150%)';
+panel.style.transform = isHidden ? '' : 'translateX(150%)';
+if (btn) btn.innerHTML = svgIcon(isHidden ? 'minimize' : 'restore', 14);
+localStorage.setItem(PANEL_STATE_KEY, isHidden ? 'visible' : 'hidden');
 };
 window._toggleTier = function(tierId) {
 const tierContent = document.getElementById(tierId);
@@ -2150,9 +5256,18 @@ const toggle = document.getElementById('toggle-' + tierId);
 if (tierContent && toggle) {
 const isHidden = tierContent.style.display === 'none';
 tierContent.style.display = isHidden ? 'grid' : 'none';
-toggle.textContent = isHidden ? '▼' : '▶';
+toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
 setSectionCollapsed(tierId, !isHidden);
 }
+};
+
+window._toggleCustomerContact = function(toggleEl) {
+const wrapper = toggleEl.nextElementSibling;
+if (!wrapper) return;
+const opening = wrapper.style.display === 'none';
+wrapper.style.display = opening ? 'grid' : 'none';
+const chevron = toggleEl.querySelector('svg');
+if (chevron) chevron.style.transform = opening ? 'rotate(0deg)' : 'rotate(-90deg)';
 };
 
 window._toggleCallbackType = function(sectionId) {
@@ -2161,29 +5276,73 @@ const toggle = document.getElementById('toggle-' + sectionId);
 if (content && toggle) {
 const isHidden = content.style.display === 'none';
 content.style.display = isHidden ? 'grid' : 'none';
-toggle.textContent = isHidden ? '▼' : '▶';
+toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
 setSectionCollapsed(sectionId, !isHidden);
 }
 };
 
+window._toggleFiltersZone = function() {
+const body = document.getElementById('filtersZoneBody');
+const toggle = document.getElementById('filtersZoneToggle');
+if (!body || !toggle) return;
+const isHidden = body.style.display === 'none';
+body.style.display = isHidden ? 'block' : 'none';
+toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
+saveAssignSettings({ filtersOpen: isHidden });
+// The time wheel lives inside this disclosure - scrollTop assignments
+// silently no-op while its container is display:none, so the wheel's
+// position never actually took effect until now that it's visible
+// (same root cause as the original "wheel always shows 00:00" bug).
+if (isHidden) syncAllWheelPositions();
+};
+
+// Collapses the whole ASSIGN block (agents/limit/preview/button/
+// results), not just filters. If FILTERS is currently open when this
+// re-opens, its wheel needs the same re-sync as _toggleFiltersZone
+// does - its own display style already says "open" from before, so
+// nothing re-triggers that sync on its own now that the wheel's actual
+// container (this one) has just become visible again.
 window._toggleAssignSection = function() {
 const body = document.getElementById('assignSectionBody');
 const toggle = document.getElementById('assignSectionToggle');
 if (!body || !toggle) return;
 const isHidden = body.style.display === 'none';
 body.style.display = isHidden ? 'block' : 'none';
-toggle.textContent = isHidden ? '▼' : '▶';
-saveAssignSettings({ sectionOpen: isHidden });
-if (isHidden) syncAllWheelPositions();
+toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
+saveAssignSettings({ assignOpen: isHidden });
+const filtersBody = document.getElementById('filtersZoneBody');
+if (isHidden && filtersBody && filtersBody.style.display !== 'none') syncAllWheelPositions();
 };
 
+window._toggleAdvancedCallbackTypes = function(forceOpen) {
+const body = document.getElementById('advancedCallbackTypes');
+const toggle = document.getElementById('advancedCallbackToggle');
+if (!body || !toggle) return;
+const isCurrentlyOpen = body.style.display === 'flex';
+const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !isCurrentlyOpen;
+body.style.display = shouldOpen ? 'flex' : 'none';
+toggle.style.transform = shouldOpen ? 'rotate(0deg)' : 'rotate(-90deg)';
+saveAssignSettings({ advancedOpen: shouldOpen });
+};
+
+// Recomputes and displays what clicking "Assign" would actually do before
+// the button is even clicked, so a filter combination that matches
+// nothing, an unexpectedly large batch, or (previously) a forgotten agent
+// selection is visible immediately rather than found out via an empty/
+// surprising results log - or worse, via the button's own "Select at
+// least one agent" rejection after the preview had already implied
+// everything was ready. Agent count now factors directly into what's
+// shown, both for that reason and because seeing the actual per-agent
+// split ("23 -> 4 agents, ~6 each") is the real pre-click control this is
+// meant to give: not just "will something happen" but "is this a
+// reasonable way to divide it up."
 // Shared by every quick-criteria entry point (the general Quick Assign
-// button and each clickable due-summary tile): expand the section if
-// it's collapsed so progress is visible, then resolve which agents are
-// actually checked - agent selection is real state the user is
-// deliberately curating and always gets respected, no matter which
-// fixed lead-criteria shortcut triggered the run. Returns null (and
-// leaves a message in the log) if nothing's selected.
+// button and each clickable due-summary tile): expands the ASSIGN
+// section if it's collapsed so progress/results are visible, then
+// resolves which agents are actually checked - agent selection is real
+// state the user is deliberately curating and always gets respected,
+// no matter which fixed lead-criteria shortcut triggered the run.
+// Returns null (and leaves a message in the log) if nothing's selected.
 function beginQuickAssign() {
 const body = document.getElementById('assignSectionBody');
 if (body && body.style.display === 'none') {
@@ -2201,34 +5360,13 @@ return null;
 return agents;
 }
 
-// A fixed, opinionated "clear what's urgent right now" sweep for the LEAD
-// side of the equation - deliberately ignores whatever tiers/callback-types
-// happen to be checked (that's what the manual button is for). Pending
-// Customers: New + Auto Rescheduled leads due by the top of the next hour.
-// SLA: every tier due within the next hour.
-window._quickAssign = async function() {
-if (assigning) {
-cancelRequested = true;
-return;
-}
-const agents = beginQuickAssign();
-if (!agents) return;
-if (currentPageType === PAGE_PENDING) {
-const leads = collectPendingCustomers();
-const eligible = filterPendingLeads(leads, { callbackTypes: new Set(CALLBACK_TYPES_PRIMARY), cutoffDate: defaultHourCutoff() });
-const prioritized = prioritizePendingLeads(eligible);
-const limited = applyAssignLimit(prioritized);
-const plan = roundRobinAssign(limited, agents);
-await executeAssignmentRun(plan, locatePendingAssignCell);
-} else {
-const leads = collectAssignableLeads();
-const eligible = filterAssignableLeads(leads, { tiers: new Set([1, 2, 3, 4]), windowMinutes: 60, customerFirstOnly: false, emailOnly: false });
-const prioritized = prioritizeLeads(eligible);
-const limited = applyAssignLimit(prioritized);
-const plan = roundRobinAssign(limited, agents);
-await executeAssignmentRun(plan, locateAssignCell);
-}
-};
+// The general "Quick Assign" button that used to live here was removed:
+// on SLA it was byte-for-byte identical to clicking the "1h" due-summary
+// tile (same tiers, same window), and on Pending its narrower New/Auto
+// Rescheduled-only scope is still reachable via the manual button with
+// those two boxes checked - genuinely lost a one-click version of that
+// specific scope, kept for the sake of not having a button that
+// silently duplicated a tile right next to it.
 
 // Each due-summary tile (Missed/15m/30m/1h, and the Customer First row)
 // is itself a quick-assign shortcut - clicking one runs assignment using
@@ -2252,9 +5390,9 @@ emailOnly: false,
 missedOnly: !!missedOnly
 });
 const prioritized = prioritizeLeads(eligible);
-const limited = applyAssignLimit(prioritized);
+const limited = applyAssignLimit(prioritized, agents);
 const plan = roundRobinAssign(limited, agents);
-await executeAssignmentRun(plan, locateAssignCell);
+await executeAssignmentRun(plan, locateAssignCell, PAGE_SLA);
 };
 
 // Mirrors _quickAssignSlaTile for the Pending Customers due-summary tiles
@@ -2274,10 +5412,220 @@ const cutoffDate = new Date(defaultHourCutoff().getTime() + hoursAhead * 60 * 60
 const leads = collectPendingCustomers();
 const eligible = filterPendingLeads(leads, { callbackTypes: new Set(CALLBACK_TYPE_ORDER), cutoffDate });
 const prioritized = prioritizePendingLeads(eligible);
-const limited = applyAssignLimit(prioritized);
+const limited = applyAssignLimit(prioritized, agents);
 const plan = roundRobinAssign(limited, agents);
-await executeAssignmentRun(plan, locatePendingAssignCell);
+await executeAssignmentRun(plan, locatePendingAssignCell, PAGE_PENDING);
 };
+// Shared by the manual Assign button (whatever filters are checked) and
+// Quick Assign (its own fixed opinionated criteria) - both just need to
+// build a plan and hand it off the same way.
+const ASSIGN_CONFIRM_THRESHOLD = 10;
+
+async function executeAssignmentRun(plan, locateCellFn, pageType) {
+const button = document.getElementById('assignRunButton');
+const log = document.getElementById('assignResultsLog');
+if (!button || !log) return null;
+
+if (plan.length === 0) {
+log.textContent = 'No unassigned leads match.';
+return null;
+}
+
+if (plan.length >= ASSIGN_CONFIRM_THRESHOLD) {
+const agentCount = new Set(plan.map(p => p.agent.id)).size;
+const proceed = window.confirm(`About to assign ${plan.length} leads to ${agentCount} agent${agentCount === 1 ? '' : 's'}. Proceed?`);
+if (!proceed) return null;
+}
+
+// Stays enabled (not disabled) during the run and changes color/label
+// instead - clicking it again while a run is active is how you cancel,
+// via the cancelRequested check each run-starting handler makes at its
+// own top. That reuses the exact same onclick wiring already on this
+// button rather than needing to swap handlers, and means "click to
+// cancel" holds true regardless of whether this run was started by the
+// manual button or Quick Assign.
+button.disabled = false;
+button.style.background = '#d97706';
+button.style.cursor = 'pointer';
+button.textContent = `Assigning 0/${plan.length}... (click to cancel)`;
+log.innerHTML = '';
+const summaryEl = document.getElementById('assignResultsSummary');
+if (summaryEl) summaryEl.innerHTML = '';
+
+cancelRequested = false;
+assigning = true;
+let results;
+try {
+results = await runAssignmentPlan(plan, locateCellFn, (soFar) => {
+button.textContent = `Assigning ${soFar.length}/${plan.length}... (click to cancel)`;
+log.innerHTML = soFar.map(r =>
+`<div style="color: ${r.ok ? '#059669' : '#dc2626'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
+).join('');
+log.scrollTop = log.scrollHeight;
+});
+} finally {
+assigning = false;
+cancelRequested = false;
+}
+
+const succeeded = results.filter(r => r.ok).length;
+button.disabled = false;
+button.style.background = '#059669';
+button.style.cursor = 'pointer';
+button.textContent = 'Assign Unassigned Leads';
+const failedEntries = results.filter(r => !r.ok).map(r => ({ lead: r.lead, agent: r.agent }));
+lastFailedAssignmentPlan = failedEntries.length > 0 ? failedEntries : null;
+lastFailedLocateCellFn = failedEntries.length > 0 ? locateCellFn : null;
+lastFailedPageType = failedEntries.length > 0 ? pageType : null;
+appendAssignmentLog(results);
+console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
+
+// The assign click itself only mutates the live table's own assign
+// cell for each lead - it never touches currentCustomers/
+// currentPendingCustomers (this panel's own cached render source), so
+// the lead cards kept showing the pre-assign "unassigned" state until
+// an unrelated manual refresh. Same lightweight fix as Clear Queue's
+// own (window._clearWholeQueue): update the cache directly from this
+// run's own results and re-render, rather than re-running the full
+// ingestion pipeline. That replaces assignResultsSummary's own DOM
+// too, so it's (re)rendered AFTER this, not before - or the fresh
+// render would wipe it again.
+if (succeeded > 0) {
+// The newly-assigned leads' real queue position is now something
+// different from whatever the last scan found (or unknown, if there
+// never was one) - per instruction, auto re-scan Queue by Agent so
+// the badges reflect reality immediately, accepting the extra
+// navigation this adds to every successful assign run.
+showPageFlashOverlay('Checking agent queues…');
+try {
+await refreshAgentQueueSnapshot();
+// Same gap as the other three call sites of refreshAgentQueueSnapshot
+// in this file: the navigate-away-and-back it just did only changes
+// the route, Angular still needs a moment to repopulate the SLA/
+// Pending table afterward - reading it immediately (via the render
+// below) briefly showed "0 leads due"/"No leads match the current
+// filters" right after every successful assign run, on both pages.
+await waitForLeadsTableReady();
+} catch (error) {
+// A failure here previously skipped the render/renderAssignResultsSummary/
+// return below entirely (this whole function's caller doesn't handle a
+// rejection either) - a successful assign run's own results would just
+// vanish along with the panel, with nothing visible showing why. The
+// queue-position rescan is a nice-to-have layered on top of an assign
+// run that already genuinely succeeded; it failing is not a reason to
+// also withhold that assign run's own results.
+console.warn('[SLA Extract] Queue check failed after assign run - showing results anyway:', error);
+} finally {
+hidePageFlashOverlay();
+}
+// Not wrapped in anything before this fix - if this render threw, it
+// propagated out uncaught (nothing here awaits/reports it either), and
+// renderAssignResultsSummary/the assign run's own return value below
+// never happened, on top of the panel never appearing.
+try {
+const successByKey = new Map(results.filter(r => r.ok).map(r => [r.lead.key, r.agent.name]));
+if (pageType === PAGE_PENDING) {
+currentPendingCustomers = currentPendingCustomers.map((c) => successByKey.has(c.key) ? { ...c, assigned: true, agentName: successByKey.get(c.key) } : c);
+displayPendingPanel(currentPendingCustomers, 0, 0, false);
+} else {
+currentCustomers = currentCustomers.map((c) => successByKey.has(c.key) ? { ...c, assigned: true, agentName: successByKey.get(c.key) } : c);
+displayPanel(currentCustomers, 0, 0, false);
+}
+} catch (error) {
+console.error('[SLA Extract] Panel failed to render after assign run:', error);
+alert('SLA Manager: leads were assigned, but the panel failed to reload.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
+}
+}
+renderAssignResultsSummary(results);
+return results;
+}
+
+window._runSlaAssignment = async function() {
+if (assigning) {
+cancelRequested = true;
+return;
+}
+const log = document.getElementById('assignResultsLog');
+if (!log) return;
+
+const selectedTiers = new Set(
+Array.from(document.querySelectorAll('.assign-tier-checkbox:checked')).map(el => Number(el.value))
+);
+const selectedAgentIds = new Set(
+Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map(el => el.value)
+);
+const windowInput = document.getElementById('assignWindowMinutes');
+const windowMinutes = windowInput && windowInput.value ? Number(windowInput.value) : null;
+const customerFirstOnly = document.getElementById('assignCustomerFirstOnly')?.checked || false;
+const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
+
+if (selectedTiers.size === 0) {
+log.textContent = 'Select at least one tier.';
+return;
+}
+
+const agents = getAgentRoster().filter(a => selectedAgentIds.has(a.id));
+if (agents.length === 0) {
+log.textContent = 'Select at least one agent.';
+return;
+}
+
+const leads = collectAssignableLeads();
+const eligible = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes, customerFirstOnly, emailOnly });
+const prioritized = prioritizeLeads(eligible);
+
+if (prioritized.length === 0) {
+log.textContent = 'No unassigned leads match the selected tiers/filters/timeframe.';
+return;
+}
+
+const limited = applyAssignLimit(prioritized, agents);
+const plan = roundRobinAssign(limited, agents);
+await executeAssignmentRun(plan, locateAssignCell, PAGE_SLA);
+};
+
+window._runPendingAssignment = async function() {
+if (assigning) {
+cancelRequested = true;
+return;
+}
+const log = document.getElementById('assignResultsLog');
+if (!log) return;
+
+const selectedTypes = new Set(
+Array.from(document.querySelectorAll('.assign-callback-checkbox:checked')).map(el => el.value)
+);
+const selectedAgentIds = new Set(
+Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map(el => el.value)
+);
+const cutoffInput = document.getElementById('assignCutoffTime');
+const cutoffDate = parseCutoffFromInput(cutoffInput ? cutoffInput.value : '');
+
+if (selectedTypes.size === 0) {
+log.textContent = 'Select at least one callback type.';
+return;
+}
+
+const agents = getAgentRoster().filter(a => selectedAgentIds.has(a.id));
+if (agents.length === 0) {
+log.textContent = 'Select at least one agent.';
+return;
+}
+
+const leads = collectPendingCustomers();
+const eligible = filterPendingLeads(leads, { callbackTypes: selectedTypes, cutoffDate });
+const prioritized = prioritizePendingLeads(eligible);
+
+if (prioritized.length === 0) {
+log.textContent = 'No unassigned leads match the selected callback types/timeframe.';
+return;
+}
+
+const limited = applyAssignLimit(prioritized, agents);
+const plan = roundRobinAssign(limited, agents);
+await executeAssignmentRun(plan, locatePendingAssignCell, PAGE_PENDING);
+};
+
 
 // Assigns exactly one specific lead to exactly one chosen agent, for the
 // case of handling a particular customer right now rather than waiting
@@ -2353,12 +5701,12 @@ const toggle = document.getElementById('toggle-' + section.id);
 if (!q) {
 const collapsed = isSectionCollapsed(section.id);
 section.style.display = collapsed ? 'none' : 'grid';
-if (toggle) toggle.textContent = collapsed ? '▶' : '▼';
+if (toggle) toggle.style.transform = collapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
 return;
 }
 const hasMatch = Array.from(section.querySelectorAll('.customer-card')).some(c => c.style.display !== 'none');
 section.style.display = hasMatch ? 'grid' : 'none';
-if (toggle) toggle.textContent = hasMatch ? '▼' : '▶';
+if (toggle) toggle.style.transform = hasMatch ? 'rotate(0deg)' : 'rotate(-90deg)';
 });
 };
 
@@ -2367,28 +5715,6 @@ document.querySelectorAll('.assign-agent-checkbox').forEach((el) => { el.checked
 if (window._updateAssignPreview) window._updateAssignPreview();
 };
 
-window._toggleAdvancedCallbackTypes = function(forceOpen) {
-const body = document.getElementById('advancedCallbackTypes');
-const toggle = document.getElementById('advancedCallbackToggle');
-if (!body || !toggle) return;
-const isCurrentlyOpen = body.style.display === 'flex';
-const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : !isCurrentlyOpen;
-body.style.display = shouldOpen ? 'flex' : 'none';
-toggle.textContent = shouldOpen ? '▼' : '▶';
-saveAssignSettings({ advancedOpen: shouldOpen });
-};
-
-// Recomputes and displays what clicking "Assign" would actually do before
-// the button is even clicked, so a filter combination that matches
-// nothing, an unexpectedly large batch, or (previously) a forgotten agent
-// selection is visible immediately rather than found out via an empty/
-// surprising results log - or worse, via the button's own "Select at
-// least one agent" rejection after the preview had already implied
-// everything was ready. Agent count now factors directly into what's
-// shown, both for that reason and because seeing the actual per-agent
-// split ("23 -> 4 agents, ~6 each") is the real pre-click control this is
-// meant to give: not just "will something happen" but "is this a
-// reasonable way to divide it up."
 window._updateAssignPreview = function() {
 const previewEl = document.getElementById('assignMatchPreview');
 if (!previewEl) return;
@@ -2435,7 +5761,8 @@ const agentCount = document.querySelectorAll('.assign-agent-checkbox:checked').l
 const rawCount = count;
 const limitRaw = document.getElementById('assignLimitInput')?.value;
 const limit = limitRaw ? Number(limitRaw) : null;
-if (limit && limit > 0) count = Math.min(count, limit);
+const limitPerAgent = document.getElementById('assignLimitPerAgent')?.checked || false;
+if (limit && limit > 0) count = Math.min(count, limitPerAgent ? limit * agentCount : limit);
 const cappedSuffix = count < rawCount ? ` (capped from ${rawCount})` : '';
 
 if (agentCount === 0) {
@@ -2504,158 +5831,6 @@ if (newEmailOnly && emailOnlyChecked) newEmailOnly.checked = true;
 initAssignSectionWheels();
 };
 
-// Shared by the manual Assign button (whatever filters are checked) and
-// Quick Assign (its own fixed opinionated criteria) - both just need to
-// build a plan and hand it off the same way.
-const ASSIGN_CONFIRM_THRESHOLD = 10;
-
-async function executeAssignmentRun(plan, locateCellFn) {
-const button = document.getElementById('assignRunButton');
-const log = document.getElementById('assignResultsLog');
-if (!button || !log) return null;
-
-if (plan.length === 0) {
-log.textContent = 'No unassigned leads match.';
-return null;
-}
-
-if (plan.length >= ASSIGN_CONFIRM_THRESHOLD) {
-const agentCount = new Set(plan.map(p => p.agent.id)).size;
-const proceed = window.confirm(`About to assign ${plan.length} leads to ${agentCount} agent${agentCount === 1 ? '' : 's'}. Proceed?`);
-if (!proceed) return null;
-}
-
-// Stays enabled (not disabled) during the run and changes color/label
-// instead - clicking it again while a run is active is how you cancel,
-// via the cancelRequested check each run-starting handler makes at its
-// own top. That reuses the exact same onclick wiring already on this
-// button rather than needing to swap handlers, and means "click to
-// cancel" holds true regardless of whether this run was started by the
-// manual button or Quick Assign.
-button.disabled = false;
-button.style.background = '#d97706';
-button.style.cursor = 'pointer';
-button.textContent = `Assigning 0/${plan.length}... (click to cancel)`;
-log.innerHTML = '';
-const summaryEl = document.getElementById('assignResultsSummary');
-if (summaryEl) summaryEl.innerHTML = '';
-
-cancelRequested = false;
-assigning = true;
-let results;
-try {
-results = await runAssignmentPlan(plan, locateCellFn, (soFar) => {
-button.textContent = `Assigning ${soFar.length}/${plan.length}... (click to cancel)`;
-log.innerHTML = soFar.map(r =>
-`<div style="color: ${r.ok ? '#059669' : '#dc2626'};">${r.ok ? '✓' : '✗'} ${escapeHtml(r.lead.name)} → ${escapeHtml(r.agent.name)}${r.reason ? ' (' + escapeHtml(r.reason) + ')' : ''}</div>`
-).join('');
-log.scrollTop = log.scrollHeight;
-});
-} finally {
-assigning = false;
-cancelRequested = false;
-}
-
-const succeeded = results.filter(r => r.ok).length;
-button.disabled = false;
-button.style.background = '#059669';
-button.style.cursor = 'pointer';
-button.textContent = 'Assign Unassigned Leads';
-const failedEntries = results.filter(r => !r.ok).map(r => ({ lead: r.lead, agent: r.agent }));
-lastFailedAssignmentPlan = failedEntries.length > 0 ? failedEntries : null;
-lastFailedLocateCellFn = failedEntries.length > 0 ? locateCellFn : null;
-renderAssignResultsSummary(results);
-appendAssignmentLog(results);
-console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
-return results;
-}
-
-window._runSlaAssignment = async function() {
-if (assigning) {
-cancelRequested = true;
-return;
-}
-const log = document.getElementById('assignResultsLog');
-if (!log) return;
-
-const selectedTiers = new Set(
-Array.from(document.querySelectorAll('.assign-tier-checkbox:checked')).map(el => Number(el.value))
-);
-const selectedAgentIds = new Set(
-Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map(el => el.value)
-);
-const windowInput = document.getElementById('assignWindowMinutes');
-const windowMinutes = windowInput && windowInput.value ? Number(windowInput.value) : null;
-const customerFirstOnly = document.getElementById('assignCustomerFirstOnly')?.checked || false;
-const emailOnly = document.getElementById('assignEmailOnly')?.checked || false;
-
-if (selectedTiers.size === 0) {
-log.textContent = 'Select at least one tier.';
-return;
-}
-
-const agents = getAgentRoster().filter(a => selectedAgentIds.has(a.id));
-if (agents.length === 0) {
-log.textContent = 'Select at least one agent.';
-return;
-}
-
-const leads = collectAssignableLeads();
-const eligible = filterAssignableLeads(leads, { tiers: selectedTiers, windowMinutes, customerFirstOnly, emailOnly });
-const prioritized = prioritizeLeads(eligible);
-
-if (prioritized.length === 0) {
-log.textContent = 'No unassigned leads match the selected tiers/filters/timeframe.';
-return;
-}
-
-const limited = applyAssignLimit(prioritized);
-const plan = roundRobinAssign(limited, agents);
-await executeAssignmentRun(plan, locateAssignCell);
-};
-
-window._runPendingAssignment = async function() {
-if (assigning) {
-cancelRequested = true;
-return;
-}
-const log = document.getElementById('assignResultsLog');
-if (!log) return;
-
-const selectedTypes = new Set(
-Array.from(document.querySelectorAll('.assign-callback-checkbox:checked')).map(el => el.value)
-);
-const selectedAgentIds = new Set(
-Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map(el => el.value)
-);
-const cutoffInput = document.getElementById('assignCutoffTime');
-const cutoffDate = parseCutoffFromInput(cutoffInput ? cutoffInput.value : '');
-
-if (selectedTypes.size === 0) {
-log.textContent = 'Select at least one callback type.';
-return;
-}
-
-const agents = getAgentRoster().filter(a => selectedAgentIds.has(a.id));
-if (agents.length === 0) {
-log.textContent = 'Select at least one agent.';
-return;
-}
-
-const leads = collectPendingCustomers();
-const eligible = filterPendingLeads(leads, { callbackTypes: selectedTypes, cutoffDate });
-const prioritized = prioritizePendingLeads(eligible);
-
-if (prioritized.length === 0) {
-log.textContent = 'No unassigned leads match the selected callback types/timeframe.';
-return;
-}
-
-const limited = applyAssignLimit(prioritized);
-const plan = roundRobinAssign(limited, agents);
-await executeAssignmentRun(plan, locatePendingAssignCell);
-};
-
 // Detects switching between the SLA queue and Pending Customers by
 // polling detectPageType() on a timer, rather than reacting to
 // hashchange - this app's customer-detail modal (and likely other
@@ -2678,15 +5853,45 @@ await executeAssignmentRun(plan, locatePendingAssignCell);
 if (window._slaAutoDetectInterval) {
 clearInterval(window._slaAutoDetectInterval);
 }
+
+// Same zombie-instance problem, a different symptom: a previous
+// instance's own mountPanel() guard (`if (panelElement) panelElement.
+// remove();`) only knows about ITS OWN panelElement variable - a fresh
+// instance's panelElement starts as null, with no way to know a
+// completely separate previous instance ever created one. Confirmed
+// live: this left two #_slaPanel trees mounted simultaneously, each
+// with their own duplicate-ID children (two "Classify Lead Checker
+// results" buttons, two #leadCheckerImportPopover elements) -
+// getElementById always resolves the FIRST one in DOM order, so a click
+// on the current, visible panel's own button toggled the OLD, off-
+// screen instance's popover instead, with no visible effect at all.
+// createBadge() already does this exact same explicit ID-based cleanup
+// for the badge itself (removing any existing #_slaBadgeNavItem/
+// #_slaBadge before creating its own) - this is that same pattern,
+// applied to the panel, which had no equivalent.
+document.getElementById(PANEL_ID)?.remove();
 let lastKnownPageType = detectPageType();
+// A changed detection needs to be seen on two consecutive ticks before
+// acting on it, not just one - confirmed live: switching SLA -> Pending
+// correctly loaded Pending, then flipped back to SLA Report on its own
+// a few seconds later, with no further navigation in between. A single
+// transient misread (detectPageType matching a stale/duplicate <table>
+// briefly left in the DOM during Konnect's own unrelated Angular
+// re-render, for instance) was otherwise enough on its own to wrongly
+// flip the panel straight back. Genuine navigation stays on the new
+// page for far longer than one extra 2.5s tick, so this doesn't
+// meaningfully slow down reacting to a real page switch.
+let pendingPageType = null;
 window._slaAutoDetectInterval = setInterval(() => {
-if (extracting || assigning) return;
+if (extracting || assigning || runningMorningChecks || refreshingLeads || currentPanelMode === 'morningChecks') return;
 const pageType = detectPageType();
-if (pageType && pageType !== lastKnownPageType) {
+if (!pageType || pageType === lastKnownPageType) { pendingPageType = null; return; }
+if (pageType === pendingPageType) {
 lastKnownPageType = pageType;
+pendingPageType = null;
 runExtraction();
-} else if (pageType) {
-lastKnownPageType = pageType;
+} else {
+pendingPageType = pageType;
 }
 }, 2500);
 

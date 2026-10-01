@@ -1,9 +1,9 @@
 // ===================================================================
-// KONNECT BOOKING CHECK
+// KONNECT LEAD CHECKER
 //
 // Separate tool, separate site - runs on Konnect Live, not the Konnect
-// Manager app SLA-Extract.js/SLA-Manager.js live in. Takes a batch of
-// SLA leads pasted from SLA-Extract.js's "Copy for Booking Check"
+// Manager app SLA-Manager.js lives in. Takes a batch of
+// SLA leads pasted from SLA-Manager.js's "Copy for Lead Checker"
 // export (Name/Phone/Email/Source/Campaign/Created, tab-separated),
 // finds each customer, locates the exact lead, and classifies its
 // Initial Notes as a booking or not.
@@ -34,8 +34,8 @@
 // Re-running the bookmarklet should focus the existing panel, not
 // inject a second copy of everything - same pattern as Halo-Tool.js's
 // window.__haloAssistant guard.
-if (window.__konnectBookingCheck && window.__konnectBookingCheck.focus) {
-window.__konnectBookingCheck.focus();
+if (window.__konnectLeadChecker && window.__konnectLeadChecker.focus) {
+window.__konnectLeadChecker.focus();
 return;
 }
 
@@ -959,13 +959,13 @@ if (Math.abs(ms - keeperMs) <= 24 * 60 * 60 * 1000) setDuplicate(row);
 });
 }
 
-window.KonnectBookingCheck = window.KonnectBookingCheck || {};
-window.KonnectBookingCheck.classifyLead = classifyLead;
-window.KonnectBookingCheck.computeDedupeKey = computeDedupeKey;
-window.KonnectBookingCheck.applyDedupe = applyDedupe;
-window.KonnectBookingCheck.hasClockTime = hasClockTime;
-window.KonnectBookingCheck.hasDayMention = hasDayMention;
-window.KonnectBookingCheck.stripSystemSuffixes = stripSystemSuffixes;
+window.KonnectLeadChecker = window.KonnectLeadChecker || {};
+window.KonnectLeadChecker.classifyLead = classifyLead;
+window.KonnectLeadChecker.computeDedupeKey = computeDedupeKey;
+window.KonnectLeadChecker.applyDedupe = applyDedupe;
+window.KonnectLeadChecker.hasClockTime = hasClockTime;
+window.KonnectLeadChecker.hasDayMention = hasDayMention;
+window.KonnectLeadChecker.stripSystemSuffixes = stripSystemSuffixes;
 
 
 // ===================================================================
@@ -1210,13 +1210,13 @@ const href = (link.getAttribute('href') || '').trim().toLowerCase();
 return !href.startsWith('mailto:') && !href.startsWith('tel:');
 }
 
-window.KonnectBookingCheck.openSearchPage = openSearchPage;
-window.KonnectBookingCheck.selectSearchType = selectSearchType;
-window.KonnectBookingCheck.enterSearchIdentifier = enterSearchIdentifier;
-window.KonnectBookingCheck.submitSearchAndWaitForResults = submitSearchAndWaitForResults;
-window.KonnectBookingCheck.readSearchResultRows = readSearchResultRows;
-window.KonnectBookingCheck.chooseCustomerResult = chooseCustomerResult;
-window.KonnectBookingCheck.isSafeCustomerLink = isSafeCustomerLink;
+window.KonnectLeadChecker.openSearchPage = openSearchPage;
+window.KonnectLeadChecker.selectSearchType = selectSearchType;
+window.KonnectLeadChecker.enterSearchIdentifier = enterSearchIdentifier;
+window.KonnectLeadChecker.submitSearchAndWaitForResults = submitSearchAndWaitForResults;
+window.KonnectLeadChecker.readSearchResultRows = readSearchResultRows;
+window.KonnectLeadChecker.chooseCustomerResult = chooseCustomerResult;
+window.KonnectLeadChecker.isSafeCustomerLink = isSafeCustomerLink;
 
 // ===================================================================
 // TIMELINE READINESS (state machine step: WAIT_FOR_TIMELINE)
@@ -1371,9 +1371,9 @@ customerResult.link.click();
 return waitForTimelineReady(timeout);
 }
 
-window.KonnectBookingCheck.getTimelineReadyState = getTimelineReadyState;
-window.KonnectBookingCheck.waitForTimelineReady = waitForTimelineReady;
-window.KonnectBookingCheck.openCustomerAndWaitForTimeline = openCustomerAndWaitForTimeline;
+window.KonnectLeadChecker.getTimelineReadyState = getTimelineReadyState;
+window.KonnectLeadChecker.waitForTimelineReady = waitForTimelineReady;
+window.KonnectLeadChecker.openCustomerAndWaitForTimeline = openCustomerAndWaitForTimeline;
 
 (function timelineReadinessSelfTest() {
 const failures = [];
@@ -1386,9 +1386,9 @@ check('connected customer route matches with no query', CONNECTED_CUSTOMER_ROUTE
 check('search route does not match', CONNECTED_CUSTOMER_ROUTE_PATTERN.test('#/search?redirectRoute=%2Fsearch'), false);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck timeline-readiness self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker timeline-readiness self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck timeline-readiness self-test passed (3/3)');
+console.info('KonnectLeadChecker timeline-readiness self-test passed (3/3)');
 }
 })();
 
@@ -1468,7 +1468,7 @@ return clone.textContent.replace(/\s+/g, ' ').trim();
 
 // For audit/logging only - confirmed live that a real Konnect Lead ID
 // is visible in the timeline, but it's never used as a match key since
-// the SLA export (SLA-Extract.js) doesn't supply one.
+// the SLA export (SLA-Manager.js) doesn't supply one.
 function extractVisibleLeadId(row) {
 const el = row.querySelector('[title="This is the Konnect Lead ID"]');
 const match = el?.textContent.match(/\d+/);
@@ -1512,12 +1512,12 @@ return { year: ref.getFullYear(), month, day: Number(withoutYear[1]), hour: Numb
 return null;
 }
 
-// SLA-Extract.js's own Created column format, confirmed live:
+// SLA-Manager.js's own Created column format, confirmed live:
 // "Sat, 26 Sep 2026 17:48" - weekday+comma prefix, ignored (the
 // with-year branch below is deliberately not anchored, so the regex
 // just skips past it). Pending Customers' Last Actioned field (fed into
 // this same column for the call-entry fallback above - see
-// buildPendingBookingCheckTsv/findMatchingCallLeadId) follows a
+// buildPendingLeadCheckerTsv/findMatchingCallLeadId) follows a
 // different, Konnect-wide convention instead - the same one
 // parseTimelineTimestamp already handles for timeline entries
 // themselves: no year shown at all for the current calendar year
@@ -1600,7 +1600,7 @@ return { target, candidates };
 // ===================================================================
 // CALL-ENTRY FALLBACK - for Pending Customers leads specifically, which
 // (unlike SLA rows) have no lead-creation timestamp to export at all
-// (see SLA-Extract.js's own buildPendingBookingCheckTsv) and instead
+// (see SLA-Manager.js's own buildPendingLeadCheckerTsv) and instead
 // export their Last Actioned date/time, as shown on Konnect Manager's
 // own Pending Customers table. That value is NOT an exact-minute match
 // against the blue "call" entry (a.connected-customer-timeline-centre-lightblue
@@ -1815,9 +1815,9 @@ const unresolvableRow = fakeCallRow('Someone Scheduled a call', undefined);
 check('A row with an unreadable LeadID never counts, even with a genuine engagement heading', anyCallEntryIndicatesAlreadyEngaged([unresolvableRow], '222', fakeReadScope), false);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck already-engaged-detection self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker already-engaged-detection self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck already-engaged-detection self-test passed (12/12)');
+console.info('KonnectLeadChecker already-engaged-detection self-test passed (12/12)');
 }
 })();
 
@@ -2143,19 +2143,19 @@ warnings.push(`Campaign differs (informational only, not a rejection): SLA="${sl
 return { ok: true, warnings };
 }
 
-window.KonnectBookingCheck.getLoadedLeadEntries = getLoadedLeadEntries;
-window.KonnectBookingCheck.extractTimelineTimestamp = extractTimelineTimestamp;
-window.KonnectBookingCheck.extractVisibleLeadId = extractVisibleLeadId;
-window.KonnectBookingCheck.parseTimelineTimestamp = parseTimelineTimestamp;
-window.KonnectBookingCheck.parseSlaCreated = parseSlaCreated;
-window.KonnectBookingCheck.minutesSinceEpoch = minutesSinceEpoch;
-window.KonnectBookingCheck.parseModalDate = parseModalDate;
-window.KonnectBookingCheck.datetimesMatchAtMinute = datetimesMatchAtMinute;
-window.KonnectBookingCheck.findMatchingLeadCandidates = findMatchingLeadCandidates;
-window.KonnectBookingCheck.openLeadModal = openLeadModal;
-window.KonnectBookingCheck.extractLeadPanelFields = extractLeadPanelFields;
-window.KonnectBookingCheck.extractInitialNotes = extractInitialNotes;
-window.KonnectBookingCheck.validateLeadCandidate = validateLeadCandidate;
+window.KonnectLeadChecker.getLoadedLeadEntries = getLoadedLeadEntries;
+window.KonnectLeadChecker.extractTimelineTimestamp = extractTimelineTimestamp;
+window.KonnectLeadChecker.extractVisibleLeadId = extractVisibleLeadId;
+window.KonnectLeadChecker.parseTimelineTimestamp = parseTimelineTimestamp;
+window.KonnectLeadChecker.parseSlaCreated = parseSlaCreated;
+window.KonnectLeadChecker.minutesSinceEpoch = minutesSinceEpoch;
+window.KonnectLeadChecker.parseModalDate = parseModalDate;
+window.KonnectLeadChecker.datetimesMatchAtMinute = datetimesMatchAtMinute;
+window.KonnectLeadChecker.findMatchingLeadCandidates = findMatchingLeadCandidates;
+window.KonnectLeadChecker.openLeadModal = openLeadModal;
+window.KonnectLeadChecker.extractLeadPanelFields = extractLeadPanelFields;
+window.KonnectLeadChecker.extractInitialNotes = extractInitialNotes;
+window.KonnectLeadChecker.validateLeadCandidate = validateLeadCandidate;
 
 // A stable key for "have I already examined this entry" tracking across
 // scroll attempts (per instruction: never rescan every historical row
@@ -2249,7 +2249,7 @@ return { status: 'OK', loadedNewEntries: false, scrollContainer: scrollTarget ? 
 // treated as equivalent by canonicalizing to the leading-0 form - e.g.
 // "+44 7393 966086" and "07393966086" both normalize to
 // "07393966086". No normalizeRegistration - Registration was
-// deliberately dropped from the SLA-Extract.js export (see that
+// deliberately dropped from the SLA-Manager.js export (see that
 // repo's own history: "not something we need to copy, nor can search
 // reliably by anyways"), so it's never part of this tool's input at
 // all, not just optional.
@@ -2263,7 +2263,7 @@ if (digits.startsWith('44')) return '0' + digits.slice(2);
 return digits;
 }
 
-// Matches the CURRENT SLA-Extract.js "Copy for Booking Check" export
+// Matches the CURRENT SLA-Manager.js "Copy for Lead Checker" export
 // exactly - six columns, no Registration (an earlier draft of this
 // tool's spec still assumed a 7-column Registration-included schema;
 // the export itself changed after that spec was written). Each row is
@@ -2314,12 +2314,12 @@ status, exception
 return { rows, headerOk: true, error: null };
 }
 
-window.KonnectBookingCheck.timelineEntryKey = timelineEntryKey;
-window.KonnectBookingCheck.closeLeadModal = closeLeadModal;
-window.KonnectBookingCheck.loadOlderTimelineEntries = loadOlderTimelineEntries;
-window.KonnectBookingCheck.normalizeEmail = normalizeEmail;
-window.KonnectBookingCheck.normalizePhone = normalizePhone;
-window.KonnectBookingCheck.parseBatchInput = parseBatchInput;
+window.KonnectLeadChecker.timelineEntryKey = timelineEntryKey;
+window.KonnectLeadChecker.closeLeadModal = closeLeadModal;
+window.KonnectLeadChecker.loadOlderTimelineEntries = loadOlderTimelineEntries;
+window.KonnectLeadChecker.normalizeEmail = normalizeEmail;
+window.KonnectLeadChecker.normalizePhone = normalizePhone;
+window.KonnectLeadChecker.parseBatchInput = parseBatchInput;
 
 // ===================================================================
 // Self-test for batch-input parsing and normalization - no DOM
@@ -2354,9 +2354,9 @@ const badHeaderBatch = 'Name\tPhone\tEmail\tRegistration\tSource\tCampaign\tCrea
 check('parseBatchInput rejects the old 7-column Registration header', parseBatchInput(badHeaderBatch).headerOk, false);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck batch-input self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker batch-input self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck batch-input self-test passed (6/6)');
+console.info('KonnectLeadChecker batch-input self-test passed (6/6)');
 }
 })();
 
@@ -2434,9 +2434,9 @@ check(`real pair ${i + 1}: gap is within CALL_MATCH_TOLERANCE_MINUTES`, diff <= 
 });
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck timeline self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker timeline self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info(`KonnectBookingCheck timeline self-test passed (${12 + REAL_MANAGER_VS_LIVE_PAIRS.length * 2}/${12 + REAL_MANAGER_VS_LIVE_PAIRS.length * 2})`);
+console.info(`KonnectLeadChecker timeline self-test passed (${12 + REAL_MANAGER_VS_LIVE_PAIRS.length * 2}/${12 + REAL_MANAGER_VS_LIVE_PAIRS.length * 2})`);
 }
 })();
 
@@ -2583,9 +2583,9 @@ failures.push(`${id}: expected tier ${expectedTier}, got tier ${result.tier} (${
 });
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck classifyLead spec self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker classifyLead spec self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info(`KonnectBookingCheck classifyLead spec self-test passed (${cases.length}/${cases.length})`);
+console.info(`KonnectLeadChecker classifyLead spec self-test passed (${cases.length}/${cases.length})`);
 }
 })();
 
@@ -2629,9 +2629,9 @@ check('Same key but >24h apart (E) is not flagged - outside the dedupe window', 
 check('Same key but >24h apart (F) is not flagged - outside the dedupe window', flagged('F'), false);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck dedupe self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker dedupe self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck dedupe self-test passed (8/8)');
+console.info('KonnectLeadChecker dedupe self-test passed (8/8)');
 }
 })();
 
@@ -2671,9 +2671,9 @@ check('Lease-quote-terms prose on a General campaign lands in Tier 4 (was 5.9 fa
 check('Lease-quote-terms result is flagged Finance', leaseResult.flags.includes('Finance'), true);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck real-reviewed-leads self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker real-reviewed-leads self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck real-reviewed-leads self-test passed (4/4)');
+console.info('KonnectLeadChecker real-reviewed-leads self-test passed (4/4)');
 }
 })();
 
@@ -2697,9 +2697,9 @@ check('Engagement signal confirmed (Scheduled a call or Spoke To Customer) - sen
 check('Non-Post-Closure source - postClosureAction stays null regardless of the signal', classifyLead('Customer Comments: -', { campaign: 'Citroen - Enquiry - New', source: 'Customer First', hasAlreadyEngagedCallEntry: true }).postClosureAction, null);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck postClosureAction self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker postClosureAction self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck postClosureAction self-test passed (4/4)');
+console.info('KonnectLeadChecker postClosureAction self-test passed (4/4)');
 }
 })();
 
@@ -2716,7 +2716,7 @@ console.info('KonnectBookingCheck postClosureAction self-test passed (4/4)');
 // waits are bounded (a few seconds at most).
 // ===================================================================
 
-const SESSION_STORAGE_KEY = 'konnectBookingCheck:session:v1';
+const SESSION_STORAGE_KEY = 'konnectLeadChecker:session:v1';
 
 function saveSession(session) {
 try { localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session)); } catch (error) { /* ignore */ }
@@ -2735,7 +2735,7 @@ try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (error) { /* ignore 
 // automated clicking/searching on Konnect Live should stay a deliberate
 // choice unless the user has explicitly asked to skip that
 // confirmation step.
-const SETTINGS_STORAGE_KEY = 'konnectBookingCheck:settings:v1';
+const SETTINGS_STORAGE_KEY = 'konnectLeadChecker:settings:v1';
 
 function loadSettings() {
 try {
@@ -2814,7 +2814,7 @@ return Object.assign({}, result, patch, { processingTimestamp: new Date().toISOS
 // would conflate two different leads from one customer) across two
 // separate pastes, so a genuinely-completed result can be carried over
 // rather than reprocessed. campaign/source/created together are the
-// same real-world fields Extract's own "Copy for Booking Check" export
+// same real-world fields Extract's own "Copy for Lead Checker" export
 // draws from a specific SLA row - two rows sharing all of these really
 // are the same lead, not a coincidence.
 function rowIdentityKey(row) {
@@ -2962,7 +2962,7 @@ if (workingCandidates.length === 0) {
 // pink entry (see the CALL-ENTRY FALLBACK section above). This is
 // deliberately a fallback, not a separate up-front branch chosen by
 // row type - SLA rows always match directly above and never reach
-// here, so Booking Check never needs the batch input to declare in
+// here, so Lead Checker never needs the batch input to declare in
 // advance which kind of row it's looking at.
 const callFallback = await findLeadCandidateViaCallFallback(row.created, session, referenceNow);
 if (callFallback.status === 'CANCELLED') return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
@@ -2974,7 +2974,7 @@ workingCandidates = [callFallback.candidate];
 // rather than falling through to the generic
 // TARGET_CREATED_DATETIME_NOT_FOUND below, which would wrongly imply
 // nothing matched the target time at all.
-console.warn('[KonnectBookingCheck] Call-entry fallback did not resolve to a lead for row.created=', JSON.stringify(row.created), '- status:', callFallback.status);
+console.warn('[KonnectLeadChecker] Call-entry fallback did not resolve to a lead for row.created=', JSON.stringify(row.created), '- status:', callFallback.status);
 return finalizeResult(result, { status: 'EXCEPTION', exception: `CALL_FALLBACK_${callFallback.status}` });
 }
 }
@@ -2992,7 +2992,7 @@ if (workingCandidates.length === 0) {
 // this gap - is what actually shows whether the match failed on a
 // genuine timestamp mismatch or on a raw-text shape this parser
 // doesn't recognize.
-console.warn('[KonnectBookingCheck] TARGET_CREATED_DATETIME_NOT_FOUND for row.created=', JSON.stringify(row.created), 'parsed target=', target, '- entries seen:', getLoadedLeadEntries().map((entryRow) => {
+console.warn('[KonnectLeadChecker] TARGET_CREATED_DATETIME_NOT_FOUND for row.created=', JSON.stringify(row.created), 'parsed target=', target, '- entries seen:', getLoadedLeadEntries().map((entryRow) => {
 const raw = extractTimelineTimestamp(entryRow);
 return { raw, parsed: raw ? parseTimelineTimestamp(raw, referenceNow) : null };
 }));
@@ -3028,11 +3028,11 @@ break;
 }
 const clickTarget = findLeadClickTarget(candidate.row);
 if (!clickTarget || !clickTarget.isConnected) {
-console.warn('[KonnectBookingCheck] click target not found for candidate at', candidate.rawTimestamp);
+console.warn('[KonnectLeadChecker] click target not found for candidate at', candidate.rawTimestamp);
 candidateFailures.push('LEAD_CLICK_TARGET_NOT_FOUND');
 continue;
 }
-console.info('[KonnectBookingCheck] clicking candidate at', candidate.rawTimestamp, 'visibleLeadId=', candidate.leadId);
+console.info('[KonnectLeadChecker] clicking candidate at', candidate.rawTimestamp, 'visibleLeadId=', candidate.leadId);
 const modalState = await openLeadModal(candidate.row);
 if (isCancelled(session)) {
 // The modal may have opened right as Cancel/Clear & Stop was
@@ -3043,7 +3043,7 @@ candidateFailures.push('CANCELLED');
 break;
 }
 if (!modalState) {
-console.warn('[KonnectBookingCheck] modal did not become ready for candidate at', candidate.rawTimestamp);
+console.warn('[KonnectLeadChecker] modal did not become ready for candidate at', candidate.rawTimestamp);
 candidateFailures.push('LEAD_MODAL_TIMEOUT');
 continue;
 }
@@ -3055,16 +3055,16 @@ continue;
 // without being the real, freshly-opened lead modal. Logging the
 // actual matched element (not just the fields we tried to pull out of
 // it) removes the guesswork either way.
-console.info('[KonnectBookingCheck] modal element matched:', modalState.modal.className, '| panel used:', modalState.panel === modalState.modal ? '(fell back to whole modal - no .tab-pane.active found)' : modalState.panel.className, '| visible rect:', JSON.stringify(modalState.modal.getBoundingClientRect()));
-console.info('[KonnectBookingCheck] modal panel outerHTML (first 1500 chars):', modalState.panel.outerHTML.slice(0, 1500));
+console.info('[KonnectLeadChecker] modal element matched:', modalState.modal.className, '| panel used:', modalState.panel === modalState.modal ? '(fell back to whole modal - no .tab-pane.active found)' : modalState.panel.className, '| visible rect:', JSON.stringify(modalState.modal.getBoundingClientRect()));
+console.info('[KonnectLeadChecker] modal panel outerHTML (first 1500 chars):', modalState.panel.outerHTML.slice(0, 1500));
 const panelFields = extractLeadPanelFields(modalState.panel);
-console.info('[KonnectBookingCheck] modal opened - extracted fields:', JSON.stringify(panelFields));
+console.info('[KonnectLeadChecker] modal opened - extracted fields:', JSON.stringify(panelFields));
 const validation = validateLeadCandidate(panelFields, candidate.parsed, row);
 if (validation.ok) {
 const initialNotes = extractInitialNotes(modalState.panel);
 validated.push({ candidate, panelFields, initialNotes, warnings: validation.warnings || [] });
 } else {
-console.warn('[KonnectBookingCheck] validation rejected candidate:', validation.reason);
+console.warn('[KonnectLeadChecker] validation rejected candidate:', validation.reason);
 candidateFailures.push('LEAD_VALIDATION_FAILED');
 // Both the candidate's own timestamp and the row's original Created/
 // Last-Actioned value are shown, not just one - a call-fallback match
@@ -3137,7 +3137,7 @@ const classification = classifyLead(initialNotes, { campaign: row.campaign, sour
 // source: classification.source, not left as makeResultBase's own
 // row.source - that's the raw, often-blank batch value (Pending
 // Customers' own export deliberately leaves Source blank, see
-// buildPendingBookingCheckTsv's own comment), never updated to the
+// buildPendingLeadCheckerTsv's own comment), never updated to the
 // value classifyLead actually resolved and classified against
 // (resolvedSource, further possibly inferred from Initial Notes text
 // by inferSource). Confirmed live: the card's own Source field was
@@ -3309,7 +3309,7 @@ if (session.paused) { await sleep(200); continue; }
 // every lead not yet started, and resumes automatically the moment the
 // tab is foregrounded again.
 if (document.hidden) { uiHandle.setState('Paused - tab is in the background'); await sleep(200); continue; }
-// Same "(N left)" countdown SLA-Extract.js's own overlay shows during
+// Same "(N left)" countdown SLA-Manager.js's own overlay shows during
 // batch ingestion (setBadgeProgress there) - showPageFlashOverlay just
 // updates the existing overlay's text when already showing, so this
 // is cheap to call every iteration.
@@ -3343,7 +3343,7 @@ function hasRetryableExceptions(s) {
 return retryableExceptionCount(s) > 0;
 }
 
-// The Booking Checker button row used to be one flat always-visible
+// The Lead Checker button row used to be one flat always-visible
 // row of 7 buttons regardless of session state (confirmed live:
 // nothing toggled .hidden/.disabled on any of them) - reported as "too
 // many ambiguous buttons sandwiched together". Grouped into run
@@ -3386,7 +3386,7 @@ handoffControls: hasResults
 }
 
 // One color per tier (6, was 4 categories) - same palette family SLA-
-// Extract.js's own bookingCheckImportCategoryColor uses, extended for
+// Extract.js's own leadCheckerImportCategoryColor uses, extended for
 // the new tier count, so a lead reads the same color whichever tool
 // it's looked at in.
 const TIER_COLORS = { 1: '#059669', 2: '#d97706', 3: '#2563eb', 4: '#7c3aed', 5: '#64748b', 6: '#94a3b8' };
@@ -3473,7 +3473,7 @@ return 'Idle';
 // Tier 1-2) appointment date ASC, then lead received time ASC. The
 // single-number PriorityRank (tier*100 + subRank) carries the primary
 // two keys directly - it's what gets exported to Extract, which sorts
-// on it as a plain number (see classifyBookingCheckImportRows there).
+// on it as a plain number (see classifyLeadCheckerImportRows there).
 // The appointment-date tie-break isn't implemented (would need a real
 // date VALUE extracted from free text, not just the yes/no hasDayMention/
 // hasClockTime checks the classifier itself uses) - a known
@@ -3575,7 +3575,7 @@ r.campaign || '', r.source || ''
 return [header, ...lines].join('\n');
 }
 
-// Feeds the reverse handoff into SLA-Extract.js. Used to hand back only
+// Feeds the reverse handoff into SLA-Manager.js. Used to hand back only
 // the raw fields and let Extract re-classify from a second, separately-
 // maintained copy of this exact classifier - a real drift risk that
 // already happened (that copy never got this file's later dual-raw-
@@ -3583,7 +3583,7 @@ return [header, ...lines].join('\n');
 // this export directly). Now exports the already-computed Tier/
 // SubCategory/Flags/PriorityRank too, so Extract just uses them - one
 // classifier, not two that can quietly disagree on the same lead. Kept
-// in lockstep with SLA-Extract.js's own BOOKING_CHECK_IMPORT_HEADER -
+// in lockstep with SLA-Manager.js's own LEAD_CHECKER_IMPORT_HEADER -
 // changing this header without changing that one breaks the handoff.
 function buildRawNotesTsvForExtract(session) {
 const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank'];
@@ -3663,23 +3663,23 @@ function buildBulkAnalysisClipboardPayload(session) {
 return BULK_ANALYSIS_PROMPT + '\n' + buildBulkAnalysisExport(session);
 }
 
-window.KonnectBookingCheck.buildBulkAnalysisExport = buildBulkAnalysisExport;
-window.KonnectBookingCheck.buildBulkAnalysisClipboardPayload = buildBulkAnalysisClipboardPayload;
+window.KonnectLeadChecker.buildBulkAnalysisExport = buildBulkAnalysisExport;
+window.KonnectLeadChecker.buildBulkAnalysisClipboardPayload = buildBulkAnalysisClipboardPayload;
 
-window.KonnectBookingCheck.buildProcessingGroups = buildProcessingGroups;
-window.KonnectBookingCheck.firstUnresolvedGroupIndex = firstUnresolvedGroupIndex;
-window.KonnectBookingCheck.newSession = newSession;
-window.KonnectBookingCheck.retryExceptions = retryExceptions;
-window.KonnectBookingCheck.rowIdentityKey = rowIdentityKey;
-window.KonnectBookingCheck.isNeedsReview = isNeedsReview;
-window.KonnectBookingCheck.applyManualReviewDecision = applyManualReviewDecision;
-window.KonnectBookingCheck.buildManualReviewDecisionsExport = buildManualReviewDecisionsExport;
-window.KonnectBookingCheck.stepOnce = stepOnce;
-window.KonnectBookingCheck.runLoop = runLoop;
-window.KonnectBookingCheck.orderedResults = orderedResults;
-window.KonnectBookingCheck.bookingPriorityRankValue = bookingPriorityRankValue;
-window.KonnectBookingCheck.compareByBookingPriority = compareByBookingPriority;
-window.KonnectBookingCheck.buildRawNotesTsvForExtract = buildRawNotesTsvForExtract;
+window.KonnectLeadChecker.buildProcessingGroups = buildProcessingGroups;
+window.KonnectLeadChecker.firstUnresolvedGroupIndex = firstUnresolvedGroupIndex;
+window.KonnectLeadChecker.newSession = newSession;
+window.KonnectLeadChecker.retryExceptions = retryExceptions;
+window.KonnectLeadChecker.rowIdentityKey = rowIdentityKey;
+window.KonnectLeadChecker.isNeedsReview = isNeedsReview;
+window.KonnectLeadChecker.applyManualReviewDecision = applyManualReviewDecision;
+window.KonnectLeadChecker.buildManualReviewDecisionsExport = buildManualReviewDecisionsExport;
+window.KonnectLeadChecker.stepOnce = stepOnce;
+window.KonnectLeadChecker.runLoop = runLoop;
+window.KonnectLeadChecker.orderedResults = orderedResults;
+window.KonnectLeadChecker.bookingPriorityRankValue = bookingPriorityRankValue;
+window.KonnectLeadChecker.compareByBookingPriority = compareByBookingPriority;
+window.KonnectLeadChecker.buildRawNotesTsvForExtract = buildRawNotesTsvForExtract;
 
 (function orchestrationSelfTest() {
 const failures = [];
@@ -3725,12 +3725,12 @@ compareByBookingPriority(
 ) > 0,
 true);
 
-// The exact contract SLA-Extract.js's "Classify Booking Check
-// results" panel parses (BOOKING_CHECK_IMPORT_HEADER there) - pinned
+// The exact contract SLA-Manager.js's "Classify Lead Checker
+// results" panel parses (LEAD_CHECKER_IMPORT_HEADER there) - pinned
 // down explicitly since the two files can't share a module and would
 // otherwise only find out they'd drifted apart by failing silently on
 // a real paste. Extract now trusts these columns directly instead of
-// re-classifying (see its own booking-check-import self-test), so this
+// re-classifying (see its own lead-checker-import self-test), so this
 // check also confirms the actual computed tier/subCategory/rank land
 // in the right columns, not just that the header row's shape is right.
 const rawExtractTsv = buildRawNotesTsvForExtract(fakeSession);
@@ -3742,9 +3742,9 @@ check('raw Extract export: Flags column carries the computed flags', aliceAgainC
 check('raw Extract export: PriorityRank column carries a real numeric rank', aliceAgainCells[16], String(bookingPriorityRankValue(fakeSession.results[1])));
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck orchestration self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker orchestration self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck orchestration self-test passed (10/10)');
+console.info('KonnectLeadChecker orchestration self-test passed (10/10)');
 }
 })();
 
@@ -3814,9 +3814,9 @@ const nextIndex = firstUnresolvedGroupIndex(fakeSession.groups, fakeSession.resu
 check('Already-resolved Carol\'s group (index 2) is skipped, not reprocessed, once Bob\'s retry is done', nextIndex, 3);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck retryExceptions self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker retryExceptions self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck retryExceptions self-test passed (10/10)');
+console.info('KonnectLeadChecker retryExceptions self-test passed (10/10)');
 }
 })();
 
@@ -3897,9 +3897,9 @@ done: false, paused: true
 check('CLASSIFICATION_REVIEW_REQUIRED is not retryable (own resolution flow, not a processing failure)', retryableExceptionCount(reviewOnlyException), 0);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck button-visibility self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker button-visibility self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck button-visibility self-test passed (7/7)');
+console.info('KonnectLeadChecker button-visibility self-test passed (7/7)');
 }
 })();
 
@@ -3934,9 +3934,9 @@ check('categoryBadge still surfaces the underlying tier as secondary info', cate
 check('categoryBadge for a normal lead still leads with the tier pill as before', categoryBadge(normalLead).indexOf('WARM ENQUIRY') < categoryBadge(normalLead).indexOf('Quote'), true);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck postClosureDisplay self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker postClosureDisplay self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck postClosureDisplay self-test passed (9/9)');
+console.info('KonnectLeadChecker postClosureDisplay self-test passed (9/9)');
 }
 })();
 
@@ -3963,9 +3963,9 @@ check('Cancelled takes priority over done being false', deriveRestStateLabel({ p
 check('Freshly parsed, never started', deriveRestStateLabel({ paused: false, done: false, cancelled: false }, false), 'Idle');
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck deriveRestStateLabel self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker deriveRestStateLabel self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck deriveRestStateLabel self-test passed (7/7)');
+console.info('KonnectLeadChecker deriveRestStateLabel self-test passed (7/7)');
 }
 })();
 
@@ -4029,9 +4029,9 @@ const session4 = newSession(batch1, session1);
 check('Re-pasting a fully-completed batch is immediately done', session4.done, true);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck session-merge self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker session-merge self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck session-merge self-test passed (8/8)');
+console.info('KonnectLeadChecker session-merge self-test passed (8/8)');
 }
 })();
 
@@ -4091,9 +4091,9 @@ check('Review-decisions export includes only the manually-overridden row', expor
 check('Review-decisions export row carries the chosen tier name', exportLines[1].split('\t')[2], 'WARM ENQUIRY');
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck needs-review self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker needs-review self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck needs-review self-test passed (15/15)');
+console.info('KonnectLeadChecker needs-review self-test passed (15/15)');
 }
 })();
 
@@ -4135,14 +4135,14 @@ check('Clipboard payload leads with the explanatory prompt text', payload.starts
 check('Clipboard payload includes the export data after the prompt', payload.includes(exportTsv), true);
 
 if (failures.length > 0) {
-console.error('KonnectBookingCheck bulk-analysis-export self-test FAILED:\n' + failures.join('\n'));
+console.error('KonnectLeadChecker bulk-analysis-export self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectBookingCheck bulk-analysis-export self-test passed (7/7)');
+console.info('KonnectLeadChecker bulk-analysis-export self-test passed (7/7)');
 }
 })();
 
 // ===================================================================
-// PAGE FLASH OVERLAY - same pattern as SLA-Extract.js's own
+// PAGE FLASH OVERLAY - same pattern as SLA-Manager.js's own
 // showPageFlashOverlay/hidePageFlashOverlay (Refreshing leads/Clearing
 // the queue/Morning Checks there). Konnect Live's own pages re-
 // rendering mid-navigation while searching/opening a customer/opening
@@ -4152,42 +4152,42 @@ console.info('KonnectBookingCheck bulk-analysis-export self-test passed (7/7)');
 // live progress state - stays visible on top of the dimmed page.
 // ===================================================================
 
-const KBC_PAGE_FLASH_OVERLAY_ID = '_kbcPageFlashOverlay';
-let kbcPageFlashOverlayPrevOverflow = null;
+const KLC_PAGE_FLASH_OVERLAY_ID = '_klcPageFlashOverlay';
+let klcPageFlashOverlayPrevOverflow = null;
 
 function showPageFlashOverlay(message) {
-const existing = document.getElementById(KBC_PAGE_FLASH_OVERLAY_ID);
+const existing = document.getElementById(KLC_PAGE_FLASH_OVERLAY_ID);
 if (existing) {
 const label = existing.querySelector('[data-overlay-label]');
 if (label) label.textContent = message;
 return;
 }
-if (!document.getElementById('_kbcSpinKeyframes')) {
+if (!document.getElementById('_klcSpinKeyframes')) {
 const style = document.createElement('style');
-style.id = '_kbcSpinKeyframes';
-style.textContent = '@keyframes _kbcSpin { to { transform: rotate(360deg); } }';
+style.id = '_klcSpinKeyframes';
+style.textContent = '@keyframes _klcSpin { to { transform: rotate(360deg); } }';
 document.head.appendChild(style);
 }
 const overlay = document.createElement('div');
-overlay.id = KBC_PAGE_FLASH_OVERLAY_ID;
+overlay.id = KLC_PAGE_FLASH_OVERLAY_ID;
 overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(15,23,42,0.94); z-index: 999999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: white; font-size: 14px; font-weight: 600;';
 overlay.innerHTML = `
-<div style="width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.25); border-top-color: white; border-radius: 50%; animation: _kbcSpin 0.8s linear infinite;"></div>
+<div style="width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.25); border-top-color: white; border-radius: 50%; animation: _klcSpin 0.8s linear infinite;"></div>
 <div data-overlay-label>${message}</div>
 `;
-kbcPageFlashOverlayPrevOverflow = document.documentElement.style.overflow;
+klcPageFlashOverlayPrevOverflow = document.documentElement.style.overflow;
 document.documentElement.style.overflow = 'hidden';
 document.documentElement.appendChild(overlay);
 }
 
 function hidePageFlashOverlay() {
-document.getElementById(KBC_PAGE_FLASH_OVERLAY_ID)?.remove();
-document.documentElement.style.overflow = kbcPageFlashOverlayPrevOverflow || '';
-kbcPageFlashOverlayPrevOverflow = null;
+document.getElementById(KLC_PAGE_FLASH_OVERLAY_ID)?.remove();
+document.documentElement.style.overflow = klcPageFlashOverlayPrevOverflow || '';
+klcPageFlashOverlayPrevOverflow = null;
 }
 
 // ===================================================================
-// ICONS - ported verbatim from SLA-Extract.js's own redesign (small
+// ICONS - ported verbatim from SLA-Manager.js's own redesign (small
 // inline-SVG line icons, Lucide/Feather-style: 24x24 viewBox, stroke-
 // based, currentColor) so this panel matches the rest of the toolset
 // instead of the plain-text/emoji buttons it had before. Only the icons
@@ -4220,7 +4220,7 @@ return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" st
 // driven by a plain CSS "parent:not([open]) .chev" rule, not a JS-
 // computed transform - these are native <details> elements with no
 // toggle listener/re-render of their own, so there's no "collapsed"
-// boolean to pass in the way SLA-Extract.js's own chevronIcon needs one.
+// boolean to pass in the way SLA-Manager.js's own chevronIcon needs one.
 function detailsChevronIcon() {
 return `<svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;">${ICONS.chevron}</svg>`;
 }
@@ -4232,15 +4232,15 @@ return `<svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none"
 // ===================================================================
 
 // Every fresh bookmarklet click always starts minimized to just the
-// nav item/badge, per instruction - unlike SLA-Extract.js (a
+// nav item/badge, per instruction - unlike SLA-Manager.js (a
 // persistent auto-detect script that rebuilds its panel across route
 // changes, where remembering "was open" matters), this only ever
 // initializes once per click, so there's no reload-continuity case
 // worth a persisted flag for - it would only ever get read once, right
 // after being set false at the very same startup it's supposedly
 // remembering.
-const KBC_NAV_ITEM_ID = '_kbcNavItem';
-const KBC_BADGE_ID = '_kbcBadge';
+const KLC_NAV_ITEM_ID = '_klcNavItem';
+const KLC_BADGE_ID = '_klcBadge';
 
 // Docks into Konnect Live's own top nav rather than floating a colored
 // circle over the page - confirmed live via a real DOM scan: the right
@@ -4252,7 +4252,7 @@ const KBC_BADGE_ID = '_kbcBadge';
 // class for the icon color (rather than hardcoding its hex), is what
 // makes this actually blend in as "one more of the page's own nav
 // items" instead of a generic badge that happens to sit nearby - same
-// intent as SLA-Extract.js's own createBadge() docking into Konnect
+// intent as SLA-Manager.js's own createBadge() docking into Konnect
 // Manager's navbar, just matched to Konnect Live's real markup.
 // Falls back to a small fixed circular badge - recolored to this
 // page's own confirmed palette (#222222 nav background, white,
@@ -4260,13 +4260,13 @@ const KBC_BADGE_ID = '_kbcBadge';
 // that nav structure isn't there (a page this was never confirmed
 // against, or a future Konnect Live redesign).
 function buildBadge() {
-document.getElementById(KBC_NAV_ITEM_ID)?.remove();
-document.getElementById(KBC_BADGE_ID)?.remove();
+document.getElementById(KLC_NAV_ITEM_ID)?.remove();
+document.getElementById(KLC_BADGE_ID)?.remove();
 
 const nav = document.querySelector('nav.navbar.navbar-inverse.navbar-fixed-top');
 if (nav) {
 const ul = document.createElement('ul');
-ul.id = KBC_NAV_ITEM_ID;
+ul.id = KLC_NAV_ITEM_ID;
 ul.className = 'nav navbar-right top-nav';
 // Explicit float, not just the class - a dynamically-injected element
 // shouldn't depend on cascade/load-order luck for something this
@@ -4277,7 +4277,7 @@ const li = document.createElement('li');
 li.className = 'dropdown hidden-sm';
 const a = document.createElement('a');
 a.href = 'javascript:void(0)';
-a.title = 'Konnect Booking Check';
+a.title = 'Konnect Lead Checker';
 const icon = document.createElement('i');
 icon.className = 'fa fa-clipboard fa-fw text-konnect-live';
 const label = document.createElement('span');
@@ -4311,9 +4311,9 @@ setProgress() {}
 };
 }
 
-console.warn('KonnectBookingCheck: navbar not found, falling back to a fixed badge');
+console.warn('KonnectLeadChecker: navbar not found, falling back to a fixed badge');
 const badge = document.createElement('div');
-badge.id = KBC_BADGE_ID;
+badge.id = KLC_BADGE_ID;
 Object.assign(badge.style, {
 position: 'fixed', top: '16px', right: '16px', width: '48px', height: '48px',
 background: '#222222', border: '2px solid #C2CB42', borderRadius: '50%',
@@ -4323,7 +4323,7 @@ fontWeight: 'bold', color: '#C2CB42', transition: 'transform 0.15s ease, box-sha
 fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
 });
 badge.innerHTML = svgIcon('clipboard', 22);
-badge.title = 'Konnect Booking Check';
+badge.title = 'Konnect Lead Checker';
 badge.addEventListener('mouseenter', () => {
 badge.style.transform = 'scale(1.12)';
 badge.style.boxShadow = '0 6px 16px rgba(194,203,66,0.5)';
@@ -4352,7 +4352,7 @@ badge.style.fontSize = '18px';
 
 // Idle (no session, or a finished one) always falls back to the plain
 // idle label/icon - the number only means something while there's
-// still work left, same as SLA-Extract.js's own setBadgeProgress.
+// still work left, same as SLA-Manager.js's own setBadgeProgress.
 function updateBadgeProgress(badge, ordered, session) {
 if (!badge) return;
 if (!session || ordered.length === 0 || session.done) {
@@ -4364,21 +4364,21 @@ badge.setProgress(remaining > 0 ? remaining : null);
 }
 
 function buildPanelMarkup() {
-// Same zombie-instance class of bug confirmed live in SLA-Extract.js's
-// own panel: the window.__konnectBookingCheck guard at the top of this
+// Same zombie-instance class of bug confirmed live in SLA-Manager.js's
+// own panel: the window.__konnectLeadChecker guard at the top of this
 // file is meant to stop a second panel ever being created while one
 // already exists, but per instruction ("refresh the bookmarklet so the
 // next click starts anew"), that guard alone wasn't reliably enough -
 // clicking again after Clear & Stop (or any other path that leaves the
 // guard and the real DOM state disagreeing) could still end up with two
-// #_kbcPanelHost trees, the newer one silently fighting the older one
+// #_klcPanelHost trees, the newer one silently fighting the older one
 // for duplicate-ID elements the exact same way. Removing any existing
 // host by ID unconditionally, right before creating a fresh one, makes
 // this correct regardless of why the guard might be wrong, not just
 // when it happens to be right.
-document.getElementById('_kbcPanelHost')?.remove();
+document.getElementById('_klcPanelHost')?.remove();
 const host = document.createElement('div');
-host.id = '_kbcPanelHost';
+host.id = '_klcPanelHost';
 Object.assign(host.style, { all: 'initial', position: 'fixed', top: '16px', right: '16px', zIndex: 2147483000, display: 'none' });
 document.documentElement.appendChild(host);
 const root = host.attachShadow({ mode: 'open' });
@@ -4418,8 +4418,8 @@ button.primary:hover { background: #aab238; }
 .recent-log-tier { flex-shrink: 0; padding: 1px 6px; border-radius: 3px; font-weight: 700; font-size: 9.5px; white-space: nowrap; }
 .progress-track { height: 5px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
 .progress-fill { height: 100%; background: #C2CB42; transition: width 0.2s ease; border-radius: 3px; }
-.progress-fill.active { background-image: linear-gradient(135deg, rgba(255,255,255,0.4) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.4) 75%, transparent 75%, transparent); background-size: 14px 14px; animation: kbcProgressStripes 0.6s linear infinite; }
-@keyframes kbcProgressStripes { from { background-position: 0 0; } to { background-position: 14px 0; } }
+.progress-fill.active { background-image: linear-gradient(135deg, rgba(255,255,255,0.4) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.4) 75%, transparent 75%, transparent); background-size: 14px 14px; animation: klcProgressStripes 0.6s linear infinite; }
+@keyframes klcProgressStripes { from { background-position: 0 0; } to { background-position: 14px 0; } }
 /* !important, not a plain class rule - button.action's own display:
 inline-flex (a type+class selector, higher specificity than a single
 class) was winning over a plain .hidden every time regardless of CSS
@@ -4488,7 +4488,7 @@ details.customer:hover > summary .category-badge { border-color: currentColor; }
 </style>
 <div class="panel">
 <div class="header" id="headerEl">
-<div class="header-title">${svgIcon('clipboard', 15)}<span>Konnect Booking Check</span></div>
+<div class="header-title">${svgIcon('clipboard', 15)}<span>Konnect Lead Checker</span></div>
 <button id="minBtn" title="Minimize">${svgIcon('minimize', 14)}</button>
 </div>
 <div class="bodyEl" id="bodyEl">
@@ -4599,7 +4599,7 @@ button.style.color = originalColor;
 }, 1500);
 }
 
-function initKonnectBookingCheckUI() {
+function initKonnectLeadCheckerUI() {
 const { host, root } = buildPanelMarkup();
 
 const pasteBox = root.getElementById('pasteBox');
@@ -4660,7 +4660,7 @@ if (session) pasteBox.value = session.rawInput || '';
 const detailsState = { tiers: new Set([-2, -1, 1, 2, 3, 4, 5, 6]), customers: new Set() };
 let reviewSectionOpen = false;
 
-// Same click-to-copy visual pattern as SLA-Extract.js's .sla-copyable
+// Same click-to-copy visual pattern as SLA-Manager.js's .sla-copyable
 // fields (cursor pointer, light indigo background) - per instruction,
 // customer number/name/email in this dropdown should work the same
 // way. data-value carries the unescaped-for-copy text; the click
@@ -4670,7 +4670,7 @@ let reviewSectionOpen = false;
 function copyableField(value) {
 if (!value) return '';
 const display = escapeHtmlForUi(value);
-return `<span class="kbc-copyable" data-value="${display}" style="cursor: pointer; padding: 1px 5px; border-radius: 4px; background: #eef2ff; color: #1e293b; display: inline-block;">${display}</span>`;
+return `<span class="klc-copyable" data-value="${display}" style="cursor: pointer; padding: 1px 5px; border-radius: 4px; background: #eef2ff; color: #1e293b; display: inline-block;">${display}</span>`;
 }
 
 function customerBodyHtml(r) {
@@ -4879,7 +4879,7 @@ resultsBody.querySelectorAll('details.customer').forEach((el) => {
 const key = Number(el.dataset.key);
 el.addEventListener('toggle', () => { if (el.open) detailsState.customers.add(key); else detailsState.customers.delete(key); });
 });
-resultsBody.querySelectorAll('.kbc-copyable').forEach((el) => {
+resultsBody.querySelectorAll('.klc-copyable').forEach((el) => {
 el.addEventListener('click', () => {
 const original = el.textContent;
 copyTextToClipboard(el.dataset.value)
@@ -5037,7 +5037,7 @@ render();
 // directly via the async Clipboard API, same approach and same
 // fallback (that API needs clipboard-read permission and can be
 // blocked entirely in some contexts) already proven out in
-// SLA-Extract.js's own "Paste from clipboard & Classify" button.
+// SLA-Manager.js's own "Paste from clipboard & Classify" button.
 // Setting pasteBox.value directly does NOT fire its 'paste' event, so
 // ensureSessionFromPasteBox/render/auto-start are called explicitly
 // here rather than relying on the listeners above.
@@ -5155,7 +5155,7 @@ hidePageFlashOverlay();
 uiHandle.setState('Idle', '-', '-');
 });
 
-// Originally left the persisted session alone, matching SLA-Extract.js's
+// Originally left the persisted session alone, matching SLA-Manager.js's
 // own Clear & Stop exactly (per instruction at the time) - but real use
 // showed that reading as "not actually clearing it" here: reopening the
 // bookmarklet afterward still showed the old batch/results, which reads
@@ -5172,8 +5172,8 @@ session = null;
 recentCompletions = [];
 host.remove();
 badge.remove();
-window.__konnectBookingCheck = null;
-console.info('Konnect Booking Check stopped and cleared - click the bookmarklet again to start fresh');
+window.__konnectLeadChecker = null;
+console.info('Konnect Lead Checker stopped and cleared - click the bookmarklet again to start fresh');
 });
 
 root.getElementById('btnCopyRawForExtract').addEventListener('click', (event) => {
@@ -5243,7 +5243,7 @@ window.addEventListener('mouseup', () => { dragState = null; });
 
 render();
 
-window.__konnectBookingCheck = {
+window.__konnectLeadChecker = {
 focus() {
 host.style.display = 'block';
 badge.hide();
@@ -5253,9 +5253,9 @@ getSession: () => session
 }
 
 try {
-initKonnectBookingCheckUI();
+initKonnectLeadCheckerUI();
 } catch (error) {
-console.warn('KonnectBookingCheck UI did not initialize (expected outside a real browser):', error && error.message);
+console.warn('KonnectLeadChecker UI did not initialize (expected outside a real browser):', error && error.message);
 }
 
 })();
