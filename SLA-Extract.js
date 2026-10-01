@@ -3269,7 +3269,18 @@ return true;
 });
 const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'].join('\t');
 const lines = rows.map((c) => [
-tsvSafe(stripTitle(c.name)), tsvSafe(c.mobile || c.landline), tsvSafe(c.email), '', tsvSafe(c.campaign), tsvSafe(c.lastActionText)
+// Source is otherwise genuinely blank (this page has no Source column
+// of its own to draw a real value from, see the comment this used to
+// carry) - except for the Post Closure callback type specifically,
+// where we already know for certain what it is at export time, the
+// same label Konnect's own timeline uses ("Manually Created Sales Lead
+// from Post Closure Processing"). Without this, Konnect-Booking-Check.js's
+// own Post Closure detection (classifyLead's Step 13) could never
+// trigger for a lead routed through this page at all - its Source
+// falls back to the lead modal's own ORIGINAL enquiry source (e.g.
+// "Customer First"), which is never "Post Closure Processing" - a real
+// reported case was wrongly left classified by tier because of this.
+tsvSafe(stripTitle(c.name)), tsvSafe(c.mobile || c.landline), tsvSafe(c.email), c.callbackType === 'Post Closure' ? 'Post Closure Processing' : '', tsvSafe(c.campaign), tsvSafe(c.lastActionText)
 ].join('\t'));
 return { tsv: [header, ...lines].join('\n'), count: rows.length, excludedCount };
 }
@@ -3600,13 +3611,22 @@ if (cells[5] !== 'Sat, 26 Sep 2026 18:05') failures.push(`Expected Created to be
 
 const neverActionedResult = buildPendingBookingCheckTsv(['New', 'Auto Rescheduled', 'Manual Rescheduled', 'Post Closure']);
 if (neverActionedResult.count !== 2) failures.push(`Expected never-actioned leads to stay excluded even if their callback type were selectable, got count ${neverActionedResult.count}`);
+// Source must say "Post Closure Processing" explicitly for this one
+// callback type - otherwise Konnect-Booking-Check.js's own Step 13 can
+// never detect these leads at all, since its fallback (the lead
+// modal's own Source field) shows the customer's ORIGINAL enquiry
+// source instead, never this label. A real reported case was wrongly
+// left classified by tier because of exactly this gap.
+const caraRow = neverActionedResult.tsv.split('\n').find((line) => line.startsWith('Cara Chen'));
+if (!caraRow) failures.push('Expected Cara Chen (callbackType Post Closure) to appear in the export');
+else if (caraRow.split('\t')[3] !== 'Post Closure Processing') failures.push(`Expected Cara Chen's Source to read "Post Closure Processing", got "${caraRow.split('\t')[3]}"`);
 
 currentPendingCustomers = originalPendingCustomers;
 
 if (failures.length > 0) {
 console.error('SLA Extract pending-booking-check-export self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Extract pending-booking-check-export self-test passed (8/8)');
+console.info('SLA Extract pending-booking-check-export self-test passed (10/10)');
 }
 })();
 
