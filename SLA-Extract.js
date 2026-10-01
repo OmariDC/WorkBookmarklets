@@ -3387,7 +3387,17 @@ return;
 }
 navigator.clipboard.writeText(tsv).then(() => {
 buttonEl.textContent = `✓ Copied ${count}`;
-setTimeout(() => { buttonEl.textContent = original; }, 1500);
+// Closes itself on a successful copy - per instruction, this is a
+// "copy here, go paste in the other tool" handoff, not a dashboard to
+// linger on, so leaving it open just adds a manual close click to
+// every single round-trip. Only on success - left open on failure
+// (below) so the error is visible and the user can retry without
+// reopening the popover from scratch.
+setTimeout(() => {
+buttonEl.textContent = original;
+const popover = document.getElementById('bookingCheckPopover');
+if (popover) popover.style.display = 'none';
+}, 900);
 }).catch(() => {
 buttonEl.textContent = '✗ Failed';
 setTimeout(() => { buttonEl.textContent = original; }, 1500);
@@ -4673,8 +4683,8 @@ ${assignSectionHtml}
 
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
 ${hideSearch ? '' : `
+${showBookingCheck ? `<button onclick="window._pasteAndClassifyBookingCheck(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 10px;" title="Reads Konnect Booking Check's &quot;Copy raw for Extract&quot; result straight off the clipboard and classifies it">${svgIcon('copy', 13)}Paste & Classify from Booking Check</button>` : ''}
 <div style="position: sticky; top: 0; z-index: 2; background: #f8fafc; padding-bottom: 10px; margin-bottom: 10px;">
-${showBookingCheck ? `<button onclick="window._pasteAndClassifyBookingCheck(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 8px;" title="Reads Konnect Booking Check's &quot;Copy raw for Extract&quot; result straight off the clipboard and classifies it">${svgIcon('copy', 13)}Paste & Classify from Booking Check</button>` : ''}
 <input type="text" id="customerSearchInput" placeholder="Search by name…" oninput="window._filterCustomerSearch(this.value)"
 style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; color: #1e293b; background: white;">
 </div>`}
