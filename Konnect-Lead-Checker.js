@@ -4630,12 +4630,38 @@ const btnClearEl = root.getElementById('btnClear');
 const btnCopyRawForExtractEl = root.getElementById('btnCopyRawForExtract');
 const pauseResumeBtn = root.getElementById('btnPauseResume');
 
-const badge = buildBadge();
-badge.show();
+function wireBadgeClick() {
 badge.clickTarget.addEventListener('click', () => {
 host.style.display = 'block';
 badge.hide();
 });
+}
+
+let badge = buildBadge();
+badge.show();
+wireBadgeClick();
+
+// Konnect Live's own Angular app re-renders the navbar during this
+// tool's own navigation (opening customer searches/leads as part of
+// processing a batch) - confirmed live: the nav icon disappeared
+// entirely partway through an active run, with no error and no
+// "navbar not found" warning logged (it WAS found and built
+// successfully at init), meaning something removed it afterward.
+// Angular has no knowledge of a manually-injected element, so its own
+// re-renders of the <nav> it owns don't preserve it. Rebuilds exactly
+// as buildBadge() does if it's ever found missing, restoring whichever
+// visibility state it should currently be in (hidden while the panel
+// itself is open, shown while closed) rather than assuming one or the
+// other. Called from render(), which already runs on every single
+// state change during active processing - cheap existence checks, no
+// separate timer needed.
+function ensureBadgeAttached() {
+if (document.getElementById(KLC_NAV_ITEM_ID) || document.getElementById(KLC_BADGE_ID)) return;
+const panelCurrentlyOpen = host.style.display === 'block';
+badge = buildBadge();
+wireBadgeClick();
+if (panelCurrentlyOpen) badge.hide(); else badge.show();
+}
 
 // Category filter toggled by clicking a stat pill - empty set means "no
 // filter, show everything" (also true again once every category has
@@ -4739,6 +4765,7 @@ render();
 }
 
 function render() {
+ensureBadgeAttached();
 if (!session) {
 rowCountEl.textContent = '0 rows parsed';
 resultsBody.innerHTML = '<div class="empty-state">Paste a batch above to begin.</div>';
