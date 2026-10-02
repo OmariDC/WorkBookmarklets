@@ -2968,6 +2968,27 @@ const callFallback = await findLeadCandidateViaCallFallback(row.created, session
 if (callFallback.status === 'CANCELLED') return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
 if (callFallback.status === 'OK') {
 workingCandidates = [callFallback.candidate];
+} else if (callFallback.status === 'AMBIGUOUS_CALL_MATCH' && String(row.source || '').toLowerCase() === 'post closure processing') {
+// Reported live: a genuine Post Closure lead (Source already known
+// from the batch itself, before any lead-matching even happens) hit
+// AMBIGUOUS_CALL_MATCH instead of ever reaching classification at
+// all - a customer with more than one lead cycle can easily have two
+// DIFFERENT leads' calls land within a few minutes of each other
+// (the old cycle finally timing out right as the new Post Closure
+// one gets its own first call), which is exactly what makes the
+// call-fallback unable to tell which lead row.created's Last Actioned
+// value actually belongs to. Since we already know this row is Post
+// Closure regardless of which specific lead instance it resolves to,
+// and we have no Initial Notes to find an engagement signal in
+// either way, the safe resolution is the same "check" default Step
+// 13 already falls back to - not a hard failure requiring a manual
+// retry that can never actually resolve the ambiguity anyway.
+return finalizeResult(result, {
+status: 'CLASSIFIED', source: row.source,
+postClosureAction: 'check: needs contact?',
+reason: 'Post Closure lead, but which specific lead cycle this row belongs to was ambiguous (multiple leads had calls close together) - no Initial Notes to check for an engagement signal, so defaulted to the safe "check" outcome rather than guessing.',
+confidence: 'low'
+});
 } else if (callFallback.status !== 'NO_CALL_MATCH') {
 // A call WAS found at the target minute, but something past that
 // point didn't work out - reported as its own specific exception
