@@ -334,15 +334,19 @@ const flags = computeFlags(text0, campaign, source, flagCtx);
 
 // Step 13: Post Closure Processing. Being carved out incrementally as
 // real criteria are confirmed (per instruction) rather than replaced in
-// one go - "Scheduled a call" and a "Spoke To Customer" call outcome
-// anywhere in the customer's timeline are the confirmed signals so far
-// (see hasAlreadyEngagedCallEntry/anyCallEntryIndicatesAlreadyEngaged),
-// meaning the customer's already been engaged and the lead should go
-// straight back rather than being worked again. Everything else still
-// falls to the "check" bucket - not yet known whether a dealer already
-// contacted the customer or the lead was rejected, which would also
-// mean "send back", just not detectable yet. "check:" drops once those
-// are carved out too and this stops being a guess.
+// one go - three confirmed signals so far, all meaning the lead should
+// go straight back rather than being worked again: "Scheduled a call"
+// and a "Spoke To Customer" call outcome anywhere in the customer's
+// timeline (see hasAlreadyEngagedCallEntry/anyCallEntryIndicatesAlreadyEngaged),
+// and a genuine dealer rejection - a Type 9 timeline row whose own
+// Description says "Lead Rejected" (see hasRejectedTimelineRow/
+// anyTimelineRowIsLeadRejected) - exactly the "if the lead was
+// rejected, we send it straight back through" case from the original
+// brief. Everything else still falls to the "check" bucket - not yet
+// known whether a dealer already contacted the customer some other
+// way, which would also mean "send back", just not detectable yet.
+// "check:" drops once that's carved out too and this stops being a
+// guess.
 const postClosureAction = src === 'post closure processing'
 ? (hasAlreadyEngagedCallEntry ? 'send back through' : 'check: needs contact?')
 : null;
@@ -1713,6 +1717,40 @@ function hasAlreadyEngagedCallEntry(targetLeadId) {
 return anyCallEntryIndicatesAlreadyEngaged(getLoadedCallEntries(), targetLeadId);
 }
 
+// Every timeline row (leads, calls, sent-to-dealer, Post Closure notes,
+// final outcomes - every type) shares this same ng-repeat, regardless
+// of its own icon/colour styling - confirmed live via a real scope
+// dump of all 8 rows on one customer's timeline. TimelineItemType
+// (read straight off each row's own Angular scope, not CSS class/icon
+// matching - the only way to even find these, since they don't share
+// the pink/blue styling getLoadedLeadEntries/getLoadedCallEntries look
+// for) is what actually distinguishes them: 1 = lead created, 2 = sent
+// to Enquiry Max, 3 = call, 9 = final outcome, 20 = Post Closure Note
+// sent. Type 9 specifically can carry a genuine "Lead Rejected"
+// outcome - the dealer rejecting the lead entirely is exactly the "if
+// the lead was rejected, we send it straight back through" case from
+// the original brief, a third confirmed engagement signal alongside
+// Scheduled a call and Spoke To Customer.
+function getAllTimelineRows() {
+return [...document.querySelectorAll('div.row.ng-scope[ng-repeat*="customerTimeLine"]')];
+}
+
+function anyTimelineRowIsLeadRejected(timelineRows, targetLeadId, readScope) {
+const resolveScope = readScope || readTimelineItemScope;
+if (!targetLeadId) return false;
+return timelineRows.some((row) => {
+const item = resolveScope(row);
+if (!item || item.LeadID == null) return false;
+if (String(item.LeadID) !== targetLeadId) return false;
+if (Number(item.TimelineItemType) !== 9) return false;
+return /\blead rejected\b/i.test(String(item.Description || ''));
+});
+}
+
+function hasRejectedTimelineRow(targetLeadId) {
+return anyTimelineRowIsLeadRejected(getAllTimelineRows(), targetLeadId);
+}
+
 // ===================================================================
 // Self-test for the already-engaged detection - real row text pulled
 // directly from a live DOM dump of three actual customers (one
@@ -1818,6 +1856,58 @@ if (failures.length > 0) {
 console.error('KonnectLeadChecker already-engaged-detection self-test FAILED:\n' + failures.join('\n'));
 } else {
 console.info('KonnectLeadChecker already-engaged-detection self-test passed (12/12)');
+}
+})();
+
+// ===================================================================
+// Self-test for Lead Rejected detection (Type 9) - real scope data
+// pulled directly from a live customer's full 8-row timeline (leads,
+// calls, sent-to-dealer, a Post Closure Note, and a genuine dealer
+// rejection), read via Angular scope rather than CSS/icon matching,
+// since a Type 9 row shares none of the pink/blue styling the other
+// detection functions key off.
+// ===================================================================
+(function leadRejectedDetectionSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
+}
+function fakeScopeRow(item) {
+return { __fakeItem: item };
+}
+function fakeReadScope(row) { return row.__fakeItem; }
+
+// Real 8-row timeline (Liverpool/Daniel Folger example): an older lead
+// (1385403) that went through voicemail-only calls, max attempts, sent
+// to dealer, and was ultimately rejected by the dealer; a newer Post
+// Closure lead (1386301) created in between, with no rows of its own
+// at all yet.
+const realTimeline = [
+fakeScopeRow({ EventTime: '2026-09-30T16:50:00', TimelineItemType: 1, LeadID: 1385403, Description: 'Manually Created Sales Lead from Customer First' }),
+fakeScopeRow({ EventTime: '2026-09-30T16:56:00', TimelineItemType: 3, LeadID: 1385403, Description: 'No Answer, Message Left.\r\nNo Activity Outcome\r\n' }),
+fakeScopeRow({ EventTime: '2026-10-01T10:04:00', TimelineItemType: 3, LeadID: 1385403, Description: 'No Answer, Message Left.\r\nMax Attempts Reached, Sent to Dealer\r\n' }),
+fakeScopeRow({ EventTime: '2026-10-01T10:05:00', TimelineItemType: 2, LeadID: 1385403, Description: 'Lead sent to Enquiry Max' }),
+fakeScopeRow({ EventTime: '2026-10-02T11:06:00', TimelineItemType: 1, LeadID: 1386301, Description: 'Manually Created Sales Lead from Post Closure Processing' }),
+fakeScopeRow({ EventTime: '2026-10-02T11:11:00', TimelineItemType: 3, LeadID: 1385403, Description: 'No Answer, Message Left.\r\nMax Attempts Reached\r\nNo Activity Outcome\r\n' }),
+fakeScopeRow({ EventTime: '2026-10-02T11:24:00', TimelineItemType: 20, LeadID: 0, Description: 'Post Closure Note sent to Enquiry Max' }),
+fakeScopeRow({ EventTime: '2026-10-02T11:52:00', TimelineItemType: 9, LeadID: 1385403, Description: 'Lead Rejected, set by Daniel Folger at Liverpool' })
+];
+
+check('The rejection belongs to the OLDER lead (1385403) - matches against its own LeadID', anyTimelineRowIsLeadRejected(realTimeline, '1385403', fakeReadScope), true);
+check('The newer Post Closure lead (1386301) has no rows of its own at all yet - not wrongly matched to the older lead\'s rejection', anyTimelineRowIsLeadRejected(realTimeline, '1386301', fakeReadScope), false);
+check('No target LeadID - never guesses', anyTimelineRowIsLeadRejected(realTimeline, null, fakeReadScope), false);
+check('Empty timeline', anyTimelineRowIsLeadRejected([], '1385403', fakeReadScope), false);
+
+const nonRejectionType9 = [fakeScopeRow({ EventTime: '2026-10-02T11:52:00', TimelineItemType: 9, LeadID: '555', Description: 'Some other final outcome, not a rejection' })];
+check('Type 9 rows that are not actually a rejection do not match', anyTimelineRowIsLeadRejected(nonRejectionType9, '555', fakeReadScope), false);
+
+const wrongTypeSameWords = [fakeScopeRow({ EventTime: '2026-10-02T11:52:00', TimelineItemType: 3, LeadID: '555', Description: 'Mentions Lead Rejected in passing but is not actually a Type 9 row' })];
+check('Lead Rejected wording on a non-Type-9 row does not match - the type must be 9, not just the text', anyTimelineRowIsLeadRejected(wrongTypeSameWords, '555', fakeReadScope), false);
+
+if (failures.length > 0) {
+console.error('KonnectLeadChecker leadRejectedDetection self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectLeadChecker leadRejectedDetection self-test passed (6/6)');
 }
 })();
 
@@ -3153,7 +3243,12 @@ const resolvedSource = row.source || panelFields.source;
 // Confirmed live: a real customer's earlier, unrelated lead had its own
 // Scheduled-call entry, which still wrongly counted under a time-scoped
 // version of this check.
-const alreadyEngagedCallEntry = String(resolvedSource || '').toLowerCase() === 'post closure processing' ? hasAlreadyEngagedCallEntry(candidate.leadId) : false;
+// hasRejectedTimelineRow checked alongside the call-based signals, not
+// folded into the same function - a Type 9 "Lead Rejected" row isn't a
+// call at all (no phone icon, never found by getLoadedCallEntries),
+// it needs its own scan over every timeline row type via scope.
+const isPostClosureLead = String(resolvedSource || '').toLowerCase() === 'post closure processing';
+const alreadyEngagedCallEntry = isPostClosureLead && (hasAlreadyEngagedCallEntry(candidate.leadId) || hasRejectedTimelineRow(candidate.leadId));
 const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry });
 // source: classification.source, not left as makeResultBase's own
 // row.source - that's the raw, often-blank batch value (Pending
