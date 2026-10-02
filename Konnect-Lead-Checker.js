@@ -1751,6 +1751,66 @@ function hasRejectedTimelineRow(targetLeadId) {
 return anyTimelineRowIsLeadRejected(getAllTimelineRows(), targetLeadId);
 }
 
+// A dealer rejection never carries the Post Closure lead's own LeadID -
+// confirmed live, it posts to a DIFFERENT lead entirely (the one the
+// rejection decision was actually made against). Per instruction: when
+// a customer has exactly one OTHER lead on their timeline besides the
+// Post Closure one being classified, there's no ambiguity about which
+// lead a rejection on that other one belongs to - the Post Closure
+// lead itself never gets its own outcome row (it's brand new), so if
+// the one other lead was rejected, that rejection explains why this
+// Post Closure re-entry exists at all. Deliberately narrow for now -
+// for customers with more than 2 distinct leads on the timeline, which
+// specific other lead a rejection should be attributed to is genuinely
+// ambiguous without comparing Initial Notes text between them (per
+// instruction, identical Initial Notes is how you'd tell which earlier
+// lead a Post Closure re-entry actually continues) - that needs a real
+// multi-lead example to build against, not guessed at here.
+function getDistinctLeadCreationIds(timelineRows, readScope) {
+const resolveScope = readScope || readTimelineItemScope;
+const ids = timelineRows
+.map((row) => resolveScope(row))
+.filter((item) => item && item.LeadID != null && Number(item.TimelineItemType) === 1)
+.map((item) => String(item.LeadID));
+return [...new Set(ids)];
+}
+
+function anyOtherLeadWasRejected(timelineRows, targetLeadId, readScope) {
+const resolveScope = readScope || readTimelineItemScope;
+if (!targetLeadId) return false;
+const distinctLeadIds = getDistinctLeadCreationIds(timelineRows, resolveScope);
+if (distinctLeadIds.length !== 2 || !distinctLeadIds.includes(targetLeadId)) return false;
+const otherLeadId = distinctLeadIds.find((id) => id !== targetLeadId);
+return anyTimelineRowIsLeadRejected(timelineRows, otherLeadId, resolveScope);
+}
+
+function hasOtherLeadRejected(targetLeadId) {
+return anyOtherLeadWasRejected(getAllTimelineRows(), targetLeadId);
+}
+
+// Used when row.created couldn't be matched to any lead at all
+// (TARGET_CREATED_DATETIME_NOT_FOUND) or matched more than one
+// (AMBIGUOUS_CALL_MATCH) - there's no candidate.leadId in either case,
+// so the engagement-signal checks above have nothing to check against.
+// Finds the Post Closure lead's own LeadID directly by its heading text
+// instead, reusing getLoadedLeadEntries/extractVisibleLeadId exactly as
+// the normal pink-match path already does - only when there's exactly
+// one such entry on the page, since more than one is the same
+// unresolved ambiguity this is trying to route around, not guessed at.
+function findUnambiguousPostClosureLeadId() {
+const postClosureEntries = getLoadedLeadEntries().filter((row) => {
+const heading = row.querySelector('.connected-customer-title-pink');
+return heading && /post closure processing/i.test(heading.textContent);
+});
+if (postClosureEntries.length !== 1) return null;
+return extractVisibleLeadId(postClosureEntries[0]);
+}
+
+function isPostClosureLeadAlreadyEngaged(targetLeadId) {
+if (!targetLeadId) return false;
+return hasAlreadyEngagedCallEntry(targetLeadId) || hasRejectedTimelineRow(targetLeadId) || hasOtherLeadRejected(targetLeadId);
+}
+
 // ===================================================================
 // Self-test for the already-engaged detection - real row text pulled
 // directly from a live DOM dump of three actual customers (one
@@ -1904,10 +1964,25 @@ check('Type 9 rows that are not actually a rejection do not match', anyTimelineR
 const wrongTypeSameWords = [fakeScopeRow({ EventTime: '2026-10-02T11:52:00', TimelineItemType: 3, LeadID: '555', Description: 'Mentions Lead Rejected in passing but is not actually a Type 9 row' })];
 check('Lead Rejected wording on a non-Type-9 row does not match - the type must be 9, not just the text', anyTimelineRowIsLeadRejected(wrongTypeSameWords, '555', fakeReadScope), false);
 
+// Per instruction: a rejection never carries the Post Closure lead's
+// own LeadID, but when there are exactly 2 distinct leads on the whole
+// timeline, there's no ambiguity about which lead a rejection on the
+// OTHER one belongs to - the Post Closure lead itself never gets its
+// own outcome row. This is the real reported case: the rejection is
+// tagged 1385403, but classifying lead 1386301 should still resolve as
+// engaged because of it.
+check('getDistinctLeadCreationIds finds exactly the 2 real leads on this timeline', getDistinctLeadCreationIds(realTimeline, fakeReadScope).join(','), '1385403,1386301');
+check('The OTHER lead (1385403) being rejected counts for the Post Closure lead (1386301) being classified', anyOtherLeadWasRejected(realTimeline, '1386301', fakeReadScope), true);
+check('Checking the rejected lead itself (1385403) against "other lead" finds no OTHER lead rejected (it IS the rejected one)', anyOtherLeadWasRejected(realTimeline, '1385403', fakeReadScope), false);
+check('No target LeadID - never guesses', anyOtherLeadWasRejected(realTimeline, null, fakeReadScope), false);
+
+const threeLeadTimeline = realTimeline.concat([fakeScopeRow({ EventTime: '2026-10-03T09:00:00', TimelineItemType: 1, LeadID: 999, Description: 'Manually Created Sales Lead from Customer First' })]);
+check('3+ distinct leads is deliberately left unhandled (ambiguous without comparing Initial Notes) - does not wrongly attribute the rejection', anyOtherLeadWasRejected(threeLeadTimeline, '1386301', fakeReadScope), false);
+
 if (failures.length > 0) {
 console.error('KonnectLeadChecker leadRejectedDetection self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectLeadChecker leadRejectedDetection self-test passed (6/6)');
+console.info('KonnectLeadChecker leadRejectedDetection self-test passed (10/10)');
 }
 })();
 
@@ -3067,16 +3142,21 @@ workingCandidates = [callFallback.candidate];
 // (the old cycle finally timing out right as the new Post Closure
 // one gets its own first call), which is exactly what makes the
 // call-fallback unable to tell which lead row.created's Last Actioned
-// value actually belongs to. Since we already know this row is Post
-// Closure regardless of which specific lead instance it resolves to,
-// and we have no Initial Notes to find an engagement signal in
-// either way, the safe resolution is the same "check" default Step
-// 13 already falls back to - not a hard failure requiring a manual
-// retry that can never actually resolve the ambiguity anyway.
+// value actually belongs to. No candidate.leadId exists here (that's
+// the whole problem), so findUnambiguousPostClosureLeadId finds the
+// Post Closure lead directly by its own heading instead of by time -
+// when that's unambiguous, the real engagement signals (Scheduled a
+// call/Spoke To Customer/Lead Rejected, including on the one other
+// lead per instruction) still apply here rather than guessing;
+// otherwise this still falls back to the safe "check" default.
+const fallbackLeadId = findUnambiguousPostClosureLeadId();
+const engaged = isPostClosureLeadAlreadyEngaged(fallbackLeadId);
 return finalizeResult(result, {
 status: 'CLASSIFIED', source: row.source,
-postClosureAction: 'check: needs contact?',
-reason: 'Post Closure lead, but which specific lead cycle this row belongs to was ambiguous (multiple leads had calls close together) - no Initial Notes to check for an engagement signal, so defaulted to the safe "check" outcome rather than guessing.',
+postClosureAction: engaged ? 'send back through' : 'check: needs contact?',
+reason: engaged
+? 'Post Closure lead - which specific lead cycle this row belongs to was ambiguous by time, but it was identified directly by its own "Post Closure Processing" heading, and an engagement signal (Scheduled a call / Spoke To Customer / Lead Rejected) was found.'
+: 'Post Closure lead, but which specific lead cycle this row belongs to was ambiguous (multiple leads had calls close together) - no engagement signal found, so defaulted to the safe "check" outcome rather than guessing.',
 confidence: 'low'
 });
 } else if (callFallback.status !== 'NO_CALL_MATCH') {
@@ -3107,23 +3187,30 @@ console.warn('[KonnectLeadChecker] TARGET_CREATED_DATETIME_NOT_FOUND for row.cre
 const raw = extractTimelineTimestamp(entryRow);
 return { raw, parsed: raw ? parseTimelineTimestamp(raw, referenceNow) : null };
 }));
-// Same reasoning as the AMBIGUOUS_CALL_MATCH case just above, applied
-// to a flat "nothing matched at all" instead of "too many matched" -
+// Same reasoning as the AMBIGUOUS_CALL_MATCH case above, applied to a
+// flat "nothing matched at all" instead of "too many matched" -
 // reported live: Pending Customers' Last Actioned value can land on
 // neither a lead's own creation time nor any call (it's pointed at a
-// Post Closure Note/final-outcome row instead, which this matching
-// has no timing rule for yet - see this function's own TODO on that).
-// Still known for certain from the batch itself that this is a Post
-// Closure row regardless of which exact timestamp it's keyed to, and
-// there's no Initial Notes to check for an engagement signal once no
-// lead can be opened at all - same safe "check" resolution rather
-// than a hard exception needing a manual retry that can't actually
-// fix a timing mismatch.
+// Post Closure Note/final-outcome row instead, which this matching has
+// no timing rule for yet - needs a real example of that exact timing
+// relationship before encoding one, not guessed at here). No
+// candidate.leadId exists here either, so findUnambiguousPostClosureLeadId
+// finds the Post Closure lead directly by its own heading instead of
+// by time - when that's unambiguous, the real engagement signals
+// still apply (this is exactly the real reported case that confirmed
+// Lead Rejected on the one other lead counts here); otherwise this
+// still falls back to the safe "check" default rather than a hard
+// exception needing a manual retry that can't actually fix a timing
+// mismatch.
 if (String(row.source || '').toLowerCase() === 'post closure processing') {
+const fallbackLeadId = findUnambiguousPostClosureLeadId();
+const engaged = isPostClosureLeadAlreadyEngaged(fallbackLeadId);
 return finalizeResult(result, {
 status: 'CLASSIFIED', source: row.source,
-postClosureAction: 'check: needs contact?',
-reason: 'Post Closure lead, but its Created/Last Actioned value didn\'t match any lead or call on the page - no Initial Notes to check for an engagement signal, so defaulted to the safe "check" outcome rather than guessing.',
+postClosureAction: engaged ? 'send back through' : 'check: needs contact?',
+reason: engaged
+? 'Post Closure lead - its Created/Last Actioned value didn\'t match any lead or call on the page, but it was identified directly by its own "Post Closure Processing" heading, and an engagement signal (Scheduled a call / Spoke To Customer / Lead Rejected) was found.'
+: 'Post Closure lead, but its Created/Last Actioned value didn\'t match any lead or call on the page - no engagement signal found, so defaulted to the safe "check" outcome rather than guessing.',
 confidence: 'low'
 });
 }
@@ -3268,7 +3355,7 @@ const resolvedSource = row.source || panelFields.source;
 // call at all (no phone icon, never found by getLoadedCallEntries),
 // it needs its own scan over every timeline row type via scope.
 const isPostClosureLead = String(resolvedSource || '').toLowerCase() === 'post closure processing';
-const alreadyEngagedCallEntry = isPostClosureLead && (hasAlreadyEngagedCallEntry(candidate.leadId) || hasRejectedTimelineRow(candidate.leadId));
+const alreadyEngagedCallEntry = isPostClosureLead && isPostClosureLeadAlreadyEngaged(candidate.leadId);
 const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry });
 // source: classification.source, not left as makeResultBase's own
 // row.source - that's the raw, often-blank batch value (Pending
