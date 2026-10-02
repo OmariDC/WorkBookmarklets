@@ -3107,6 +3107,26 @@ console.warn('[KonnectLeadChecker] TARGET_CREATED_DATETIME_NOT_FOUND for row.cre
 const raw = extractTimelineTimestamp(entryRow);
 return { raw, parsed: raw ? parseTimelineTimestamp(raw, referenceNow) : null };
 }));
+// Same reasoning as the AMBIGUOUS_CALL_MATCH case just above, applied
+// to a flat "nothing matched at all" instead of "too many matched" -
+// reported live: Pending Customers' Last Actioned value can land on
+// neither a lead's own creation time nor any call (it's pointed at a
+// Post Closure Note/final-outcome row instead, which this matching
+// has no timing rule for yet - see this function's own TODO on that).
+// Still known for certain from the batch itself that this is a Post
+// Closure row regardless of which exact timestamp it's keyed to, and
+// there's no Initial Notes to check for an engagement signal once no
+// lead can be opened at all - same safe "check" resolution rather
+// than a hard exception needing a manual retry that can't actually
+// fix a timing mismatch.
+if (String(row.source || '').toLowerCase() === 'post closure processing') {
+return finalizeResult(result, {
+status: 'CLASSIFIED', source: row.source,
+postClosureAction: 'check: needs contact?',
+reason: 'Post Closure lead, but its Created/Last Actioned value didn\'t match any lead or call on the page - no Initial Notes to check for an engagement signal, so defaulted to the safe "check" outcome rather than guessing.',
+confidence: 'low'
+});
+}
 return finalizeResult(result, { status: 'EXCEPTION', exception: 'TARGET_CREATED_DATETIME_NOT_FOUND' });
 }
 
