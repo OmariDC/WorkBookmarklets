@@ -33,7 +33,7 @@
       "id": "vm-left",
       "label": "VM left",
       "category": "calls",
-      "text": "{{attempt}} - VM left -- Omari",
+      "text": "{{attempt}} - VM left -- {{agent}}",
       "aliases": ["vm"],
       "requiresAttempt": true,
       "quickOrder": 1
@@ -42,7 +42,7 @@
       "id": "line-ringing",
       "label": "Line ringing",
       "category": "calls",
-      "text": "{{attempt}} - Line ringing -- Omari",
+      "text": "{{attempt}} - Line ringing -- {{agent}}",
       "aliases": ["ring", "ringing"],
       "requiresAttempt": true,
       "quickOrder": 2
@@ -51,7 +51,7 @@
       "id": "could-not-reach",
       "label": "Could not reach lead",
       "category": "calls",
-      "text": "{{attempt}} - Could not reach lead -- Omari",
+      "text": "{{attempt}} - Could not reach lead -- {{agent}}",
       "aliases": ["cnr"],
       "requiresAttempt": true,
       "quickOrder": 3
@@ -70,7 +70,7 @@
       "id": "precall-declined-vm",
       "label": "Precall, Declined VM",
       "category": "calls",
-      "text": "{{attempt}} - Precall, Declined VM -- Omari",
+      "text": "{{attempt}} - Precall, Declined VM -- {{agent}}",
       "aliases": ["dvm", "pdvm"],
       "requiresAttempt": true,
       "quickOrder": 5
@@ -79,7 +79,7 @@
       "id": "line-engaged",
       "label": "Line engaged",
       "category": "calls",
-      "text": "{{attempt}} - Line engaged -- Omari",
+      "text": "{{attempt}} - Line engaged -- {{agent}}",
       "aliases": ["eng", "engaged"],
       "requiresAttempt": true
     },
@@ -87,7 +87,7 @@
       "id": "line-rang-then-failed",
       "label": "Line rang then failed",
       "category": "calls",
-      "text": "{{attempt}} - Line rang then failed -- Omari",
+      "text": "{{attempt}} - Line rang then failed -- {{agent}}",
       "aliases": ["rf", "failed"],
       "requiresAttempt": true
     },
@@ -95,7 +95,7 @@
       "id": "mail-box-full",
       "label": "Mail box full",
       "category": "calls",
-      "text": "{{attempt}} - Mail box full -- Omari",
+      "text": "{{attempt}} - Mail box full -- {{agent}}",
       "aliases": ["mbf"],
       "requiresAttempt": true
     },
@@ -103,7 +103,7 @@
       "id": "not-interested",
       "label": "Not interested",
       "category": "calls",
-      "text": "Not interested -- Omari",
+      "text": "Not interested -- {{agent}}",
       "aliases": ["ni"],
       "requiresAttempt": false
     },
@@ -111,7 +111,7 @@
       "id": "confirm-provisional-booking",
       "label": "Confirm provisional booking",
       "category": "appointments",
-      "text": "VM left -- Omari - Please confirm provisional booking with customer",
+      "text": "VM left -- {{agent}} - Please confirm provisional booking with customer",
       "aliases": ["book"],
       "requiresAttempt": false
     },
@@ -137,7 +137,7 @@
       "id": "email-sent-attempts",
       "label": "Email sent attempts",
       "category": "email",
-      "text": "1 - Email Sent -- Omari (Close ON attempt 3 if no response)\n2 -\n3 -",
+      "text": "1 - Email Sent -- {{agent}} (Close ON attempt 3 if no response)\n2 -\n3 -",
       "aliases": ["es"],
       "requiresAttempt": false
     },
@@ -154,7 +154,7 @@
       "id": "catch-all-attempt-1",
       "label": "Catch All - Attempt 1 VM Left",
       "category": "catch-all",
-      "text": "**** Catch All Return Lead **** **Attempt 1 – VM Left** – Omari",
+      "text": "**** Catch All Return Lead **** **Attempt 1 – VM Left** – {{agent}}",
       "aliases": ["ca1"],
       "requiresAttempt": false
     },
@@ -162,7 +162,7 @@
       "id": "catch-all-attempt-2",
       "label": "Catch All - Attempt 2 VM Left",
       "category": "catch-all",
-      "text": "**** Catch All Return Lead **** **Attempt 2 – VM Left** – Omari",
+      "text": "**** Catch All Return Lead **** **Attempt 2 – VM Left** – {{agent}}",
       "aliases": ["ca2"],
       "requiresAttempt": false
     },
@@ -170,7 +170,7 @@
       "id": "catch-all-attempt-3",
       "label": "Catch All - Attempt 3 VM Left",
       "category": "catch-all",
-      "text": "**** Catch All Return Lead **** **Attempt 3 – VM Left** – Omari",
+      "text": "**** Catch All Return Lead **** **Attempt 3 – VM Left** – {{agent}}",
       "aliases": ["ca3"],
       "requiresAttempt": false
     },
