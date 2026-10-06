@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.6.0'
+    version: '1.6.1'
   };
 
   const CONFIG_URL = 'https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Notes-Phrases.json';
@@ -592,6 +592,8 @@
       .kn-export { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
       .kn-browse-button { width: 100%; margin-bottom: 8px; }
       .kn-shortcut-hint { text-align: center; }
+      .kn-agent-row { display: flex; justify-content: center; align-items: center; gap: 6px; margin-top: 6px; }
+      .kn-link { background: none; border: none; padding: 0; color: #fff; font-size: 12px; text-decoration: underline; cursor: pointer; }
       @media (max-width: 720px) {
         #${PALETTE_ID} { width: 190px; }
       }
@@ -774,6 +776,12 @@
       });
       body.appendChild(browse);
       body.appendChild(element('div', 'kn-muted kn-shortcut-hint', 'Keys 1–5 select a quick option'));
+      const agentRow = element('div', 'kn-muted kn-agent-row', `Signed as: ${getAgentName() || 'not set'}`);
+      agentRow.appendChild(button('Change', 'kn-link', () => {
+        askAgentName();
+        renderPalette();
+      }));
+      body.appendChild(agentRow);
     } else {
       if (state.configStatus) body.appendChild(element('div', 'kn-status', state.configStatus));
       body.appendChild(element('div', 'kn-muted', 'Phrase configuration has not loaded yet.'));
