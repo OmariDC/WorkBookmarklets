@@ -9,11 +9,12 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.5.1'
+    version: '1.6.0'
   };
 
   const CONFIG_URL = 'https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Notes-Phrases.json';
   const STORAGE_KEY = 'konnectNotes:workingConfig:v1';
+  const AGENT_NAME_KEY = 'konnectNotes:agentName:v1';
   const STYLE_ID = 'kn-notes-style';
   const PALETTE_ID = 'kn-notes-palette';
   const LAUNCHER_SECTION_ID = 'kn-notes-launcher-section';
@@ -90,6 +91,31 @@
     } catch (error) {
       state.configStatus = 'Chrome could not save local phrase settings.';
     }
+  }
+
+  function getAgentName() {
+    try {
+      return normaliseText(localStorage.getItem(AGENT_NAME_KEY));
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function askAgentName() {
+    const current = getAgentName();
+    const answer = window.prompt('Konnect Notes: enter your name as it should appear in notes.', current);
+    const name = normaliseText(answer);
+    if (!name) return current;
+    try {
+      localStorage.setItem(AGENT_NAME_KEY, name);
+    } catch (error) {
+      state.configStatus = 'Chrome could not save your name.';
+    }
+    return name;
+  }
+
+  function ensureAgentName() {
+    return getAgentName() || askAgentName();
   }
 
   function signature(config) {
@@ -683,6 +709,7 @@
     return phrase.text
       .replace('{{attempt}}', '[attempt]')
       .replace('{{email}}', ' [top email]')
+      .replaceAll('{{agent}}', getAgentName() || '[your name]')
       .replace(/\n/g, ' · ');
   }
 
@@ -881,8 +908,14 @@
     }, false));
     const body = element('div', 'kn-body');
     body.appendChild(element('div', 'kn-status', state.statusMessage || state.configStatus));
+    body.appendChild(element('div', 'kn-muted', `Notes are signed as: ${getAgentName() || 'not set'}`));
 
     const actions = element('div', 'kn-settings-actions');
+    actions.appendChild(button('Change name', '', () => {
+      const name = askAgentName();
+      state.statusMessage = name ? `Notes will be signed as ${name}.` : 'No name saved.';
+      renderPalette();
+    }));
     actions.appendChild(button('Add phrase', 'kn-primary', () => {
       state.editingPhraseId = null;
       state.view = 'edit';
@@ -970,6 +1003,7 @@
     textInput.value = current?.text || '';
     textInput.placeholder = 'Exact phrase text';
     body.appendChild(labelledField('Phrase', textInput));
+    body.appendChild(element('div', 'kn-muted', 'Use {{agent}} where your name should go.'));
 
     const aliasesInput = element('input', 'kn-input');
     aliasesInput.value = (current?.aliases || []).join(', ');
@@ -1469,6 +1503,12 @@
       text = text.replaceAll('{{attempt}}', String(number));
     }
 
+    if (text.includes('{{agent}}')) {
+      const agent = ensureAgentName();
+      if (!agent) return;
+      text = text.replaceAll('{{agent}}', agent);
+    }
+
     let emailMissing = false;
     const usesTopEmail = phrase.id === 'email-only-full' ||
       phrase.emailSource === 'top' || text.includes('{{email}}');
@@ -1664,6 +1704,7 @@
     injectStyles();
     ensurePalette();
     loadInitialConfig();
+    if (!getAgentName()) askAgentName();
     scanPage();
     startObserver();
     document.addEventListener('keydown', handleAbbreviation, true);
