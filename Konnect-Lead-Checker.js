@@ -4748,6 +4748,8 @@ though the class was being toggled correctly the whole time. */
 <input type="checkbox" id="autoStartToggle">
 Auto-start on paste
 </label>
+</div>
+</details>
 <div class="buttons" id="runControls">
 <button class="action primary" id="btnStart">${svgIcon('play', 11)}Start</button>
 <button class="action primary" id="btnPauseResume">${svgIcon('pause', 11)}Pause</button>
@@ -4769,8 +4771,6 @@ Auto-start on paste
 <div class="progress-track"><div class="progress-fill" id="progressFill" style="width: 0%;"></div></div>
 <div class="recent-log" id="recentLog"></div>
 </div>
-</div>
-</details>
 <div id="needsReviewSection"></div>
 <div class="stats-bar hidden" id="statsBar"></div>
 <div class="filter-bar hidden" id="filterBar">
@@ -4921,6 +4921,14 @@ let nameFilterText = '';
 
 let session = loadStoredSession();
 if (session) pasteBox.value = session.rawInput || '';
+// A restored session (page reload mid-batch) should start with the
+// same reclaimed space startProcessing's own collapse gives a run that
+// begins in this tab - otherwise reopening on an in-progress batch
+// goes right back to the textarea/buttons eating most of the panel.
+if (session && session.rows && session.rows.length > 0) {
+const topSectionEl = root.getElementById('topSection');
+if (topSectionEl) topSectionEl.open = false;
+}
 
 // <details> open/closed state doesn't survive an innerHTML rebuild, and
 // render() is called after every processed row - without tracking this
@@ -5290,6 +5298,14 @@ s.paused = false;
 s.cancelled = false;
 setPauseResumeLabel('Pause');
 showPageFlashOverlay('Checking leads…');
+// The batch-input textarea/buttons/status block only need to be open
+// before a run starts (reviewing/editing the paste) or while actively
+// watching it - once it's running, this was eating most of the
+// panel's height, leaving almost no room to see the actual results
+// list below it. Collapsing it here reclaims that space the moment a
+// run actually begins, rather than requiring a manual collapse click.
+const topSectionEl = root.getElementById('topSection');
+if (topSectionEl) topSectionEl.open = false;
 runLoop(s, uiHandle);
 }
 
