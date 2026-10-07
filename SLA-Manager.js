@@ -45,7 +45,6 @@ arrowUp: '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 1
 chevron: '<polyline points="6 9 12 15 18 9"/>',
 checklist: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
 copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
-more: '<circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/>',
 focus: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>',
 check: '<polyline points="20 6 9 17 4 12"/>',
 chevronRight: '<polyline points="9 18 15 12 9 6"/>'
@@ -2178,6 +2177,25 @@ cachedLeadsSnapshot = { pageType: PAGE_PENDING, leads: collectPendingCustomers()
 return cachedLeadsSnapshot.leads;
 }
 
+// Keeps this cache in sync with the same in-memory patch
+// executeAssignmentRun applies to currentCustomers/currentPendingCustomers
+// after a successful assign run - these are two independent data
+// sources (this one feeds the stat tiles' Missed/due-soon/Customer
+// First/unassigned counts; currentCustomers feeds the actual lead
+// cards), so patching only currentCustomers left the cards correctly
+// showing the new assigned state while the stat tiles kept reporting
+// the pre-assign numbers until an unrelated full refresh. Patched in
+// place rather than invalidated - invalidating would force a fresh DOM
+// re-scan on the very next render, immediately after the queue-check's
+// own navigation, racing Angular's repopulation exactly like the
+// render-after-assign code this sits alongside already works around.
+function patchCachedLeadsAssigned(successByKey) {
+if (!cachedLeadsSnapshot) return;
+cachedLeadsSnapshot.leads = cachedLeadsSnapshot.leads.map((l) =>
+successByKey.has(l.key) ? { ...l, assigned: true, agentName: successByKey.get(l.key) } : l
+);
+}
+
 // Directly tests the actual mechanism displayPanel/displayPendingPanel's
 // invalidateCache=false argument depends on (see their own comments) -
 // that repeated getCached*() calls do NOT touch the live DOM again
@@ -3494,11 +3512,6 @@ if (!popover) return;
 popover.style.display = popover.style.display === 'none' ? 'block' : 'none';
 };
 
-window._toggleHeaderOverflowMenu = function() {
-const menu = document.getElementById('_slaHeaderOverflowMenu');
-if (!menu) return;
-menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
-};
 
 window._toggleZenMode = function() {
 if (isZenModeOn()) disableZenMode(); else enableZenMode();
@@ -4864,13 +4877,21 @@ const dominantTitle = dominant?.source === 'leadChecker' ? leadCheckerTitle
 : dominant?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.`
 : '';
 const nextActionLabel = c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown';
-return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" data-lead-key="${escapeHtml(c.key)}" data-page-type="${PAGE_PENDING}" data-assigned="${c.assigned ? 1 : 0}" data-agent-name="${escapeHtml(c.agentName || '')}" style="padding: 12px 14px;">
-<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 9px;">
-${renderAvatarCircle(c.name, dominant ? dominant.color : '#8e8e93', 38)}
+// Zen mode's real value is here, not just hiding Assign/Filters - the
+// bulk of a card's footprint is these per-row details, so a genuine
+// "focus" mode has to shrink the rows themselves to show meaningfully
+// more leads at once, not just tidy the chrome around the list.
+const zenCompact = isZenModeOn();
+const cardPadding = zenCompact ? '8px 14px' : '12px 14px';
+const avatarSize = zenCompact ? 30 : 38;
+const nameRowMargin = zenCompact ? '3px' : '9px';
+return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" data-lead-key="${escapeHtml(c.key)}" data-page-type="${PAGE_PENDING}" data-assigned="${c.assigned ? 1 : 0}" data-agent-name="${escapeHtml(c.agentName || '')}" style="padding: ${cardPadding};">
+<div style="display: flex; align-items: center; gap: 12px; margin-bottom: ${nameRowMargin};">
+${renderAvatarCircle(c.name, dominant ? dominant.color : '#8e8e93', avatarSize)}
 <div style="flex: 1; min-width: 0;">
-<div style="display: flex; align-items: center; gap: 7px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: #1c1c1e; font-size: 15.5px;">${escapeHtml(c.name)}</span>
-${dominant ? `<span title="${escapeHtml(dominantTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${dominant.color}18; color: ${dominant.color};">${escapeHtml(dominant.label)}</span>` : ''}
+<div style="display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: #1c1c1e; font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex-shrink: 1;">${escapeHtml(c.name)}</span>
+${dominant ? `<span title="${escapeHtml(dominantTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${dominant.color}18; color: ${dominant.color}; white-space: nowrap; flex-shrink: 0;">${escapeHtml(dominant.label)}</span>` : ''}
 </div>
 <div style="font-size: 12.5px; color: #8e8e93; margin-top: 2px;">${secondaryLine || `Next action: ${nextActionLabel}`}</div>
 </div>
@@ -4878,8 +4899,8 @@ ${c.assigned
 ? `<span title="${escapeHtml(c.agentName || 'Assigned')}" style="flex-shrink: 0;">${svgIcon('check', 18, ' color: #34c759;')}</span>`
 : `<span style="flex-shrink: 0; color: #c7c7cc;">${svgIcon('chevronRight', 16)}</span>`}
 </div>
-${secondaryLine ? `<div style="font-size: 12.5px; color: #8e8e93; margin-bottom: 9px; margin-left: 50px;">Next action: ${nextActionLabel}</div>` : ''}
-${renderContactToggle(`
+${secondaryLine ? `<div style="font-size: 12.5px; color: #8e8e93; margin-bottom: ${zenCompact ? '4px' : '9px'}; margin-left: 50px;">Next action: ${nextActionLabel}</div>` : ''}
+${zenCompact ? '' : renderContactToggle(`
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">MOBILE</div>
 ${renderCopyableField(c.mobile)}
@@ -4893,10 +4914,10 @@ ${renderCopyableField(c.email)}
 ${renderCopyableField(c.landline)}
 </div>
 `)}
-<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-left: 50px;">
+${zenCompact ? '' : `<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-left: 50px;">
 <span style="color: #64748b;">${escapeHtml(c.brand || '')}</span>
 <span style="color: #34c759;">${escapeHtml(c.campaign || '')}</span>
-</div>
+</div>`}
 </div>`;
 }
 });
@@ -4929,13 +4950,21 @@ const secondaryLine = buildSecondaryLine(dominant, urgency, leadChecker, queuePo
 const dominantTitle = dominant?.source === 'leadChecker' ? leadCheckerTitle
 : dominant?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.`
 : '';
-return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" data-lead-key="${escapeHtml(c.key)}" data-page-type="${PAGE_SLA}" data-assigned="${c.assigned ? 1 : 0}" data-agent-name="${escapeHtml(c.agentName || '')}" style="padding: 12px 14px;">
-<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 9px;">
-${renderAvatarCircle(c.name, dominant ? dominant.color : '#8e8e93', 38)}
+// Zen mode's real value is here, not just hiding Assign/Filters - the
+// bulk of a card's footprint is these per-row details, so a genuine
+// "focus" mode has to shrink the rows themselves to show meaningfully
+// more leads at once, not just tidy the chrome around the list.
+const zenCompact = isZenModeOn();
+const cardPadding = zenCompact ? '8px 14px' : '12px 14px';
+const avatarSize = zenCompact ? 30 : 38;
+const nameRowMargin = zenCompact ? '3px' : '9px';
+return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" data-lead-key="${escapeHtml(c.key)}" data-page-type="${PAGE_SLA}" data-assigned="${c.assigned ? 1 : 0}" data-agent-name="${escapeHtml(c.agentName || '')}" style="padding: ${cardPadding};">
+<div style="display: flex; align-items: center; gap: 12px; margin-bottom: ${nameRowMargin};">
+${renderAvatarCircle(c.name, dominant ? dominant.color : '#8e8e93', avatarSize)}
 <div style="flex: 1; min-width: 0;">
-<div style="display: flex; align-items: center; gap: 7px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: #1c1c1e; font-size: 15.5px;">${escapeHtml(c.name)}</span>
-${dominant ? `<span title="${escapeHtml(dominantTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${dominant.color}18; color: ${dominant.color};">${escapeHtml(dominant.label)}</span>` : ''}
+<div style="display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: #1c1c1e; font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex-shrink: 1;">${escapeHtml(c.name)}</span>
+${dominant ? `<span title="${escapeHtml(dominantTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${dominant.color}18; color: ${dominant.color}; white-space: nowrap; flex-shrink: 0;">${escapeHtml(dominant.label)}</span>` : ''}
 </div>
 ${secondaryLine ? `<div style="font-size: 12.5px; color: #8e8e93; margin-top: 2px;">${secondaryLine}</div>` : ''}
 </div>
@@ -4943,7 +4972,7 @@ ${c.assigned
 ? `<span title="${escapeHtml(c.agentName || 'Assigned')}" style="flex-shrink: 0;">${svgIcon('check', 18, ' color: #34c759;')}</span>`
 : `<span style="flex-shrink: 0; color: #c7c7cc;">${svgIcon('chevronRight', 16)}</span>`}
 </div>
-${renderContactToggle(`
+${zenCompact ? '' : renderContactToggle(`
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
 ${renderCopyableField(c.phone)}
@@ -4953,10 +4982,10 @@ ${renderCopyableField(c.phone)}
 ${renderCopyableField(c.email)}
 </div>
 `)}
-<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-left: 50px;">
+${zenCompact ? '' : `<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-left: 50px;">
 <span style="color: #64748b;">${escapeHtml(c.source)}</span>
 <span style="color: #34c759;">${escapeHtml(c.campaign)}</span>
-</div>
+</div>`}
 </div>`;
 }
 });
@@ -5008,22 +5037,14 @@ title="Lead Checker - copy leads out, classify results back in">${svgIcon('inbox
 style="background: ${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)'}; border: none; color: ${currentPanelMode === 'morningChecks' ? '#fbbf24' : '#cbd5e1'}; cursor: pointer; padding: 5px 9px 5px 7px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center; gap: 4px; margin: 0 4px;"
 onmouseover="this.style.background='rgba(255,255,255,0.18)';" onmouseout="this.style.background='${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)'}';"
 title="${currentPanelMode === 'morningChecks' ? 'Back to queue view' : 'Switch to Morning Checks'}">${svgIcon('checklist', 13)}<span style="font-size: 11px; font-weight: 600;">Checks</span></button>
-${showLeadChecker ? `<button onclick="window._toggleHeaderOverflowMenu();"
-style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
-title="More options">${svgIcon('more', 14)}</button>
-<div id="_slaHeaderOverflowMenu" style="display: none; position: absolute; top: 34px; right: 0; z-index: 6; min-width: 200px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 4px; color: #1e293b;">
-<button onclick="window._toggleLeadCheckerPrioritySort(); window._toggleHeaderOverflowMenu();"
-style="width: 100%; box-sizing: border-box; background: transparent; border: none; color: #1e293b; cursor: pointer; padding: 8px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; text-align: left;"
-onmouseover="this.style.background='#f1f5f9';" onmouseout="this.style.background='transparent';">
-<span style="color: ${isLeadCheckerPrioritySortEnabled() ? '#d97706' : '#94a3b8'};">${svgIcon('bolt', 14)}</span>
-Priority sort: ${isLeadCheckerPrioritySortEnabled() ? 'On' : 'Off'}
-</button>
-</div>` : ''}
+${showLeadChecker ? `<button onclick="window._toggleLeadCheckerPrioritySort();"
+style="background: ${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#94a3b8'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#94a3b8'}';"
+title="${isLeadCheckerPrioritySortEnabled() ? 'Lead Checker priority sort: ON - click to turn off' : 'Lead Checker priority sort: OFF - click to bring Confirmed/Warm leads to the top of each section'}">${svgIcon('bolt', 14)}</button>` : ''}
 <button onclick="window._toggleZenMode();"
 style="background: ${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isZenModeOn() ? '#38bdf8' : '#94a3b8'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isZenModeOn() ? '#38bdf8' : '#94a3b8'}';"
-title="${isZenModeOn() ? 'Zen mode: on - click to restore sections to how they were' : 'Zen mode - collapse Overview/Assign/Filters down to the essentials'}">${svgIcon('focus', 14)}</button>
+title="${isZenModeOn() ? 'Zen mode: on - click to restore the full view' : 'Zen mode - hide Overview/Assign/Filters and shrink every card down to just the essentials, so more leads fit on screen at once'}">${svgIcon('focus', 14)}</button>
 <button id="_slaSizeBtn" onclick="window._togglePanelSize();"
 style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
@@ -5936,6 +5957,7 @@ hidePageFlashOverlay();
 // never happened, on top of the panel never appearing.
 try {
 const successByKey = new Map(results.filter(r => r.ok).map(r => [r.lead.key, r.agent.name]));
+patchCachedLeadsAssigned(successByKey);
 if (pageType === PAGE_PENDING) {
 currentPendingCustomers = currentPendingCustomers.map((c) => successByKey.has(c.key) ? { ...c, assigned: true, agentName: successByKey.get(c.key) } : c);
 displayPendingPanel(currentPendingCustomers, 0, 0, false);
@@ -6302,9 +6324,11 @@ let lastKnownPageType = detectPageType();
 // transient misread (detectPageType matching a stale/duplicate <table>
 // briefly left in the DOM during Konnect's own unrelated Angular
 // re-render, for instance) was otherwise enough on its own to wrongly
-// flip the panel straight back. Genuine navigation stays on the new
-// page for far longer than one extra 2.5s tick, so this doesn't
-// meaningfully slow down reacting to a real page switch.
+// flip the panel straight back. Shortened from 2500ms to 600ms (worst
+// case ~1.2s instead of ~5s to confirm a real switch) - the transient
+// misread this guards against is brief enough that two consecutive
+// quick ticks still catches it, it just doesn't need to wait this long
+// to do so.
 let pendingPageType = null;
 window._slaAutoDetectInterval = setInterval(() => {
 if (extracting || assigning || runningMorningChecks || refreshingLeads || currentPanelMode === 'morningChecks') return;
@@ -6317,7 +6341,7 @@ runExtraction();
 } else {
 pendingPageType = pageType;
 }
-}, 2500);
+}, 600);
 
 ensureWheelStyles();
 createBadge();
