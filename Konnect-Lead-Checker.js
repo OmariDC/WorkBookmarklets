@@ -3549,6 +3549,152 @@ uiHandle.setState(session.cancelled ? 'Cancelled' : (session.done ? 'Done' : 'Pa
 }
 }
 
+// Moved here (next to buildProcessingGroups/retryExceptions, which it
+// tests) - used to sit ~1000 lines away, after the NEEDS REVIEW and
+// BULK PATTERN-ANALYSIS EXPORT sections, breaking this file's own
+// convention of keeping a self-test within a few hundred lines of the
+// function it covers.
+(function orchestrationSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+
+const batch = [
+'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
+'Alice\t\talice@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 18:05',
+'Alice Again\t\talice@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 19:05',
+'Bob\t07000000000\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 20:05'
+].join('\n');
+const parsed = parseBatchInput(batch);
+const groups = buildProcessingGroups(parsed.rows);
+check('groups by normalized email/phone', groups.map((g) => g.rows.length), [2, 1]);
+check('same customer keeps a separate result per row', groups[0].rows.map((r) => r.created), ['Sat, 26 Sep 2026 18:05', 'Sat, 26 Sep 2026 19:05']);
+
+const fakeSession = {
+rows: parsed.rows,
+results: {
+0: { name: 'Alice', phone: '', email: 'alice@example.com', tier: 2, tierName: 'DATE ONLY', subCategory: 'Customer-Stated Day', subRank: 3, flags: [], status: 'CLASSIFIED', created: 'Sat, 26 Sep 2026 18:05' },
+1: { name: 'Alice Again', phone: '', email: 'alice@example.com', tier: 1, tierName: 'CONFIRMED DATE & TIME', subCategory: 'Customer-Stated Slot', subRank: 3, flags: ['PX'], status: 'CLASSIFIED', created: 'Sat, 26 Sep 2026 19:05' },
+2: { name: 'Bob', phone: '07000000000', email: '', tier: 5, tierName: 'NURTURE', subCategory: 'Enquiry: Blank', subRank: 9, flags: [], status: 'CLASSIFIED', created: 'Sat, 26 Sep 2026 20:05' }
+}
+};
+
+// Tier ASC then subRank ASC (Section 2's own sort order).
+check('rank: Tier 1 beats Tier 2', bookingPriorityRankValue(fakeSession.results[1]) < bookingPriorityRankValue(fakeSession.results[0]), true);
+check('rank: Tier 2 beats Tier 5', bookingPriorityRankValue(fakeSession.results[0]) < bookingPriorityRankValue(fakeSession.results[2]), true);
+check('rank: lower subRank beats higher subRank within the same tier',
+bookingPriorityRankValue({ status: 'CLASSIFIED', tier: 3, subRank: 1 }) < bookingPriorityRankValue({ status: 'CLASSIFIED', tier: 3, subRank: 9 }),
+true);
+check('rank: unclassified/exception rows (no tier at all) sink to the bottom',
+bookingPriorityRankValue({ status: 'EXCEPTION', tier: null }) > bookingPriorityRankValue(fakeSession.results[2]),
+true);
+check('compareByBookingPriority ties on tier+subRank by received time (created) ascending',
+compareByBookingPriority(
+{ status: 'CLASSIFIED', tier: 3, subRank: 5, created: 'Sat, 26 Sep 2026 20:00' },
+{ status: 'CLASSIFIED', tier: 3, subRank: 5, created: 'Sat, 26 Sep 2026 19:00' }
+) > 0,
+true);
+
+// The exact contract SLA-Manager.js's "Classify Lead Checker
+// results" panel parses (LEAD_CHECKER_IMPORT_HEADER there) - pinned
+// down explicitly since the two files can't share a module and would
+// otherwise only find out they'd drifted apart by failing silently on
+// a real paste. Extract now trusts these columns directly instead of
+// re-classifying (see its own lead-checker-import self-test), so this
+// check also confirms the actual computed tier/subCategory/rank land
+// in the right columns, not just that the header row's shape is right.
+const rawExtractTsv = buildRawNotesTsvForExtract(fakeSession);
+const rawExtractLines = rawExtractTsv.split('\n');
+check('raw Extract export header shape', rawExtractLines[0], 'Name\tPhone\tEmail\tSource\tCampaign\tCreated\tInitialNotes\tTier\tTierName\tSubCategory\tSubRank\tFlags\tConfidence\tReason\tDedupeKey\tPostClosureAction\tPriorityRank');
+const aliceAgainCells = rawExtractLines[2].split('\t');
+check('raw Extract export: TierName column carries the computed tier name', aliceAgainCells[8], 'CONFIRMED DATE & TIME');
+check('raw Extract export: Flags column carries the computed flags', aliceAgainCells[11], 'PX');
+check('raw Extract export: PriorityRank column carries a real numeric rank', aliceAgainCells[16], String(bookingPriorityRankValue(fakeSession.results[1])));
+
+if (failures.length > 0) {
+console.error('KonnectLeadChecker orchestration self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectLeadChecker orchestration self-test passed (10/10)');
+}
+})();
+
+// Moved here (next to retryExceptions, which it tests) - see
+// orchestrationSelfTest's own comment just above for why.
+(function retryExceptionsSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+
+const batch = [
+'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
+'Alice\t\talice@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 18:05',
+'Bob\t07000000000\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 19:05',
+'Carol\t\tcarol@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 20:05',
+'Dee\t\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 21:05'
+].join('\n');
+const parsed = parseBatchInput(batch);
+const groups = buildProcessingGroups(parsed.rows);
+check('Dee (no phone/email) is excluded from processing groups', groups.length, 3);
+
+const originalAlice = { name: 'Alice', status: 'CLASSIFIED', tier: 2, tierName: 'DATE ONLY' };
+const originalCarol = { name: 'Carol', status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED' };
+const originalDee = { name: 'Dee', status: 'EXCEPTION', exception: 'NO_SEARCH_IDENTIFIER' };
+const fakeSession = {
+rows: parsed.rows,
+groups,
+// isRunning-but-paused is the real scenario this has to work
+// correctly under (a live runLoop idling on session.paused, still
+// holding this exact object) - included here so mutating in place,
+// not returning a new object, is actually exercised.
+groupIndex: 3, done: true, cancelled: false, paused: true,
+results: {
+0: originalAlice,
+1: { name: 'Bob', status: 'EXCEPTION', exception: 'TIMELINE_TIMEOUT' },
+2: originalCarol,
+3: originalDee
+}
+};
+
+retryExceptions(fakeSession);
+check('A genuine processing failure (Bob) is cleared for retry', fakeSession.results[1], undefined);
+check('An already-classified row (Alice) is left untouched', fakeSession.results[0], originalAlice);
+check('CLASSIFICATION_REVIEW_REQUIRED (Carol) is NOT retried - not a failure, has its own resolution flow', fakeSession.results[2], originalCarol);
+check('INVALID_INPUT (Dee) is left untouched - excluded from groups entirely, retrying would strand it with no result', fakeSession.results[3], originalDee);
+check('groupIndex rewinds to the earliest group with a cleared result (Bob\'s, index 1)', fakeSession.groupIndex, 1);
+check('rowInGroupIndex resets', fakeSession.rowInGroupIndex, 0);
+check('done recalculated as false - there is work left', fakeSession.done, false);
+check('cancelled reset to false', fakeSession.cancelled, false);
+check('paused is left alone - retrying doesn\'t itself resume a paused run', fakeSession.paused, true);
+
+// The actual bug reported live: retrying didn't just rerun the
+// exception, it reran the rest of the whole list. Root cause was
+// stepOnce only ever skipping resolved groups ONCE, at session
+// creation - after retryExceptions rewinds groupIndex back to Bob's
+// group (index 1), advanceToNextGroup's own blind +1 would move on to
+// Carol's group (index 2) next and stepOnce would reprocess it too,
+// even though results[2] (Carol) was never cleared and is still
+// perfectly valid. Simulates exactly what stepOnce now does on every
+// call: Bob's group just got a fresh result (as if reprocessing it
+// succeeded), then re-checks from where advanceToNextGroup would have
+// landed (index 2) - it must recognize Carol's group is ALREADY
+// resolved and skip straight past it to the end, not reprocess it.
+fakeSession.results[1] = { name: 'Bob', status: 'CLASSIFIED', tier: 4, tierName: 'WARM ENQUIRY' };
+const nextIndex = firstUnresolvedGroupIndex(fakeSession.groups, fakeSession.results, 2);
+check('Already-resolved Carol\'s group (index 2) is skipped, not reprocessed, once Bob\'s retry is done', nextIndex, 3);
+
+if (failures.length > 0) {
+console.error('KonnectLeadChecker retryExceptions self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectLeadChecker retryExceptions self-test passed (10/10)');
+}
+})();
+
 function orderedResults(session) {
 return session.rows.map((row) => session.results[row.inputIndex]).filter(Boolean);
 }
@@ -3612,7 +3758,11 @@ handoffControls: hasResults
 // Extract.js's own leadCheckerImportCategoryColor uses, extended for
 // the new tier count, so a lead reads the same color whichever tool
 // it's looked at in.
-const TIER_COLORS = { 1: '#059669', 2: '#d97706', 3: '#2563eb', 4: '#7c3aed', 5: '#64748b', 6: '#94a3b8' };
+// Kept in lockstep with SLA-Manager.js's LEAD_CHECKER_TIER_COLORS (see
+// that file's comment) - tier 2 moved off '#d97706' since it collided
+// with postClosureColor's "check" amber and with SLA's urgency-amber on
+// the same card; ramp shifted up a slot to clear every locked/urgency hex.
+const TIER_COLORS = { 1: '#059669', 2: '#2563eb', 3: '#7c3aed', 4: '#9333ea', 5: '#64748b', 6: '#94a3b8' };
 
 // Per instruction: for a Post Closure lead, the tier/sub-category the
 // classifier would otherwise have landed on (WARM ENQUIRY, NURTURE,
@@ -3836,6 +3986,7 @@ return [header.join('\t'), ...lines].join('\n');
 // same "real reported lead" discipline as REVIEW_DECISIONS above, just
 // upstream of a rule existing yet. No name/phone/email, for the same
 // reason as that export: none of it bears on classification.
+// ===================================================================
 function buildBulkAnalysisExport(session) {
 // initialNotes presence, not status - a genuine automation failure
 // (e.g. SEARCH_NO_RESULTS) never got as far as reading the notes, so
@@ -3903,145 +4054,6 @@ window.KonnectLeadChecker.orderedResults = orderedResults;
 window.KonnectLeadChecker.bookingPriorityRankValue = bookingPriorityRankValue;
 window.KonnectLeadChecker.compareByBookingPriority = compareByBookingPriority;
 window.KonnectLeadChecker.buildRawNotesTsvForExtract = buildRawNotesTsvForExtract;
-
-(function orchestrationSelfTest() {
-const failures = [];
-function check(label, actual, expected) {
-const a = JSON.stringify(actual);
-const e = JSON.stringify(expected);
-if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
-}
-
-const batch = [
-'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
-'Alice\t\talice@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 18:05',
-'Alice Again\t\talice@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 19:05',
-'Bob\t07000000000\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 20:05'
-].join('\n');
-const parsed = parseBatchInput(batch);
-const groups = buildProcessingGroups(parsed.rows);
-check('groups by normalized email/phone', groups.map((g) => g.rows.length), [2, 1]);
-check('same customer keeps a separate result per row', groups[0].rows.map((r) => r.created), ['Sat, 26 Sep 2026 18:05', 'Sat, 26 Sep 2026 19:05']);
-
-const fakeSession = {
-rows: parsed.rows,
-results: {
-0: { name: 'Alice', phone: '', email: 'alice@example.com', tier: 2, tierName: 'DATE ONLY', subCategory: 'Customer-Stated Day', subRank: 3, flags: [], status: 'CLASSIFIED', created: 'Sat, 26 Sep 2026 18:05' },
-1: { name: 'Alice Again', phone: '', email: 'alice@example.com', tier: 1, tierName: 'CONFIRMED DATE & TIME', subCategory: 'Customer-Stated Slot', subRank: 3, flags: ['PX'], status: 'CLASSIFIED', created: 'Sat, 26 Sep 2026 19:05' },
-2: { name: 'Bob', phone: '07000000000', email: '', tier: 5, tierName: 'NURTURE', subCategory: 'Enquiry: Blank', subRank: 9, flags: [], status: 'CLASSIFIED', created: 'Sat, 26 Sep 2026 20:05' }
-}
-};
-
-// Tier ASC then subRank ASC (Section 2's own sort order).
-check('rank: Tier 1 beats Tier 2', bookingPriorityRankValue(fakeSession.results[1]) < bookingPriorityRankValue(fakeSession.results[0]), true);
-check('rank: Tier 2 beats Tier 5', bookingPriorityRankValue(fakeSession.results[0]) < bookingPriorityRankValue(fakeSession.results[2]), true);
-check('rank: lower subRank beats higher subRank within the same tier',
-bookingPriorityRankValue({ status: 'CLASSIFIED', tier: 3, subRank: 1 }) < bookingPriorityRankValue({ status: 'CLASSIFIED', tier: 3, subRank: 9 }),
-true);
-check('rank: unclassified/exception rows (no tier at all) sink to the bottom',
-bookingPriorityRankValue({ status: 'EXCEPTION', tier: null }) > bookingPriorityRankValue(fakeSession.results[2]),
-true);
-check('compareByBookingPriority ties on tier+subRank by received time (created) ascending',
-compareByBookingPriority(
-{ status: 'CLASSIFIED', tier: 3, subRank: 5, created: 'Sat, 26 Sep 2026 20:00' },
-{ status: 'CLASSIFIED', tier: 3, subRank: 5, created: 'Sat, 26 Sep 2026 19:00' }
-) > 0,
-true);
-
-// The exact contract SLA-Manager.js's "Classify Lead Checker
-// results" panel parses (LEAD_CHECKER_IMPORT_HEADER there) - pinned
-// down explicitly since the two files can't share a module and would
-// otherwise only find out they'd drifted apart by failing silently on
-// a real paste. Extract now trusts these columns directly instead of
-// re-classifying (see its own lead-checker-import self-test), so this
-// check also confirms the actual computed tier/subCategory/rank land
-// in the right columns, not just that the header row's shape is right.
-const rawExtractTsv = buildRawNotesTsvForExtract(fakeSession);
-const rawExtractLines = rawExtractTsv.split('\n');
-check('raw Extract export header shape', rawExtractLines[0], 'Name\tPhone\tEmail\tSource\tCampaign\tCreated\tInitialNotes\tTier\tTierName\tSubCategory\tSubRank\tFlags\tConfidence\tReason\tDedupeKey\tPostClosureAction\tPriorityRank');
-const aliceAgainCells = rawExtractLines[2].split('\t');
-check('raw Extract export: TierName column carries the computed tier name', aliceAgainCells[8], 'CONFIRMED DATE & TIME');
-check('raw Extract export: Flags column carries the computed flags', aliceAgainCells[11], 'PX');
-check('raw Extract export: PriorityRank column carries a real numeric rank', aliceAgainCells[16], String(bookingPriorityRankValue(fakeSession.results[1])));
-
-if (failures.length > 0) {
-console.error('KonnectLeadChecker orchestration self-test FAILED:\n' + failures.join('\n'));
-} else {
-console.info('KonnectLeadChecker orchestration self-test passed (10/10)');
-}
-})();
-
-(function retryExceptionsSelfTest() {
-const failures = [];
-function check(label, actual, expected) {
-const a = JSON.stringify(actual);
-const e = JSON.stringify(expected);
-if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
-}
-
-const batch = [
-'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
-'Alice\t\talice@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 18:05',
-'Bob\t07000000000\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 19:05',
-'Carol\t\tcarol@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 20:05',
-'Dee\t\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 21:05'
-].join('\n');
-const parsed = parseBatchInput(batch);
-const groups = buildProcessingGroups(parsed.rows);
-check('Dee (no phone/email) is excluded from processing groups', groups.length, 3);
-
-const originalAlice = { name: 'Alice', status: 'CLASSIFIED', tier: 2, tierName: 'DATE ONLY' };
-const originalCarol = { name: 'Carol', status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED' };
-const originalDee = { name: 'Dee', status: 'EXCEPTION', exception: 'NO_SEARCH_IDENTIFIER' };
-const fakeSession = {
-rows: parsed.rows,
-groups,
-// isRunning-but-paused is the real scenario this has to work
-// correctly under (a live runLoop idling on session.paused, still
-// holding this exact object) - included here so mutating in place,
-// not returning a new object, is actually exercised.
-groupIndex: 3, done: true, cancelled: false, paused: true,
-results: {
-0: originalAlice,
-1: { name: 'Bob', status: 'EXCEPTION', exception: 'TIMELINE_TIMEOUT' },
-2: originalCarol,
-3: originalDee
-}
-};
-
-retryExceptions(fakeSession);
-check('A genuine processing failure (Bob) is cleared for retry', fakeSession.results[1], undefined);
-check('An already-classified row (Alice) is left untouched', fakeSession.results[0], originalAlice);
-check('CLASSIFICATION_REVIEW_REQUIRED (Carol) is NOT retried - not a failure, has its own resolution flow', fakeSession.results[2], originalCarol);
-check('INVALID_INPUT (Dee) is left untouched - excluded from groups entirely, retrying would strand it with no result', fakeSession.results[3], originalDee);
-check('groupIndex rewinds to the earliest group with a cleared result (Bob\'s, index 1)', fakeSession.groupIndex, 1);
-check('rowInGroupIndex resets', fakeSession.rowInGroupIndex, 0);
-check('done recalculated as false - there is work left', fakeSession.done, false);
-check('cancelled reset to false', fakeSession.cancelled, false);
-check('paused is left alone - retrying doesn\'t itself resume a paused run', fakeSession.paused, true);
-
-// The actual bug reported live: retrying didn't just rerun the
-// exception, it reran the rest of the whole list. Root cause was
-// stepOnce only ever skipping resolved groups ONCE, at session
-// creation - after retryExceptions rewinds groupIndex back to Bob's
-// group (index 1), advanceToNextGroup's own blind +1 would move on to
-// Carol's group (index 2) next and stepOnce would reprocess it too,
-// even though results[2] (Carol) was never cleared and is still
-// perfectly valid. Simulates exactly what stepOnce now does on every
-// call: Bob's group just got a fresh result (as if reprocessing it
-// succeeded), then re-checks from where advanceToNextGroup would have
-// landed (index 2) - it must recognize Carol's group is ALREADY
-// resolved and skip straight past it to the end, not reprocess it.
-fakeSession.results[1] = { name: 'Bob', status: 'CLASSIFIED', tier: 4, tierName: 'WARM ENQUIRY' };
-const nextIndex = firstUnresolvedGroupIndex(fakeSession.groups, fakeSession.results, 2);
-check('Already-resolved Carol\'s group (index 2) is skipped, not reprocessed, once Bob\'s retry is done', nextIndex, 3);
-
-if (failures.length > 0) {
-console.error('KonnectLeadChecker retryExceptions self-test FAILED:\n' + failures.join('\n'));
-} else {
-console.info('KonnectLeadChecker retryExceptions self-test passed (10/10)');
-}
-})();
 
 // ===================================================================
 // Self-test for computeButtonVisibility - the button row used to be
@@ -4146,7 +4158,7 @@ const checkLead = { tier: 5, tierName: 'NURTURE', postClosureAction: 'check: nee
 const normalLead = { tier: 4, tierName: 'WARM ENQUIRY', subCategory: 'Quote / Offer Request: Detailed' };
 
 check('categoryColor uses postClosureColor, not TIER_COLORS, once postClosureAction is set', categoryColor(sendBackLead), '#0891b2');
-check('categoryColor falls back to the real tier colour when there is no postClosureAction', categoryColor(normalLead), '#7c3aed');
+check('categoryColor falls back to the real tier colour when there is no postClosureAction', categoryColor(normalLead), '#9333ea');
 
 check('categoryKey groups a confident send-back separately from its underlying tier', categoryKey(sendBackLead), 'POST CLOSURE: SEND BACK');
 check('categoryKey groups the uncertain check bucket separately too', categoryKey(checkLead), 'POST CLOSURE: CHECK');
@@ -4393,10 +4405,10 @@ document.head.appendChild(style);
 }
 const overlay = document.createElement('div');
 overlay.id = KLC_PAGE_FLASH_OVERLAY_ID;
-overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(15,23,42,0.94); z-index: 999999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: white; font-size: 14px; font-weight: 600;';
+overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(28,28,30,0.78); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); z-index: 999999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: white; font-size: 13px; font-weight: 600;';
 overlay.innerHTML = `
-<div style="width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.25); border-top-color: white; border-radius: 50%; animation: _klcSpin 0.8s linear infinite;"></div>
-<div data-overlay-label>${message}</div>
+<div style="width: 28px; height: 28px; border: 2.5px solid rgba(255,255,255,0.2); border-top-color: #C2CB42; border-radius: 50%; animation: _klcSpin 0.7s linear infinite;"></div>
+<div data-overlay-label style="background: rgba(255,255,255,0.12); padding: 6px 14px; border-radius: 999px;">${message}</div>
 `;
 klcPageFlashOverlayPrevOverflow = document.documentElement.style.overflow;
 document.documentElement.style.overflow = 'hidden';
@@ -4435,6 +4447,20 @@ trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0
 
 function svgIcon(name, size, extraStyle) {
 return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;${extraStyle || ''}">${ICONS[name]}</svg>`;
+}
+
+// Used only for the true full-panel empty state (no session started at
+// all) - the other two .empty-state strings (no results yet mid-session,
+// no results match the current filter) stay as compact one-liners since
+// they're transient/contextual, not "there is nothing here at all."
+function renderZeroState(iconName, title, subtitle) {
+return `<div style="padding: 40px 16px; text-align: center;">
+<div style="width: 56px; height: 56px; border-radius: 50%; background: #e5e5ea; display: flex; align-items: center; justify-content: center; margin: 0 auto 14px;">
+${svgIcon(iconName, 24, ' stroke-width: 1.5; color: #8e8e93;')}
+</div>
+<h3 style="color: #1c1c1e; margin: 0 0 5px 0; font-size: 15px; font-weight: 600;">${title}</h3>
+<p style="color: #8e8e93; margin: 0; font-size: 12.5px; line-height: 1.5;">${subtitle}</p>
+</div>`;
 }
 
 // A ".chev"-classed chevron for the <details> summary rows below - kept
@@ -4612,8 +4638,8 @@ root.innerHTML = `
 (live DOM scan), not a generic scheme - only the chrome/branding
 surfaces use them; category/warning/error colors elsewhere stay as
 their own semantic colors regardless of page theme. */
-.panel { width: 460px; max-height: 90vh; display: flex; flex-direction: column; background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.35); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #1e293b; overflow: hidden; }
-.header { flex-shrink: 0; background: #222222; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-radius: 10px 10px 0 0; cursor: move; user-select: none; }
+.panel { width: 460px; max-height: 90vh; display: flex; flex-direction: column; background: #f2f2f7; border: none; border-radius: 20px; box-shadow: 0 20px 50px -12px rgba(0,0,0,0.25); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: #1c1c1e; overflow: hidden; }
+.header { flex-shrink: 0; background: #1c1c1e; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-radius: 20px 20px 0 0; cursor: move; user-select: none; }
 .header-title { display: flex; align-items: center; gap: 6px; font-weight: 600; overflow: hidden; }
 .header-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .header button { background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 2px; display: flex; align-items: center; }
@@ -4624,21 +4650,21 @@ textarea:focus, .search-input:focus { outline: none; border-color: #C2CB42; box-
 .row-count { color: #64748b; margin: 4px 0 8px; }
 .section-label { color: #94a3b8; text-transform: uppercase; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; margin: 10px 0 4px; }
 .section-label:first-child { margin-top: 0; }
-.buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
-button.action { padding: 5px 8px; border: 1px solid #cbd5e1; background: white; border-radius: 6px; cursor: pointer; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; }
-button.action:hover { background: #f6f7e4; }
+.buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+button.action { padding: 7px 12px; border: none; background: #e5e5ea; color: #1c1c1e; border-radius: 999px; cursor: pointer; font-size: 11.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
+button.action:hover { background: #d8d8dd; }
 button.action:disabled { opacity: 0.45; cursor: default; }
-button.action:disabled:hover { background: white; }
-button.action.temp { border-style: dashed; border-color: #f59e0b; color: #92400e; }
-button.action.temp:hover { background: #fffbeb; }
-button.primary { background: #C2CB42; color: #1e293b; border-color: #C2CB42; }
+button.action:disabled:hover { background: #e5e5ea; }
+button.action.temp { background: #fff3cd; color: #92400e; }
+button.action.temp:hover { background: #ffe8a8; }
+button.primary { background: #C2CB42; color: #1c1c1e; }
 button.primary:hover { background: #aab238; }
-.status { background: white; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 8px; margin-bottom: 8px; }
+.status { background: white; border: none; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); padding: 10px 12px; margin-bottom: 8px; }
 .status div { margin-bottom: 2px; }
 .recent-log { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
 .recent-log-row { display: flex; align-items: center; gap: 5px; font-size: 10.5px; overflow: hidden; }
 .recent-log-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #334155; }
-.recent-log-tier { flex-shrink: 0; padding: 1px 6px; border-radius: 3px; font-weight: 700; font-size: 9.5px; white-space: nowrap; }
+.recent-log-tier { flex-shrink: 0; padding: 1px 6px; border-radius: 6px; font-weight: 700; font-size: 9.5px; white-space: nowrap; }
 .progress-track { height: 5px; background: #e2e8f0; border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
 .progress-fill { height: 100%; background: #C2CB42; transition: width 0.2s ease; border-radius: 3px; }
 .progress-fill.active { background-image: linear-gradient(135deg, rgba(255,255,255,0.4) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.4) 75%, transparent 75%, transparent); background-size: 14px 14px; animation: klcProgressStripes 0.6s linear infinite; }
@@ -4653,8 +4679,8 @@ and silently ate the whole rule that followed it on the first attempt,
 which is why the previous fix didn't actually take effect live even
 though the class was being toggled correctly the whole time. */
 .hidden { display: none !important; }
-.footer { flex-shrink: 0; border-top: 1px solid #cbd5e1; padding: 8px 12px; background: white; display: flex; justify-content: flex-end; border-radius: 0 0 10px 10px; }
-.footer button { padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+.footer { flex-shrink: 0; padding: 10px 14px; background: white; display: flex; justify-content: center; border-radius: 0 0 20px 20px; }
+.footer button { padding: 4px 8px; background: transparent; color: #ff3b30; border: none; border-radius: 6px; cursor: pointer; font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
 .topSection { flex-shrink: 0; border: 1px solid #e2e8f0; border-radius: 6px; background: white; margin-bottom: 8px; }
 .topSection > summary { padding: 6px 8px; cursor: pointer; font-weight: 600; color: #475569; list-style: none; display: flex; align-items: center; gap: 6px; }
 .topSection > summary::-webkit-details-marker { display: none; }
@@ -4662,15 +4688,13 @@ though the class was being toggled correctly the whole time. */
 .topSection:not([open]) > summary .chev { transform: rotate(-90deg); }
 .topSection-content { padding: 0 8px 8px; }
 .exportBar { flex-shrink: 0; }
-.stats-bar { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
-.stat-pill { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 5px; font-size: 10.5px; font-weight: 700; cursor: pointer; user-select: none; border: 1px solid transparent; transition: opacity 0.1s ease, border-color 0.1s ease; }
+.stats-bar { display: flex; flex-wrap: nowrap; gap: 6px; margin-bottom: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+.stat-pill { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border-radius: 999px; font-size: 10.5px; font-weight: 700; cursor: pointer; user-select: none; border: none; transition: opacity 0.1s ease; }
 .stat-pill.inactive { opacity: 0.35; }
-.stat-pill:hover { border-color: currentColor; }
-.category-badge { border: 1px solid transparent; }
-details.customer:hover > summary .category-badge { border-color: currentColor; }
+.stat-pill:hover { opacity: 0.85; }
 .filter-bar { display: flex; gap: 6px; margin-bottom: 8px; }
-.search-input { flex: 1; padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 11px; box-sizing: border-box; font-family: inherit; }
-.category-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 4px; font-size: 10.5px; font-weight: 700; white-space: nowrap; }
+.search-input { flex: 1; padding: 7px 10px; border: none; background: white; box-shadow: 0 1px 2px rgba(0,0,0,0.04); border-radius: 10px; font-size: 11px; box-sizing: border-box; font-family: inherit; }
+.category-badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 700; white-space: nowrap; }
 .subcat-label { display: inline-block; margin-left: 4px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 500; color: #64748b; vertical-align: middle; }
 .maintenance-controls { margin-top: 6px; }
 .maintenance-controls .action { background: #f1f5f9; color: #64748b; font-weight: 600; }
@@ -4684,15 +4708,14 @@ details.customer:hover > summary .category-badge { border-color: currentColor; }
 .tier-left { display: flex; align-items: center; gap: 6px; }
 .tier-count { color: #94a3b8; font-weight: 400; }
 .customer { border-top: 1px solid #f1f5f9; }
-.customer > summary { padding: 5px 8px 5px 20px; cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
-.customer > summary::-webkit-details-marker { display: none; }
-.customer > summary .chev { transition: transform 0.15s ease; color: #cbd5e1; flex-shrink: 0; }
-.customer:not([open]) > summary .chev { transform: rotate(-90deg); }
+.customer-summary { padding: 5px 8px 5px 20px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.customer-summary .chev { transition: transform 0.15s ease; color: #cbd5e1; flex-shrink: 0; }
+.customer:not(.open) > .customer-summary .chev { transform: rotate(-90deg); }
 .customer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.customer-body { padding: 4px 8px 8px 28px; background: #f8fafc; }
+.customer-body { padding: 4px 8px 8px 28px; background: #f2f2f7; }
 .customer-body .field { margin-bottom: 3px; }
 .customer-body .field b { color: #475569; }
-.notes-block { white-space: pre-wrap; background: white; border: 1px solid #e2e8f0; border-radius: 4px; padding: 6px; margin-top: 4px; font-family: monospace; font-size: 10.5px; }
+.notes-block { white-space: pre-wrap; background: white; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px; margin-top: 4px; font-family: monospace; font-size: 10.5px; }
 .reason { color: #64748b; font-style: italic; margin-top: 3px; }
 .empty-state { color: #94a3b8; padding: 8px 4px; }
 .review-section { flex-shrink: 0; border: 1px solid #fbbf24; border-radius: 6px; background: #fffbeb; margin-bottom: 8px; }
@@ -4703,10 +4726,10 @@ details.customer:hover > summary .category-badge { border-color: currentColor; }
 .review-section-left { display: flex; align-items: center; gap: 6px; }
 .review-row { border-top: 1px solid #fde68a; padding: 8px; }
 .review-name { font-weight: 600; margin-bottom: 2px; }
-.review-notes { white-space: pre-wrap; background: white; border: 1px solid #fde68a; border-radius: 4px; padding: 6px; margin: 4px 0 6px; font-family: monospace; font-size: 10.5px; }
+.review-notes { white-space: pre-wrap; background: white; border: 1px solid #fde68a; border-radius: 6px; padding: 6px; margin: 4px 0 6px; font-family: monospace; font-size: 10.5px; }
 .review-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
-.review-actions button { padding: 4px 8px; border-radius: 4px; border: 1px solid transparent; cursor: pointer; font-size: 10.5px; font-weight: 700; }
-.review-reason { width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 11px; font-family: inherit; }
+.review-actions button { padding: 4px 8px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; font-size: 10.5px; font-weight: 700; }
+.review-reason { width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 11px; font-family: inherit; }
 #resultsBody { flex: 1; min-height: 40px; overflow-y: auto; }
 </style>
 <div class="panel">
@@ -4919,7 +4942,22 @@ let reviewSectionOpen = false;
 function copyableField(value) {
 if (!value) return '';
 const display = escapeHtmlForUi(value);
-return `<span class="klc-copyable" data-value="${display}" style="cursor: pointer; padding: 1px 5px; border-radius: 4px; background: #eef2ff; color: #1e293b; display: inline-block;">${display}</span>`;
+return `<span class="klc-copyable" data-value="${display}" style="cursor: pointer; padding: 1px 5px; border-radius: 6px; background: #eef2ff; color: #1e293b; display: inline-block;">${display}</span>`;
+}
+
+function initialsForKlc(name) {
+const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+if (parts.length === 0) return '?';
+if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+// Primary visual anchor for a lead row, matching SLA-Manager.js's
+// avatar-circle pattern - color is categoryColor(r), the same single
+// status color categoryBadge already uses for its dominant pill, so
+// the avatar and the badge always agree.
+function renderAvatarCircle(name, colorHex, size) {
+return `<div style="width: ${size}px; height: ${size}px; border-radius: 50%; background: ${colorHex}; color: white; font-size: ${Math.round(size * 0.4)}px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">${escapeHtmlForUi(initialsForKlc(name))}</div>`;
 }
 
 function customerBodyHtml(r) {
@@ -4991,7 +5029,7 @@ function render() {
 ensureBadgeAttached();
 if (!session) {
 rowCountEl.textContent = '0 rows parsed';
-resultsBody.innerHTML = '<div class="empty-state">Paste a batch above to begin.</div>';
+resultsBody.innerHTML = renderZeroState('clipboard', 'No Batch Loaded', 'Paste a batch above to begin.');
 completedCountEl.textContent = '0';
 exceptionCountEl.textContent = '0';
 totalCountEl.textContent = '0';
@@ -5100,12 +5138,15 @@ resultsBody.innerHTML = Array.from(byTier.keys()).sort((a, b) => a - b).map((tie
 // received time) so the most actionable leads in each tier surface
 // at the top rather than input order.
 const rows = [...byTier.get(tier)].sort(compareByBookingPriority);
-const customersHtml = rows.map((r) => `
-<details class="customer" data-key="${r.inputIndex}" ${detailsState.customers.has(r.inputIndex) ? 'open' : ''}>
-<summary><span style="display: flex; align-items: center; gap: 6px; overflow: hidden;">${detailsChevronIcon()}<span class="customer-name" title="${escapeHtmlForUi(r.initialNotes || 'No Initial Notes read yet.')}">${escapeHtmlForUi(r.name)}</span></span>${categoryBadge(r)}</summary>
-<div class="customer-body">${customerBodyHtml(r)}</div>
-</details>
-`).join('');
+const customersHtml = rows.map((r) => {
+const open = detailsState.customers.has(r.inputIndex);
+return `
+<div class="customer${open ? ' open' : ''}" data-key="${r.inputIndex}">
+<div class="customer-summary"><span style="display: flex; align-items: center; gap: 8px; overflow: hidden;">${detailsChevronIcon()}${renderAvatarCircle(r.name, categoryColor(r), 28)}<span class="customer-name" title="${escapeHtmlForUi(r.initialNotes || 'No Initial Notes read yet.')}">${escapeHtmlForUi(r.name)}</span></span>${categoryBadge(r)}</div>
+<div class="customer-body" style="display: ${open ? 'block' : 'none'};">${customerBodyHtml(r)}</div>
+</div>
+`;
+}).join('');
 const tierLabel = tier === -2 ? 'Post Closure - Send back through'
 : tier === -1 ? 'Post Closure - Check: needs contact?'
 : tier === 7 ? 'Unclassified'
@@ -5125,9 +5166,23 @@ resultsBody.querySelectorAll('details.tier').forEach((el) => {
 const key = Number(el.dataset.key);
 el.addEventListener('toggle', () => { if (el.open) detailsState.tiers.add(key); else detailsState.tiers.delete(key); });
 });
-resultsBody.querySelectorAll('details.customer').forEach((el) => {
+// Was a native <details>/<summary> (toggle event) - replaced with a
+// plain div + explicit click handler so the trailing chevron/row can
+// match SLA-Manager.js's row-tap-to-expand visual pattern instead of
+// the browser's own disclosure-triangle styling. Same detailsState Set,
+// same persistence-across-re-render behavior, just a different event
+// source triggering the add/delete.
+resultsBody.querySelectorAll('.customer').forEach((el) => {
 const key = Number(el.dataset.key);
-el.addEventListener('toggle', () => { if (el.open) detailsState.customers.add(key); else detailsState.customers.delete(key); });
+const summary = el.querySelector('.customer-summary');
+const body = el.querySelector('.customer-body');
+if (!summary || !body) return;
+summary.addEventListener('click', () => {
+const opening = body.style.display === 'none';
+body.style.display = opening ? 'block' : 'none';
+el.classList.toggle('open', opening);
+if (opening) detailsState.customers.add(key); else detailsState.customers.delete(key);
+});
 });
 resultsBody.querySelectorAll('.klc-copyable').forEach((el) => {
 el.addEventListener('click', () => {

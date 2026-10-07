@@ -12,6 +12,10 @@ const PANEL_STATE_KEY = '_slaPanelState';
 const PANEL_SIZE_KEY = '_slaPanelSize';
 const ASSIGN_SETTINGS_KEY = '_slaAssignSettings';
 
+function getPanelSize() {
+return localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
+}
+
 // ===================================================================
 // ICONS
 //
@@ -40,11 +44,29 @@ restore: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
 arrowUp: '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',
 chevron: '<polyline points="6 9 12 15 18 9"/>',
 checklist: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
-copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'
+copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+more: '<circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none"/>',
+focus: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>',
+check: '<polyline points="20 6 9 17 4 12"/>',
+chevronRight: '<polyline points="9 18 15 12 9 6"/>'
 };
 
 function svgIcon(name, size, extraStyle) {
 return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;${extraStyle || ''}">${ICONS[name]}</svg>`;
+}
+
+// Used only for the two true full-panel empty states (no leads at all /
+// no session started at all) - per-section "No customers" one-liners
+// stay compact on purpose, this heavier icon-in-a-circle treatment
+// would be visual overkill repeated at every collapsed section header.
+function renderZeroState(iconName, title, subtitle) {
+return `<div style="padding: 48px 20px; text-align: center;">
+<div style="width: 64px; height: 64px; border-radius: 50%; background: #e5e5ea; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
+${svgIcon(iconName, 28, ' stroke-width: 1.5; color: #8e8e93;')}
+</div>
+<h3 style="color: #1c1c1e; margin: 0 0 6px 0; font-size: 17px; font-weight: 600;">${title}</h3>
+<p style="color: #8e8e93; margin: 0; font-size: 14px; line-height: 1.5;">${subtitle}</p>
+</div>`;
 }
 
 // Rotates rather than swaps between two glyphs (the old ▼/▶ text-content
@@ -545,10 +567,13 @@ document.head.appendChild(style);
 }
 const overlay = document.createElement('div');
 overlay.id = PAGE_FLASH_OVERLAY_ID;
-overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(15,23,42,0.94); z-index: 99999; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: white; font-size: 14px; font-weight: 600;';
+// z-index must exceed the panel box's own 100000 (PANEL_BOX_ID,
+// renderPanelShell) - it was 99999 (below the panel) until now, which
+// meant this overlay rendered BEHIND the panel instead of blocking it.
+overlay.style.cssText = 'position: fixed; inset: 0; background: rgba(28,28,30,0.78); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); z-index: 100001; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: white; font-size: 13px; font-weight: 600;';
 overlay.innerHTML = `
-<div style="width: 32px; height: 32px; border: 3px solid rgba(255,255,255,0.25); border-top-color: white; border-radius: 50%; animation: _slaSpin 0.8s linear infinite;"></div>
-<div data-overlay-label>${message}</div>
+<div style="width: 28px; height: 28px; border: 2.5px solid rgba(255,255,255,0.2); border-top-color: white; border-radius: 50%; animation: _slaSpin 0.7s linear infinite;"></div>
+<div data-overlay-label style="background: rgba(255,255,255,0.12); padding: 6px 14px; border-radius: 999px;">${message}</div>
 `;
 pageFlashOverlayPrevOverflow = document.documentElement.style.overflow;
 document.documentElement.style.overflow = 'hidden';
@@ -960,8 +985,13 @@ if (buttonEl) buttonEl.textContent = originalText;
 // whichever agent's queue it's in, from the last snapshot taken by
 // window._checkAgentQueuePositions - a point-in-time read, not live,
 // same tradeoff already accepted for the agent roster elsewhere here.
-function findAgentQueuePositionForLead(lead) {
-const snapshot = loadAgentQueueSnapshot();
+// Takes the snapshot as a parameter rather than loading it internally -
+// both call sites (renderTierSection/renderCallbackTypeSection) hoist
+// loadAgentQueueSnapshot() once per section instead of once per card,
+// same pattern already used for leadCheckerResults in those two
+// functions, since this used to re-read+re-parse localStorage on every
+// single customer card.
+function findAgentQueuePositionInSnapshot(lead, snapshot) {
 if (!snapshot.agents || snapshot.agents.length === 0) return null;
 const emailKey = normalizeEmailForLeadCheckerMatch(lead.email);
 const phoneKey = normalizePhoneForLeadCheckerMatch(lead.phone);
@@ -983,25 +1013,6 @@ function ordinal(n) {
 const s = ['th', 'st', 'nd', 'rd'];
 const v = n % 100;
 return n + (s[(v - 20) % 10] || s[v] || s[0]);
-}
-
-// Reused as-is for the normal case (assigned here, and genuinely
-// queued) and the mismatch case (shows unassigned here, but Konnect's
-// own Queue by Agent already has it queued to someone) - same badge
-// slot on the card either way, just recolored/reworded, rather than
-// adding a second element for the mismatch. Per instruction: don't
-// clutter the UI with an extra warning section just for this.
-function renderQueuePositionBadge(assigned, queuePosition) {
-if (!queuePosition) return '';
-const mismatch = !assigned;
-const label = mismatch ? `⚠ Already in ${escapeHtml(queuePosition.agentName)}'s queue` : `${ordinal(queuePosition.position)} in queue`;
-const title = mismatch
-? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${escapeHtml(queuePosition.agentName)} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.`
-: `In ${escapeHtml(queuePosition.agentName)}'s live call queue, out of the last ${queuePosition.totalShown} shown${queuePosition.processed ? ' (already called)' : ''}`;
-const color = mismatch ? '#dc2626' : '#64748b';
-const background = mismatch ? '#dc262615' : '#f1f5f915';
-const border = mismatch ? '#dc2626' : '#e2e8f0';
-return `<div style="margin-bottom: 10px;"><span title="${title}" style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${background}; color: ${color}; border: 1px solid ${border};">${label}</span></div>`;
 }
 
 // ===================================================================
@@ -1920,7 +1931,7 @@ element.style.color = '';
 }
 
 function escapeHtml(value) {
-return String(value).replace(/[&<>"']/g, (c) => ({
+return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({
 '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 }[c]));
 }
@@ -1929,12 +1940,74 @@ function stripTitle(name) {
 return name.replace(/^(mr|mrs|miss|ms|mx|dr|prof|rev|sir|lady)\.?\s+/i, '').trim();
 }
 
+function initialsFor(name) {
+const parts = stripTitle(name || '').split(/\s+/).filter(Boolean);
+if (parts.length === 0) return '?';
+if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+// Primary visual anchor for a lead row, replacing the old plain-text
+// name-first layout - color is the row's single dominant status color
+// (from pickDominantBadge), so the avatar itself carries the "most
+// urgent thing about this lead" signal even before reading the badge.
+function renderAvatarCircle(name, colorHex, size) {
+return `<div class="avatar-circle" style="cursor: pointer; width: ${size}px; height: ${size}px; border-radius: 50%; background: ${colorHex}; color: white; font-size: ${Math.round(size * 0.4)}px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">${escapeHtml(initialsFor(name))}</div>`;
+}
+
+// Replaces showing up to 3 equal-weight pills (urgency + Lead Checker
+// tier/postClosure + queue-mismatch) side by side on one card - per
+// instruction, only the single most actionable signal gets the full
+// colored-pill treatment; everything else demotes to the plain muted
+// secondary line (see callers). Order matters: a Post-Closure "send
+// back through" or a queue mismatch (both mean "don't just assign this
+// normally") outrank a plain SLA timer, which outranks an informational
+// tier/queue-position note. Must never let a tier name win the pill
+// slot when postClosureAction is set (postClosureBadgeReplacementSelfTest).
+function pickDominantBadge(urgency, leadChecker, queuePosition, assigned) {
+if (leadChecker && leadChecker.postClosureAction === 'send back through') {
+return { label: leadChecker.postClosureAction, color: postClosureActionColor(leadChecker.postClosureAction), source: 'leadChecker' };
+}
+if (queuePosition && !assigned) {
+return { label: `Already in ${queuePosition.agentName}'s queue`, color: '#b45309', source: 'queue' };
+}
+if (urgency && urgency.emphasize && urgency.label) {
+return { label: urgency.label, color: urgency.color, source: 'urgency' };
+}
+if (leadChecker && leadChecker.postClosureAction) {
+return { label: leadChecker.postClosureAction, color: postClosureActionColor(leadChecker.postClosureAction), source: 'leadChecker' };
+}
+if (urgency && urgency.label) {
+return { label: urgency.label, color: urgency.color, source: 'urgency' };
+}
+if (leadChecker && leadChecker.tierName) {
+return { label: leadChecker.tierName, color: leadCheckerImportCategoryColor(leadChecker.tier), source: 'leadChecker' };
+}
+return null;
+}
+
+// Builds the muted secondary line under a row's name/badge - whichever
+// signals pickDominantBadge did NOT pick for the one colored pill, so
+// nothing actually disappears, it just demotes to plain text instead of
+// competing colored chrome. queuePosition's non-mismatch "Nth in queue"
+// case never wins the dominant slot (informational, not urgent), so it
+// always shows here when present.
+function buildSecondaryLine(dominant, urgency, leadChecker, queuePosition, assigned) {
+const parts = [];
+if (urgency && urgency.label && dominant?.source !== 'urgency') parts.push(urgency.label);
+if (leadChecker && dominant?.source !== 'leadChecker') parts.push(leadChecker.postClosureAction || leadChecker.tierName);
+if (queuePosition && dominant?.source !== 'queue') {
+parts.push(assigned ? `${ordinal(queuePosition.position)} in queue` : `Already in ${queuePosition.agentName}'s queue`);
+}
+return parts.filter(Boolean).join(' &middot; ');
+}
+
 function renderCopyableField(value) {
 if (!value) {
-return `<span style="padding: 4px 6px; border-radius: 4px; background: #e2e8f0; color: #94a3b8; display: inline-block; font-size: 13px;">N/A</span>`;
+return `<span style="padding: 4px 6px; border-radius: 6px; background: #e2e8f0; color: #94a3b8; display: inline-block; font-size: 13px;">N/A</span>`;
 }
 const display = escapeHtml(value);
-return `<span class="sla-copyable" data-value="${display}" style="cursor: pointer; padding: 4px 6px; border-radius: 4px; background: #eef2ff; color: #1e293b; display: inline-block; font-size: 13px;">${display}</span>`;
+return `<span class="sla-copyable" data-value="${display}" style="cursor: pointer; padding: 4px 6px; border-radius: 6px; background: #eef2ff; color: #1e293b; display: inline-block; font-size: 13px;">${display}</span>`;
 }
 
 // Wraps a customer card's contact-info grid (phone/email, or mobile/
@@ -1958,8 +2031,8 @@ ${gridInnerHtml}
 
 function renderAssignmentBadge(assigned, agentName) {
 return assigned
-? `<span style="background: #d1fae5; color: #059669; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; white-space: nowrap; flex-shrink: 0;">✓ ${escapeHtml(agentName || 'Assigned')}</span>`
-: `<span style="background: #f8fafc; color: #94a3b8; padding: 2px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; flex-shrink: 0;">Unassigned</span>`;
+? `<span style="background: #d1fae5; color: #059669; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; white-space: nowrap; flex-shrink: 0;">✓ ${escapeHtml(agentName || 'Assigned')}</span>`
+: `<span style="background: #f8fafc; color: #94a3b8; padding: 2px 8px; border-radius: 6px; font-size: 11px; white-space: nowrap; flex-shrink: 0;">Unassigned</span>`;
 }
 
 // A per-lead agent picker, for the case of assigning one specific lead
@@ -1985,20 +2058,10 @@ const options = agents.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtm
 // deliberately different kind of action from a batch sweep and should
 // read that way at a glance, without the shape itself changing.
 return `<select class="manual-assign-select" data-lead-key="${escapeHtml(leadKey)}" data-page-type="${pageType}"
-style="font-size: 11px; font-weight: 600; padding: 2px 8px; border: 1px solid #c7d2fe; border-radius: 4px; background: #eef2ff; color: #4338ca; max-width: 140px; flex-shrink: 0; cursor: pointer;">
+style="font-size: 11px; font-weight: 600; padding: 2px 8px; border: 1px solid #c7d2fe; border-radius: 6px; background: #eef2ff; color: #4338ca; max-width: 140px; flex-shrink: 0; cursor: pointer;">
 <option value="" selected disabled>Assign to…</option>
 ${options}
 </select>`;
-}
-
-// Wrapped in its own span (not just the bare badge/select) so
-// _manualAssignLead has a stable, narrowly-scoped element to swap the
-// content of - the card's outer flex row also holds the customer name
-// as a sibling, so replacing that row's innerHTML directly would wipe
-// the name out along with the badge/picker.
-function renderAssignmentCell(assigned, agentName, leadKey, pageType) {
-const inner = assigned ? renderAssignmentBadge(true, agentName) : renderManualAssignPicker(leadKey, pageType);
-return `<span class="assignment-cell">${inner}</span>`;
 }
 
 // ===================================================================
@@ -2595,7 +2658,7 @@ const text = failed === 0
 const retryLink = failed > 0
 ? ` <span onclick="window._retryFailedAssignments()" style="text-decoration: underline; cursor: pointer;">Retry Failed</span>`
 : '';
-el.innerHTML = `<div style="margin-top: 8px; padding: 8px 10px; border-radius: 4px; background: ${color}20; color: ${color}; font-size: 13px; font-weight: 700; text-align: center;">${text}${retryLink}</div>`;
+el.innerHTML = `<div style="margin-top: 8px; padding: 8px 10px; border-radius: 6px; background: ${color}20; color: ${color}; font-size: 13px; font-weight: 700; text-align: center;">${text}${retryLink}</div>`;
 }
 
 // Retrying re-runs only the leads that actually failed, keeping each one
@@ -2696,7 +2759,7 @@ style.id = '_slaWheelStyles';
 // the input itself is visually hidden (opacity/size, not display:none,
 // so it stays focusable/clickable) rather than replaced with a custom
 // control.
-style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #4f46e5; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef2ff !important; } .chip-label { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 14px; border: 1px solid #cbd5e1; background: white; color: #64748b; font-size: 12px; cursor: pointer; user-select: none; transition: background 0.15s, border-color 0.15s, color 0.15s; } .chip-label input { position: absolute; opacity: 0; width: 0; height: 0; } .chip-label:has(input:checked) { background: #eef2ff; border-color: #4f46e5; color: #4338ca; font-weight: 600; }';
+style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #4f46e5; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef2ff !important; } .chip-label { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 14px; border: 1px solid #cbd5e1; background: white; color: #64748b; font-size: 12px; cursor: pointer; user-select: none; transition: background 0.15s, border-color 0.15s, color 0.15s; } .chip-label input { position: absolute; opacity: 0; width: 0; height: 0; } .chip-label:has(input:checked) { background: #eef2ff; border-color: #4f46e5; color: #4338ca; font-weight: 600; } .lead-row-card { background: white; border-radius: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); overflow: hidden; } .avatar-circle:hover { filter: brightness(0.92); }';
 document.head.appendChild(style);
 }
 
@@ -2704,8 +2767,8 @@ function renderWheelColumnHtml(id, values, widthPx) {
 const spacerHeight = Math.floor(WHEEL_VISIBLE_ROWS / 2) * WHEEL_ROW_HEIGHT;
 const items = values.map(v => `<div class="wheel-item" style="height: ${WHEEL_ROW_HEIGHT}px; display: flex; align-items: center; justify-content: center; font-size: 13px; scroll-snap-align: center; color: #94a3b8; cursor: pointer; transition: color 0.15s, font-weight 0.15s;">${escapeHtml(String(v))}</div>`).join('');
 return `<div style="position: relative; width: ${widthPx}px;">
-<div style="position: absolute; top: ${spacerHeight}px; left: 0; right: 0; height: ${WHEEL_ROW_HEIGHT}px; background: #eef2ff; border-radius: 4px; pointer-events: none;"></div>
-<div id="${id}" class="wheel-scroll" style="position: relative; height: ${WHEEL_VISIBLE_ROWS * WHEEL_ROW_HEIGHT}px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; border: 1px solid #cbd5e1; border-radius: 4px; background: white; cursor: grab;">
+<div style="position: absolute; top: ${spacerHeight}px; left: 0; right: 0; height: ${WHEEL_ROW_HEIGHT}px; background: #eef2ff; border-radius: 6px; pointer-events: none;"></div>
+<div id="${id}" class="wheel-scroll" style="position: relative; height: ${WHEEL_VISIBLE_ROWS * WHEEL_ROW_HEIGHT}px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; border: 1px solid #cbd5e1; border-radius: 6px; background: white; cursor: grab;">
 <div style="height: ${spacerHeight}px;"></div>
 ${items}
 <div style="height: ${spacerHeight}px;"></div>
@@ -2927,23 +2990,8 @@ syncWheelPositionOnly('assignCutoffMinuteWheel', MINUTE_VALUES, currentMinute);
 // lead list below it, not the assign section). Full mode has much more
 // room, so it gets a looser cap.
 function assignSectionBodyMaxHeight() {
-const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
+const panelSize = getPanelSize();
 return panelSize === 'full' ? '55vh' : '280px';
-}
-
-// Same reasoning as assignSectionBodyMaxHeight, one level up: that cap
-// only applied to FILTERS, but ASSIGN (agents/limit/preview/button/
-// results, with FILTERS nested inside it) can independently grow tall
-// enough on its own - a long agent list plus a full results log plus
-// FILTERS expanded - to push the footer (Clear & Stop, etc.) out past
-// the panel box's own overflow:hidden boundary, making it disappear
-// entirely rather than just becoming unreachable via scroll. Capped
-// looser than the inner FILTERS cap since it has to fit everything
-// FILTERS already accounts for, plus the agents list/button/results
-// around it.
-function assignFullSectionMaxHeight() {
-const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
-return panelSize === 'full' ? '65vh' : '320px';
 }
 
 // Reads whichever wheels are actually present in the currently-mounted
@@ -3017,7 +3065,7 @@ const queueByName = new Map(queueSnapshot.agents.map((q) => [normalizeAgentName(
 return agents.map(a => {
 const queueInfo = queueByName.get(normalizeAgentName(a.name));
 const queueBadge = queueInfo
-? `<span title="${queueInfo.notDoneCount} not yet called, out of the last ${queueInfo.totalShown} queued (as of ${escapeHtml(new Date(queueSnapshot.scannedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))})" style="margin-left: 6px; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 700; background: #eef2ff; color: #4338ca;">${queueInfo.notDoneCount}</span>`
+? `<span title="${queueInfo.notDoneCount} not yet called, out of the last ${queueInfo.totalShown} queued (as of ${escapeHtml(new Date(queueSnapshot.scannedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))})" style="margin-left: 6px; padding: 1px 6px; border-radius: 6px; font-size: 11px; font-weight: 700; background: #eef2ff; color: #4338ca;">${queueInfo.notDoneCount}</span>`
 : '';
 return `
 <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #1e293b;" ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
@@ -3033,12 +3081,12 @@ ${escapeHtml(a.name)}${queueBadge}
 // before roundRobinAssign() in every entry point. Blank means no cap.
 function renderAssignLimitControl(settings) {
 return `<div style="display: flex; align-items: center; gap: 10px;">
-<label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;">
+<label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; font-weight: 600; letter-spacing: 0.3px; white-space: nowrap;">
 LIMIT
 <input type="number" id="assignLimitInput" min="1" placeholder="all" value="${settings.assignLimit || ''}" oninput="window._updateAssignPreview()"
-style="width: 48px; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 13px; font-weight: 400; color: #1e293b;">
+style="width: 48px; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; font-weight: 400; color: #1e293b;">
 </label>
-<label for="assignLimitPerAgent" title="When on, LIMIT is the number of leads EACH selected agent gets, not the total across all of them" style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #64748b; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap; cursor: pointer;">
+<label for="assignLimitPerAgent" title="When on, LIMIT is the number of leads EACH selected agent gets, not the total across all of them" style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #64748b; font-weight: 600; letter-spacing: 0.3px; white-space: nowrap; cursor: pointer;">
 <input type="checkbox" id="assignLimitPerAgent" ${settings.assignLimitPerAgent ? 'checked' : ''} onchange="window._updateAssignPreview()">
 per agent
 </label>
@@ -3062,6 +3110,69 @@ return `<div ${clickable ? `class="stat-tile-clickable" onclick="${onclick}" tit
 <div style="font-size: 16px; font-weight: 700; color: ${color || '#1e293b'};">${value}</div>
 <div style="font-size: 9px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.3px;">${label}</div>
 </div>`;
+}
+
+const STAT_SUMMARY_COLLAPSED_KEY = '_slaStatSummaryCollapsed';
+
+// Defaults to collapsed, unlike every other collapsible section in this
+// file (which defaults open) - these tiles are the first thing shown on
+// every panel open/rebuild, and were 2-3 full tile rows of chrome ahead
+// of the actual lead list. The one-line fallback (passed in by each
+// caller) keeps the headline numbers visible either way, so collapsing
+// this never actually hides information, just its expanded layout.
+function isStatSummaryCollapsed() {
+const v = localStorage.getItem(STAT_SUMMARY_COLLAPSED_KEY);
+return v === null ? true : v === '1';
+}
+
+function renderStatSummaryShell(oneLineSummary, expandedBodyHtml) {
+const collapsed = isStatSummaryCollapsed();
+return `
+<div onclick="window._toggleStatSummary()" style="cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0 8px;">
+<span id="statSummaryLabel" data-summary="${escapeHtml(oneLineSummary)}" style="font-size: 11px; color: #64748b;">${collapsed ? escapeHtml(oneLineSummary) : 'OVERVIEW'}</span>
+${chevronIcon(collapsed, 'statSummaryToggle')}
+</div>
+<div id="statSummaryBody" style="display: ${collapsed ? 'none' : 'block'};">${expandedBodyHtml}</div>`;
+}
+
+const ZEN_MODE_KEY = '_slaZenMode';
+const ZEN_SNAPSHOT_KEY = '_slaZenSnapshot';
+
+function isZenModeOn() {
+return localStorage.getItem(ZEN_MODE_KEY) === '1';
+}
+
+// Snapshot/restore over the existing stat-summary collapse key - per
+// instruction, an escape hatch for a session that's drifted back open,
+// not a new mechanism competing with the per-section chevrons. The
+// Assign/Filters segmented control always shows exactly one tab now (no
+// "both collapsed" state to snapshot any more - see
+// renderAssignSectionShell), so zen mode's job there is simpler: hide
+// the whole assign/filters zone outright while on, bring it back
+// exactly as it was (whichever tab was last active) on disable.
+function enableZenMode() {
+try {
+localStorage.setItem(ZEN_SNAPSHOT_KEY, JSON.stringify({ statSummaryCollapsed: isStatSummaryCollapsed() }));
+localStorage.setItem(ZEN_MODE_KEY, '1');
+localStorage.setItem(STAT_SUMMARY_COLLAPSED_KEY, '1');
+} catch (error) {
+// ignore
+}
+}
+
+function disableZenMode() {
+let snapshot = null;
+try {
+snapshot = JSON.parse(localStorage.getItem(ZEN_SNAPSHOT_KEY));
+} catch (error) {
+// ignore
+}
+try {
+localStorage.setItem(ZEN_MODE_KEY, '0');
+localStorage.setItem(STAT_SUMMARY_COLLAPSED_KEY, snapshot && snapshot.statSummaryCollapsed ? '1' : '0');
+} catch (error) {
+// ignore
+}
 }
 
 function renderSlaDueSummary() {
@@ -3094,11 +3205,15 @@ const cfTiles = SLA_DUE_BUCKET_MINUTES.map((m, i) =>
 renderStatTile(`${m}m`, customerFirstDueCounts[i], customerFirstDueCounts[i] > 0 ? CUSTOMER_FIRST_ACCENT : null, `window._quickAssignSlaTile(${m}, true, false)`)
 ).join('');
 
-return `
-<div id="slaDueSummary" style="padding: 12px 20px 0; background: #f8fafc; font-size: 13px; color: #1e293b;">
+const oneLineSummary = `${missedCount} missed &middot; ${dueCounts[1]} due ≤30m &middot; ${notAssignedCount} unassigned`;
+const expandedBody = `
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
-<div style="font-size: 11px; font-weight: 700; color: ${CUSTOMER_FIRST_ACCENT}; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Customer First</div>
-<div style="display: flex; gap: 6px; margin-bottom: 8px;">${cfTiles}</div>
+<div style="font-size: 11px; font-weight: 600; color: ${CUSTOMER_FIRST_ACCENT}; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Customer First</div>
+<div style="display: flex; gap: 6px; margin-bottom: 8px;">${cfTiles}</div>`;
+
+return `
+<div id="slaDueSummary" style="padding: 12px 20px 0; background: #f2f2f7; font-size: 13px; color: #1e293b;">
+${renderStatSummaryShell(oneLineSummary, expandedBody)}
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span style="font-size: 11px; color: #94a3b8;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
 <button onclick="window._clearWholeQueue()" style="background: #dc2626; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('warning', 11)} Clear Queue</button>
@@ -3343,17 +3458,27 @@ const importState = loadLeadCheckerImportState();
 // page - this popover is now shown on both pages, and the matched-count
 // summary was always checking against the SLA list regardless.
 const customersForMatching = currentPageType === PAGE_PENDING ? currentPendingCustomers : currentCustomers;
-const matchedCount = importState.results.filter((r) => customersForMatching.some((c) => findLeadCheckerResultForCustomer(c, [r]))).length;
+// Was O(results x customers), re-deriving the asymmetric email/phone
+// match for every pair - now one index build plus one candidate lookup
+// per customer, unioning into a Set since this only needs to know
+// which results have AT LEAST one matching customer, not which
+// customer is any given result's single "best" match.
+const leadCheckerMatchIndex = buildLeadCheckerResultIndex(importState.results);
+const matchedResultsSet = new Set();
+customersForMatching.forEach((c) => {
+leadCheckerResultCandidatesIndexed(c, leadCheckerMatchIndex).forEach((r) => matchedResultsSet.add(r));
+});
+const matchedCount = matchedResultsSet.size;
 const importSummary = importState.results.length === 0
 ? `<div style="font-size: 12px; color: #94a3b8; padding: 8px 0 0;">Paste results from Konnect Lead Checker's "Copy raw for Extract" button, then press Classify - they'll show up as a badge on the matching lead card below.</div>`
 : `<div style="font-size: 12px; color: #64748b; padding: 8px 0 0;">${importState.results.length} classified, ${matchedCount} matched to a lead in the current list below.${importState.results.length !== matchedCount ? ' The rest aren\'t in the current SLA list (already assigned, expired, or a different queue).' : ''}</div>`;
 
 return `
 <div id="leadCheckerPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 280px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
-<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">COPY LEADS TO LEAD CHECKER</div>
+<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">COPY LEADS TO LEAD CHECKER</div>
 ${exportSectionHtml}
 <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 14px 0;">
-<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">CLASSIFY RESULTS BACK IN</div>
+<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">CLASSIFY RESULTS BACK IN</div>
 <div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">Use the "Paste & Classify from Lead Checker" button above the list - or paste manually here if clipboard access is blocked:</div>
 <textarea id="leadCheckerImportBox" placeholder="Paste TSV from Konnect Lead Checker" oninput="window._updateLeadCheckerImportInput(this.value)" style="width: 100%; height: 60px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px;">${escapeHtml(importState.rawInput)}</textarea>
 <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
@@ -3367,6 +3492,18 @@ window._toggleLeadCheckerPopover = function() {
 const popover = document.getElementById('leadCheckerPopover');
 if (!popover) return;
 popover.style.display = popover.style.display === 'none' ? 'block' : 'none';
+};
+
+window._toggleHeaderOverflowMenu = function() {
+const menu = document.getElementById('_slaHeaderOverflowMenu');
+if (!menu) return;
+menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+};
+
+window._toggleZenMode = function() {
+if (isZenModeOn()) disableZenMode(); else enableZenMode();
+if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, 0, 0, false);
+else displayPanel(currentCustomers, 0, 0, false);
 };
 
 window._updateLeadCheckerExportPreview = function() {
@@ -3691,7 +3828,15 @@ console.info('SLA Extract lead-checker-export-dedupe self-test passed (4/4)');
 // Same TIER_COLORS palette Konnect-Lead-Checker.js's own panel uses
 // for these exact 6 tiers (lead-classification-spec.md v1.10), so a
 // lead reads the same color whichever tool it's looked at in.
-const LEAD_CHECKER_TIER_COLORS = { 1: '#059669', 2: '#d97706', 3: '#2563eb', 4: '#7c3aed', 5: '#64748b', 6: '#94a3b8' };
+//
+// Tiers 2-4 moved off the original amber/blue/violet ramp - tier 2 used
+// to be '#d97706', the exact same hex as SLA urgency's "due in 30m" and
+// postClosureActionColor's "check" state, so a Lead Checker tier-2 badge
+// was visually indistinguishable from either of those on the same card.
+// Shifted the whole ramp up a slot (tier 2 -> blue, tier 3 -> violet,
+// tier 4 -> a new deeper purple) to clear every locked/urgency hex -
+// see postClosureActionColor below for the colours this must never reuse.
+const LEAD_CHECKER_TIER_COLORS = { 1: '#059669', 2: '#2563eb', 3: '#7c3aed', 4: '#9333ea', 5: '#64748b', 6: '#94a3b8' };
 
 function leadCheckerImportCategoryColor(tier) {
 return LEAD_CHECKER_TIER_COLORS[tier] || '#1e293b';
@@ -3746,6 +3891,121 @@ return false;
 if (candidates.length <= 1) return candidates[0] || null;
 return candidates.find((r) => r.created === c.createdText) || candidates[0];
 }
+
+// Index for the hot paths (renderTierSection/renderCallbackTypeSection's
+// per-card loops, and renderLeadCheckerPopover's match-count calc) that
+// used to call findLeadCheckerResultForCustomer's O(results) linear scan
+// once per customer, i.e. O(customers x results) per render.
+// findLeadCheckerResultForCustomer's own matching rule is asymmetric,
+// not a plain "email OR phone" union: a result WITH an email is matched
+// ONLY by email when the customer also has an email (its phone is never
+// consulted in that case) - phone is only consulted for a given result
+// when the CUSTOMER has no email (then every phone-having result is in
+// play, regardless of whether that result also happens to have an
+// email) or when that particular RESULT has no email (then it can only
+// ever be reached via phone anyway). byPhone below deliberately indexes
+// every phone-having result regardless of its own email, and the
+// email-present branch filters OUT any phone candidate that also has an
+// email (since for those, with the customer also having one, the
+// original always required an exact email match, never a phone
+// fallback). leadCheckerResultIndexEquivalenceSelfTest proves this
+// returns the same thing as the unindexed function across a range of
+// fixtures - written and passing before any render loop was switched
+// to use this.
+function buildLeadCheckerResultIndex(results) {
+const byEmail = new Map();
+const byPhone = new Map();
+(results || []).forEach((r) => {
+const e = normalizeEmailForLeadCheckerMatch(r.email);
+const p = normalizePhoneForLeadCheckerMatch(r.phone);
+if (e) {
+if (!byEmail.has(e)) byEmail.set(e, []);
+byEmail.get(e).push(r);
+}
+if (p) {
+if (!byPhone.has(p)) byPhone.set(p, []);
+byPhone.get(p).push(r);
+}
+});
+return { byEmail, byPhone };
+}
+
+// Split out from findLeadCheckerResultForCustomerIndexed so
+// renderLeadCheckerPopover's match-count calc (which needs every
+// pairwise match for a customer, not just the single best one) can
+// reuse the exact same candidate-finding logic instead of re-deriving
+// the asymmetric matching rule a third time.
+function leadCheckerResultCandidatesIndexed(c, index) {
+const emailKey = normalizeEmailForLeadCheckerMatch(c.email);
+const phoneKey = normalizePhoneForLeadCheckerMatch(c.phone || c.mobile || c.landline);
+if (emailKey) {
+const emailMatches = index.byEmail.get(emailKey) || [];
+const phoneMatches = phoneKey
+? (index.byPhone.get(phoneKey) || []).filter((r) => !normalizeEmailForLeadCheckerMatch(r.email))
+: [];
+return emailMatches.concat(phoneMatches);
+}
+return phoneKey ? (index.byPhone.get(phoneKey) || []) : [];
+}
+
+function findLeadCheckerResultForCustomerIndexed(c, index) {
+const candidates = leadCheckerResultCandidatesIndexed(c, index);
+if (candidates.length <= 1) return candidates[0] || null;
+return candidates.find((r) => r.created === c.createdText) || candidates[0];
+}
+
+// Proves findLeadCheckerResultForCustomerIndexed returns the exact same
+// result as the original linear-scan findLeadCheckerResultForCustomer
+// across the asymmetric-matching cases that make this rule genuinely
+// NOT a plain "email OR phone" union (see buildLeadCheckerResultIndex's
+// own comment) - written and run before any render loop was switched
+// over to the indexed version.
+(function leadCheckerResultIndexEquivalenceSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+if (actual !== expected) failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+}
+
+const results = [
+{ name: 'Email Match', email: 'alice@example.com', phone: '', created: 'A' },
+{ name: 'Phone Only', email: '', phone: '07000000001', created: 'B' },
+{ name: 'Email+Phone, different email', email: 'carol@example.com', phone: '07000000002', created: 'C' },
+{ name: 'Dup Email 1', email: 'dup@example.com', phone: '', created: '2026-01-01' },
+{ name: 'Dup Email 2', email: 'dup@example.com', phone: '', created: '2026-01-02' },
+];
+const index = buildLeadCheckerResultIndex(results);
+
+const cases = [
+// Simple email match.
+{ c: { email: 'alice@example.com', phone: '' }, label: 'simple email match' },
+// Simple phone match - neither side has email.
+{ c: { email: '', phone: '07000000001' }, label: 'simple phone match, no email either side' },
+// Customer HAS email, result has none but phone matches - phone fallback for an email-less result.
+{ c: { email: '', phone: '07000000002' }, label: 'customer has no email, result has email+matching phone - must still match via phone' },
+// Customer has email, result also has a DIFFERENT email but the SAME phone - must NOT fall back to phone (both have email, email branch is mandatory).
+{ c: { email: 'notcarol@example.com', phone: '07000000002' }, label: 'both sides have email (different) - phone must not override a failed email match' },
+// Duplicate-email candidates, exact createdText tie-break.
+{ c: { email: 'dup@example.com', phone: '', createdText: '2026-01-02' }, label: 'duplicate email, exact created tie-break' },
+// Duplicate-email candidates, no exact tie-break - falls to first candidate (order-dependent, exercised to confirm both implementations still agree).
+{ c: { email: 'dup@example.com', phone: '', createdText: 'nonexistent' }, label: 'duplicate email, no exact created match' },
+// No match at all.
+{ c: { email: 'nobody@example.com', phone: '00000000000' }, label: 'no match' },
+// Customer has neither email nor phone.
+{ c: { email: '', phone: '' }, label: 'customer has neither email nor phone' },
+];
+
+cases.forEach(({ c, label }) => {
+const viaLinearScan = findLeadCheckerResultForCustomer(c, results);
+const viaIndex = findLeadCheckerResultForCustomerIndexed(c, index);
+check(label, viaIndex, viaLinearScan);
+});
+
+if (failures.length > 0) {
+console.error('SLA Extract leadCheckerResultIndexEquivalence self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info(`SLA Extract leadCheckerResultIndexEquivalence self-test passed (${cases.length}/${cases.length})`);
+}
+})();
 
 // A customer contacted repeatedly (autos typically reach the same
 // person 3-5 times, and an SLA lead can later turn into an auto) kept
@@ -3932,8 +4192,13 @@ return localStorage.getItem(LEAD_CHECKER_PRIORITY_SORT_KEY) === '1';
 // contact?" one, both ahead of anyone not yet classified by Booking
 // Check at all, regardless of whatever tier the classifier's own
 // pipeline happened to land the lead on underneath.
-function leadCheckerPriorityRank(customer, leadCheckerResults) {
-const result = findLeadCheckerResultForCustomer(customer, leadCheckerResults);
+// Takes a prebuilt index, not the raw results array - its only caller
+// (sortByLeadCheckerPriority) used to pass the raw array straight
+// through to a linear scan called once per customer being sorted, i.e.
+// O(customers x results) per sort; now the index is built once per
+// sort call instead.
+function leadCheckerPriorityRank(customer, leadCheckerResultIndex) {
+const result = findLeadCheckerResultForCustomerIndexed(customer, leadCheckerResultIndex);
 if (!result) return 7;
 if (result.postClosureAction === 'send back through') return -2;
 if (result.postClosureAction) return -1;
@@ -3964,11 +4229,12 @@ return 1 + Math.floor((dueDate.getTime() - thisHourCutoff.getTime()) / (60 * 600
 // the hour-to-contact grouping stays the dominant sort key, likelihood
 // is the tie-break inside it.
 function sortByLeadCheckerPriority(customers, leadCheckerResults, getDueDate) {
+const leadCheckerResultIndex = buildLeadCheckerResultIndex(leadCheckerResults);
 return customers
 .map((c, index) => ({
 c, index,
 hourBucket: getDueDate ? hourBucketIndex(getDueDate(c)) : 0,
-rank: leadCheckerPriorityRank(c, leadCheckerResults)
+rank: leadCheckerPriorityRank(c, leadCheckerResultIndex)
 }))
 .sort((a, b) => a.hourBucket - b.hourBucket || a.rank - b.rank || a.index - b.index)
 .map((entry) => entry.c);
@@ -4207,18 +4473,41 @@ return prioritized.slice(0, effectiveLimit);
 // it (collapsed independently, and only reachable at all while ASSIGN
 // is open) since tier/callback-type/time-window filters only matter
 // when you're about to run a manual assign.
+// The segmented control always shows exactly one tab's content (never
+// "both collapsed") - per confirmed decision, that old fully-collapsed
+// default is gone, and zen mode (see enableZenMode) is now the only way
+// to hide this whole zone. filtersOpen/assignOpen stay as the existing
+// persisted settings keys (every other caller - beginQuickAssign,
+// _toggleAssignSection/_toggleFiltersZone - keeps working unmodified),
+// just made mutually exclusive here: Filters is the active tab only
+// when filtersOpen is explicitly true, Assign otherwise (the default).
+// Shared between this function's initial render and setActiveAssignTab's
+// click-time repaint (below) - both used to hand-type the same three
+// active/inactive values independently, which meant keeping them in
+// sync by hand on every future tweak instead of by construction.
+const ASSIGN_PILL_ACTIVE_BG = 'white';
+const ASSIGN_PILL_ACTIVE_COLOR = '#1c1c1e';
+const ASSIGN_PILL_ACTIVE_SHADOW = '0 1px 2px rgba(0,0,0,0.08)';
+const ASSIGN_PILL_INACTIVE_BG = 'transparent';
+const ASSIGN_PILL_INACTIVE_COLOR = '#6e6e73';
+const ASSIGN_PILL_INACTIVE_SHADOW = 'none';
+
 function renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, runHandlerName, filtersZoneHtml) {
+if (isZenModeOn()) return '';
 const filtersOpen = !!settings.filtersOpen;
-const assignOpen = settings.assignOpen !== false;
+const assignOpen = !filtersOpen;
+const activeTabCss = `background: ${ASSIGN_PILL_ACTIVE_BG}; color: ${ASSIGN_PILL_ACTIVE_COLOR}; box-shadow: ${ASSIGN_PILL_ACTIVE_SHADOW};`;
+const inactiveTabCss = `color: ${ASSIGN_PILL_INACTIVE_COLOR};`;
 return `
-<div id="assignSectionContainer" style="padding: 0 20px 16px; background: #f8fafc; border-bottom: 1px solid #e2e8f0;">
-<div onclick="window._toggleAssignSection()" style="cursor: pointer; display: flex; align-items: center; gap: 6px; padding: 6px 0; font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px;">
-${chevronIcon(!assignOpen, 'assignSectionToggle')} ASSIGN
+<div id="assignSectionContainer" style="padding: 0 20px 16px; background: #f2f2f7;">
+<div style="display: flex; background: #e5e5ea; border-radius: 10px; padding: 2px; gap: 2px; margin-bottom: 10px;">
+<div id="assignTabPill" onclick="window._toggleAssignSection()" style="flex: 1; text-align: center; padding: 7px 0; cursor: pointer; border-radius: 8px; font-size: 13px; font-weight: 600; transition: background 0.15s, box-shadow 0.15s; ${assignOpen ? activeTabCss : inactiveTabCss}">Assign</div>
+<div id="filtersTabPill" onclick="window._toggleFiltersZone()" style="flex: 1; text-align: center; padding: 7px 0; cursor: pointer; border-radius: 8px; font-size: 13px; font-weight: 600; transition: background 0.15s, box-shadow 0.15s; ${filtersOpen ? activeTabCss : inactiveTabCss}">Filters</div>
 </div>
-<div id="assignSectionBody" style="display: ${assignOpen ? 'block' : 'none'}; max-height: ${assignFullSectionMaxHeight()}; overflow-y: auto; padding-right: 6px;">
+<div id="assignSectionBody" style="display: ${assignOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="margin-bottom: 10px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-<span style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px;">AGENTS ONLINE</span>
+<span style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px;">AGENTS ONLINE</span>
 <span style="display: flex; gap: 8px;">
 <span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #4f46e5; cursor: pointer;">All</span>
 <span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #4f46e5; cursor: pointer;">None</span>
@@ -4228,7 +4517,7 @@ ${chevronIcon(!assignOpen, 'assignSectionToggle')} ASSIGN
 </span>
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
-<div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: white; border-radius: 4px; font-size: 11px; color: #1e293b;"></div>
+<div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: white; border-radius: 6px; font-size: 11px; color: #1e293b;"></div>
 </div>
 <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px;">
 ${renderAssignLimitControl(settings)}
@@ -4240,12 +4529,9 @@ ${buttonDisabled ? (canCheckAgentRoster() ? 'No agents online' : "Can't check ag
 </button>
 <div id="assignResultsSummary"></div>
 <div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: #64748b; max-height: 100px; overflow-y: auto;"></div>
-<div onclick="window._toggleFiltersZone()" style="cursor: pointer; display: flex; align-items: center; gap: 6px; margin-top: 14px; font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px;">
-${chevronIcon(!filtersOpen, 'filtersZoneToggle')} FILTERS
 </div>
-<div id="filtersZoneBody" style="display: ${filtersOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; margin-top: 10px; padding-right: 6px;">
+<div id="filtersZoneBody" style="display: ${filtersOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 ${filtersZoneHtml}
-</div>
 </div>
 </div>`;
 }
@@ -4273,11 +4559,11 @@ const buttonDisabled = agents.length === 0;
 
 const filtersZoneHtml = `
 <div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">TIERS</div>
+<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">TIERS</div>
 <div style="display: flex; gap: 6px; flex-wrap: wrap;">${tierCheckboxes}</div>
 </div>
 <div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">SPECIAL FILTERS</div>
+<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">SPECIAL FILTERS</div>
 <div style="display: flex; gap: 6px; flex-wrap: wrap;">
 <label class="chip-label">
 <input type="checkbox" id="assignCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateAssignPreview()">
@@ -4290,7 +4576,7 @@ Email only <span style="opacity: 0.7;">(${emailOnlyCount})</span>
 </div>
 </div>
 <div>
-<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
+<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
 <input id="assignWindowMinutes" type="hidden" value="${settings.windowMinutes || ''}">
 ${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
 </div>`;
@@ -4439,10 +4725,14 @@ renderStatTile('This hour', dueThisHour, dueThisHour > 0, `window._quickAssignPe
 renderStatTile('Next hour', dueNextHour, false, `window._quickAssignPendingTile(1)`)
 ].join('');
 
-return `
-<div id="pendingDueSummary" style="padding: 12px 20px 0; background: #f8fafc; font-size: 13px; color: #1e293b;">
+const oneLineSummary = `${dueThisHour} due this hour &middot; ${dueNextHour} due next hour &middot; ${notAssignedCount} unassigned`;
+const expandedBody = `
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
-<div style="font-size: 11px; color: #64748b; margin-bottom: 6px;">${callbackLine}</div>
+<div style="font-size: 11px; color: #64748b; margin-bottom: 6px;">${callbackLine}</div>`;
+
+return `
+<div id="pendingDueSummary" style="padding: 12px 20px 0; background: #f2f2f7; font-size: 13px; color: #1e293b;">
+${renderStatSummaryShell(oneLineSummary, expandedBody)}
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span style="font-size: 11px; color: #94a3b8;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
 <button onclick="window._clearWholeQueue()" style="background: #dc2626; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('warning', 11)} Clear Queue</button>
@@ -4481,7 +4771,7 @@ const advancedOpenStyle = settings.advancedOpen ? 'display: flex;' : 'display: n
 
 const filtersZoneHtml = `
 <div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">CALLBACK TYPE</div>
+<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">CALLBACK TYPE</div>
 <div style="display: flex; gap: 6px; flex-wrap: wrap;">${primaryCheckboxes}</div>
 <div onclick="window._toggleAdvancedCallbackTypes()" style="margin-top: 6px; font-size: 11px; color: #4f46e5; cursor: pointer;">
 ${chevronIcon(!settings.advancedOpen, 'advancedCallbackToggle')} Advanced (Manual Rescheduled, Post Closure)
@@ -4489,7 +4779,7 @@ ${chevronIcon(!settings.advancedOpen, 'advancedCallbackToggle')} Advanced (Manua
 <div id="advancedCallbackTypes" style="${advancedOpenStyle} gap: 6px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
 </div>
 <div>
-<div style="font-size: 11px; font-weight: 700; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">DUE BEFORE</div>
+<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">DUE BEFORE</div>
 <input id="assignCutoffTime" type="hidden" value="${defaultCutoff}">
 <div style="display: flex; align-items: center; gap: 6px;">
 ${renderWheelColumnHtml('assignCutoffHourWheel', HOUR_VALUES, 56)}
@@ -4501,20 +4791,49 @@ ${renderWheelColumnHtml('assignCutoffMinuteWheel', MINUTE_VALUES, 56)}
 return renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, '_runPendingAssignment', filtersZoneHtml);
 }
 
-function renderCallbackTypeSection(typeName, customers, color) {
-const sectionId = 'cb-' + slugify(typeName);
+// ===================================================================
+// CARD RENDERING (SLA + PENDING)
+// ===================================================================
 
+// Shared section shell (header/chevron/toggle, collapsed-state,
+// empty-state, the grouped lead-row-card wrapping every row) for both
+// the SLA tier view and the Pending callback-type view - they used to
+// be two ~85-line functions building near-byte-identical cards. The
+// row itself stays a caller-supplied renderRow callback rather than
+// being fully parameterized here, since it genuinely differs per page
+// (contact fields, footer tags, due-date source, urgency).
+function renderCustomerCardListSection({ label, customers, color, sectionId, toggleHandlerName, renderRow }) {
 if (customers.length === 0) {
 return `<div style="margin-bottom: 16px; padding: 10px 4px; border-bottom: 2px solid ${color};">
-<span style="color: ${color}; font-size: 15px; font-weight: 700;">${escapeHtml(typeName)}</span>
+<span style="color: ${color}; font-size: 15px; font-weight: 700;">${escapeHtml(label)}</span>
 <span style="margin-left: 10px; color: #94a3b8; font-size: 13px;">No customers</span>
 </div>`;
 }
-
 const collapsed = isSectionCollapsed(sectionId);
+return `<div style="margin-bottom: 16px;">
+<div onclick="window.${toggleHandlerName}('${sectionId}')" style="cursor: pointer; padding: 10px 4px;
+display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
+<div>
+<span style="font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(label)}</span>
+<span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
+</div>
+<span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + sectionId)}</span>
+</div>
+<div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
+<div class="lead-row-card">
+${customers.map(renderRow).join('<div style="height: 1px; background: #f2f2f7; margin-left: 64px;"></div>')}
+</div>
+</div>
+</div>`;
+}
+
+function renderCallbackTypeSection(typeName, customers, color) {
+const sectionId = 'cb-' + slugify(typeName);
 // Loaded once per section (not per card) - same pattern as
 // renderTierSection's own leadCheckerResults.
 const leadCheckerResults = loadLeadCheckerImportState().results;
+const leadCheckerResultIndex = buildLeadCheckerResultIndex(leadCheckerResults);
+const agentQueueSnapshot = loadAgentQueueSnapshot();
 // No hour-bucketing for the Post Closure callback type specifically -
 // per instruction, within that section a Send-back-through result must
 // sort ahead of a Check-needs-contact one, both ahead of anyone not yet
@@ -4525,35 +4844,41 @@ const leadCheckerResults = loadLeadCheckerImportState().results;
 const orderedCustomers = isLeadCheckerPrioritySortEnabled()
 ? sortByLeadCheckerPriority(customers, leadCheckerResults, typeName === 'Post Closure' ? null : (c) => c.nextActionDate)
 : customers;
-return `<div style="margin-bottom: 16px;">
-<div onclick="window._toggleCallbackType('${sectionId}')" style="cursor: pointer; padding: 10px 4px;
-display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
-<div>
-<span style="font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(typeName)}</span>
-<span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
-</div>
-<span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + sectionId)}</span>
-</div>
-<div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
-${orderedCustomers.map(c => {
-const queuePosition = findAgentQueuePositionForLead({ email: c.email, phone: c.mobile });
+return renderCustomerCardListSection({
+label: typeName,
+customers: orderedCustomers,
+color,
+sectionId,
+toggleHandlerName: '_toggleCallbackType',
+renderRow: (c) => {
 // c directly, not a remapped {email, phone: c.mobile} object - that
 // remapping predates findLeadCheckerResultForCustomer's own mobile/
 // landline fallback and was incomplete anyway (dropped landline
 // entirely). The function now handles both fields itself.
-const leadChecker = findLeadCheckerResultForCustomer(c, leadCheckerResults);
+const queuePosition = findAgentQueuePositionInSnapshot({ email: c.email, phone: c.mobile }, agentQueueSnapshot);
+const leadChecker = findLeadCheckerResultForCustomerIndexed(c, leadCheckerResultIndex);
 const leadCheckerTitle = leadChecker ? [leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
-return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px; border-bottom: 1px solid #e2e8f0;">
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
-${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_PENDING)}
+const dominant = pickDominantBadge(null, leadChecker, queuePosition, c.assigned);
+const secondaryLine = buildSecondaryLine(dominant, null, leadChecker, queuePosition, c.assigned);
+const dominantTitle = dominant?.source === 'leadChecker' ? leadCheckerTitle
+: dominant?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.`
+: '';
+const nextActionLabel = c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown';
+return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" data-lead-key="${escapeHtml(c.key)}" data-page-type="${PAGE_PENDING}" data-assigned="${c.assigned ? 1 : 0}" data-agent-name="${escapeHtml(c.agentName || '')}" style="padding: 12px 14px;">
+<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 9px;">
+${renderAvatarCircle(c.name, dominant ? dominant.color : '#8e8e93', 38)}
+<div style="flex: 1; min-width: 0;">
+<div style="display: flex; align-items: center; gap: 7px;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: #1c1c1e; font-size: 15.5px;">${escapeHtml(c.name)}</span>
+${dominant ? `<span title="${escapeHtml(dominantTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${dominant.color}18; color: ${dominant.color};">${escapeHtml(dominant.label)}</span>` : ''}
 </div>
-<div style="margin-bottom: 10px;">
-<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">NEXT ACTION</div>
-<span style="font-size: 13px; color: #1e293b;">${c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown'}</span>
+<div style="font-size: 12.5px; color: #8e8e93; margin-top: 2px;">${secondaryLine || `Next action: ${nextActionLabel}`}</div>
 </div>
-${leadChecker ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(leadCheckerTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${leadChecker.postClosureAction ? postClosureActionColor(leadChecker.postClosureAction) : leadCheckerImportCategoryColor(leadChecker.tier)}1a; color: ${leadChecker.postClosureAction ? postClosureActionColor(leadChecker.postClosureAction) : leadCheckerImportCategoryColor(leadChecker.tier)};">${escapeHtml(leadChecker.postClosureAction || leadChecker.tierName || String(leadChecker.tier || ''))}</span></div>` : ''}
-${renderQueuePositionBadge(c.assigned, queuePosition)}
+${c.assigned
+? `<span title="${escapeHtml(c.agentName || 'Assigned')}" style="flex-shrink: 0;">${svgIcon('check', 18, ' color: #34c759;')}</span>`
+: `<span style="flex-shrink: 0; color: #c7c7cc;">${svgIcon('chevronRight', 16)}</span>`}
+</div>
+${secondaryLine ? `<div style="font-size: 12.5px; color: #8e8e93; margin-bottom: 9px; margin-left: 50px;">Next action: ${nextActionLabel}</div>` : ''}
 ${renderContactToggle(`
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">MOBILE</div>
@@ -4568,56 +4893,56 @@ ${renderCopyableField(c.email)}
 ${renderCopyableField(c.landline)}
 </div>
 `)}
-<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
+<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-left: 50px;">
 <span style="color: #64748b;">${escapeHtml(c.brand || '')}</span>
-<span style="color: #059669;">${escapeHtml(c.campaign || '')}</span>
+<span style="color: #34c759;">${escapeHtml(c.campaign || '')}</span>
 </div>
 </div>`;
-}).join('')}
-</div>
-</div>`;
+}
+});
 }
 
 function renderTierSection(tierName, customers, color, tierId) {
-if (customers.length === 0) {
-return `<div style="margin-bottom: 16px; padding: 10px 4px; border-bottom: 2px solid ${color};">
-<span style="color: ${color}; font-size: 15px; font-weight: 700;">${tierName}</span>
-<span style="margin-left: 10px; color: #94a3b8; font-size: 13px;">No customers</span>
-</div>`;
-}
-
-const collapsed = isSectionCollapsed(tierId);
 // Loaded once per tier section (not per card) - the whole point of
 // classifying in this panel rather than Konnect Lead Checker's own
 // UI is to see the result on this exact card, next to Assign/contact
 // details, instead of a second disconnected list.
 const leadCheckerResults = loadLeadCheckerImportState().results;
+const leadCheckerResultIndex = buildLeadCheckerResultIndex(leadCheckerResults);
+const agentQueueSnapshot = loadAgentQueueSnapshot();
 const orderedCustomers = isLeadCheckerPrioritySortEnabled()
 ? sortByLeadCheckerPriority(customers, leadCheckerResults, (c) => c.slaDate)
 : customers;
-return `<div style="margin-bottom: 16px;">
-<div onclick="window._toggleTier('${tierId}')" style="cursor: pointer; padding: 10px 4px;
-display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
-<div>
-<span style="font-weight: 700; color: #1e293b; font-size: 15px;">${tierName}</span>
-<span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
-</div>
-<span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + tierId)}</span>
-</div>
-<div id="${tierId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
-${orderedCustomers.map(c => {
+return renderCustomerCardListSection({
+label: tierName,
+customers: orderedCustomers,
+color,
+sectionId: tierId,
+toggleHandlerName: '_toggleTier',
+renderRow: (c) => {
 const urgency = slaUrgencyInfo(c);
-const leadChecker = findLeadCheckerResultForCustomer(c, leadCheckerResults);
+const leadChecker = findLeadCheckerResultForCustomerIndexed(c, leadCheckerResultIndex);
 const leadCheckerTitle = leadChecker ? [leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
-const queuePosition = findAgentQueuePositionForLead(c);
-return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" style="padding: 12px 4px 12px 10px; border-bottom: 1px solid #e2e8f0; ${urgency.emphasize ? `border-left: 3px solid ${urgency.color}; background: ${urgency.color}0d;` : ''}">
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(c.name)}</span>
-${renderAssignmentCell(c.assigned, c.agentName, c.key, PAGE_SLA)}
+const queuePosition = findAgentQueuePositionInSnapshot(c, agentQueueSnapshot);
+const dominant = pickDominantBadge(urgency, leadChecker, queuePosition, c.assigned);
+const secondaryLine = buildSecondaryLine(dominant, urgency, leadChecker, queuePosition, c.assigned);
+const dominantTitle = dominant?.source === 'leadChecker' ? leadCheckerTitle
+: dominant?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.`
+: '';
+return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" data-lead-key="${escapeHtml(c.key)}" data-page-type="${PAGE_SLA}" data-assigned="${c.assigned ? 1 : 0}" data-agent-name="${escapeHtml(c.agentName || '')}" style="padding: 12px 14px;">
+<div style="display: flex; align-items: center; gap: 12px; margin-bottom: 9px;">
+${renderAvatarCircle(c.name, dominant ? dominant.color : '#8e8e93', 38)}
+<div style="flex: 1; min-width: 0;">
+<div style="display: flex; align-items: center; gap: 7px;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: #1c1c1e; font-size: 15.5px;">${escapeHtml(c.name)}</span>
+${dominant ? `<span title="${escapeHtml(dominantTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${dominant.color}18; color: ${dominant.color};">${escapeHtml(dominant.label)}</span>` : ''}
 </div>
-${urgency.label ? `<div style="margin-bottom: 10px;"><span style="display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${urgency.color}1a; color: ${urgency.color};">${urgency.label}</span></div>` : ''}
-${leadChecker ? `<div style="margin-bottom: 10px;"><span title="${escapeHtml(leadCheckerTitle)}" style="cursor: help; display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; background: ${leadChecker.postClosureAction ? postClosureActionColor(leadChecker.postClosureAction) : leadCheckerImportCategoryColor(leadChecker.tier)}1a; color: ${leadChecker.postClosureAction ? postClosureActionColor(leadChecker.postClosureAction) : leadCheckerImportCategoryColor(leadChecker.tier)};">${escapeHtml(leadChecker.postClosureAction || leadChecker.tierName || String(leadChecker.tier || ''))}</span></div>` : ''}
-${renderQueuePositionBadge(c.assigned, queuePosition)}
+${secondaryLine ? `<div style="font-size: 12.5px; color: #8e8e93; margin-top: 2px;">${secondaryLine}</div>` : ''}
+</div>
+${c.assigned
+? `<span title="${escapeHtml(c.agentName || 'Assigned')}" style="flex-shrink: 0;">${svgIcon('check', 18, ' color: #34c759;')}</span>`
+: `<span style="flex-shrink: 0; color: #c7c7cc;">${svgIcon('chevronRight', 16)}</span>`}
+</div>
 ${renderContactToggle(`
 <div>
 <div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
@@ -4628,22 +4953,27 @@ ${renderCopyableField(c.phone)}
 ${renderCopyableField(c.email)}
 </div>
 `)}
-<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px;">
+<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-left: 50px;">
 <span style="color: #64748b;">${escapeHtml(c.source)}</span>
-<span style="color: #059669;">${escapeHtml(c.campaign)}</span>
-</div>
-</div>`;
-}).join('')}
+<span style="color: #34c759;">${escapeHtml(c.campaign)}</span>
 </div>
 </div>`;
 }
+});
+}
 
+// ===================================================================
+// PANEL MOUNTING & DISPLAY
+// ===================================================================
+
+// Shared panel chrome (positioning, header, footer) for both pages - only
+// the title/counts, the assign section, and the body content differ.
 function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml, hideSearch, onTitleClick, showLeadChecker }) {
-const panelSize = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
+const panelSize = getPanelSize();
 const isFull = panelSize === 'full';
 const positionStyle = isFull
 ? 'top: 0; right: 0; bottom: 0; height: 100vh; width: 450px; border-radius: 0;'
-: 'bottom: 20px; right: 20px; width: 400px; height: min(560px, calc(100vh - 90px)); border-radius: 16px;';
+: 'bottom: 20px; right: 20px; width: 400px; height: min(560px, calc(100vh - 90px)); border-radius: 20px;';
 
 // PANEL_STATE_KEY was being written on every minimize but never read
 // back - a page-switch triggers the auto-detect poll, which rebuilds
@@ -4656,7 +4986,7 @@ const isMinimized = localStorage.getItem(PANEL_STATE_KEY) === 'hidden';
 
 return `
 <div id="${PANEL_BOX_ID}" style="position: fixed; ${positionStyle}
-background: #f8fafc; box-shadow: 0 20px 40px -12px rgba(15,23,42,0.25), 0 4px 12px rgba(15,23,42,0.08);
+background: #f2f2f7; box-shadow: 0 20px 50px -12px rgba(0,0,0,0.25);
 z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 display: flex; flex-direction: column; transition: transform 0.3s ease; ${isMinimized ? 'transform: translateX(150%);' : ''}">
 
@@ -4669,29 +4999,41 @@ flex-shrink: 0;">
 ${newCount > 0 ? `<span style="color: #d97706; font-size: 13px; font-weight: 600;">+${newCount}</span>` : ''}
 ${removedCount > 0 ? `<span style="color: #94a3b8; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
 </div>
-<div style="display: flex; gap: 2px;">
+<div style="display: flex; gap: 2px; align-items: center; position: relative;">
 ${showLeadChecker ? `<button onclick="window._toggleLeadCheckerPopover();"
-style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
 title="Lead Checker - copy leads out, classify results back in">${svgIcon('inbox', 14)}</button>` : ''}
-${showLeadChecker ? `<button id="_slaPrioritySortBtn" onclick="window._toggleLeadCheckerPrioritySort();"
-style="background: ${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#94a3b8'}; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#94a3b8'}';"
-title="${isLeadCheckerPrioritySortEnabled() ? 'Lead Checker priority sort: ON - click to turn off' : 'Lead Checker priority sort: OFF - click to bring Confirmed/Warm leads to the top of each section'}">${svgIcon('bolt', 14)}</button>` : ''}
 <button onclick="window._toggleMorningChecks();"
-style="background: ${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='#94a3b8';"
-title="${currentPanelMode === 'morningChecks' ? 'Back to queue view' : 'Morning Checks'}">${svgIcon('checklist', 14)}</button>
+style="background: ${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)'}; border: none; color: ${currentPanelMode === 'morningChecks' ? '#fbbf24' : '#cbd5e1'}; cursor: pointer; padding: 5px 9px 5px 7px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center; gap: 4px; margin: 0 4px;"
+onmouseover="this.style.background='rgba(255,255,255,0.18)';" onmouseout="this.style.background='${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)'}';"
+title="${currentPanelMode === 'morningChecks' ? 'Back to queue view' : 'Switch to Morning Checks'}">${svgIcon('checklist', 13)}<span style="font-size: 11px; font-weight: 600;">Checks</span></button>
+${showLeadChecker ? `<button onclick="window._toggleHeaderOverflowMenu();"
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
+title="More options">${svgIcon('more', 14)}</button>
+<div id="_slaHeaderOverflowMenu" style="display: none; position: absolute; top: 34px; right: 0; z-index: 6; min-width: 200px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 4px; color: #1e293b;">
+<button onclick="window._toggleLeadCheckerPrioritySort(); window._toggleHeaderOverflowMenu();"
+style="width: 100%; box-sizing: border-box; background: transparent; border: none; color: #1e293b; cursor: pointer; padding: 8px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; text-align: left;"
+onmouseover="this.style.background='#f1f5f9';" onmouseout="this.style.background='transparent';">
+<span style="color: ${isLeadCheckerPrioritySortEnabled() ? '#d97706' : '#94a3b8'};">${svgIcon('bolt', 14)}</span>
+Priority sort: ${isLeadCheckerPrioritySortEnabled() ? 'On' : 'Off'}
+</button>
+</div>` : ''}
+<button onclick="window._toggleZenMode();"
+style="background: ${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isZenModeOn() ? '#38bdf8' : '#94a3b8'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isZenModeOn() ? '#38bdf8' : '#94a3b8'}';"
+title="${isZenModeOn() ? 'Zen mode: on - click to restore sections to how they were' : 'Zen mode - collapse Overview/Assign/Filters down to the essentials'}">${svgIcon('focus', 14)}</button>
 <button id="_slaSizeBtn" onclick="window._togglePanelSize();"
-style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
 title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${svgIcon(isFull ? 'shrink' : 'expand', 14)}</button>
 <button onclick="document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0;"
-style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
 title="Top">${svgIcon('arrowUp', 14)}</button>
 <button id="_slaMinimizeBtn" onclick="window._toggleMinimizePanel();"
-style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 4px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
 title="Minimize">${svgIcon(isMinimized ? 'restore' : 'minimize', 14)}</button>
 </div>
@@ -4704,7 +5046,7 @@ ${assignSectionHtml}
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
 ${hideSearch ? '' : `
 ${showLeadChecker ? `<button onclick="window._pasteAndClassifyLeadChecker(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 10px;" title="Reads Konnect Lead Checker's &quot;Copy raw for Extract&quot; result straight off the clipboard and classifies it">${svgIcon('copy', 13)}Paste & Classify from Lead Checker</button>` : ''}
-<div style="position: sticky; top: 0; z-index: 2; background: #f8fafc; padding-bottom: 10px; margin-bottom: 10px;">
+<div style="position: sticky; top: 0; z-index: 2; background: #f2f2f7; padding-bottom: 10px; margin-bottom: 10px;">
 <input type="text" id="customerSearchInput" placeholder="Search by name…" oninput="window._filterCustomerSearch(this.value)"
 style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; color: #1e293b; background: white;">
 </div>`}
@@ -4742,11 +5084,62 @@ copyToClipboard(this.dataset.value, this);
 // Delegated on the panel root rather than bound per-<select>, so a
 // picker that gets swapped back in after a failed manual assign (see
 // _manualAssignLead) is still handled without needing to re-attach a
-// listener to the freshly-injected element.
+// listener to the freshly-injected element. The avatar-click popover's
+// own <select> (see below) is reached by this same listener too, since
+// it's appended as a child of panelElement, not a separate root.
 panelElement.addEventListener('change', (event) => {
 const el = event.target.closest('.manual-assign-select');
 if (!el) return;
 window._manualAssignLead(el.dataset.pageType, el.dataset.leadKey, el.value, el);
+});
+
+// Singleton popover for the avatar-click assign dropdown - one element,
+// repositioned via getBoundingClientRect() on each click rather than
+// built fresh inline per row, since rows scroll inside .panelContent
+// and position:fixed coordinates (unlike position:absolute anchored to
+// a scrolling ancestor) survive that. Appended as a child of
+// panelElement so it's torn down automatically on the next mountPanel
+// call instead of leaking a second one.
+const avatarPopover = document.createElement('div');
+avatarPopover.id = '_slaAvatarAssignPopover';
+avatarPopover.style.cssText = 'display: none; position: fixed; z-index: 100001; width: 190px; background: white; border-radius: 12px; box-shadow: 0 10px 30px -6px rgba(0,0,0,0.25); padding: 10px;';
+panelElement.appendChild(avatarPopover);
+
+function closeAvatarPopover() {
+avatarPopover.style.display = 'none';
+}
+
+panelElement.querySelectorAll('.avatar-circle').forEach(el => {
+el.addEventListener('click', (event) => {
+event.stopPropagation();
+const card = el.closest('.customer-card');
+if (!card) return;
+const alreadyOpenForThisCard = avatarPopover.style.display !== 'none' && avatarPopover.dataset.forCard === card.dataset.leadKey;
+if (alreadyOpenForThisCard) {
+closeAvatarPopover();
+return;
+}
+// Per decision: the avatar dropdown only assigns an UNASSIGNED lead -
+// tapping an already-assigned lead's avatar just shows who it's
+// assigned to, read-only, rather than opening a reassignment picker
+// (today's _manualAssignLead guard blocks acting on an assigned lead
+// anyway - this is a visual acknowledgment of that, not a new rule).
+const assigned = card.dataset.assigned === '1';
+avatarPopover.innerHTML = assigned
+? `<div style="font-size: 11px; font-weight: 700; color: #8e8e93; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Assigned to</div><div style="font-size: 13px; color: #1c1c1e; padding: 4px 2px;">${escapeHtml(card.dataset.agentName || 'Unknown')}</div>`
+: `<div style="font-size: 11px; font-weight: 700; color: #8e8e93; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px;">Assign to</div>${renderManualAssignPicker(card.dataset.leadKey, card.dataset.pageType)}`;
+avatarPopover.dataset.forCard = card.dataset.leadKey;
+const rect = el.getBoundingClientRect();
+avatarPopover.style.display = 'block';
+const popoverRect = avatarPopover.getBoundingClientRect();
+const top = rect.bottom + 6;
+const maxLeft = window.innerWidth - popoverRect.width - 8;
+avatarPopover.style.top = `${Math.min(top, window.innerHeight - popoverRect.height - 8)}px`;
+avatarPopover.style.left = `${Math.max(8, Math.min(rect.left, maxLeft))}px`;
+});
+});
+panelElement.addEventListener('click', (event) => {
+if (!event.target.closest('#_slaAvatarAssignPopover') && !event.target.closest('.avatar-circle')) closeAvatarPopover();
 });
 
 initAssignSectionWheels();
@@ -4776,13 +5169,7 @@ tier3: sortByUrgency(customers.filter(c => c.tier === 3)),
 tier4: sortByUrgency(customers.filter(c => c.tier === 4))
 };
 
-const bodyHtml = customers.length === 0 ? `
-<div style="padding: 40px 20px; text-align: center;">
-<div style="color: #cbd5e1; margin-bottom: 16px;">${svgIcon('inbox', 48, ' stroke-width: 1.5;')}</div>
-<h3 style="color: #1e293b; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Leads in Queue</h3>
-<p style="color: #64748b; margin: 0; font-size: 15px; line-height: 1.6;">The SLA queue is empty. Check back when new leads arrive.</p>
-</div>
-` : `
+const bodyHtml = customers.length === 0 ? renderZeroState('inbox', 'No Leads in Queue', 'The SLA queue is empty. Check back when new leads arrive.') : `
 ${renderTierSection('Tier 1 - Priority', tiered.tier1, '#dc2626', 'tier1')}
 ${renderTierSection('Tier 2 - High', tiered.tier2, '#d97706', 'tier2')}
 ${renderTierSection('Tier 3 - Medium', tiered.tier3, '#0d9488', 'tier3')}
@@ -4814,13 +5201,7 @@ color: CALLBACK_TYPE_COLORS[type],
 customers: customers.filter(c => c.callbackType === type)
 }));
 
-const bodyHtml = customers.length === 0 ? `
-<div style="padding: 40px 20px; text-align: center;">
-<div style="color: #cbd5e1; margin-bottom: 16px;">${svgIcon('inbox', 48, ' stroke-width: 1.5;')}</div>
-<h3 style="color: #1e293b; margin: 0 0 8px 0; font-size: 18px; font-weight: 600;">No Pending Customers</h3>
-<p style="color: #64748b; margin: 0; font-size: 15px; line-height: 1.6;">Nothing in the queue right now.</p>
-</div>
-` : grouped.map(g => renderCallbackTypeSection(g.type, g.customers, g.color)).join('');
+const bodyHtml = customers.length === 0 ? renderZeroState('inbox', 'No Pending Customers', 'Nothing in the queue right now.') : grouped.map(g => renderCallbackTypeSection(g.type, g.customers, g.color)).join('');
 
 mountPanel(renderPanelShell({
 title: 'Pending Customers',
@@ -4833,6 +5214,10 @@ onTitleClick: 'window._refreshLeadsAndPanel()',
 showLeadChecker: true
 }));
 }
+
+// ===================================================================
+// EXTRACTION & EXPORT
+// ===================================================================
 
 async function extractAndExportSla() {
 if (extracting || assigning || runningMorningChecks) return;
@@ -5005,6 +5390,10 @@ setTimeout(() => { badge.innerHTML = original; }, 1500);
 return Promise.resolve();
 }
 }
+
+// ===================================================================
+// BADGE LIFECYCLE & RESET
+// ===================================================================
 
 function setBadgeProgress(remaining) {
 if (!badge) return;
@@ -5190,9 +5579,12 @@ badge = null;
 console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
 }
 
-// Shared panel chrome (positioning, header, footer) for both pages - only
-// the title/counts, the assign section, and the body content differ.
 window._slaResetBookmarklet = resetBookmarklet;
+
+// ===================================================================
+// PANEL UI TOGGLES
+// ===================================================================
+
 // Patches the existing panel box's position/size directly instead of
 // tearing it down and rebuilding it through displayPanel/
 // displayPendingPanel - a full rebuild re-derives everything (including
@@ -5202,6 +5594,28 @@ window._slaResetBookmarklet = resetBookmarklet;
 // other state doesn't use, e.g. `top`) rather than only setting what
 // changes, since compact and full use different property sets to
 // position the box.
+window._togglePanelSize = function() {
+const panel = document.getElementById(PANEL_BOX_ID);
+const btn = document.getElementById('_slaSizeBtn');
+if (!panel) return;
+const current = getPanelSize();
+const next = current === 'full' ? 'compact' : 'full';
+localStorage.setItem(PANEL_SIZE_KEY, next);
+const isFull = next === 'full';
+Object.assign(panel.style, {
+top: isFull ? '0' : '',
+bottom: isFull ? '0' : '20px',
+right: isFull ? '0' : '20px',
+width: isFull ? '450px' : '400px',
+height: isFull ? '100vh' : 'min(560px, calc(100vh - 90px))',
+borderRadius: isFull ? '0' : '20px'
+});
+if (btn) {
+btn.innerHTML = svgIcon(isFull ? 'shrink' : 'expand', 14);
+btn.title = isFull ? 'Shrink to box' : 'Expand to full height';
+}
+};
+
 // Full displayPanel/displayPendingPanel rebuild, not a DOM-only tweak
 // like _togglePanelSize above - this changes which cards appear where
 // within each section's bodyHtml, not just a style property, so the
@@ -5219,28 +5633,6 @@ displayPanel(currentCustomers, 0, 0, false);
 }
 };
 
-window._togglePanelSize = function() {
-const panel = document.getElementById(PANEL_BOX_ID);
-const btn = document.getElementById('_slaSizeBtn');
-if (!panel) return;
-const current = localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
-const next = current === 'full' ? 'compact' : 'full';
-localStorage.setItem(PANEL_SIZE_KEY, next);
-const isFull = next === 'full';
-Object.assign(panel.style, {
-top: isFull ? '0' : '',
-bottom: isFull ? '0' : '20px',
-right: isFull ? '0' : '20px',
-width: isFull ? '450px' : '400px',
-height: isFull ? '100vh' : 'min(560px, calc(100vh - 90px))',
-borderRadius: isFull ? '0' : '16px'
-});
-if (btn) {
-btn.innerHTML = svgIcon(isFull ? 'shrink' : 'expand', 14);
-btn.title = isFull ? 'Shrink to box' : 'Expand to full height';
-}
-};
-
 window._toggleMinimizePanel = function() {
 const panel = document.getElementById(PANEL_BOX_ID);
 const btn = document.getElementById('_slaMinimizeBtn');
@@ -5250,6 +5642,20 @@ panel.style.transform = isHidden ? '' : 'translateX(150%)';
 if (btn) btn.innerHTML = svgIcon(isHidden ? 'minimize' : 'restore', 14);
 localStorage.setItem(PANEL_STATE_KEY, isHidden ? 'visible' : 'hidden');
 };
+window._toggleStatSummary = function() {
+const body = document.getElementById('statSummaryBody');
+const toggle = document.getElementById('statSummaryToggle');
+const label = document.getElementById('statSummaryLabel');
+if (!body || !toggle) return;
+const isHidden = body.style.display === 'none';
+body.style.display = isHidden ? 'block' : 'none';
+toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
+if (label) label.textContent = isHidden ? 'OVERVIEW' : (label.dataset.summary || '');
+try { localStorage.setItem(STAT_SUMMARY_COLLAPSED_KEY, isHidden ? '0' : '1'); } catch (error) {
+// ignore
+}
+};
+
 window._toggleTier = function(tierId) {
 const tierContent = document.getElementById(tierId);
 const toggle = document.getElementById('toggle-' + tierId);
@@ -5281,37 +5687,39 @@ setSectionCollapsed(sectionId, !isHidden);
 }
 };
 
+// Segmented control: Assign/Filters are mutually exclusive tabs now
+// (never "both collapsed", never "both open") - switching to one
+// always shows that tab's body and hides the other, and repaints both
+// pills' active styling to match, instead of the old independent
+// chevron-rotate-and-toggle-one-body behavior. The time wheel lives
+// inside Filters' body - scrollTop assignments silently no-op while
+// their container is display:none, so switching TO Filters needs the
+// same re-sync syncAllWheelPositions used to do on open.
+function setActiveAssignTab(tab) {
+const assignBody = document.getElementById('assignSectionBody');
+const filtersBody = document.getElementById('filtersZoneBody');
+const assignPill = document.getElementById('assignTabPill');
+const filtersPill = document.getElementById('filtersTabPill');
+if (!assignBody || !filtersBody || !assignPill || !filtersPill) return;
+const showAssign = tab === 'assign';
+assignBody.style.display = showAssign ? 'block' : 'none';
+filtersBody.style.display = showAssign ? 'none' : 'block';
+assignPill.style.background = showAssign ? ASSIGN_PILL_ACTIVE_BG : ASSIGN_PILL_INACTIVE_BG;
+assignPill.style.color = showAssign ? ASSIGN_PILL_ACTIVE_COLOR : ASSIGN_PILL_INACTIVE_COLOR;
+assignPill.style.boxShadow = showAssign ? ASSIGN_PILL_ACTIVE_SHADOW : ASSIGN_PILL_INACTIVE_SHADOW;
+filtersPill.style.background = showAssign ? ASSIGN_PILL_INACTIVE_BG : ASSIGN_PILL_ACTIVE_BG;
+filtersPill.style.color = showAssign ? ASSIGN_PILL_INACTIVE_COLOR : ASSIGN_PILL_ACTIVE_COLOR;
+filtersPill.style.boxShadow = showAssign ? ASSIGN_PILL_INACTIVE_SHADOW : ASSIGN_PILL_ACTIVE_SHADOW;
+saveAssignSettings({ assignOpen: showAssign, filtersOpen: !showAssign });
+if (!showAssign) syncAllWheelPositions();
+}
+
 window._toggleFiltersZone = function() {
-const body = document.getElementById('filtersZoneBody');
-const toggle = document.getElementById('filtersZoneToggle');
-if (!body || !toggle) return;
-const isHidden = body.style.display === 'none';
-body.style.display = isHidden ? 'block' : 'none';
-toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
-saveAssignSettings({ filtersOpen: isHidden });
-// The time wheel lives inside this disclosure - scrollTop assignments
-// silently no-op while its container is display:none, so the wheel's
-// position never actually took effect until now that it's visible
-// (same root cause as the original "wheel always shows 00:00" bug).
-if (isHidden) syncAllWheelPositions();
+setActiveAssignTab('filters');
 };
 
-// Collapses the whole ASSIGN block (agents/limit/preview/button/
-// results), not just filters. If FILTERS is currently open when this
-// re-opens, its wheel needs the same re-sync as _toggleFiltersZone
-// does - its own display style already says "open" from before, so
-// nothing re-triggers that sync on its own now that the wheel's actual
-// container (this one) has just become visible again.
 window._toggleAssignSection = function() {
-const body = document.getElementById('assignSectionBody');
-const toggle = document.getElementById('assignSectionToggle');
-if (!body || !toggle) return;
-const isHidden = body.style.display === 'none';
-body.style.display = isHidden ? 'block' : 'none';
-toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
-saveAssignSettings({ assignOpen: isHidden });
-const filtersBody = document.getElementById('filtersZoneBody');
-if (isHidden && filtersBody && filtersBody.style.display !== 'none') syncAllWheelPositions();
+setActiveAssignTab('assign');
 };
 
 window._toggleAdvancedCallbackTypes = function(forceOpen) {
@@ -5324,6 +5732,10 @@ body.style.display = shouldOpen ? 'flex' : 'none';
 toggle.style.transform = shouldOpen ? 'rotate(0deg)' : 'rotate(-90deg)';
 saveAssignSettings({ advancedOpen: shouldOpen });
 };
+
+// ===================================================================
+// ASSIGN EXECUTION & PREVIEW
+// ===================================================================
 
 // Recomputes and displays what clicking "Assign" would actually do before
 // the button is even clicked, so a filter combination that matches
@@ -5677,6 +6089,14 @@ appendAssignmentLog(results);
 const result = results[0];
 if (result.ok) {
 wrapper.innerHTML = renderAssignmentBadge(true, agent.name);
+// Only the avatar-click popover has an id to find itself by here (the
+// old inline assignment-cell didn't need auto-close, it wasn't a
+// floating overlay sitting on top of the row) - closing it after a
+// moment keeps the one-tap assign flow from needing a second click
+// just to dismiss the confirmation.
+if (wrapper.id === '_slaAvatarAssignPopover') {
+setTimeout(() => { wrapper.style.display = 'none'; }, 700);
+}
 } else {
 wrapper.innerHTML = `<div style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px;">
 <span style="font-size: 11px; color: #dc2626;">${escapeHtml(result.reason || 'Failed')}</span>
@@ -5830,6 +6250,10 @@ if (newEmailOnly && emailOnlyChecked) newEmailOnly.checked = true;
 
 initAssignSectionWheels();
 };
+
+// ===================================================================
+// BOOTSTRAP / PAGE AUTO-DETECT
+// ===================================================================
 
 // Detects switching between the SLA queue and Pending Customers by
 // polling detectPageType() on a timer, rather than reacting to
