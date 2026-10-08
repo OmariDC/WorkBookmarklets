@@ -47,7 +47,8 @@ checklist: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 
 copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
 focus: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>',
 check: '<polyline points="20 6 9 17 4 12"/>',
-chevronRight: '<polyline points="9 18 15 12 9 6"/>'
+chevronRight: '<polyline points="9 18 15 12 9 6"/>',
+x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'
 };
 
 function svgIcon(name, size, extraStyle) {
@@ -782,6 +783,7 @@ await waitForLeadsTableReady();
 console.warn('[SLA Extract] Wait for table after clearing the queue failed - showing the panel anyway:', error);
 }
 try {
+patchCachedLeadsCleared();
 if (originatingPageType === PAGE_PENDING) {
 currentPendingCustomers = currentPendingCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
 displayPendingPanel(currentPendingCustomers, 0, 0, false);
@@ -1963,41 +1965,53 @@ return `<div class="avatar-circle" style="cursor: pointer; width: ${size}px; hei
 // normally") outrank a plain SLA timer, which outranks an informational
 // tier/queue-position note. Must never let a tier name win the pill
 // slot when postClosureAction is set (postClosureBadgeReplacementSelfTest).
-function pickDominantBadge(urgency, leadChecker, queuePosition, assigned) {
-if (leadChecker && leadChecker.postClosureAction === 'send back through') {
+// Was one single "dominant" slot with Lead Checker's own tier color as
+// the LOWEST priority candidate - since almost every SLA card has a
+// non-null urgency.label (any lead with an slaDate at all), urgency
+// won that slot on nearly every card, which silently demoted Lead
+// Checker's own classification color to plain grey text essentially
+// always, not just when something more urgent was genuinely competing
+// for attention. Reported live as "the colour coding... has been
+// completely removed." Split into two independent, always-reliable
+// slots instead of one winner-take-all contest: Lead Checker's own
+// classification gets its own guaranteed colored badge whenever
+// present, and urgency/queue-mismatch separately compete for a second
+// slot - neither can silently lose and fall back to colorless text just
+// because the other also happened to apply to the same lead.
+function pickLeadCheckerBadge(leadChecker) {
+if (!leadChecker) return null;
+if (leadChecker.postClosureAction) {
 return { label: leadChecker.postClosureAction, color: postClosureActionColor(leadChecker.postClosureAction), source: 'leadChecker' };
 }
-if (queuePosition && !assigned) {
-return { label: `Already in ${queuePosition.agentName}'s queue`, color: '#b45309', source: 'queue' };
-}
-if (urgency && urgency.emphasize && urgency.label) {
-return { label: urgency.label, color: urgency.color, source: 'urgency' };
-}
-if (leadChecker && leadChecker.postClosureAction) {
-return { label: leadChecker.postClosureAction, color: postClosureActionColor(leadChecker.postClosureAction), source: 'leadChecker' };
-}
-if (urgency && urgency.label) {
-return { label: urgency.label, color: urgency.color, source: 'urgency' };
-}
-if (leadChecker && leadChecker.tierName) {
+if (leadChecker.tierName) {
 return { label: leadChecker.tierName, color: leadCheckerImportCategoryColor(leadChecker.tier), source: 'leadChecker' };
 }
 return null;
 }
 
-// Builds the muted secondary line under a row's name/badge - whichever
-// signals pickDominantBadge did NOT pick for the one colored pill, so
-// nothing actually disappears, it just demotes to plain text instead of
-// competing colored chrome. queuePosition's non-mismatch "Nth in queue"
-// case never wins the dominant slot (informational, not urgent), so it
-// always shows here when present.
-function buildSecondaryLine(dominant, urgency, leadChecker, queuePosition, assigned) {
-const parts = [];
-if (urgency && urgency.label && dominant?.source !== 'urgency') parts.push(urgency.label);
-if (leadChecker && dominant?.source !== 'leadChecker') parts.push(leadChecker.postClosureAction || leadChecker.tierName);
-if (queuePosition && dominant?.source !== 'queue') {
-parts.push(assigned ? `${ordinal(queuePosition.position)} in queue` : `Already in ${queuePosition.agentName}'s queue`);
+// Queue-mismatch outranks urgency for this second slot (matches the
+// old priority order) - "assigning this may be rejected" is more
+// immediately actionable than a plain due-timer. The non-mismatch
+// "Nth in queue" case never competes here (informational, not urgent),
+// it always demotes straight to the secondary line.
+function pickUrgencyBadge(urgency, queuePosition, assigned) {
+if (queuePosition && !assigned) {
+return { label: `Already in ${queuePosition.agentName}'s queue`, color: '#b45309', source: 'queue' };
 }
+if (urgency && urgency.label) {
+return { label: urgency.label, color: urgency.color, source: 'urgency' };
+}
+return null;
+}
+
+// Builds the muted secondary line under a row's name/badges - only
+// whichever urgency/queue signal did NOT win the second badge slot
+// above ends up here; Lead Checker's own badge is unconditional now, so
+// it never has anything left to demote.
+function buildSecondaryLine(urgencyBadge, urgency, queuePosition, assigned) {
+const parts = [];
+if (urgency && urgency.label && urgencyBadge?.source !== 'urgency') parts.push(urgency.label);
+if (queuePosition && assigned) parts.push(`${ordinal(queuePosition.position)} in queue`);
 return parts.filter(Boolean).join(' &middot; ');
 }
 
@@ -2194,6 +2208,16 @@ if (!cachedLeadsSnapshot) return;
 cachedLeadsSnapshot.leads = cachedLeadsSnapshot.leads.map((l) =>
 successByKey.has(l.key) ? { ...l, assigned: true, agentName: successByKey.get(l.key) } : l
 );
+}
+
+// Same reasoning as patchCachedLeadsAssigned, for the other side of the
+// same gap - _clearWholeQueue unassigns every lead in currentCustomers/
+// currentPendingCustomers but never touched this separate cache either,
+// so the stat tiles kept reporting the pre-clear assigned/unassigned
+// split until an unrelated full refresh.
+function patchCachedLeadsCleared() {
+if (!cachedLeadsSnapshot) return;
+cachedLeadsSnapshot.leads = cachedLeadsSnapshot.leads.map((l) => ({ ...l, assigned: false, agentName: null }));
 }
 
 // Directly tests the actual mechanism displayPanel/displayPendingPanel's
@@ -3101,8 +3125,11 @@ function renderAssignLimitControl(settings) {
 return `<div style="display: flex; align-items: center; gap: 10px;">
 <label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; font-weight: 600; letter-spacing: 0.3px; white-space: nowrap;">
 LIMIT
+<span style="position: relative; display: inline-flex; align-items: center;">
 <input type="number" id="assignLimitInput" min="1" placeholder="all" value="${settings.assignLimit || ''}" oninput="window._updateAssignPreview()"
-style="width: 48px; padding: 4px 6px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; font-weight: 400; color: #1e293b;">
+style="width: 48px; padding: 4px 18px 4px 6px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; font-weight: 400; color: #1e293b;">
+<span onclick="window._clearAssignLimit()" title="Clear limit (assign all)" style="position: absolute; right: 4px; cursor: pointer; color: #94a3b8; display: flex; align-items: center;">${svgIcon('x', 11)}</span>
+</span>
 </label>
 <label for="assignLimitPerAgent" title="When on, LIMIT is the number of leads EACH selected agent gets, not the total across all of them" style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #64748b; font-weight: 600; letter-spacing: 0.3px; white-space: nowrap; cursor: pointer;">
 <input type="checkbox" id="assignLimitPerAgent" ${settings.assignLimitPerAgent ? 'checked' : ''} onchange="window._updateAssignPreview()">
@@ -4871,11 +4898,10 @@ renderRow: (c) => {
 const queuePosition = findAgentQueuePositionInSnapshot({ email: c.email, phone: c.mobile }, agentQueueSnapshot);
 const leadChecker = findLeadCheckerResultForCustomerIndexed(c, leadCheckerResultIndex);
 const leadCheckerTitle = leadChecker ? [leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
-const dominant = pickDominantBadge(null, leadChecker, queuePosition, c.assigned);
-const secondaryLine = buildSecondaryLine(dominant, null, leadChecker, queuePosition, c.assigned);
-const dominantTitle = dominant?.source === 'leadChecker' ? leadCheckerTitle
-: dominant?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.`
-: '';
+const leadCheckerBadge = pickLeadCheckerBadge(leadChecker);
+const urgencyBadge = pickUrgencyBadge(null, queuePosition, c.assigned);
+const secondaryLine = buildSecondaryLine(urgencyBadge, null, queuePosition, c.assigned);
+const urgencyBadgeTitle = urgencyBadge?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.` : '';
 const nextActionLabel = c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown';
 // Zen mode's real value is here, not just hiding Assign/Filters - the
 // bulk of a card's footprint is these per-row details, so a genuine
@@ -4885,13 +4911,15 @@ const zenCompact = isZenModeOn();
 const cardPadding = zenCompact ? '8px 14px' : '12px 14px';
 const avatarSize = zenCompact ? 30 : 38;
 const nameRowMargin = zenCompact ? '3px' : '9px';
+const avatarColor = urgencyBadge ? urgencyBadge.color : (leadCheckerBadge ? leadCheckerBadge.color : '#8e8e93');
 return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" data-lead-key="${escapeHtml(c.key)}" data-page-type="${PAGE_PENDING}" data-assigned="${c.assigned ? 1 : 0}" data-agent-name="${escapeHtml(c.agentName || '')}" style="padding: ${cardPadding};">
 <div style="display: flex; align-items: center; gap: 12px; margin-bottom: ${nameRowMargin};">
-${renderAvatarCircle(c.name, dominant ? dominant.color : '#8e8e93', avatarSize)}
+${renderAvatarCircle(c.name, avatarColor, avatarSize)}
 <div style="flex: 1; min-width: 0;">
-<div style="display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: #1c1c1e; font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex-shrink: 1;">${escapeHtml(c.name)}</span>
-${dominant ? `<span title="${escapeHtml(dominantTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${dominant.color}18; color: ${dominant.color}; white-space: nowrap; flex-shrink: 0;">${escapeHtml(dominant.label)}</span>` : ''}
+<div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: #1c1c1e; font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${escapeHtml(c.name)}</span>
+${leadCheckerBadge ? `<span title="${escapeHtml(leadCheckerTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${leadCheckerBadge.color}18; color: ${leadCheckerBadge.color}; white-space: nowrap;">${escapeHtml(leadCheckerBadge.label)}</span>` : ''}
+${urgencyBadge ? `<span title="${escapeHtml(urgencyBadgeTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${urgencyBadge.color}18; color: ${urgencyBadge.color}; white-space: nowrap;">${escapeHtml(urgencyBadge.label)}</span>` : ''}
 </div>
 <div style="font-size: 12.5px; color: #8e8e93; margin-top: 2px;">${secondaryLine || `Next action: ${nextActionLabel}`}</div>
 </div>
@@ -4945,11 +4973,10 @@ const urgency = slaUrgencyInfo(c);
 const leadChecker = findLeadCheckerResultForCustomerIndexed(c, leadCheckerResultIndex);
 const leadCheckerTitle = leadChecker ? [leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
 const queuePosition = findAgentQueuePositionInSnapshot(c, agentQueueSnapshot);
-const dominant = pickDominantBadge(urgency, leadChecker, queuePosition, c.assigned);
-const secondaryLine = buildSecondaryLine(dominant, urgency, leadChecker, queuePosition, c.assigned);
-const dominantTitle = dominant?.source === 'leadChecker' ? leadCheckerTitle
-: dominant?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.`
-: '';
+const leadCheckerBadge = pickLeadCheckerBadge(leadChecker);
+const urgencyBadge = pickUrgencyBadge(urgency, queuePosition, c.assigned);
+const secondaryLine = buildSecondaryLine(urgencyBadge, urgency, queuePosition, c.assigned);
+const urgencyBadgeTitle = urgencyBadge?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.` : '';
 // Zen mode's real value is here, not just hiding Assign/Filters - the
 // bulk of a card's footprint is these per-row details, so a genuine
 // "focus" mode has to shrink the rows themselves to show meaningfully
@@ -4958,13 +4985,15 @@ const zenCompact = isZenModeOn();
 const cardPadding = zenCompact ? '8px 14px' : '12px 14px';
 const avatarSize = zenCompact ? 30 : 38;
 const nameRowMargin = zenCompact ? '3px' : '9px';
+const avatarColor = urgencyBadge ? urgencyBadge.color : (leadCheckerBadge ? leadCheckerBadge.color : '#8e8e93');
 return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" data-lead-key="${escapeHtml(c.key)}" data-page-type="${PAGE_SLA}" data-assigned="${c.assigned ? 1 : 0}" data-agent-name="${escapeHtml(c.agentName || '')}" style="padding: ${cardPadding};">
 <div style="display: flex; align-items: center; gap: 12px; margin-bottom: ${nameRowMargin};">
-${renderAvatarCircle(c.name, dominant ? dominant.color : '#8e8e93', avatarSize)}
+${renderAvatarCircle(c.name, avatarColor, avatarSize)}
 <div style="flex: 1; min-width: 0;">
-<div style="display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: #1c1c1e; font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex-shrink: 1;">${escapeHtml(c.name)}</span>
-${dominant ? `<span title="${escapeHtml(dominantTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${dominant.color}18; color: ${dominant.color}; white-space: nowrap; flex-shrink: 0;">${escapeHtml(dominant.label)}</span>` : ''}
+<div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: #1c1c1e; font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${escapeHtml(c.name)}</span>
+${leadCheckerBadge ? `<span title="${escapeHtml(leadCheckerTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${leadCheckerBadge.color}18; color: ${leadCheckerBadge.color}; white-space: nowrap;">${escapeHtml(leadCheckerBadge.label)}</span>` : ''}
+${urgencyBadge ? `<span title="${escapeHtml(urgencyBadgeTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${urgencyBadge.color}18; color: ${urgencyBadge.color}; white-space: nowrap;">${escapeHtml(urgencyBadge.label)}</span>` : ''}
 </div>
 ${secondaryLine ? `<div style="font-size: 12.5px; color: #8e8e93; margin-top: 2px;">${secondaryLine}</div>` : ''}
 </div>
@@ -6105,19 +6134,28 @@ results = await runAssignmentPlan([{ lead, agent }], locateCellFn, () => {});
 assigning = false;
 }
 
-invalidateLeadsCache();
 appendAssignmentLog(results);
 
 const result = results[0];
 if (result.ok) {
-wrapper.innerHTML = renderAssignmentBadge(true, agent.name);
-// Only the avatar-click popover has an id to find itself by here (the
-// old inline assignment-cell didn't need auto-close, it wasn't a
-// floating overlay sitting on top of the row) - closing it after a
-// moment keeps the one-tap assign flow from needing a second click
-// just to dismiss the confirmation.
-if (wrapper.id === '_slaAvatarAssignPopover') {
-setTimeout(() => { wrapper.style.display = 'none'; }, 700);
+// Same gap patchCachedLeadsAssigned fixed for executeAssignmentRun -
+// this used to invalidateLeadsCache() (forcing a racy fresh DOM
+// re-scan on whatever read it next) and never re-rendered the panel
+// at all, so a one-tap avatar assign left the card AND the stat tiles
+// showing the pre-assign state until an unrelated full refresh
+// happened to fire. Patch in place and re-render immediately instead,
+// matching the batch-assign path exactly. This also tears down and
+// rebuilds the popover as part of the re-render, so there's nothing
+// left to show a lingering "✓ AgentName" confirmation in - the row
+// itself updating to its new assigned state is the confirmation.
+const successByKey = new Map([[lead.key, agent.name]]);
+patchCachedLeadsAssigned(successByKey);
+if (pageType === PAGE_PENDING) {
+currentPendingCustomers = currentPendingCustomers.map((c) => c.key === lead.key ? { ...c, assigned: true, agentName: agent.name } : c);
+displayPendingPanel(currentPendingCustomers, 0, 0, false);
+} else {
+currentCustomers = currentCustomers.map((c) => c.key === lead.key ? { ...c, assigned: true, agentName: agent.name } : c);
+displayPanel(currentCustomers, 0, 0, false);
 }
 } else {
 wrapper.innerHTML = `<div style="display: flex; flex-direction: column; align-items: flex-end; gap: 2px;">
@@ -6155,6 +6193,13 @@ if (toggle) toggle.style.transform = hasMatch ? 'rotate(0deg)' : 'rotate(-90deg)
 window._setAllAgentCheckboxes = function(checked) {
 document.querySelectorAll('.assign-agent-checkbox').forEach((el) => { el.checked = checked; });
 if (window._updateAssignPreview) window._updateAssignPreview();
+};
+
+window._clearAssignLimit = function() {
+const input = document.getElementById('assignLimitInput');
+if (!input) return;
+input.value = '';
+window._updateAssignPreview();
 };
 
 window._updateAssignPreview = function() {
