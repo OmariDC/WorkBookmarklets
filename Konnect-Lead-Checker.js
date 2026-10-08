@@ -79,6 +79,14 @@ return new RegExp(name + '\\s*:?\\s*£?[\\d,]+', 'i').test(String(text || ''));
 }
 
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+// Real AA Cars lead: "Could we please view this car sat afternoon." -
+// hasDayMention's plain .includes() check only recognised full weekday
+// names, so an abbreviated one fell through every day-detection rule
+// and needed a human. Word-boundary (\b), not a bare substring match -
+// unlike the full names, these are short enough to collide with real
+// words otherwise ("mon" in "money", "fri" in "friend", "sat" in
+// "satisfied", "wed" in "wedding", "thu" in "thunder").
+const WEEKDAY_ABBR_RE = /\b(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)\b/i;
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const WRITTEN = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
 const WRITTEN_KEYS = Object.keys(WRITTEN).join('|');
@@ -123,6 +131,7 @@ return false;
 function hasDayMention(text) {
 const lowered = low(text);
 if (WEEKDAYS.some((d) => lowered.includes(d))) return true;
+if (WEEKDAY_ABBR_RE.test(lowered)) return true;
 if (/\btoday\b|\btonight\b|\btomorrow\b|\bthis morning\b|\bthis afternoon\b|\bthis weekend\b|\bnext week\b/i.test(lowered)) return true;
 if (new RegExp('\\b\\d{1,2}(st|nd|rd|th)?\\s+(of\\s+)?(' + MONTHS.join('|') + ')\\b', 'i').test(lowered)) return true;
 if (/\b\d{1,2}\/\d{1,2}\b/.test(lowered)) return true;
@@ -717,7 +726,16 @@ if (src === 'aa cars') {
 // against by the time this runs - match to end-of-segment instead.
 const m = text.match(/Reg:\s*(\S+)\s*\|\s*Message from customer:\s*([\s\S]*?)\s*\|?\s*$/i);
 if (m) {
-const msgLower = m[2].toLowerCase();
+const msg = m[2];
+const msgLower = msg.toLowerCase();
+// Real example: "Could we please view this car sat afternoon." -
+// every sibling marketplace branch (Autotrader, CarGurus, Vehicle
+// URL, email-style) already checks day/time before falling back to
+// a generic enquiry result; this branch never did, so a lead that
+// gave an actual day fell straight to the medium-confidence
+// catch-all and needed a human despite stating a real day/time.
+if (hasDayMention(msgLower) && hasClockTime(msgLower)) return R(1, 'Customer-Stated Slot', 3, 'high', 'AA Cars message with day+time (Section 5, Tier 1 rank 3).');
+if (hasDayMention(msgLower)) return R(2, 'Customer-Stated Day', 3, 'high', 'AA Cars message with a day only (Section 5, Tier 2 rank 3).');
 if (/would like to book a test drive/i.test(msgLower)) return R(3, 'Test Drive Request (no date)', 2, 'high', 'AA Cars test drive request (Section 7.13).');
 return R(4, 'Marketplace Enquiry (non-Autotrader)', 8, 'medium', 'AA Cars message (Section 7.13).');
 }
@@ -871,6 +889,18 @@ if (/motab/i.test(codeLower)) flagCtx.motab = true;
 if (hasAmountField(text, 'Deposit') || hasAmountField(text, 'Term') || hasAmountField(text, 'Monthly Budget')) {
 flagCtx.finance = true;
 return R(4, 'Quote / Offer Request: Detailed', 3, 'medium', 'Social/Meta offer form with real terms (Section 8.2).');
+}
+// Confirmed recurring template, narrower than the generic blank case
+// below: a Social-Meta marketing code whose entire "comment" is just
+// the ad unit's own vehicle+price blurb with an fb.me/facebook
+// tracking link and no genuine customer-typed text - that's the ad's
+// own auto-populated copy every time, not uncertain blank intent, so
+// it earns high rather than medium confidence. Checked ahead of the
+// generic fallback since that one also covers other marketing-code
+// families (pch/pcp/cs offers pages, Fiat website, etc.) this doesn't
+// apply to.
+if (/^social-meta-/i.test(codeLower) && /\b(fb\.me|facebook\.com)\b/i.test(commentsLower)) {
+return R(5, 'Quote / Offer Request: Blank', 4, 'high', "Social/Meta ad click-through - comment is just the ad's own vehicle/price blurb with a facebook tracking link, no free text (Section 8.2).");
 }
 return R(5, 'Quote / Offer Request: Blank', 4, 'medium', 'Social/Meta offer form, blank (Section 8.2).');
 }
@@ -2736,7 +2766,21 @@ const cases = [
 ['T116', 'Subject: T Level Industry Placement Enquiry, 315 Hours...', 'Leapmotor General', 'R&D', 6],
 ['T117', 'Hello team. I am looking to join the motability scheme and weighing up mid size SUV options. Is there someone I can speak to about the Jeep Compass?', 'Jeep General', 'R&D', 3],
 ['T118', 'The customer was on the following website page, before completing the valuation: https://example.com/leapmotor/new/offers/c10-0-apr', 'Leapmotor P/X Valuation', 'R&D', 4],
-['T119', 'The customer was on the following website page, before completing the valuation: https://example.com/leapmotor/new', 'Leapmotor P/X Valuation', 'R&D', 5]
+['T119', 'The customer was on the following website page, before completing the valuation: https://example.com/leapmotor/new', 'Leapmotor P/X Valuation', 'R&D', 5],
+// Real AA Cars lead, previously needed manual review - the AA Cars
+// branch never checked day/time at all (every sibling marketplace
+// branch already does), so this fell to the generic medium-confidence
+// catch-all despite stating a real day. Also exercises the new
+// abbreviated-weekday support ("sat", not "saturday").
+['T120', 'Vehicle notes: *£5,584*    2015    42,025 miles    Petrol    Manual    Reg: LM15AKN | Message from customer: Could we please view this car sat afternoon. | URL of vehicle of interest: https://mandrillapp.com/track/click/30912759/x', 'Enquiry - Used', 'AA Cars', 2],
+// Real AA Cars lead, confirms the existing "would like to book a test
+// drive" rule still wins when no day/time is present at all.
+['T121', 'Vehicle notes: *£14,129*    2025    4,182 miles    Petrol    Manual    Reg: FG25WNZ | Message from customer: I would like to book a test drive for vehicle Vauxhall Corsa 1.2 Turbo GS | Hatchback 5dr Petrol Manual Euro 6 (s/s) (100 ps) (FG25WNZ). | URL of vehicle of interest: https://mandrillapp.com/track/click/30912759/x', 'Enquiry - Used', 'AA Cars', 3],
+// Real Social-Meta PCH lead - tier unchanged (already correct), this
+// one's actually about the confidence bump to high for this narrower
+// ad-click-through shape (see customerFirstMarketingCode's own
+// comment) - kept here so the tier itself stays regression-tested too.
+['T122', 'Lead ID: 00Qa200000gv9zFEAQ | Marketing Code: Social-Meta-Q4-PCH3 | Customer Comments: PCH Frontera Hybrid GS £339 - https://fb.me/adspreview/facebook/2bqthHxfokGg4VG', 'Vauxhall - Offer Request - New', 'Customer First', 5]
 ];
 
 const failures = [];
