@@ -4724,6 +4724,13 @@ though the class was being toggled correctly the whole time. */
 .review-section > summary .chev { transition: transform 0.15s ease; }
 .review-section:not([open]) > summary .chev { transform: rotate(-90deg); }
 .review-section-left { display: flex; align-items: center; gap: 6px; }
+/* A long initialNotes/reason block had nothing capping this section's
+height and no scroll container of its own - .bodyEl isn't scrollable
+either, so the overflow just got clipped by .panel's own
+overflow:hidden with no way to reach the rest of the text. Same
+capped-height-plus-internal-scroll pattern as SLA-Manager.js's own
+assignSectionBody/filtersZoneBody. */
+.review-rows { max-height: 260px; overflow-y: auto; }
 .review-row { border-top: 1px solid #fde68a; padding: 8px; }
 .review-name { font-weight: 600; margin-bottom: 2px; }
 .review-notes { white-space: pre-wrap; background: white; border: 1px solid #fde68a; border-radius: 6px; padding: 6px; margin: 4px 0 6px; font-family: monospace; font-size: 10.5px; }
@@ -5012,7 +5019,7 @@ ${REVIEW_TIER_OPTIONS.map((tier) => `<button data-tier="${tier}" style="backgrou
 needsReviewSectionEl.innerHTML = `
 <details class="review-section" ${reviewSectionOpen ? 'open' : ''}>
 <summary><span class="review-section-left">${detailsChevronIcon()}<span>Needs Review</span></span><span>${needsReview.length}</span></summary>
-${rowsHtml}
+<div class="review-rows">${rowsHtml}</div>
 </details>
 `;
 const detailsEl = needsReviewSectionEl.querySelector('details.review-section');
