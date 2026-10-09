@@ -4556,7 +4556,20 @@ document.getElementById(KLC_NAV_ITEM_ID)?.remove();
 document.getElementById(KLC_BADGE_ID)?.remove();
 
 const nav = document.querySelector('nav.navbar.navbar-inverse.navbar-fixed-top');
-if (nav) {
+// The login page reuses this exact same Bootstrap nav/class combo, just
+// without any of the Live/Feedback/Care/Pricing module icons - so
+// matching on the outer nav alone (as this used to) docks into the
+// login page's nav just as happily as the real one, landing the Check
+// icon in whatever's actually on the right there instead (reported
+// live: "loads the wrong button" when enabled from the login page
+// instead of the search page). Requiring at least one of the real
+// module <ul class="nav navbar-right top-nav"> siblings to already be
+// present confirms this is genuinely the authenticated app's nav, not
+// a same-classed lookalike - same fix shape as SLA-Manager.js's own
+// createBadge() matching on "Client Config" content rather than the
+// shared "nav navbar-nav" class alone.
+const hasModuleIcons = nav && !!nav.querySelector('ul.nav.navbar-right.top-nav');
+if (nav && hasModuleIcons) {
 const ul = document.createElement('ul');
 ul.id = KLC_NAV_ITEM_ID;
 ul.className = 'nav navbar-right top-nav';
