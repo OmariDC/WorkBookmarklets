@@ -2940,10 +2940,9 @@ function clearStoredSession() {
 try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (error) { /* ignore */ }
 }
 
-// Opt-in, not default - per instruction, starting a real batch of
-// automated clicking/searching on Konnect Live should stay a deliberate
-// choice unless the user has explicitly asked to skip that
-// confirmation step.
+// Defaults on now (per instruction) - still a toggle, not forced, so a
+// user who wants the old deliberate-confirmation behavior can switch it
+// back off and that choice is remembered via saveSettings below.
 const SETTINGS_STORAGE_KEY = 'konnectLeadChecker:settings:v1';
 
 function loadSettings() {
@@ -2953,7 +2952,7 @@ if (raw && typeof raw === 'object') return { autoStart: !!raw.autoStart };
 } catch (error) {
 // ignore
 }
-return { autoStart: false };
+return { autoStart: true };
 }
 
 function saveSettings(partial) {
@@ -4801,6 +4800,7 @@ Auto-start on paste
 </label>
 </div>
 </details>
+<button class="action primary hidden" id="btnClearPasteStart" style="margin-bottom: 8px; width: 100%; justify-content: center;">${svgIcon('copy', 11)}Clear & paste to start</button>
 <div class="buttons" id="runControls">
 <button class="action primary" id="btnStart">${svgIcon('play', 11)}Start</button>
 <button class="action primary" id="btnPauseResume">${svgIcon('pause', 11)}Pause</button>
@@ -4926,6 +4926,21 @@ const btnRetryExceptionsEl = root.getElementById('btnRetryExceptions');
 const btnClearEl = root.getElementById('btnClear');
 const btnCopyRawForExtractEl = root.getElementById('btnCopyRawForExtract');
 const pauseResumeBtn = root.getElementById('btnPauseResume');
+const topSectionEl = root.getElementById('topSection');
+const btnClearPasteStartEl = root.getElementById('btnClearPasteStart');
+
+// Collapsing "Batch input" (startProcessing does this the moment a run
+// begins) hides btnPasteClipboard along with it, leaving no single-click
+// way to wipe the old batch and get a new one running without manually
+// reopening that section first. This combined button lives outside
+// topSection so it survives the collapse, and only shows up once
+// collapsed - while topSection is open, the existing separate Paste/
+// Clear buttons inside it already cover the same ground.
+function syncClearPasteStartVisibility() {
+btnClearPasteStartEl.classList.toggle('hidden', topSectionEl.open);
+}
+topSectionEl.addEventListener('toggle', syncClearPasteStartVisibility);
+syncClearPasteStartVisibility();
 
 function wireBadgeClick() {
 badge.clickTarget.addEventListener('click', () => {
@@ -4977,8 +4992,8 @@ if (session) pasteBox.value = session.rawInput || '';
 // begins in this tab - otherwise reopening on an in-progress batch
 // goes right back to the textarea/buttons eating most of the panel.
 if (session && session.rows && session.rows.length > 0) {
-const topSectionEl = root.getElementById('topSection');
-if (topSectionEl) topSectionEl.open = false;
+topSectionEl.open = false;
+syncClearPasteStartVisibility();
 }
 
 // <details> open/closed state doesn't survive an innerHTML rebuild, and
@@ -5355,8 +5370,8 @@ showPageFlashOverlay('Checking leads…');
 // panel's height, leaving almost no room to see the actual results
 // list below it. Collapsing it here reclaims that space the moment a
 // run actually begins, rather than requiring a manual collapse click.
-const topSectionEl = root.getElementById('topSection');
-if (topSectionEl) topSectionEl.open = false;
+topSectionEl.open = false;
+syncClearPasteStartVisibility();
 runLoop(s, uiHandle);
 }
 
@@ -5525,6 +5540,41 @@ pasteBox.value = '';
 setPauseResumeLabel('Pause');
 hidePageFlashOverlay();
 uiHandle.setState('Idle', '-', '-');
+});
+
+// Fuses btnClear + btnPasteClipboard + Start into one click, for the
+// collapsed-topSection case (see syncClearPasteStartVisibility) where
+// reopening "Batch input" just to run the same three steps manually is
+// the exact friction this button exists to remove. Always attempts to
+// start on a successful paste, regardless of the autoStart toggle - the
+// toggle governs the passive paste-into-textarea case, not this
+// explicit single-purpose button.
+root.getElementById('btnClearPasteStart').addEventListener('click', async (event) => {
+if (!navigator.clipboard || !navigator.clipboard.readText) {
+showButtonFeedback(event.currentTarget, 'Clipboard blocked - paste manually', true);
+return;
+}
+let text;
+try {
+text = await navigator.clipboard.readText();
+} catch (error) {
+showButtonFeedback(event.currentTarget, 'Clipboard blocked - paste manually', true);
+return;
+}
+if (session) session.cancelled = true;
+clearStoredSession();
+session = null;
+recentCompletions = [];
+hidePageFlashOverlay();
+pasteBox.value = text;
+const s = ensureSessionFromPasteBox();
+if (s.headerOk && s.rows.length > 0 && !s.done) {
+startProcessing();
+} else {
+render();
+uiHandle.setState('Idle', '-', '-');
+showButtonFeedback(event.currentTarget, s.headerOk ? 'No rows parsed' : `Header error: ${s.headerError}`, true);
+}
 });
 
 // Originally left the persisted session alone, matching SLA-Manager.js's
