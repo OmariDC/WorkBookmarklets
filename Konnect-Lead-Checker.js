@@ -4016,73 +4016,6 @@ String(bookingPriorityRankValue(r))
 return [header.join('\t'), ...lines].join('\n');
 }
 
-// ===================================================================
-// BULK PATTERN-ANALYSIS EXPORT (temporary) - not part of the actual
-// classifier pipeline. Per instruction that the rule system currently
-// feels "too rigid" (fixed rules dispatching to 4 fixed categories),
-// this hands every processed lead's classification-relevant fields to
-// a *separate* Claude chat so the user can ask it to look for
-// recurring templates (e.g. PX leads that always read the same way)
-// across a much larger batch than could be eyeballed by hand, then
-// decide from that analysis whether new categories/filters are
-// warranted. It does not feed back into this file automatically -
-// same "real reported lead" discipline as REVIEW_DECISIONS above, just
-// upstream of a rule existing yet. No name/phone/email, for the same
-// reason as that export: none of it bears on classification.
-// ===================================================================
-function buildBulkAnalysisExport(session) {
-// initialNotes presence, not status - a genuine automation failure
-// (e.g. SEARCH_NO_RESULTS) never got as far as reading the notes, so
-// it has nothing to contribute to pattern-finding and would just be a
-// blank-text row; CLASSIFIED and CLASSIFICATION_REVIEW_REQUIRED rows
-// both have notes regardless of which way they ended up.
-const rows = orderedResults(session).filter((r) => r.initialNotes);
-const header = ['InitialNotes', 'Tier', 'TierName', 'SubCategory', 'Flags', 'Confidence', 'Reason', 'Campaign', 'Source'].join('\t');
-const lines = rows.map((r) => [
-(r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
-String(r.tier || ''), r.tierName || '', r.subCategory || '',
-(r.flags || []).join(', '),
-r.confidence || '',
-(r.reason || r.exception || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
-r.campaign || '', r.source || ''
-].join('\t'));
-return [header, ...lines].join('\n');
-}
-
-// Sent alongside buildBulkAnalysisExport's data so the other Claude
-// chat knows what it's looking at and what kind of answer is useful,
-// without the user having to re-explain the whole system from scratch
-// each time they run this.
-const BULK_ANALYSIS_PROMPT = `I'm analysing a batch of car-dealership leads that have already been auto-classified by a rules-based system (lead-classification-spec.md v1.10) into one of 6 priority tiers, each with its own sub-categories, based on their "Initial Notes" text (what the customer wrote/said) plus Campaign/Source context:
-1. CONFIRMED DATE & TIME - customer gave a specific day AND a clock time
-2. DATE ONLY - a specific day, no clock time
-3. LIKELY BOOKING - clear intent to visit/test drive/buy a specific car, no day given
-4. WARM ENQUIRY - interested but needs further conversation
-5. NURTURE - callable, but may not be interested at all (plain valuations, blank forms, etc.)
-6. REDIRECT / NO CALL - not a call for this pipeline (already booked, already handled, dealer relationship, fleet, aftersales, complaints, spam)
-
-Confidence is "high"/"medium"/"low" - "low" means the existing rules didn't confidently match and a human had to decide manually.
-
-The data below is tab-separated: InitialNotes | Tier | TierName | SubCategory | Flags | Confidence | Reason | Campaign | Source.
-
-What I want from you:
-1. Group leads that share a recognisable "template" - i.e. Initial Notes text (or Campaign/Source combos) that reliably means the same thing every time, especially ones marked "low" confidence, or where the sub-category reads too broad for what's actually happening.
-2. For each group you find, show 2-3 representative examples and describe the pattern in plain terms.
-3. Suggest whether it deserves its own new sub-category/rule, or a refinement of an existing one - and if so, propose a name, which tier it belongs under, and a short description of what should trigger it.
-4. Flag anything that looks miscategorised, even if it's a one-off, so I can decide whether it's worth a rule.
-
-Don't invent categories that only fit one example - I want genuine recurring templates, backed by the examples in this data.
-
-Here's the data:
-`;
-
-function buildBulkAnalysisClipboardPayload(session) {
-return BULK_ANALYSIS_PROMPT + '\n' + buildBulkAnalysisExport(session);
-}
-
-window.KonnectLeadChecker.buildBulkAnalysisExport = buildBulkAnalysisExport;
-window.KonnectLeadChecker.buildBulkAnalysisClipboardPayload = buildBulkAnalysisClipboardPayload;
-
 window.KonnectLeadChecker.buildProcessingGroups = buildProcessingGroups;
 window.KonnectLeadChecker.firstUnresolvedGroupIndex = firstUnresolvedGroupIndex;
 window.KonnectLeadChecker.newSession = newSession;
@@ -4372,50 +4305,6 @@ if (failures.length > 0) {
 console.error('KonnectLeadChecker needs-review self-test FAILED:\n' + failures.join('\n'));
 } else {
 console.info('KonnectLeadChecker needs-review self-test passed (15/15)');
-}
-})();
-
-(function bulkAnalysisExportSelfTest() {
-const failures = [];
-function check(label, actual, expected) {
-const a = JSON.stringify(actual);
-const e = JSON.stringify(expected);
-if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
-}
-
-const classifiedRow = finalizeResult(
-{ inputIndex: 0, name: 'Ivy Irwin', phone: '', email: 'ivy@example.com', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 20:05' },
-{ status: 'CLASSIFIED', tier: 2, tierName: 'DATE ONLY', subCategory: 'Customer-Stated Day', flags: [], confidence: 'high', reason: 'Explicit date, no time given.', initialNotes: 'Customer Comments: Tuesday works' }
-);
-const needsReviewRow = finalizeResult(
-{ inputIndex: 1, name: 'Jack Jones', phone: '07000000002', email: '', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 21:05' },
-{ status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', confidence: 'low', initialNotes: 'Customer Comments: maybe, will call back' }
-);
-const automationFailureRow = finalizeResult(
-{ inputIndex: 2, name: 'Kim King', phone: '', email: 'kim@example.com', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Sat, 26 Sep 2026 22:05' },
-{ status: 'EXCEPTION', exception: 'SEARCH_NO_RESULTS' }
-);
-const fakeSession = {
-rows: [{ inputIndex: 0 }, { inputIndex: 1 }, { inputIndex: 2 }],
-results: { 0: classifiedRow, 1: needsReviewRow, 2: automationFailureRow }
-};
-
-const exportTsv = buildBulkAnalysisExport(fakeSession);
-const exportLines = exportTsv.split('\n');
-check('Bulk-analysis export header has no name/phone/email columns', exportLines[0], 'InitialNotes\tTier\tTierName\tSubCategory\tFlags\tConfidence\tReason\tCampaign\tSource');
-check('Bulk-analysis export includes classified and needs-review rows, excludes the automation failure with no notes', exportLines.length, 3);
-check('Bulk-analysis export carries the classified row\'s tier name', exportLines[1].split('\t')[2], 'DATE ONLY');
-check('Bulk-analysis export carries the needs-review row\'s low confidence', exportLines[2].split('\t')[5], 'low');
-check('Bulk-analysis export carries the needs-review row\'s exception as its reason column', exportLines[2].split('\t')[6], 'CLASSIFICATION_REVIEW_REQUIRED');
-
-const payload = buildBulkAnalysisClipboardPayload(fakeSession);
-check('Clipboard payload leads with the explanatory prompt text', payload.startsWith(BULK_ANALYSIS_PROMPT), true);
-check('Clipboard payload includes the export data after the prompt', payload.includes(exportTsv), true);
-
-if (failures.length > 0) {
-console.error('KonnectLeadChecker bulk-analysis-export self-test FAILED:\n' + failures.join('\n'));
-} else {
-console.info('KonnectLeadChecker bulk-analysis-export self-test passed (7/7)');
 }
 })();
 
@@ -4711,8 +4600,6 @@ button.action { padding: 7px 12px; border: none; background: #e5e5ea; color: #1c
 button.action:hover { background: #d8d8dd; }
 button.action:disabled { opacity: 0.45; cursor: default; }
 button.action:disabled:hover { background: #e5e5ea; }
-button.action.temp { background: #fff3cd; color: #92400e; }
-button.action.temp:hover { background: #ffe8a8; }
 button.primary { background: #C2CB42; color: #1c1c1e; }
 button.primary:hover { background: #aab238; }
 .status { background: white; border: none; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); padding: 10px 12px; margin-bottom: 8px; }
@@ -4845,7 +4732,6 @@ Auto-start on paste
 <div class="section-label">Export</div>
 <div class="buttons">
 <button class="action" id="btnCopyReviewDecisions">${svgIcon('copy', 11)}Copy review decisions</button>
-<button class="action temp" id="btnCopyBulkAnalysis" title="Temporary: copies all processed leads plus an explanatory prompt, for pasting into a separate Claude chat to look for recurring patterns.">${svgIcon('copy', 11)}Copy for pattern analysis (temp)</button>
 </div>
 </div>
 </div>
@@ -5628,18 +5514,6 @@ return;
 }
 copyTextToClipboard(buildManualReviewDecisionsExport(s))
 .then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count}`, false))
-.catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
-});
-
-root.getElementById('btnCopyBulkAnalysis').addEventListener('click', (event) => {
-const s = ensureSessionFromPasteBox();
-const count = buildBulkAnalysisExport(s).split('\n').length - 1;
-if (count <= 0) {
-showButtonFeedback(event.currentTarget, 'Nothing processed yet', true);
-return;
-}
-copyTextToClipboard(buildBulkAnalysisClipboardPayload(s))
-.then(() => showButtonFeedback(event.currentTarget, `✓ Copied ${count} + prompt`, false))
 .catch(() => showButtonFeedback(event.currentTarget, '✗ Copy failed', true));
 });
 
