@@ -2,15 +2,15 @@
 // DUPLICATE LEAD CHECK
 //
 // Quick one-off tool for Konnect Live. A bulk drop of leads came
-// through on 23 Oct that look like exact copies of leads from
-// September. For each customer (Name / Email / First contact date+time)
+// through in late Oct that look like exact copies of earlier leads. For each customer (Name / Email / First contact date+time)
 // this:
 //   1. searches the customer by email and opens their timeline,
 //   2. finds the lead at the given date+time (exact minute) and reads
 //      its Initial Notes, Source and creation method (the timeline
 //      heading, e.g. "New Sales Lead from Customer First" vs
 //      "Manually Created Sales Lead from ..."),
-//   3. opens every September lead on the same timeline and compares.
+//   3. opens every other lead from 1 July onwards on the same
+//      timeline and compares.
 // A lead is flagged DUPLICATE when its Initial Notes are exactly the
 // same AND its creation method is the same.
 //
@@ -25,7 +25,7 @@ window.__dupLeadCheck.focus();
 return;
 }
 
-const DUP_MONTH = 8; // September (0-based)
+const COMPARE_FROM_MONTH = 6; // July (0-based), in the same year as the new lead
 
 // ===================================================================
 // SHARED HELPERS (from Konnect-Lead-Checker.js)
@@ -250,7 +250,7 @@ return { row, raw, parsed: raw ? parseTimelineTimestamp(raw) : null, leadId: ent
 });
 }
 
-// Scroll until no new lead entries appear, so September is loaded.
+// Scroll until no new lead entries appear, so July onwards is loaded.
 // The scroll container is a best guess (same as Lead Checker's).
 async function loadWholeTimeline(isEarliestEnough) {
 const root = findTimelineRoot();
@@ -340,8 +340,8 @@ log(`Searching ${row.email}...`);
 const opened = await openCustomerByEmail(row.email, row.name);
 if (opened.error) return { verdict: 'ERROR', detail: opened.error };
 
-log('Loading timeline back to September...');
-await loadWholeTimeline(() => describeEntries().some((e) => e.parsed && e.parsed.year === target.year && e.parsed.month < DUP_MONTH));
+log('Loading timeline back to July...');
+await loadWholeTimeline(() => describeEntries().some((e) => e.parsed && (e.parsed.year < target.year || e.parsed.month < COMPARE_FROM_MONTH)));
 
 const entries = describeEntries();
 let targetEntry = entries.filter((e) => sameMinute(e.parsed, target));
@@ -363,19 +363,23 @@ log(`Reading lead ${newEntry.raw}...`);
 const newLead = await readLead(newEntry);
 if (newLead.error) return { verdict: 'ERROR', detail: newLead.error };
 
-const septEntries = entries.filter((e) => e !== newEntry && e.parsed && e.parsed.year === target.year && e.parsed.month === DUP_MONTH);
+const compareEntries = entries.filter((e) => e !== newEntry && e.parsed
+&& (e.parsed.year > target.year || (e.parsed.year === target.year && e.parsed.month >= COMPARE_FROM_MONTH)));
 const base = { newLeadId: newEntry.leadId, newMethod: newEntry.method, newSource: newLead.source, newNotes: newLead.notes };
-if (septEntries.length === 0) return { verdict: 'NO SEPT LEAD', detail: note + 'No September leads on this timeline.', ...base };
+if (compareEntries.length === 0) return { verdict: 'NO OTHER LEADS', detail: note + 'No other leads since 1 July on this timeline.', ...base };
 
 const exact = [];
 const notesOnly = [];
 const loose = [];
-for (const sept of septEntries) {
-log(`Comparing with ${sept.raw}...`);
-const old = await readLead(sept);
-if (old.error) return { verdict: 'ERROR', detail: `${sept.raw}: ${old.error}`, ...base };
-const sameMethod = sept.method === newEntry.method;
-const label = `${sept.raw} (Lead ${sept.leadId || '?'})`;
+const unread = [];
+for (let i = 0; i < compareEntries.length; i++) {
+const other = compareEntries[i];
+log(`Comparing with ${other.raw} (${i + 1}/${compareEntries.length})...`);
+const old = await readLead(other);
+// One lead that won't open shouldn't sink the rest of the check.
+if (old.error) { unread.push(`${other.raw}: ${old.error}`); continue; }
+const sameMethod = other.method === newEntry.method;
+const label = `${other.raw} (Lead ${other.leadId || '?'})`;
 if (old.notes === newLead.notes) {
 (sameMethod ? exact : notesOnly).push(label);
 } else if (sameMethod && clean(old.notes).toLowerCase() === clean(newLead.notes).toLowerCase()) {
@@ -383,10 +387,12 @@ loose.push(label);
 }
 }
 
-if (exact.length) return { verdict: 'DUPLICATE', detail: note + `Exact same notes and creation method as ${exact.join(', ')}`, ...base };
-if (loose.length) return { verdict: 'NEAR DUPLICATE', detail: note + `Same creation method, notes only differ in spacing/case: ${loose.join(', ')}`, ...base };
-if (notesOnly.length) return { verdict: 'NOTES MATCH, METHOD DIFFERS', detail: note + `Same notes but different creation method: ${notesOnly.join(', ')}`, ...base };
-return { verdict: 'NOT DUPLICATE', detail: note + `Checked ${septEntries.length} September lead(s), none matched.`, ...base };
+const unreadNote = unread.length ? ` Could not read ${unread.length}: ${unread.join('; ')}` : '';
+if (exact.length) return { verdict: 'DUPLICATE', detail: note + `Exact same notes and creation method as ${exact.join(', ')}` + unreadNote, ...base };
+if (loose.length) return { verdict: 'NEAR DUPLICATE', detail: note + `Same creation method, notes only differ in spacing/case: ${loose.join(', ')}` + unreadNote, ...base };
+if (notesOnly.length) return { verdict: 'NOTES MATCH, METHOD DIFFERS', detail: note + `Same notes but different creation method: ${notesOnly.join(', ')}` + unreadNote, ...base };
+if (unread.length) return { verdict: 'INCOMPLETE', detail: note + `No match in the ${compareEntries.length - unread.length} lead(s) read since 1 July.` + unreadNote, ...base };
+return { verdict: 'NOT DUPLICATE', detail: note + `Checked ${compareEntries.length} lead(s) since 1 July, none matched.`, ...base };
 }
 
 // ===================================================================
@@ -417,7 +423,8 @@ const COLORS = {
 'NEAR DUPLICATE': '#ef6c00',
 'NOTES MATCH, METHOD DIFFERS': '#8e6c00',
 'NOT DUPLICATE': '#2e7d32',
-'NO SEPT LEAD': '#2e7d32',
+'NO OTHER LEADS': '#2e7d32',
+'INCOMPLETE': '#616161',
 'ERROR': '#616161'
 };
 
@@ -430,7 +437,7 @@ panel.id = 'dup-lead-check';
 panel.style.cssText = 'position:fixed;top:70px;right:16px;width:440px;max-height:calc(100vh - 90px);display:flex;flex-direction:column;z-index:2147483646;background:#fff;color:#1d1d1f;border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.25);font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;';
 panel.innerHTML = `
 <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #e5e5ea;">
-<strong style="font-size:14px;">Duplicate Lead Check (Sept)</strong>
+<strong style="font-size:14px;">Duplicate Lead Check (Jul to now)</strong>
 <button data-act="close" style="border:0;background:none;font-size:18px;cursor:pointer;color:#888;">&times;</button>
 </div>
 <div style="padding:12px 14px;display:flex;flex-direction:column;gap:8px;">
