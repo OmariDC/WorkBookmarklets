@@ -12,6 +12,43 @@ const PANEL_STATE_KEY = '_slaPanelState';
 const PANEL_SIZE_KEY = '_slaPanelSize';
 const ASSIGN_SETTINGS_KEY = '_slaAssignSettings';
 
+// Stored data holding customer names, phones, emails or notes is kept for
+// one shift only. Anything older than this, or with no timestamp, is
+// discarded on load.
+const STORED_CUSTOMER_DATA_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+function isStoredTimeFresh(isoTime) {
+const t = isoTime ? new Date(isoTime).getTime() : NaN;
+return Number.isFinite(t) && Date.now() - t <= STORED_CUSTOMER_DATA_MAX_AGE_MS;
+}
+// Customer details only reach the console when the debug flag is set:
+// localStorage.setItem('workBookmarklets:debug', '1').
+function isDebugLogging() {
+try { return localStorage.getItem('workBookmarklets:debug') === '1'; } catch (error) { return false; }
+}
+function removeStoredKey(key) {
+try { localStorage.removeItem(key); } catch (error) { /* ignore */ }
+}
+
+
+// Self-tests run on every load. A failure is logged and also shown as a
+// banner in the panel, so a broken build is visible to the person using it.
+const selfTestFailures = [];
+function reportSelfTestFailure(message) {
+console.error(message);
+selfTestFailures.push(String(message).split('\n')[0]);
+}
+function runSelfTest(name, fn) {
+try {
+fn();
+} catch (error) {
+reportSelfTestFailure(`SLA Manager ${name} threw: ${error && error.message}`);
+}
+}
+function renderSelfTestBanner() {
+if (selfTestFailures.length === 0) return '';
+return `<div role="alert" style="margin:0 0 10px;padding:8px 10px;border-radius:8px;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-size:12px;">Self-test failed: some results may be wrong. Check the console.</div>`;
+}
+
 function getPanelSize() {
 return localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 }
@@ -62,17 +99,16 @@ return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" st
 function renderZeroState(iconName, title, subtitle) {
 return `<div style="padding: 48px 20px; text-align: center;">
 <div style="width: 64px; height: 64px; border-radius: 50%; background: #e5e5ea; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
-${svgIcon(iconName, 28, ' stroke-width: 1.5; color: #8e8e93;')}
+${svgIcon(iconName, 28, ' stroke-width: 1.5; color: var(--wb-muted, #5b6577);')}
 </div>
-<h3 style="color: #1c1c1e; margin: 0 0 6px 0; font-size: 17px; font-weight: 600;">${title}</h3>
-<p style="color: #8e8e93; margin: 0; font-size: 14px; line-height: 1.5;">${subtitle}</p>
+<h3 style="color: var(--wb-text, #1c1c1e); margin: 0 0 6px 0; font-size: 17px; font-weight: 600;">${title}</h3>
+<p style="color: var(--wb-muted, #5b6577); margin: 0; font-size: 14px; line-height: 1.5;">${subtitle}</p>
 </div>`;
 }
 
-// Rotates rather than swaps between two glyphs (the old ▼/▶ text-content
-// toggle) - one icon, animated, is the more modern pattern, and the
-// toggle handlers only need to flip a transform instead of picking
-// between two strings.
+// Rotates rather than swaps between two glyphs - one icon, animated, is
+// the more modern pattern, and the toggle handlers only need to flip a
+// transform instead of picking between two strings.
 function chevronIcon(collapsed, id) {
 return `<svg id="${id}" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; transition: transform 0.15s ease; transform: rotate(${collapsed ? -90 : 0}deg);">${ICONS.chevron}</svg>`;
 }
@@ -168,25 +204,17 @@ let currentPanelMode = 'normal';
 let runningMorningChecks = false;
 // True for the whole window._refreshLeadsAndPanel() flow, not just its
 // final runExtraction() call - clicking the native refresh icon and
-// waiting for it to finish can take several seconds with no hash
-// change and no recognized-page-type change either, so nothing else
-// naturally excludes the background auto-detect poll from firing its
-// own independent runExtraction() mid-wait (unlike a real navigation,
-// which self-excludes the poll since detectPageType() goes null while
-// on an unrecognized route). Without this, swapping pages while a
-// refresh was still waiting on the icon let two overlapping scans run
-// against two different pages at once - the reported "SLA rescans
-// everything" / "Pending briefly shows no leads then corrects itself".
+// waiting for it to finish can take several seconds with no hash change
+// and no recognized-page-type change either, so nothing else naturally
+// excludes the background auto-detect poll from firing its own
+// independent runExtraction() mid-wait (unlike a real navigation, which
+// self-excludes the poll since detectPageType() goes null while on an
+// unrecognized route).
 let refreshingLeads = false;
 // Populated by window._runAllMorningChecks as each check completes -
-// {key, label, status: 'pending'|'running'|'done', ok, summary, details}.
-// Drives renderMorningChecksBody(); empty means "hasn't been run yet".
-// Restored from today's persisted run (if any) rather than always
-// starting empty - per instruction, results should persist across a
-// bookmarklet re-invocation/page reload until explicitly cleared or a
-// fresh run overwrites them, not silently reset just because the
-// panel/page was closed and reopened. loadMorningChecksLastRun is
-// defined further down but hoisted, and already scopes to today only.
+// {key, label, status: 'pending'|'running'|'done', ok, summary,
+// details}. Drives renderMorningChecksBody(); empty means "hasn't been
+// run yet".
 let morningChecksResults = (function() {
 const lastRun = loadMorningChecksLastRun();
 return (lastRun && Array.isArray(lastRun.results)) ? lastRun.results : [];
@@ -268,7 +296,7 @@ return { tier: 4, reason: 'Uncategorized' };
 // here specifically to catch the two collisions just fixed above (and
 // guard against them regressing back in), using real verbatim campaign
 // strings rather than synthetic ones.
-(function categorizeTierSelfTest() {
+runSelfTest('categorizeTierSelfTest', function categorizeTierSelfTest() {
 const cases = [
 { name: 'Real: Customer First Enquiry-New (Test drive request) stays Tier 2, not Tier 1', campaign: 'Citroen - Enquiry - New (Test drive request)', source: 'Customer First', expectTier: 2 },
 { name: 'Real: dedicated Test Drive Request campaign is Tier 1', campaign: 'Peugeot - Test Drive Request - New (pcr_new_test_drive)', source: 'Robins & Day Website', expectTier: 1 },
@@ -287,11 +315,11 @@ failures.push(`${c.name}: expected tier ${c.expectTier}, got tier ${result.tier}
 }
 });
 if (failures.length > 0) {
-console.error('SLA Extract categorizeTier self-test FAILED:\n' + failures.join('\n'));
+reportSelfTestFailure('SLA Manager categorizeTier self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info(`SLA Extract categorizeTier self-test passed (${cases.length}/${cases.length})`);
+console.info(`SLA Manager categorizeTier self-test passed (${cases.length}/${cases.length})`);
 }
-})();
+});
 
 // Display-only urgency ordering/labeling for the SLA tier cards -
 // distinct from computeSortKey further down (used for ROUND-ROBIN
@@ -415,19 +443,16 @@ observer.observe(document.body, { childList: true, subtree: true });
 
 // detectPageType() reads the table's header row, which renders before
 // ng-repeat has actually populated any data rows for the page just
-// switched to - the background auto-detect poll calls extractAndExportSla/
-// Pending the instant it notices the header match, which could mean
-// reading a still-loading table as "0 leads" and reporting an empty
-// queue that a moment later turns out to have plenty, needing a manual
-// refresh to fix (confirmed live, swapping Pending -> SLA). A smaller,
-// one-shot version of what waitForInboundRowsSettled solved for the
-// Inbound API page - there's no evidence this table loads progressively
-// in chunks the way that one does, just a short delay before it renders
-// in one batch, so this only needs to wait for the FIRST row rather than
-// watch for growth to stop. Resolves instantly if rows already exist
-// (the common case costs nothing), or after timeout with none found -
-// callers still treat that as a genuinely empty queue rather than
-// erroring, since an actually-empty SLA/Pending queue is a normal state.
+// switched to - the background auto-detect poll calls
+// extractAndExportSla/ Pending the instant it notices the header match,
+// which could mean reading a still-loading table as "0 leads" and
+// reporting an empty queue that a moment later turns out to have plenty,
+// needing a manual refresh to fix (confirmed live, swapping Pending ->
+// SLA). A smaller, one-shot version of what waitForInboundRowsSettled
+// solved for the Inbound API page - there's no evidence this table loads
+// progressively in chunks the way that one does, just a short delay
+// before it renders in one batch, so this only needs to wait for the
+// FIRST row rather than watch for growth to stop.
 function waitForLeadsTableRows(table, timeout = 8000) {
 return new Promise((resolve) => {
 const hasRows = () => table.querySelectorAll('tbody tr').length > 0;
@@ -457,22 +482,7 @@ observer.observe(table, { childList: true, subtree: true });
 // (extractAndExportSla/Pending, a same-page native-icon refresh), which
 // has never been reported as racy, and adding a settle window there too
 // would cost every already-fast, all-cached extraction a fixed chunk of
-// pure added latency for no benefit. The queue-check paths are the ones
-// actually reported live as still intermittently reading a partial/
-// empty table even with waitForLeadsTableRows in place - those involve
-// a full route change (navigating to Queue by Agent and back), not the
-// same-page refresh this function's sibling was built and confirmed
-// against, so its "loads in one batch, not progressively" assumption
-// (see its own comment) may simply not hold for a route change. Same
-// "wait for the DOM to actually go quiet" signal already confirmed live
-// for the Inbound API page's own progressive loading (see
-// waitForInboundRowsSettled) - the row count must stay unchanged for a
-// full quiet window before this trusts it, not just become non-zero
-// once. quietMs is a reasonable-guess default, not a confirmed-live
-// value the way waitForInboundRowsSettled's 1500ms is - this table is a
-// much smaller, one-shot dataset than Inbound's continuously-arriving
-// feed, so a shorter window was chosen, but only a live re-test can
-// confirm it's actually long enough.
+// pure added latency for no benefit.
 function waitForLeadsTableRowsSettled(table, timeout = 8000, quietMs = 400) {
 return new Promise((resolve) => {
 let settleTimer = null;
@@ -515,20 +525,12 @@ hardTimer = setTimeout(finish, timeout);
 // until an unrelated manual refresh fixed it.
 async function waitForLeadsTableReady() {
 const table = await waitForElement('table');
-// A much tighter hard cap than waitForLeadsTableRowsSettled's own
-// 8000ms default - this call site is a secondary refresh (the leads
-// data itself is already correct from the extraction that just ran;
-// this is only trying to avoid reading the table in the split-second
-// it's empty right after navigating back from Queue by Agent), not a
-// primary data load worth waiting a long time for. If this page's
-// table rows get torn down and rebuilt on every Angular digest cycle
-// rather than only when data genuinely changes, the settle timer would
-// keep getting reset indefinitely and this would silently eat the
-// full hard cap every single time - reported live as "not loading up
-// the UI" after the queue check, which a long cap makes look identical
-// to a real hang even though it would eventually resolve. 2.5s is
-// enough to ride out the ordinary post-navigation gap without making a
-// worse-case run feel stuck.
+// A much tighter hard cap than waitForLeadsTableRowsSettled's own 8000ms
+// default - this call site is a secondary refresh (the leads data itself
+// is already correct from the extraction that just ran; this is only
+// trying to avoid reading the table in the split-second it's empty right
+// after navigating back from Queue by Agent), not a primary data load
+// worth waiting a long time for.
 if (table) await waitForLeadsTableRowsSettled(table, 2500);
 }
 
@@ -587,15 +589,10 @@ pageFlashOverlayPrevOverflow = null;
 }
 
 // Confirmed live on the SLA queue page: <i class="fa fa-refresh"
-// ng-class="{ 'fa-spin' : loading }" ng-click="getData()" title="Refresh">.
-// No id/aria-label to key off instead - the ng-click name plus its class
-// together are specific enough not to collide with anything else on the
-// page. Clicking it adds fa-spin immediately and Angular's own
-// $scope.loading clears it again once the refetch actually finishes
-// (observed ~1.1s in testing, but that's real network time, not assumed
-// to be a fixed delay) - waiting for the class to toggle both ways is
-// what confirms the refetch genuinely started and genuinely finished,
-// rather than guessing a duration.
+// ng-class="{ 'fa-spin' : loading }" ng-click="getData()"
+// title="Refresh">. No id/aria-label to key off instead - the ng-click
+// name plus its class together are specific enough not to collide with
+// anything else on the page.
 function findNativeLeadsRefreshIcon() {
 return document.querySelector('i.fa-refresh[ng-click="getData()"]');
 }
@@ -662,18 +659,9 @@ hidePageFlashOverlay();
 // entirely.
 async function ensureCustomerHubModule() {
 // Re-queries the trigger fresh every time rather than trusting one
-// captured reference across the whole switch - confirmed live starting
-// from Service Booking, but reported live to time out starting from
-// "Service" specifically. The likely difference: switching away from
-// that module regenerates this whole element (Angular tearing down and
-// recreating it) rather than just mutating its label text in place,
-// which is what every previously-tested starting module did. A stale
-// captured `trigger` would silently watch a node that's no longer part
-// of the live document, so its own MutationObserver would never fire
-// and the label would never appear to change, even though the switch
-// genuinely succeeded on the page - a timeout that looks identical to a
-// real failure. Reading document.querySelector fresh on every check
-// avoids depending on that one reference surviving.
+// captured reference across the whole switch. Reading
+// document.querySelector fresh on every check avoids depending on that
+// one reference surviving.
 const readLabel = () => document.querySelector('div[title="Filter by Module"] span.ng-binding')?.textContent?.trim() || null;
 if (readLabel() === 'Customer Hub') return true;
 
@@ -687,7 +675,7 @@ if (!menuItem) return false;
 const items = Array.from(document.querySelectorAll('li[ng-click="moduleSelected(module)"]'));
 const target = items.find(li => li.textContent.includes('Customer Hub'));
 if (!target) {
-console.warn('[SLA Extract] Customer Hub option not found in the module dropdown - items seen:', items.map(li => li.textContent.trim()));
+console.warn('[SLA Manager] Customer Hub option not found in the module dropdown - items seen:', items.map(li => li.textContent.trim()));
 return false;
 }
 target.click();
@@ -697,7 +685,7 @@ if (readLabel() === 'Customer Hub') return true;
 return new Promise((resolve) => {
 const timer = setTimeout(() => {
 observer.disconnect();
-console.warn('[SLA Extract] Timed out waiting for module switch to Customer Hub - trigger now reads:', readLabel());
+console.warn('[SLA Manager] Timed out waiting for module switch to Customer Hub - trigger now reads:', readLabel());
 resolve(false);
 }, 3000);
 // Observes document.body, not the trigger element captured above (see
@@ -740,25 +728,22 @@ try {
 window.location.hash = '#/Queue/QueueByAgent';
 const clearBtn = await waitForElement('button[ng-click="ClearQueues()"]');
 if (!clearBtn) {
-alert('Could not find the Clear Queues button after navigating - aborted, nothing was cleared.');
+alert('Could not find the Clear Queues button after navigating. Nothing was cleared.');
 return;
 }
 const moduleOk = await ensureCustomerHubModule();
 if (!moduleOk) {
-alert('Could not confirm the Customer Hub module is selected - aborted for safety, nothing was cleared.');
+alert('Could not confirm the Customer Hub module is selected, so nothing was cleared.');
 return;
 }
 clearBtn.click();
 await sleep(800);
-// Clear Queues only unassigns every currently-assigned lead - it
-// doesn't touch any lead's underlying details (name/phone/email/
-// campaign/etc), so the fix for the panel showing stale "assigned"
-// state is updating that one field on the already-cached leads, not
-// re-running the full ingestion pipeline (runExtraction ->
-// extractAndExportSla/extractAndExportPending). That would re-open
-// every lead's detail modal again for no reason, since nothing about
-// them actually changed besides assignment - confirmed live as an
-// unwanted full re-ingestion, not the cheap refresh this needs.
+// Clear Queues only unassigns every currently-assigned lead - it doesn't
+// touch any lead's underlying details (name/phone/email/ campaign/etc),
+// so the fix for the panel showing stale "assigned" state is updating
+// that one field on the already-cached leads, not re-running the full
+// ingestion pipeline (runExtraction ->
+// extractAndExportSla/extractAndExportPending).
 clearAgentQueueSnapshot();
 cleared = true;
 } finally {
@@ -780,7 +765,7 @@ if (cleared) {
 try {
 await waitForLeadsTableReady();
 } catch (error) {
-console.warn('[SLA Extract] Wait for table after clearing the queue failed - showing the panel anyway:', error);
+console.warn('[SLA Manager] Wait for table after clearing the queue failed - showing the panel anyway:', error);
 }
 try {
 patchCachedLeadsCleared();
@@ -792,15 +777,12 @@ currentCustomers = currentCustomers.map((c) => ({ ...c, assigned: false, agentNa
 displayPanel(currentCustomers, 0, 0, false);
 }
 } catch (error) {
-console.error('[SLA Extract] Panel failed to render after clearing the queue:', error);
+console.error('[SLA Manager] Panel failed to render after clearing the queue:', error);
 alert('SLA Manager: the queue was cleared, but the panel failed to reload.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
 }
 }
 } finally {
-// Always runs now, even if the render itself threw - previously this
-// sat after an un-guarded await, so any failure in that wait left the
-// "Clearing the queue…" overlay stuck on screen forever, on top of
-// the panel never appearing.
+// Always runs now, even if the render itself threw.
 hidePageFlashOverlay();
 }
 };
@@ -833,7 +815,10 @@ const AGENT_QUEUE_SNAPSHOT_KEY = '_slaAgentQueueSnapshot';
 function loadAgentQueueSnapshot() {
 try {
 const raw = JSON.parse(localStorage.getItem(AGENT_QUEUE_SNAPSHOT_KEY));
-if (raw && Array.isArray(raw.agents)) return raw;
+if (raw && Array.isArray(raw.agents)) {
+if (isStoredTimeFresh(raw.scannedAt)) return raw;
+removeStoredKey(AGENT_QUEUE_SNAPSHOT_KEY);
+}
 } catch (error) {
 // ignore
 }
@@ -902,12 +887,12 @@ try {
 window.location.hash = '#/Queue/QueueByAgent';
 const ready = await waitForElement('li[ng-repeat="agent in fullqueue | filter: filterMessages"]', 15000);
 if (!ready) {
-console.warn('[SLA Extract] Could not find the Queue by Agent panels after navigating - queue snapshot not refreshed.');
+console.warn('[SLA Manager] Could not find the Queue by Agent panels after navigating - queue snapshot not refreshed.');
 return false;
 }
 const moduleOk = await ensureCustomerHubModule();
 if (!moduleOk) {
-console.warn('[SLA Extract] Could not confirm the Customer Hub module is selected - queue snapshot not refreshed.');
+console.warn('[SLA Manager] Could not confirm the Customer Hub module is selected - queue snapshot not refreshed.');
 return false;
 }
 // Angular renders the panel shell first and fills in each agent's
@@ -916,12 +901,12 @@ return false;
 // without seeing it, but cheap enough to wait out regardless.
 await sleep(500);
 const agents = scrapeAgentQueuePositions();
-// No visible confirmation this scrape actually found anything real -
-// logged so a "why isn't the badge showing" report can be diagnosed
-// from what was actually seen, not guessed at.
-console.info(`[SLA Extract] Queue by Agent scan: ${agents.length} agent panel(s) found`, agents.map((a) => ({
+// No visible confirmation this scrape actually found anything real.
+console.info(`[SLA Manager] Queue by Agent scan: ${agents.length} agent panel(s) found`, agents.map((a) => ({
 agent: a.agentName, notDone: a.notDoneCount, totalShown: a.totalShown,
-sample: a.queue.slice(0, 3).map((q) => ({ position: q.position, name: q.name, email: q.email, phone: q.phone, processed: q.processed }))
+sample: isDebugLogging()
+? a.queue.slice(0, 3).map((q) => ({ position: q.position, name: q.name, email: q.email, phone: q.phone, processed: q.processed }))
+: `${a.queue.length} queued (set workBookmarklets:debug to see details)`
 })));
 saveAgentQueueSnapshot(agents);
 return true;
@@ -945,7 +930,7 @@ try {
 // so that rejection would surface nowhere visible).
 try {
 const ok = await refreshAgentQueueSnapshot();
-if (!ok) alert('Could not check agent queues - see console for details.');
+if (!ok) alert('Could not check agent queues. See the console for details.');
 // refreshAgentQueueSnapshot navigates to Queue by Agent and back -
 // its own finally block resets window.location.hash, but that's just
 // the route changing, not the SLA/Pending table having actually
@@ -960,20 +945,14 @@ if (!ok) alert('Could not check agent queues - see console for details.');
 // displayPanel/displayPendingPanel and never did.
 await waitForLeadsTableReady();
 } catch (error) {
-console.warn('[SLA Extract] Queue check failed - showing the panel anyway:', error);
+console.warn('[SLA Manager] Queue check failed - showing the panel anyway:', error);
 }
-// The catch above only covers the queue check - if displayPanel/
-// displayPendingPanel itself throws (renderAssignSection, mountPanel,
-// anything inside them), that propagates out uncaught exactly the
-// same way and the panel still never appears, just one step later
-// than what that catch actually guards. Surfaced visibly (an alert)
-// rather than only to console, which this session has had no way to
-// see after two rounds of this same report.
+// The catch above only covers the queue check.
 try {
 if (originatingPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, 0, 0, false);
 else displayPanel(currentCustomers, 0, 0, false);
 } catch (error) {
-console.error('[SLA Extract] Panel failed to render after queue check:', error);
+console.error('[SLA Manager] Panel failed to render after queue check:', error);
 alert('SLA Manager: the panel failed to load after checking the queue.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
 }
 } finally {
@@ -986,12 +965,6 @@ if (buttonEl) buttonEl.textContent = originalText;
 // whichever agent's queue it's in, from the last snapshot taken by
 // window._checkAgentQueuePositions - a point-in-time read, not live,
 // same tradeoff already accepted for the agent roster elsewhere here.
-// Takes the snapshot as a parameter rather than loading it internally -
-// both call sites (renderTierSection/renderCallbackTypeSection) hoist
-// loadAgentQueueSnapshot() once per section instead of once per card,
-// same pattern already used for leadCheckerResults in those two
-// functions, since this used to re-read+re-parse localStorage on every
-// single customer card.
 function findAgentQueuePositionInSnapshot(lead, snapshot) {
 if (!snapshot.agents || snapshot.agents.length === 0) return null;
 const emailKey = normalizeEmailForLeadCheckerMatch(lead.email);
@@ -1138,11 +1111,11 @@ try {
 window.location.hash = '#/onGoingCampaigns/module/-6/deferred/false/showSLA/true';
 const loaded = await reloadCurrentMonthCampaigns();
 if (!loaded) {
-return { ok: null, summary: 'Could not load the current month\'s campaigns - aborted.' };
+return { ok: null, summary: 'Could not load the current month\'s campaigns. Stopped.' };
 }
 const { total, sum, breakdown } = extractInProgressData();
 if (total === null) {
-return { ok: null, summary: 'Could not find the In Progress total - aborted.' };
+return { ok: null, summary: 'Could not find the In Progress total. Stopped.' };
 }
 if (sum === total) {
 return { ok: true, summary: `OK (${total})` };
@@ -1150,7 +1123,7 @@ return { ok: true, summary: `OK (${total})` };
 const diff = total - sum;
 return {
 ok: false,
-summary: `MISMATCH - top total ${total}, rows sum to ${sum} (off by ${diff})`,
+summary: `MISMATCH: top total ${total}, rows sum to ${sum} (off by ${diff})`,
 details: breakdown.length > 0 ? breakdown.map(b => `${b.name}: ${b.inProgress}`) : ['(no rows have any In Progress)']
 };
 } finally {
@@ -1230,23 +1203,10 @@ observer.observe(target, { childList: true, subtree: true, characterData: true }
 }
 
 // This table doesn't render in one atomic batch the way Live Campaigns'
-// ng-repeat does - confirmed live: a check read back 28 rows and reported
-// (wrongly) that every expected source was missing, then the rest of the
-// day's leads kept arriving and rendering into the SAME table for a
-// while AFTER the check had already finished and moved on. So neither
-// "does the table element exist" nor "does at least one full row exist"
-// (both tried previously) can ever be a reliable signal here - a
+// ng-repeat does. So neither "does the table element exist" nor "does at
+// least one full row exist" can ever be a reliable signal here - a
 // perfectly well-formed 12-cell row is no guarantee at all that loading
 // is actually finished, since more of them keep arriving behind it.
-// The only signal that's actually true regardless of however this loads
-// under the hood (one paginated fetch, several sequential ones,
-// whatever) is that the DOM stops changing - this resolves once no new
-// rows have appeared for a full quiet window, not the instant any
-// appear, with a hard cap so a page that's genuinely stuck doesn't hang
-// a check forever. Returns the settled row count (12+ cells each, same
-// column requirement as before) rather than a bare boolean, so callers
-// can tell "definitely still zero after the whole wait" apart from
-// "read something, hopefully everything."
 const INBOUND_MIN_CELLS = 12;
 function countInboundRows() {
 return Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length >= INBOUND_MIN_CELLS).length;
@@ -1292,13 +1252,7 @@ return [`Today (${total} total):`, ...(lines.length > 0 ? lines : ['(no rows)'])
 
 // The real Lead Type Check: does every expected daily source actually
 // appear today; for any that don't, check yesterday (7pm-8am overnight
-// window only) before calling it actually missing. Originally
-// mislabeled as "All leads are Routed to" - that name belongs to a
-// different, later check (a per-row check of the Routed To column, see
-// window._checkRoutedTo), not this one. This also folds in what used
-// to be a separate "scan sources" step - the user only wants one check
-// here, with the raw source counts available as a secondary detail
-// rather than a standalone action.
+// window only) before calling it actually missing.
 const EXPECTED_DAILY_SOURCES = ['Robins & Day Website', 'Customer First', 'Autotrader - Deal Builder', 'Cargurus'];
 
 window._checkLeadTypes = async function(skipRestore) {
@@ -1307,11 +1261,11 @@ try {
 window.location.hash = '#/Queue/InboundAPI';
 const table = await waitForElement('table.table-striped', 15000);
 if (!table) {
-return { ok: null, summary: 'Could not load the Inbound API table - aborted.' };
+return { ok: null, summary: 'Could not load the Inbound API table. Stopped.' };
 }
 const settledCount = await waitForInboundRowsSettled();
 if (settledCount === 0) {
-return { ok: null, summary: 'Inbound API table loaded but no rows appeared - aborted.' };
+return { ok: null, summary: 'Inbound API table loaded but no rows appeared. Stopped.' };
 }
 const todayLabel = currentInboundDateLabel();
 const todayCounts = extractSourceCounts();
@@ -1323,7 +1277,7 @@ const details = sourceCountLines(todayCounts);
 // to catch, rather than confidently declaring a real problem off a
 // read that likely just didn't work.
 if (Object.keys(todayCounts).length === 0) {
-return { ok: null, summary: 'Inbound API table read back with zero rows for Today - likely not fully loaded, re-run to confirm.', details };
+return { ok: null, summary: 'Inbound API table read back with zero rows for Today. It may not have fully loaded, so run it again to confirm.', details };
 }
 
 const missingToday = EXPECTED_DAILY_SOURCES.filter(s => !todayCounts[s]);
@@ -1333,12 +1287,12 @@ return { ok: true, summary: 'OK', details };
 
 const yesterdayLink = document.querySelector('li[ng-click="getYesterdaysData()"]');
 if (!yesterdayLink) {
-return { ok: false, summary: `MISSING - ${missingToday.join(', ')} (could not check yesterday - control not found)`, details };
+return { ok: false, summary: `MISSING: ${missingToday.join(', ')} (could not check yesterday - control not found)`, details };
 }
 yesterdayLink.click();
 const changed = await waitForInboundDateChange(todayLabel, 15000);
 if (!changed) {
-return { ok: false, summary: `MISSING - ${missingToday.join(', ')} (could not confirm yesterday's data loaded)`, details };
+return { ok: false, summary: `MISSING: ${missingToday.join(', ')} (could not confirm yesterday's data loaded)`, details };
 }
 await waitForInboundRowsSettled();
 const yesterdayCounts = extractSourceCounts(isInOvernightWindow);
@@ -1347,7 +1301,7 @@ const stillMissing = missingToday.filter(s => !yesterdayCounts[s]);
 if (stillMissing.length === 0) {
 return { ok: true, summary: `OK (found overnight yesterday: ${missingToday.join(', ')})`, details };
 }
-return { ok: false, summary: `MISSING - ${stillMissing.join(', ')}`, details };
+return { ok: false, summary: `MISSING: ${stillMissing.join(', ')}`, details };
 } finally {
 // No need to explicitly restore Today here - the page's own
 // controller calls getTodaysData() in its constructor, so the next
@@ -1387,11 +1341,11 @@ try {
 window.location.hash = '#/Queue/InboundAPI';
 const table = await waitForElement('table.table-striped', 15000);
 if (!table) {
-return { ok: null, summary: 'Could not load the Inbound API table - aborted.' };
+return { ok: null, summary: 'Could not load the Inbound API table. Stopped.' };
 }
 const settledCount = await waitForInboundRowsSettled();
 if (settledCount === 0) {
-return { ok: null, summary: 'Inbound API table read back with zero usable rows for Today - likely not fully loaded, re-run to confirm.' };
+return { ok: null, summary: 'Inbound API table read back with zero usable rows for Today. It may not have fully loaded, so run it again to confirm.' };
 }
 
 const rows = Array.from(document.querySelectorAll('table.table-striped tr')).filter(r => r.querySelectorAll('td').length >= INBOUND_MIN_CELLS);
@@ -1471,15 +1425,15 @@ window.location.hash = '#/Queue/Voicemails';
 // waitForVoicemailCount already waits out below.
 const moduleTrigger = await waitForElement('div[title="Filter by Module"]', 15000);
 if (!moduleTrigger) {
-return { ok: null, summary: 'Could not find the module filter after navigating - aborted.' };
+return { ok: null, summary: 'Could not find the module filter after navigating. Stopped.' };
 }
 const moduleOk = await ensureCustomerHubModule();
 if (!moduleOk) {
-return { ok: null, summary: 'Could not confirm the Customer Hub module is selected - aborted.' };
+return { ok: null, summary: 'Could not confirm the Customer Hub module is selected. Stopped.' };
 }
 const count = await waitForVoicemailCount();
 if (count === null) {
-return { ok: null, summary: 'Could not read the voicemail queue count - aborted.' };
+return { ok: null, summary: 'Could not read the voicemail queue count. Stopped.' };
 }
 // Plain count, same nature as the SLA count - no OK/problem judgment,
 // it's often legitimately 0.
@@ -1502,7 +1456,7 @@ await waitForElement('table', 15000);
 await sleep(300);
 }
 if (detectPageType() !== PAGE_SLA) {
-return { ok: null, summary: 'Could not find the SLA queue table - aborted.' };
+return { ok: null, summary: 'Could not find the SLA queue table. Stopped.' };
 }
 // isEmailOnly is already computed per-lead by collectAssignableLeads
 // (same field the Assign section's own "Email only" checkbox count
@@ -1536,7 +1490,11 @@ results
 function loadMorningChecksLastRun() {
 try {
 const raw = JSON.parse(localStorage.getItem(MORNING_CHECKS_LAST_RUN_KEY) || 'null');
-if (!raw || new Date(raw.time).toDateString() !== new Date().toDateString()) return null;
+if (!raw) return null;
+if (new Date(raw.time).toDateString() !== new Date().toDateString() || !isStoredTimeFresh(raw.time)) {
+removeStoredKey(MORNING_CHECKS_LAST_RUN_KEY);
+return null;
+}
 return raw;
 } catch (error) {
 return null;
@@ -1552,7 +1510,7 @@ if (!lastRun) return '';
 const issueText = lastRun.failedLabels.length === 0
 ? 'All OK'
 : `${lastRun.failedLabels.length} issue${lastRun.failedLabels.length > 1 ? 's' : ''} (${escapeHtml(lastRun.failedLabels.join(', '))})`;
-return `<div style="font-size: 11px; color: #94a3b8; margin-top: 8px;">Last run today at ${formatTimeForInput(new Date(lastRun.time))} &middot; ${issueText} &middot; ${formatElapsed(lastRun.elapsedMs)}</div>`;
+return `<div style="font-size: 11px; color: var(--wb-muted, #5b6577); margin-top: 8px;">Last run today at ${formatTimeForInput(new Date(lastRun.time))} &middot; ${issueText} &middot; ${formatElapsed(lastRun.elapsedMs)}</div>`;
 }
 
 function morningCheckStatusColor(row) {
@@ -1606,8 +1564,8 @@ return `
 <div style="border: 1px ${borderStyle} ${borderColor}; border-left: 3px solid ${color}; border-radius: 8px; padding: 10px 12px; background: ${background}; opacity: ${isPending ? '0.65' : '1'}; transition: background 0.2s ease, opacity 0.2s ease;">
 <div style="display: flex; align-items: center; gap: 8px; ${hasDetails ? 'cursor: pointer;' : ''}" ${hasDetails ? `onclick="window._toggleMorningCheckDetails('${row.key}')"` : ''}>
 <span style="width: 8px; height: 8px; border-radius: 50%; background: ${color}; flex-shrink: 0;"></span>
-<span style="font-size: 12px; font-weight: 600; color: #1e293b; flex-shrink: 0;">${row.label}</span>
-<span style="font-size: 12px; color: #64748b; flex: 1; text-align: right;">${escapeHtml(rightText)}</span>
+<span style="font-size: 12px; font-weight: 600; color: var(--wb-text, #1c1c1e); flex-shrink: 0;">${row.label}</span>
+<span style="font-size: 12px; color: var(--wb-muted, #5b6577); flex: 1; text-align: right;">${escapeHtml(rightText)}</span>
 ${hasDetails ? chevronIcon(true, chevronId) : ''}
 </div>
 ${hasDetails ? `
@@ -1629,7 +1587,7 @@ if (morningChecksResults.length === 0) {
 return `
 <div style="padding: 24px 4px; text-align: center;">
 <div style="color: #cbd5e1; margin-bottom: 12px;">${svgIcon('checklist', 40, ' stroke-width: 1.5;')}</div>
-<p style="color: #64748b; margin: 0 0 20px 0; font-size: 14px; line-height: 1.6;">Runs the five morning checks in order - SLA Count, In Progress, Lead Type Check, All Leads Are Routed To, Voicemail - and reports each result here.</p>
+<p style="color: var(--wb-muted, #5b6577); margin: 0 0 20px 0; font-size: 14px; line-height: 1.6;">Runs the five morning checks in order: SLA Count, In Progress, Lead Type Check, All Leads Are Routed To, Voicemail - and reports each result here.</p>
 <button onclick="window._runAllMorningChecks();" style="padding: 10px 20px; background: #1e293b; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;">Run All Checks</button>
 ${renderLastRunLine(lastRun)}
 </div>`;
@@ -1649,14 +1607,13 @@ ${rows}
 style="padding: 8px 18px; background: ${runningMorningChecks ? '#cbd5e1' : '#1e293b'}; color: white; border: none; border-radius: 8px; cursor: ${runningMorningChecks ? 'default' : 'pointer'}; font-size: 13px; font-weight: 600;">
 ${runningMorningChecks ? 'Running…' : (allDone ? 'Run Again' : 'Run All Checks')}
 </button>
-${allDone && !runningMorningChecks ? `<span onclick="window._clearMorningChecks();" style="margin-left: 10px; font-size: 12px; color: #94a3b8; cursor: pointer; text-decoration: underline;">Clear</span>` : ''}
+${allDone && !runningMorningChecks ? `<span onclick="window._clearMorningChecks();" style="margin-left: 10px; font-size: 12px; color: var(--wb-muted, #5b6577); cursor: pointer; text-decoration: underline;">Clear</span>` : ''}
 ${allDone ? renderLastRunLine(lastRun) : ''}
 </div>`;
 }
 
 // Results otherwise persist until end of day or the next run (see
-// morningChecksResults' own init) - this is the explicit third way to
-// get back to "hasn't been run yet", per instruction.
+// morningChecksResults' own init).
 window._clearMorningChecks = function() {
 morningChecksResults = [];
 try {
@@ -1689,26 +1646,12 @@ const chevron = document.getElementById(`_mcChevron_${key}`);
 if (chevron) chevron.style.transform = `rotate(${opening ? 0 : -90}deg)`;
 };
 
-// Leaves morningChecksResults untouched on both the way out and the
-// way back in - the last run's results should still be sitting there
-// after switching to the normal queue view and back, not just while
-// the panel itself happens to stay mounted. They're only ever replaced
-// by an actual re-run (window._runAllMorningChecks resets the array
-// itself right before it starts).
-//
-// Switching back used to go through runExtraction(), which depends on
-// detectPageType() recognizing whatever page is CURRENTLY loaded - but
-// Morning Checks routinely leaves the visible tab on Live Campaigns/
-// Inbound API/Voicemails/Queue by Agent, none of which detectPageType()
-// recognizes, so that press did nothing at all until the user happened
-// to be back on the SLA or Pending page (needing a second, sometimes a
-// third, press to actually take effect). currentCustomers/
-// currentPendingCustomers already hold the last real scan from before
-// Morning Checks was entered - showing that straight back is both
-// instant (no fresh re-scrape, including any slow per-lead detail
-// scraping) and independent of whatever page is currently on screen.
-// Falls back to a live scan only if there's genuinely no prior normal
-// view yet this session.
+// Leaves morningChecksResults untouched on both the way out and the way
+// back in - the last run's results should still be sitting there after
+// switching to the normal queue view and back, not just while the panel
+// itself happens to stay mounted. They're only ever replaced by an
+// actual re-run (window._runAllMorningChecks resets the array itself
+// right before it starts).
 window._toggleMorningChecks = function() {
 if (runningMorningChecks) return;
 if (currentPanelMode === 'morningChecks') {
@@ -1742,21 +1685,10 @@ displayMorningChecks();
 // comment on window._checkRoutedTo).
 const MORNING_CHECKS_EXECUTION_ORDER = ['sla', 'routedTo', 'leadType', 'inProgress', 'voicemail'];
 
-// Runs the five real checks (see MORNING_CHECKS_EXECUTION_ORDER for why
-// that order, not the display order, is used to actually run them) -
-// Email Only Count is a sixth displayed row but has no check function
-// of its own, populated as a side effect of "sla" instead (see below).
-// Updates the page after each check completes so results appear progressively
-// rather than all at once at the end. Each check function saves/
-// restores its own hash internally, but skipRestore=true is passed here
-// so a check leaves the browser wherever it landed instead of bouncing
-// back through the page morning checks started from between every
-// single step - originalHash is only restored once, at the very end.
-// Konnect's own pages re-rendering mid-navigation (a big table's rows
-// all populating at once, etc.) is what the user described as making
-// the screen look like it's glitching - showPageFlashOverlay dims
-// the real page for the whole run so none of that is visible, without
-// slowing anything down (it's purely cosmetic, nothing waits on it).
+// Runs the five real checks - Email Only Count is a sixth displayed row
+// but has no check function of its own, populated as a side effect of
+// "sla" instead (see below). Updates the page after each check completes
+// so results appear progressively rather than all at once at the end.
 window._runAllMorningChecks = async function() {
 if (runningMorningChecks) return;
 runningMorningChecks = true;
@@ -1784,7 +1716,7 @@ let result;
 try {
 result = await checkFns[key]();
 } catch (err) {
-result = { ok: null, summary: `Error - ${err && err.message ? err.message : err}` };
+result = { ok: null, summary: `Error: ${err && err.message ? err.message : err}` };
 }
 
 morningChecksResults = morningChecksResults.map(r => r.key === key ? { ...r, status: 'done', ...result } : r);
@@ -1827,14 +1759,10 @@ displayMorningChecks();
 // own labeled table - <tr><td>Email</td><td>value</td></tr>, likewise
 // Mobiles/Landlines (both plural - a customer can have more than one on
 // file, comma-separated, matching the confirmed "07700900321," shape).
-// Reading by the field's own label is more reliable than the old
-// approach of pattern-matching a phone/email shape out of the modal's
-// whole text, which could in principle misfire on some other number or
-// address incidentally present in the modal. Scoped to .tab-pane.active
-// so the Vehicles Owned tab's own <table class="table"> (uib-tab keeps
-// every tab's markup in the DOM at once, just toggling which one is
-// "active" - confirmed both tabs share the exact same table class)
-// could never get matched by accident.
+// Scoped to .tab-pane.active so the Vehicles Owned tab's own <table
+// class="table"> (uib-tab keeps every tab's markup in the DOM at once,
+// just toggling which one is "active" - confirmed both tabs share the
+// exact same table class) could never get matched by accident.
 function readModalTabField(modal, label) {
 const rows = Array.from(modal.querySelectorAll('.tab-pane.active table.table tr'));
 const row = rows.find(r => r.querySelector('td')?.textContent?.trim() === label);
@@ -1867,10 +1795,7 @@ let phone = (firstFromCommaList(readModalTabField(modal, 'Mobiles')) || firstFro
 let email = readModalTabField(modal, 'Email');
 
 // Falls back to the old whole-modal regex scrape only if the labeled
-// lookup came back completely empty - in case some other customer's
-// modal ever renders with a different table shape than the one
-// confirmed here, rather than silently losing data the old approach
-// would have caught.
+// lookup came back completely empty.
 if (!phone || !email) {
 const modalText = modal.innerText || modal.textContent;
 if (!phone) {
@@ -1957,27 +1882,10 @@ return `<div class="avatar-circle" style="cursor: pointer; width: ${size}px; hei
 }
 
 // Replaces showing up to 3 equal-weight pills (urgency + Lead Checker
-// tier/postClosure + queue-mismatch) side by side on one card - per
-// instruction, only the single most actionable signal gets the full
-// colored-pill treatment; everything else demotes to the plain muted
-// secondary line (see callers). Order matters: a Post-Closure "send
-// back through" or a queue mismatch (both mean "don't just assign this
-// normally") outrank a plain SLA timer, which outranks an informational
-// tier/queue-position note. Must never let a tier name win the pill
-// slot when postClosureAction is set (postClosureBadgeReplacementSelfTest).
-// Was one single "dominant" slot with Lead Checker's own tier color as
-// the LOWEST priority candidate - since almost every SLA card has a
-// non-null urgency.label (any lead with an slaDate at all), urgency
-// won that slot on nearly every card, which silently demoted Lead
-// Checker's own classification color to plain grey text essentially
-// always, not just when something more urgent was genuinely competing
-// for attention. Reported live as "the colour coding... has been
-// completely removed." Split into two independent, always-reliable
-// slots instead of one winner-take-all contest: Lead Checker's own
-// classification gets its own guaranteed colored badge whenever
-// present, and urgency/queue-mismatch separately compete for a second
-// slot - neither can silently lose and fall back to colorless text just
-// because the other also happened to apply to the same lead.
+// tier/postClosure + queue-mismatch) side by side on one card. Order
+// matters: a Post-Closure "send back through" or a queue mismatch (both
+// mean "don't just assign this normally") outrank a plain SLA timer,
+// which outranks an informational tier/queue-position note.
 function pickLeadCheckerBadge(leadChecker) {
 if (!leadChecker) return null;
 if (leadChecker.postClosureAction) {
@@ -1989,11 +1897,11 @@ return { label: leadChecker.tierName, color: leadCheckerImportCategoryColor(lead
 return null;
 }
 
-// Queue-mismatch outranks urgency for this second slot (matches the
-// old priority order) - "assigning this may be rejected" is more
-// immediately actionable than a plain due-timer. The non-mismatch
-// "Nth in queue" case never competes here (informational, not urgent),
-// it always demotes straight to the secondary line.
+// Queue-mismatch outranks urgency for this second slot - "assigning this
+// may be rejected" is more immediately actionable than a plain
+// due-timer. The non-mismatch "Nth in queue" case never competes here
+// (informational, not urgent), it always demotes straight to the
+// secondary line.
 function pickUrgencyBadge(urgency, queuePosition, assigned) {
 if (queuePosition && !assigned) {
 return { label: `Already in ${queuePosition.agentName}'s queue`, color: '#b45309', source: 'queue' };
@@ -2017,7 +1925,7 @@ return parts.filter(Boolean).join(' &middot; ');
 
 function renderCopyableField(value) {
 if (!value) {
-return `<span style="padding: 4px 6px; border-radius: 6px; background: #e2e8f0; color: #94a3b8; display: inline-block; font-size: 13px;">N/A</span>`;
+return `<span style="padding: 4px 6px; border-radius: 6px; background: #e2e8f0; color: var(--wb-muted, #5b6577); display: inline-block; font-size: 13px;">N/A</span>`;
 }
 const display = escapeHtml(value);
 return `<span class="sla-copyable" data-value="${display}" style="cursor: pointer; padding: 4px 6px; border-radius: 6px; background: #eef2ff; color: #1e293b; display: inline-block; font-size: 13px;">${display}</span>`;
@@ -2045,7 +1953,7 @@ ${gridInnerHtml}
 function renderAssignmentBadge(assigned, agentName) {
 return assigned
 ? `<span style="background: #d1fae5; color: #059669; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; white-space: nowrap; flex-shrink: 0;">✓ ${escapeHtml(agentName || 'Assigned')}</span>`
-: `<span style="background: #f8fafc; color: #94a3b8; padding: 2px 8px; border-radius: 6px; font-size: 11px; white-space: nowrap; flex-shrink: 0;">Unassigned</span>`;
+: `<span style="background: #f8fafc; color: var(--wb-muted, #5b6577); padding: 2px 8px; border-radius: 6px; font-size: 11px; white-space: nowrap; flex-shrink: 0;">Unassigned</span>`;
 }
 
 // A per-lead agent picker, for the case of assigning one specific lead
@@ -2230,7 +2138,7 @@ cachedLeadsSnapshot.leads = cachedLeadsSnapshot.leads.map((l) => ({ ...l, assign
 // waitForLeadsTableRows' MutationObserver-based wait actually resolves
 // at the right moment against Konnect's real Angular re-render timing.
 // That half only a live re-test can confirm.
-(function leadsCacheSelfTest() {
+runSelfTest('leadsCacheSelfTest', function leadsCacheSelfTest() {
 const originalQuerySelector = document.querySelector.bind(document);
 let scrapeCount = 0;
 document.querySelector = function(selector) {
@@ -2263,14 +2171,14 @@ getCachedAssignableLeads();
 if (scrapeCount !== 2) failures.push(`invalidateLeadsCache: expected a fresh scrape after each explicit invalidation (2 calls), got ${scrapeCount}`);
 
 if (failures.length > 0) {
-console.error('SLA Extract leads-cache self-test FAILED:\n' + failures.join('\n'));
+reportSelfTestFailure('SLA Manager leads-cache self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Extract leads-cache self-test passed (3/3)');
+console.info('SLA Manager leads-cache self-test passed (3/3)');
 }
 } finally {
 document.querySelector = originalQuerySelector;
 }
-})();
+});
 
 // Static "last scanned at HH:MM" rather than a live-ticking "Xm ago" -
 // deliberately not using an interval to keep this updating, given
@@ -2457,6 +2365,21 @@ return plan;
 // a reference captured earlier - protects against the row/cell being
 // re-rendered (e.g. by an Angular digest from a prior assignment) between
 // when the plan was built and when this particular lead's turn comes up.
+// Every Assign cell whose row matches the lead's key. More than one match
+// means two leads share a key, and the run skips them rather than guess.
+function findSlaAssignCells(lead) {
+const found = [];
+const table = document.querySelector('table');
+if (!table) return found;
+const rows = table.querySelectorAll('tbody tr');
+for (const row of rows) {
+const cells = row.querySelectorAll('td');
+if (cells.length < 9) continue;
+const key = `${cells[COL_CUSTOMER]?.textContent?.trim()}||${cells[COL_REGISTRATION]?.textContent?.trim()}||${cells[COL_SOURCE]?.textContent?.trim()}||${cells[COL_CAMPAIGN]?.textContent?.trim()}`;
+if (key === lead.key) found.push(cells[COL_ASSIGN]);
+}
+return found;
+}
 function locateAssignCell(lead) {
 const table = document.querySelector('table');
 if (!table) return null;
@@ -2500,24 +2423,9 @@ return null;
 
 // Holding onto any specific node (the cell, or even its row) is fragile
 // against Angular's ng-repeat, which is free to replace nodes at any
-// level when it re-renders - a <td> swap, a whole <tr> swap, either is
-// a mutation on that node's PARENT, so an observer scoped to the node
-// itself never sees its own replacement and times out even on success
-// (this bit us once already at the cell level - the row-level fix just
-// moved the same blind spot up one level). The only reference that
-// stays valid across any re-render is the lead's stable content key, so
-// this re-locates the cell fresh via locateCellFn on every table
-// mutation instead of tracking a node - correct regardless of what
-// level Angular decides to replace.
-// Clicks are pipelined (fired ~200ms apart) rather than one-at-a-time,
-// so an individual confirmation's wait no longer blocks the rest of the
-// batch - it resolves in the background regardless of how long it takes.
-// That means a longer timeout costs nothing for overall run speed, only
-// how long a genuinely slow response gets before being called a failure,
-// so it's set generously to absorb real backend tail latency (the actual
-// remaining source of "reports failed but it worked" - see the Retry
-// Failed button, which exists precisely because a rare slow response can
-// still occasionally outrun even this).
+// level when it re-renders - a <td> swap, a whole <tr> swap, either is a
+// mutation on that node's PARENT, so an observer scoped to the node
+// itself never sees its own replacement and times out even on success.
 function waitForAssignConfirmed(lead, locateCellFn, timeout = 6000) {
 return new Promise((resolve) => {
 const table = document.querySelector('table');
@@ -2554,17 +2462,10 @@ return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // Browsers throttle setTimeout-based waits heavily in a backgrounded
-// tab - reported live as detail-modal scraping (extractCustomerDetails,
-// below) becoming slower and unreliable while a different browser tab
-// was active. waitForModal and every other wait this touches is
+// tab. waitForModal and every other wait this touches is
 // setTimeout/MutationObserver-based, so a throttled tab risks reading a
-// modal as never having opened purely because of throttling, not a
-// real failure. Resolves immediately if already visible (the common
-// case costs nothing); otherwise waits for the tab to actually become
-// the active one again before letting a new modal-open attempt start -
-// same cooperative-checkpoint idea as the extracting/assigning/
-// runningMorningChecks/refreshingLeads guards already used throughout
-// this file, just for a condition none of those cover.
+// modal as never having opened purely because of throttling, not a real
+// failure.
 function waitForTabVisible() {
 if (!document.hidden) return Promise.resolve();
 return new Promise((resolve) => {
@@ -2638,7 +2539,23 @@ const { lead, agent } = plan[i];
 if (i > 0) await sleep(ASSIGN_CLICK_STAGGER_MS);
 await acquireSlot();
 try {
+const allCells = locateCellFn === locatePendingAssignCell ? findPendingAssignCells(lead)
+: locateCellFn === locateAssignCell ? findSlaAssignCells(lead) : null;
+if (allCells && allCells.length > 1) {
+results[i] = { lead, agent, ok: false, reason: 'Skipped: more than one row matches this lead. Assign it by hand' };
+settled.push(results[i]);
+reportProgress();
+releaseSlot();
+continue;
+}
 const cell = locateCellFn(lead);
+if (cell && getAssignCellState(cell).assigned) {
+results[i] = { lead, agent, ok: false, reason: 'Already assigned on the page' };
+settled.push(results[i]);
+reportProgress();
+releaseSlot();
+continue;
+}
 if (!cell) {
 results[i] = { lead, agent, ok: false, reason: 'Row no longer found on page' };
 settled.push(results[i]);
@@ -2733,7 +2650,7 @@ function appendAssignmentLog(results) {
 try {
 const today = new Date().toDateString();
 const existing = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]')
-.filter(e => new Date(e.time).toDateString() === today);
+.filter(e => new Date(e.time).toDateString() === today && isStoredTimeFresh(e.time));
 const now = new Date().toISOString();
 const entries = results.filter(r => r.ok).map(r => ({
 time: now,
@@ -2754,14 +2671,14 @@ function renderAssignmentHistoryHtml() {
 let entries = [];
 try { entries = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]'); } catch (error) { /* ignore */ }
 const today = new Date().toDateString();
-entries = entries.filter(e => new Date(e.time).toDateString() === today);
-if (entries.length === 0) return '<div style="color:#94a3b8;">No assignments recorded today yet.</div>';
+entries = entries.filter(e => new Date(e.time).toDateString() === today && isStoredTimeFresh(e.time));
+if (entries.length === 0) return '<div style="color: var(--wb-muted, #5b6577);">No assignments recorded today yet.</div>';
 const tally = {};
 entries.forEach(e => { tally[e.agent] = (tally[e.agent] || 0) + 1; });
 const rows = Object.entries(tally).sort((a, b) => b[1] - a[1])
 .map(([name, count]) => `<div style="display:flex;justify-content:space-between;"><span>${escapeHtml(name)}</span><span style="font-weight:700;">${count}</span></div>`).join('');
 const last = entries[entries.length - 1];
-return `<div style="font-size:11px;color:#64748b;margin-bottom:4px;">Assigned counts (today's shift):</div>${rows}
+return `<div style="font-size:11px;color: var(--wb-muted, #5b6577);margin-bottom:4px;">Assigned counts (today's shift):</div>${rows}
 <div style="font-size:10px;color:#cbd5e1;margin-top:6px;">Last: ${escapeHtml(last.lead)} → ${escapeHtml(last.agent)} at ${new Date(last.time).toLocaleTimeString()}</div>`;
 }
 
@@ -2801,16 +2718,40 @@ style.id = '_slaWheelStyles';
 // the input itself is visually hidden (opacity/size, not display:none,
 // so it stays focusable/clickable) rather than replaced with a custom
 // control.
-style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #4f46e5; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef2ff !important; } .chip-label { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 14px; border: 1px solid #cbd5e1; background: white; color: #64748b; font-size: 12px; cursor: pointer; user-select: none; transition: background 0.15s, border-color 0.15s, color 0.15s; } .chip-label input { position: absolute; opacity: 0; width: 0; height: 0; } .chip-label:has(input:checked) { background: #eef2ff; border-color: #4f46e5; color: #4338ca; font-weight: 600; } .lead-row-card { background: white; border-radius: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); overflow: hidden; } .avatar-circle:hover { filter: brightness(0.92); }';
+style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #4f46e5; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef2ff !important; } .chip-label { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 14px; border: 1px solid var(--wb-border, #cbd5e1); background: var(--wb-surface, white); color: var(--wb-muted, #5b6577); font-size: 12px; cursor: pointer; user-select: none; transition: background 0.15s, border-color 0.15s, color 0.15s; } .chip-label input { position: absolute; opacity: 0; width: 0; height: 0; } .chip-label:has(input:checked) { background: #eef2ff; border-color: #4f46e5; color: #4338ca; font-weight: 600; } .lead-row-card { background: var(--wb-surface, white); border-radius: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); overflow: hidden; } .avatar-circle:hover { filter: brightness(0.92); }';
+document.head.appendChild(style);
+ensurePanelThemeStyles();
+}
+
+// Shared tokens (same names as the Lead Checker panel) with a dark-mode
+// override, a visible keyboard focus ring, reduced motion and a width cap
+// so the panel never runs off a narrow window.
+function ensurePanelThemeStyles() {
+if (document.getElementById('_slaThemeStyles')) return;
+const style = document.createElement('style');
+style.id = '_slaThemeStyles';
+style.textContent = `
+#${PANEL_ID} { --wb-bg: #f2f2f7; --wb-surface: #ffffff; --wb-text: #1c1c1e; --wb-muted: #5b6577; --wb-border: #cbd5e1; --wb-accent: #22365D; --wb-danger: #dc2626; color: var(--wb-text); }
+@media (prefers-color-scheme: dark) {
+#${PANEL_ID} { --wb-bg: #1c1c1e; --wb-surface: #2c2c2e; --wb-text: #f2f2f7; --wb-muted: #a1a1aa; --wb-border: #3a3a3c; --wb-accent: #8fa8d8; --wb-danger: #f87171; }
+#${PANEL_ID} input, #${PANEL_ID} select, #${PANEL_ID} textarea { background: var(--wb-surface); color: var(--wb-text); }
+}
+#${PANEL_ID} :focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; box-shadow: 0 0 0 4px #ffffff; }
+#${PANEL_BOX_ID} { max-width: calc(100vw - 32px); }
+#leadCheckerPopover { max-width: calc(100vw - 64px); box-sizing: border-box; }
+#_slaAvatarAssignPopover { max-width: calc(100vw - 16px); }
+@media (prefers-reduced-motion: reduce) {
+#${PANEL_ID}, #${PANEL_ID} * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}`;
 document.head.appendChild(style);
 }
 
 function renderWheelColumnHtml(id, values, widthPx) {
 const spacerHeight = Math.floor(WHEEL_VISIBLE_ROWS / 2) * WHEEL_ROW_HEIGHT;
-const items = values.map(v => `<div class="wheel-item" style="height: ${WHEEL_ROW_HEIGHT}px; display: flex; align-items: center; justify-content: center; font-size: 13px; scroll-snap-align: center; color: #94a3b8; cursor: pointer; transition: color 0.15s, font-weight 0.15s;">${escapeHtml(String(v))}</div>`).join('');
+const items = values.map(v => `<div class="wheel-item" style="height: ${WHEEL_ROW_HEIGHT}px; display: flex; align-items: center; justify-content: center; font-size: 13px; scroll-snap-align: center; color: var(--wb-muted, #5b6577); cursor: pointer; transition: color 0.15s, font-weight 0.15s;">${escapeHtml(String(v))}</div>`).join('');
 return `<div style="position: relative; width: ${widthPx}px;">
 <div style="position: absolute; top: ${spacerHeight}px; left: 0; right: 0; height: ${WHEEL_ROW_HEIGHT}px; background: #eef2ff; border-radius: 6px; pointer-events: none;"></div>
-<div id="${id}" class="wheel-scroll" style="position: relative; height: ${WHEEL_VISIBLE_ROWS * WHEEL_ROW_HEIGHT}px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; border: 1px solid #cbd5e1; border-radius: 6px; background: white; cursor: grab;">
+<div id="${id}" class="wheel-scroll" style="position: relative; height: ${WHEEL_VISIBLE_ROWS * WHEEL_ROW_HEIGHT}px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; background: var(--wb-surface, white); cursor: grab;">
 <div style="height: ${spacerHeight}px;"></div>
 ${items}
 <div style="height: ${spacerHeight}px;"></div>
@@ -2895,7 +2836,7 @@ index = Math.max(0, Math.min(values.length - 1, index));
 const value = values[index];
 el.querySelectorAll('.wheel-item').forEach((item, i) => {
 item.style.fontWeight = i === index ? '700' : '400';
-item.style.color = i === index ? '#1e293b' : '#94a3b8';
+item.style.color = i === index ? 'var(--wb-text, #1e293b)' : 'var(--wb-muted, #5b6577)';
 });
 if (onSettle) onSettle(value);
 }
@@ -2957,9 +2898,8 @@ scrollToIndex(index, true);
 });
 
 // Click-and-drag for direct, precise control. mousedown is scoped to
-// this el (fine to re-attach every render - it's garbage-collected along
-// with the old el once a re-render replaces it); mousemove/mouseup are
-// the single shared pair from ensureWheelDragHandlers.
+// this el; mousemove/mouseup are the single shared pair from
+// ensureWheelDragHandlers.
 el.addEventListener('mousedown', (event) => {
 el.style.cursor = 'grabbing';
 window._slaWheelDragState = {
@@ -3006,7 +2946,7 @@ const index = Math.max(0, values.indexOf(value));
 el.scrollTop = index * WHEEL_ROW_HEIGHT;
 el.querySelectorAll('.wheel-item').forEach((item, i) => {
 item.style.fontWeight = i === index ? '700' : '400';
-item.style.color = i === index ? '#1e293b' : '#94a3b8';
+item.style.color = i === index ? 'var(--wb-text, #1e293b)' : 'var(--wb-muted, #5b6577)';
 });
 }
 
@@ -3095,7 +3035,7 @@ if (agents.length === 0) {
 const label = canCheckAgentRoster()
 ? 'No agents online'
 : "Can't check agents right now (no unassigned lead to read from)";
-return `<div style="font-size: 13px; color: #94a3b8;">${label}</div>`;
+return `<div style="font-size: 13px; color: var(--wb-muted, #5b6577);">${label}</div>`;
 }
 // Not-done count comes from the last window._checkAgentQueuePositions
 // snapshot (a point-in-time read of Konnect's own Queue by Agent page,
@@ -3110,7 +3050,7 @@ const queueBadge = queueInfo
 ? `<span title="${queueInfo.notDoneCount} not yet called, out of the last ${queueInfo.totalShown} queued (as of ${escapeHtml(new Date(queueSnapshot.scannedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))})" style="margin-left: 6px; padding: 1px 6px; border-radius: 6px; font-size: 11px; font-weight: 700; background: #eef2ff; color: #4338ca;">${queueInfo.notDoneCount}</span>`
 : '';
 return `
-<label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: #1e293b;" ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
+<label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--wb-text, #1c1c1e);" ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
 <input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()">
 <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${statusDotColor(a.status)}; flex-shrink: 0;"></span>
 ${escapeHtml(a.name)}${queueBadge}
@@ -3123,15 +3063,15 @@ ${escapeHtml(a.name)}${queueBadge}
 // before roundRobinAssign() in every entry point. Blank means no cap.
 function renderAssignLimitControl(settings) {
 return `<div style="display: flex; align-items: center; gap: 10px;">
-<label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; font-weight: 600; letter-spacing: 0.3px; white-space: nowrap;">
+<label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--wb-muted, #5b6577); font-weight: 600; letter-spacing: 0.3px; white-space: nowrap;">
 LIMIT
 <span style="position: relative; display: inline-flex; align-items: center;">
 <input type="number" id="assignLimitInput" min="1" placeholder="all" value="${settings.assignLimit || ''}" oninput="window._updateAssignPreview()"
-style="width: 48px; padding: 4px 18px 4px 6px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; font-weight: 400; color: #1e293b;">
-<span onclick="window._clearAssignLimit()" title="Clear limit (assign all)" style="position: absolute; right: 4px; cursor: pointer; color: #94a3b8; display: flex; align-items: center;">${svgIcon('x', 11)}</span>
+style="width: 48px; padding: 4px 18px 4px 6px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; font-size: 13px; font-weight: 400; color: var(--wb-text, #1c1c1e);">
+<span onclick="window._clearAssignLimit()" title="Clear limit (assign all)" style="position: absolute; right: 4px; cursor: pointer; color: var(--wb-muted, #5b6577); display: flex; align-items: center;">${svgIcon('x', 11)}</span>
 </span>
 </label>
-<label for="assignLimitPerAgent" title="When on, LIMIT is the number of leads EACH selected agent gets, not the total across all of them" style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #64748b; font-weight: 600; letter-spacing: 0.3px; white-space: nowrap; cursor: pointer;">
+<label for="assignLimitPerAgent" title="When on, LIMIT is the number of leads EACH selected agent gets, not the total across all of them" style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--wb-muted, #5b6577); font-weight: 600; letter-spacing: 0.3px; white-space: nowrap; cursor: pointer;">
 <input type="checkbox" id="assignLimitPerAgent" ${settings.assignLimitPerAgent ? 'checked' : ''} onchange="window._updateAssignPreview()">
 per agent
 </label>
@@ -3151,9 +3091,9 @@ per agent
 function renderStatTile(label, value, accent, onclick) {
 const color = accent === true ? '#dc2626' : (typeof accent === 'string' ? accent : null);
 const clickable = typeof onclick === 'string' && onclick.length > 0;
-return `<div ${clickable ? `class="stat-tile-clickable" onclick="${onclick}" title="Click to assign these"` : ''} style="flex: 1; text-align: center; background: white; border-radius: 6px; padding: 6px 2px; border: 1px solid ${color || '#e2e8f0'}; ${clickable ? 'cursor: pointer;' : ''}">
+return `<div ${clickable ? `class="stat-tile-clickable" onclick="${onclick}" title="Click to assign these"` : ''} style="flex: 1; text-align: center; background: var(--wb-surface, white); border-radius: 6px; padding: 6px 2px; border: 1px solid ${color || '#e2e8f0'}; ${clickable ? 'cursor: pointer;' : ''}">
 <div style="font-size: 16px; font-weight: 700; color: ${color || '#1e293b'};">${value}</div>
-<div style="font-size: 9px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.3px;">${label}</div>
+<div style="font-size: 9px; color: var(--wb-muted, #5b6577); text-transform: uppercase; letter-spacing: 0.3px;">${label}</div>
 </div>`;
 }
 
@@ -3174,7 +3114,7 @@ function renderStatSummaryShell(oneLineSummary, expandedBodyHtml) {
 const collapsed = isStatSummaryCollapsed();
 return `
 <div onclick="window._toggleStatSummary()" style="cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0 8px;">
-<span id="statSummaryLabel" data-summary="${escapeHtml(oneLineSummary)}" style="font-size: 11px; color: #64748b;">${collapsed ? escapeHtml(oneLineSummary) : 'OVERVIEW'}</span>
+<span id="statSummaryLabel" data-summary="${escapeHtml(oneLineSummary)}" style="font-size: 11px; color: var(--wb-muted, #5b6577);">${collapsed ? escapeHtml(oneLineSummary) : 'OVERVIEW'}</span>
 ${chevronIcon(collapsed, 'statSummaryToggle')}
 </div>
 <div id="statSummaryBody" style="display: ${collapsed ? 'none' : 'block'};">${expandedBodyHtml}</div>`;
@@ -3187,14 +3127,12 @@ function isZenModeOn() {
 return localStorage.getItem(ZEN_MODE_KEY) === '1';
 }
 
-// Snapshot/restore over the existing stat-summary collapse key - per
-// instruction, an escape hatch for a session that's drifted back open,
-// not a new mechanism competing with the per-section chevrons. The
+// Snapshot/restore over the existing stat-summary collapse key. The
 // Assign/Filters segmented control always shows exactly one tab now (no
 // "both collapsed" state to snapshot any more - see
 // renderAssignSectionShell), so zen mode's job there is simpler: hide
-// the whole assign/filters zone outright while on, bring it back
-// exactly as it was (whichever tab was last active) on disable.
+// the whole assign/filters zone outright while on, bring it back exactly
+// as it was (whichever tab was last active) on disable.
 function enableZenMode() {
 try {
 localStorage.setItem(ZEN_SNAPSHOT_KEY, JSON.stringify({ statSummaryCollapsed: isStatSummaryCollapsed() }));
@@ -3257,10 +3195,10 @@ const expandedBody = `
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${cfTiles}</div>`;
 
 return `
-<div id="slaDueSummary" style="padding: 12px 20px 0; background: #f2f2f7; font-size: 13px; color: #1e293b;">
+<div id="slaDueSummary" style="padding: 12px 20px 0; background: var(--wb-bg, #f2f2f7); font-size: 13px; color: var(--wb-text, #1c1c1e);">
 ${renderStatSummaryShell(oneLineSummary, expandedBody)}
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-<span style="font-size: 11px; color: #94a3b8;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
+<span style="font-size: 11px; color: var(--wb-muted, #5b6577);">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
 <button onclick="window._clearWholeQueue()" style="background: #dc2626; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('warning', 11)} Clear Queue</button>
 </div>
 </div>`;
@@ -3287,24 +3225,9 @@ localStorage.setItem(ASSIGN_SETTINGS_KEY, JSON.stringify({ ...loadAssignSettings
 
 // Scope for the "Copy for Lead Checker" export (feeds a separate,
 // external bookmarklet on a different site - see the header popover
-// below) - kept entirely separate from ASSIGN_SETTINGS_KEY since this
-// is a one-off export scope, not part of the assign filters, and
+// below) - kept entirely separate from ASSIGN_SETTINGS_KEY since this is
+// a one-off export scope, not part of the assign filters, and
 // deliberately not surfaced anywhere in the main Assign flow at all.
-//
-// Restored here - this was accidentally deleted along with the
-// duplicate Lead Checker classifier (a separate, unrelated feature
-// that happened to sit inside the same line range removed for that
-// cleanup, past where the classifier itself actually ended). Its
-// absence broke renderPanelShell unconditionally: every single panel
-// render (not just the queue-check-triggered ones this was chased
-// through several rounds of live reports for) called the now-missing
-// renderLeadCheckerExportPopover and threw a ReferenceError, caught
-// silently inside extractAndExportSla's own try/catch (logged as "SLA
-// Export Error", never surfaced) - and completely uncaught in the
-// handful of call sites that render a second time after a Queue by
-// Agent check, which is what actually made this visible as "leads
-// ingest fine, the queue check runs, then nothing loads." Confirmed
-// via a live console/error capture, not guessed.
 const LEAD_CHECKER_EXPORT_KEY = '_slaLeadCheckerExportSettings';
 
 function loadLeadCheckerExportSettings() {
@@ -3367,18 +3290,8 @@ return { tsv: [header, ...lines].join('\n'), count: rows.length, excludedCount }
 // occasionally (feeding a separate bookmarklet on another site), so it
 // shouldn't cost any visible space the rest of the time. Positioned
 // absolutely against PANEL_BOX_ID (the nearest positioned ancestor,
-// since that box itself is position:fixed) rather than pushing any
-// other content down when open.
-// Pending Customers has no Tier 1-4 concept (that's an SLA-queue-only
-// categorization - collectPendingCustomers never computes one) and no
-// Source column at all, so its own export settings/filter/TSV-builder
-// are genuinely different shapes, not just a different filter value -
-// kept as their own functions rather than forcing collectAssignableLeads'
-// SLA-specific shape to fit. 'New' is deliberately excluded from the
-// selectable callback types - per instruction, a callback type of 'New'
-// means never actioned yet, so it has no lastActionText (see
-// buildPendingLeadCheckerTsv) and is already covered by the SLA page's
-// own export anyway.
+// since that box itself is position:fixed) rather than pushing any other
+// content down when open.
 const PENDING_LEAD_CHECKER_CALLBACK_TYPES = ['Auto Rescheduled', 'Manual Rescheduled', 'Post Closure'];
 const LEAD_CHECKER_EXPORT_PENDING_KEY = '_slaLeadCheckerExportSettingsPending';
 
@@ -3405,14 +3318,7 @@ localStorage.setItem(LEAD_CHECKER_EXPORT_PENDING_KEY, JSON.stringify(settings));
 // Konnect-Lead-Checker.js's own classifier now falls back to the lead
 // modal's own confirmed Source once it finds the right lead (see its
 // processLeadRow comment on this exact handoff) - this is the intended
-// design, not a gap to paper over with a guessed value. Created uses
-// lastActionText (the RAW cell text, not the parsed Date - Booking
-// Check's own parseSlaCreated needs the same "D Mon YYYY HH:mm" shaped
-// string every other Created value already is, not a reformatted one)
-// - confirmed live: for a lead that's been actioned before, this
-// matches the timestamp on its own pink timeline entry on Konnect Live
-// to the minute, the same precision the SLA queue's Created column
-// already provides.
+// design, not a gap to paper over with a guessed value.
 function buildPendingLeadCheckerTsv(callbackTypes) {
 const typeSet = new Set(callbackTypes);
 const importResults = loadLeadCheckerImportState().results;
@@ -3429,36 +3335,26 @@ return true;
 });
 const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'].join('\t');
 const lines = rows.map((c) => [
-// Source is otherwise genuinely blank (this page has no Source column
-// of its own to draw a real value from, see the comment this used to
-// carry) - except for the Post Closure callback type specifically,
-// where we already know for certain what it is at export time, the
-// same label Konnect's own timeline uses ("Manually Created Sales Lead
-// from Post Closure Processing"). Without this, Konnect-Lead-Checker.js's
-// own Post Closure detection (classifyLead's Step 13) could never
-// trigger for a lead routed through this page at all - its Source
-// falls back to the lead modal's own ORIGINAL enquiry source (e.g.
-// "Customer First"), which is never "Post Closure Processing" - a real
-// reported case was wrongly left classified by tier because of this.
+// Source is otherwise genuinely blank - except for the Post Closure
+// callback type specifically, where we already know for certain what it
+// is at export time, the same label Konnect's own timeline uses
+// ("Manually Created Sales Lead from Post Closure Processing"). Without
+// this, Konnect-Lead-Checker.js's own Post Closure detection
+// (classifyLead's Step 13) could never trigger for a lead routed through
+// this page at all - its Source falls back to the lead modal's own
+// ORIGINAL enquiry source (e.g. "Customer First"), which is never "Post
+// Closure Processing".
 tsvSafe(stripTitle(c.name)), tsvSafe(c.mobile || c.landline), tsvSafe(c.email), c.callbackType === 'Post Closure' ? 'Post Closure Processing' : '', tsvSafe(c.campaign), tsvSafe(c.lastActionText)
 ].join('\t'));
 return { tsv: [header, ...lines].join('\n'), count: rows.length, excludedCount };
 }
 
 // Shared shell (same popover DOM id/position/Copy button) between the
-// SLA and Pending pages - genuinely just different filter checkboxes
-// and a different TSV builder underneath, not different enough to
-// justify a second copy of the popover chrome itself the way the
-// Assign section's own SLA/Pending split is (that one's internal
-// filtering logic is far more involved on both sides).
-// Combined into one popover, one icon, one toggle (previously two
-// separate icons/popovers, Copy and Classify) - per instruction, this
-// is one round-trip workflow with Konnect Lead Checker (send leads
-// out, get results back), not two unrelated features, so it doesn't
-// need two separate entry points in the panel header. The underlying
-// settings/state stay genuinely separate (export filter settings vs.
-// import paste state - different data, different purposes), only the
-// two are now presented together in one place.
+// SLA and Pending pages - genuinely just different filter checkboxes and
+// a different TSV builder underneath, not different enough to justify a
+// second copy of the popover chrome itself the way the Assign section's
+// own SLA/Pending split is (that one's internal filtering logic is far
+// more involved on both sides).
 function renderLeadCheckerPopover() {
 const exportSectionHtml = (() => {
 if (currentPageType === PAGE_PENDING) {
@@ -3466,15 +3362,15 @@ const settings = loadPendingLeadCheckerExportSettings();
 const selectedTypes = new Set(settings.callbackTypes);
 const { count, excludedCount } = buildPendingLeadCheckerTsv(settings.callbackTypes);
 const typeCheckboxes = PENDING_LEAD_CHECKER_CALLBACK_TYPES.map(t => `
-<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;">
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--wb-text, #1c1c1e);">
 <input type="checkbox" class="booking-export-callback-type" value="${escapeHtml(t)}" ${selectedTypes.has(t) ? 'checked' : ''} onchange="window._updateLeadCheckerExportPreview()">
 ${escapeHtml(t)}
 </label>`).join('');
 return `
 <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${typeCheckboxes}</div>
-<div style="font-size: 10.5px; color: #94a3b8; margin-bottom: 10px;">New (never-actioned) leads are excluded - check the SLA queue for those.</div>
+<div style="font-size: 10.5px; color: var(--wb-muted, #5b6577); margin-bottom: 10px;">New (never-actioned) leads are excluded. Check the SLA queue for those.</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-<span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}</span>
+<span id="bookingExportRowCount" style="font-size: 11px; color: var(--wb-muted, #5b6577);">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}</span>
 <button onclick="window._copyLeadCheckerExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
 </div>`;
 }
@@ -3482,18 +3378,18 @@ const settings = loadLeadCheckerExportSettings();
 const selectedTiers = new Set(settings.tiers);
 const { count, excludedCount } = buildLeadCheckerTsv(settings.tiers, settings.customerFirstOnly);
 const tierCheckboxes = [1, 2, 3, 4].map(t => `
-<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b;">
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--wb-text, #1c1c1e);">
 <input type="checkbox" class="booking-export-tier" value="${t}" ${selectedTiers.has(t) ? 'checked' : ''} onchange="window._updateLeadCheckerExportPreview()">
 Tier ${t}
 </label>`).join('');
 return `
 <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${tierCheckboxes}</div>
-<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #1e293b; margin-bottom: 10px;">
+<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--wb-text, #1c1c1e); margin-bottom: 10px;">
 <input type="checkbox" id="bookingExportCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateLeadCheckerExportPreview()">
 Customer First only
 </label>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-<span id="bookingExportRowCount" style="font-size: 11px; color: #64748b;">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}</span>
+<span id="bookingExportRowCount" style="font-size: 11px; color: var(--wb-muted, #5b6577);">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}</span>
 <button onclick="window._copyLeadCheckerExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
 </div>`;
 })();
@@ -3515,17 +3411,17 @@ leadCheckerResultCandidatesIndexed(c, leadCheckerMatchIndex).forEach((r) => matc
 });
 const matchedCount = matchedResultsSet.size;
 const importSummary = importState.results.length === 0
-? `<div style="font-size: 12px; color: #94a3b8; padding: 8px 0 0;">Paste results from Konnect Lead Checker's "Copy raw for Extract" button, then press Classify - they'll show up as a badge on the matching lead card below.</div>`
-: `<div style="font-size: 12px; color: #64748b; padding: 8px 0 0;">${importState.results.length} classified, ${matchedCount} matched to a lead in the current list below.${importState.results.length !== matchedCount ? ' The rest aren\'t in the current SLA list (already assigned, expired, or a different queue).' : ''}</div>`;
+? `<div style="font-size: 12px; color: var(--wb-muted, #5b6577); padding: 8px 0 0;">Copy the results in Konnect Lead Checker, paste them here and press Classify. Each result shows as a badge on its lead card below.</div>`
+: `<div style="font-size: 12px; color: var(--wb-muted, #5b6577); padding: 8px 0 0;">${importState.results.length} classified, ${matchedCount} matched to a lead in the current list below.${importState.results.length !== matchedCount ? ' The rest aren\'t in the current SLA list (already assigned, expired, or a different queue).' : ''}</div>`;
 
 return `
-<div id="leadCheckerPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 280px; background: white; border: 1px solid #cbd5e1; border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
-<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">COPY LEADS TO LEAD CHECKER</div>
+<div id="leadCheckerPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 280px; background: var(--wb-surface, white); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
+<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 8px;">COPY LEADS TO LEAD CHECKER</div>
 ${exportSectionHtml}
 <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 14px 0;">
-<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 8px;">CLASSIFY RESULTS BACK IN</div>
-<div style="font-size: 10px; color: #94a3b8; margin-bottom: 6px;">Use the "Paste & Classify from Lead Checker" button above the list - or paste manually here if clipboard access is blocked:</div>
-<textarea id="leadCheckerImportBox" placeholder="Paste TSV from Konnect Lead Checker" oninput="window._updateLeadCheckerImportInput(this.value)" style="width: 100%; height: 60px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid #cbd5e1; border-radius: 6px;">${escapeHtml(importState.rawInput)}</textarea>
+<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 8px;">CLASSIFY RESULTS BACK IN</div>
+<div style="font-size: 10px; color: var(--wb-muted, #5b6577); margin-bottom: 6px;">Use the "Paste & Classify from Lead Checker" button above the list, or paste here by hand if clipboard access is blocked:</div>
+<textarea id="leadCheckerImportBox" placeholder="Paste TSV from Konnect Lead Checker" oninput="window._updateLeadCheckerImportInput(this.value)" style="width: 100%; height: 60px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px;">${escapeHtml(importState.rawInput)}</textarea>
 <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
 <button onclick="window._classifyLeadCheckerImport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Classify</button>
 </div>
@@ -3575,11 +3471,8 @@ return;
 }
 navigator.clipboard.writeText(tsv).then(() => {
 buttonEl.textContent = `✓ Copied ${count}`;
-// Closes itself on a successful copy - per instruction, this is a
-// "copy here, go paste in the other tool" handoff, not a dashboard to
-// linger on, so leaving it open just adds a manual close click to
-// every single round-trip. Only on success - left open on failure
-// (below) so the error is visible and the user can retry without
+// Closes itself on a successful copy. Only on success - left open on
+// failure (below) so the error is visible and the user can retry without
 // reopening the popover from scratch.
 setTimeout(() => {
 buttonEl.textContent = original;
@@ -3618,15 +3511,18 @@ setTimeout(() => { buttonEl.textContent = original; }, 1500);
 
 const LEAD_CHECKER_IMPORT_KEY = '_slaLeadCheckerImportState';
 // Matches Konnect-Lead-Checker.js's own buildRawNotesTsvForExtract
-// header exactly (lead-classification-spec.md v1.10 - 6 tiers with
-// sub-categories/flags/dedupe, not the old 4-category scheme) - kept
-// in lockstep since the two files can't share a module.
+// header exactly - kept in lockstep since the two files can't share a
+// module.
 const LEAD_CHECKER_IMPORT_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank'];
 
 function loadLeadCheckerImportState() {
 try {
 const raw = JSON.parse(localStorage.getItem(LEAD_CHECKER_IMPORT_KEY));
 if (raw && typeof raw === 'object') {
+if (!isStoredTimeFresh(raw.savedAt)) {
+removeStoredKey(LEAD_CHECKER_IMPORT_KEY);
+return { rawInput: '', results: [] };
+}
 return { rawInput: raw.rawInput || '', results: Array.isArray(raw.results) ? raw.results : [] };
 }
 } catch (error) {
@@ -3637,16 +3533,15 @@ return { rawInput: '', results: [] };
 
 function saveLeadCheckerImportState(state) {
 try {
-localStorage.setItem(LEAD_CHECKER_IMPORT_KEY, JSON.stringify(state));
+localStorage.setItem(LEAD_CHECKER_IMPORT_KEY, JSON.stringify({ ...state, savedAt: new Date().toISOString() }));
 } catch (error) {
-// ignore
+console.warn('[SLA Manager] Could not save the Lead Checker results (browser storage full or blocked).');
 }
 }
 
-// Lead Checker's own export sanitizes Initial Notes and Reason (tabs ->
-// spaces, newlines -> " | ") before copying, so a plain split on tab
-// always yields exactly 10 cells here - no special last-column joining
-// needed.
+// Lead Checker's export replaces tabs and newlines inside every text
+// field, so a plain split on tab yields exactly one cell per header
+// column (17).
 function parseLeadCheckerImportTsv(rawText) {
 const lines = String(rawText || '').split(/\r\n|\r|\n/).filter((line) => line.trim().length > 0);
 if (lines.length === 0) return { rows: [], headerOk: false, error: 'No input.' };
@@ -3660,9 +3555,8 @@ return { rows: [], headerOk: false, error: `Header does not match expected colum
 const rows = lines.slice(1).map((line) => {
 const cells = line.split('\t');
 // Number('') is 0, not NaN - a blank/malformed rank must NOT silently
-// become top priority, so blankness is checked before parsing, not
-// left to Number.isFinite alone (confirmed by this file's own self-
-// test below, which caught exactly this on the first pass).
+// become top priority, so blankness is checked before parsing, not left
+// to Number.isFinite alone.
 const rawRank = (cells[16] || '').trim();
 const parsedRank = rawRank === '' ? NaN : Number(rawRank);
 const rawTier = (cells[7] || '').trim();
@@ -3697,17 +3591,13 @@ function classifyLeadCheckerImportRows(rows) {
 return [...rows].sort((a, b) => a.priorityRank - b.priorityRank);
 }
 
-// Confirms the header contract and the trust-not-reclassify behavior -
-// this file no longer has a classifier of its own to get out of sync,
-// so what's actually worth guarding here is that parsing reads the
-// right columns and that sort order follows the imported rank exactly,
-// not any re-derivation from category/notes.
-(function leadCheckerImportSelfTest() {
+// Confirms the header contract and the trust-not-reclassify behavior.
+runSelfTest('leadCheckerImportSelfTest', function leadCheckerImportSelfTest() {
 const failures = [];
 // Columns: Name Phone Email Source Campaign Created InitialNotes Tier
 // TierName SubCategory SubRank Flags Confidence Reason DedupeKey
-// PostClosureAction PriorityRank - matches Konnect-Lead-Checker.js's
-// own buildRawNotesTsvForExtract (lead-classification-spec.md v1.10).
+// PostClosureAction PriorityRank - matches Konnect-Lead-Checker.js's own
+// buildRawNotesTsvForExtract.
 const sampleTsv = [
 LEAD_CHECKER_IMPORT_HEADER.join('\t'),
 ['Amy Adams', '07700900001', 'amy@example.com', 'Customer First', 'Citroen - Enquiry - New', '01/09/2026', 'Customer Comments: -', '5', 'NURTURE', 'Enquiry: Blank', '9', '', 'low', 'Nothing matched.', '', '', '509'].join('\t'),
@@ -3736,13 +3626,13 @@ LEAD_CHECKER_IMPORT_HEADER.join('\t'),
 if (!(missingRank.rows[0] && missingRank.rows[0].priorityRank === 700)) failures.push(`Expected a blank/malformed PriorityRank to default to 700 (lowest priority), got ${missingRank.rows[0] && missingRank.rows[0].priorityRank}`);
 
 if (failures.length > 0) {
-console.error('SLA Extract lead-checker-import self-test FAILED:\n' + failures.join('\n'));
+reportSelfTestFailure('SLA Manager lead-checker-import self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Extract lead-checker-import self-test passed (9/9)');
+console.info('SLA Manager lead-checker-import self-test passed (9/9)');
 }
-})();
+});
 
-(function postClosureActionColorSelfTest() {
+runSelfTest('postClosureActionColorSelfTest', function postClosureActionColorSelfTest() {
 const failures = [];
 function check(label, actual, expected) {
 if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
@@ -3750,13 +3640,13 @@ if (actual !== expected) failures.push(`${label}: expected "${expected}", got "$
 check('send back through gets the confident colour', postClosureActionColor('send back through'), '#0891b2');
 check('the uncertain "check" bucket gets the warning colour', postClosureActionColor('check: needs contact?'), '#d97706');
 if (failures.length > 0) {
-console.error('SLA Extract postClosureActionColor self-test FAILED:\n' + failures.join('\n'));
+reportSelfTestFailure('SLA Manager postClosureActionColor self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Extract postClosureActionColor self-test passed (2/2)');
+console.info('SLA Manager postClosureActionColor self-test passed (2/2)');
 }
-})();
+});
 
-(function pendingLeadCheckerExportSelfTest() {
+runSelfTest('pendingLeadCheckerExportSelfTest', function pendingLeadCheckerExportSelfTest() {
 const failures = [];
 const originalPendingCustomers = currentPendingCustomers;
 currentPendingCustomers = [
@@ -3790,10 +3680,9 @@ const neverActionedResult = buildPendingLeadCheckerTsv(['New', 'Auto Rescheduled
 if (neverActionedResult.count !== 2) failures.push(`Expected never-actioned leads to stay excluded even if their callback type were selectable, got count ${neverActionedResult.count}`);
 // Source must say "Post Closure Processing" explicitly for this one
 // callback type - otherwise Konnect-Lead-Checker.js's own Step 13 can
-// never detect these leads at all, since its fallback (the lead
-// modal's own Source field) shows the customer's ORIGINAL enquiry
-// source instead, never this label. A real reported case was wrongly
-// left classified by tier because of exactly this gap.
+// never detect these leads at all, since its fallback (the lead modal's
+// own Source field) shows the customer's ORIGINAL enquiry source
+// instead, never this label.
 const caraRow = neverActionedResult.tsv.split('\n').find((line) => line.startsWith('Cara Chen'));
 if (!caraRow) failures.push('Expected Cara Chen (callbackType Post Closure) to appear in the export');
 else if (caraRow.split('\t')[3] !== 'Post Closure Processing') failures.push(`Expected Cara Chen's Source to read "Post Closure Processing", got "${caraRow.split('\t')[3]}"`);
@@ -3801,11 +3690,11 @@ else if (caraRow.split('\t')[3] !== 'Post Closure Processing') failures.push(`Ex
 currentPendingCustomers = originalPendingCustomers;
 
 if (failures.length > 0) {
-console.error('SLA Extract pending-lead-checker-export self-test FAILED:\n' + failures.join('\n'));
+reportSelfTestFailure('SLA Manager pending-lead-checker-export self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Extract pending-lead-checker-export self-test passed (10/10)');
+console.info('SLA Manager pending-lead-checker-export self-test passed (10/10)');
 }
-})();
+});
 
 // ===================================================================
 // Self-test for isAlreadyClassifiedForContact and its use in both TSV
@@ -3816,17 +3705,20 @@ console.info('SLA Extract pending-lead-checker-export self-test passed (10/10)')
 // round, while a genuinely new contact (different created time, or no
 // prior result at all) must still be exported as usual.
 // ===================================================================
-(function leadCheckerExportDedupeSelfTest() {
+runSelfTest('leadCheckerExportDedupeSelfTest', function leadCheckerExportDedupeSelfTest() {
 const failures = [];
 const originalCustomers = currentCustomers;
 const originalPendingCustomers = currentPendingCustomers;
 const originalImportState = localStorage.getItem(LEAD_CHECKER_IMPORT_KEY);
 
+try {
 saveLeadCheckerImportState({
 rawInput: '',
 results: [
 { name: 'Dan Davis', email: 'dan@example.com', phone: '', created: 'Sat, 26 Sep 2026 10:00', tier: 2 },
-{ name: 'Eve Evans', email: 'eve@example.com', phone: '', created: 'Sat, 26 Sep 2026 09:00', tier: 2 }
+{ name: 'Eve Evans', email: 'eve@example.com', phone: '', created: 'Sat, 26 Sep 2026 09:00', tier: 2 },
+// A failed or cancelled row (blank tier) does not count as classified.
+{ name: 'Gus Green', email: 'gus@example.com', phone: '', created: 'Sat, 26 Sep 2026 13:00', tier: null }
 ]
 });
 
@@ -3837,10 +3729,12 @@ currentCustomers = [
 // the stored result) - a real auto re-contact, must still be included.
 { name: 'Eve Evans', tier: 2, source: 'Autos', campaign: 'X', phone: '', email: 'eve@example.com', createdText: 'Sat, 26 Sep 2026 11:00' },
 // Never classified before - included.
-{ name: 'Fay Fields', tier: 2, source: 'Autos', campaign: 'X', phone: '', email: 'fay@example.com', createdText: 'Sat, 26 Sep 2026 12:00' }
+{ name: 'Fay Fields', tier: 2, source: 'Autos', campaign: 'X', phone: '', email: 'fay@example.com', createdText: 'Sat, 26 Sep 2026 12:00' },
+{ name: 'Gus Green', tier: 2, source: 'Autos', campaign: 'X', phone: '', email: 'gus@example.com', createdText: 'Sat, 26 Sep 2026 13:00' }
 ];
 const slaResult = buildLeadCheckerTsv([2], false);
-if (slaResult.count !== 2) failures.push(`SLA export: expected 2 included (Eve, Fay), got ${slaResult.count}`);
+if (slaResult.count !== 3) failures.push(`SLA export: expected 3 included (Eve, Fay, Gus with a failed earlier check), got ${slaResult.count}`);
+if (!slaResult.tsv.includes('Gus Green')) failures.push('SLA export: Gus Green (earlier check failed, blank tier) should be sent again');
 if (slaResult.excludedCount !== 1) failures.push(`SLA export: expected 1 excluded (Dan), got ${slaResult.excludedCount}`);
 if (slaResult.tsv.includes('Dan Davis')) failures.push('SLA export: Dan Davis (already classified for this exact contact) should not appear in the TSV');
 if (!slaResult.tsv.includes('Eve Evans')) failures.push('SLA export: Eve Evans (new contact, different created time) should still appear');
@@ -3852,30 +3746,24 @@ currentPendingCustomers = [
 const pendingResult = buildPendingLeadCheckerTsv(['Auto Rescheduled']);
 if (pendingResult.count !== 1) failures.push(`Pending export: expected 1 included (Fay), got ${pendingResult.count}`);
 if (pendingResult.excludedCount !== 1) failures.push(`Pending export: expected 1 excluded (Dan), got ${pendingResult.excludedCount}`);
-
+} finally {
 currentCustomers = originalCustomers;
 currentPendingCustomers = originalPendingCustomers;
 if (originalImportState === null) localStorage.removeItem(LEAD_CHECKER_IMPORT_KEY);
 else localStorage.setItem(LEAD_CHECKER_IMPORT_KEY, originalImportState);
+}
 
 if (failures.length > 0) {
-console.error('SLA Extract lead-checker-export-dedupe self-test FAILED:\n' + failures.join('\n'));
+reportSelfTestFailure('SLA Manager lead-checker-export-dedupe self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Extract lead-checker-export-dedupe self-test passed (4/4)');
+console.info('SLA Manager lead-checker-export-dedupe self-test passed (5/5)');
 }
-})();
+});
 
-// Same TIER_COLORS palette Konnect-Lead-Checker.js's own panel uses
-// for these exact 6 tiers (lead-classification-spec.md v1.10), so a
-// lead reads the same color whichever tool it's looked at in.
-//
-// Tiers 2-4 moved off the original amber/blue/violet ramp - tier 2 used
-// to be '#d97706', the exact same hex as SLA urgency's "due in 30m" and
-// postClosureActionColor's "check" state, so a Lead Checker tier-2 badge
-// was visually indistinguishable from either of those on the same card.
-// Shifted the whole ramp up a slot (tier 2 -> blue, tier 3 -> violet,
-// tier 4 -> a new deeper purple) to clear every locked/urgency hex -
-// see postClosureActionColor below for the colours this must never reuse.
+// Same TIER_COLORS palette Konnect-Lead-Checker.js's own panel uses for
+// these exact 6 tiers, so a lead reads the same color whichever tool
+// it's looked at in. Tiers 2-4 moved off the original amber/blue/violet
+// ramp.
 const LEAD_CHECKER_TIER_COLORS = { 1: '#059669', 2: '#2563eb', 3: '#7c3aed', 4: '#9333ea', 5: '#64748b', 6: '#94a3b8' };
 
 function leadCheckerImportCategoryColor(tier) {
@@ -3928,8 +3816,19 @@ const rPhoneKey = normalizePhoneForLeadCheckerMatch(r.phone);
 if (phoneKey && rPhoneKey) return phoneKey === rPhoneKey;
 return false;
 });
-if (candidates.length <= 1) return candidates[0] || null;
-return candidates.find((r) => r.created === c.createdText) || candidates[0];
+return pickLeadCheckerResultForCard(c, candidates);
+}
+
+// A result belongs to a card only when its Created matches the card's own
+// time (Created on SLA rows, Last Actioned on Pending rows). A result for
+// an older lead from the same customer is never shown on the new one.
+function leadCheckerCardTimeKey(c) {
+return (c && (c.createdText || c.lastActionText)) || '';
+}
+function pickLeadCheckerResultForCard(c, candidates) {
+const key = leadCheckerCardTimeKey(c);
+if (!key) return null;
+return candidates.find((r) => r.created === key) || null;
 }
 
 // Index for the hot paths (renderTierSection/renderCallbackTypeSection's
@@ -3990,8 +3889,7 @@ return phoneKey ? (index.byPhone.get(phoneKey) || []) : [];
 
 function findLeadCheckerResultForCustomerIndexed(c, index) {
 const candidates = leadCheckerResultCandidatesIndexed(c, index);
-if (candidates.length <= 1) return candidates[0] || null;
-return candidates.find((r) => r.created === c.createdText) || candidates[0];
+return pickLeadCheckerResultForCard(c, candidates);
 }
 
 // Proves findLeadCheckerResultForCustomerIndexed returns the exact same
@@ -4000,7 +3898,7 @@ return candidates.find((r) => r.created === c.createdText) || candidates[0];
 // NOT a plain "email OR phone" union (see buildLeadCheckerResultIndex's
 // own comment) - written and run before any render loop was switched
 // over to the indexed version.
-(function leadCheckerResultIndexEquivalenceSelfTest() {
+runSelfTest('leadCheckerResultIndexEquivalenceSelfTest', function leadCheckerResultIndexEquivalenceSelfTest() {
 const failures = [];
 function check(label, actual, expected) {
 if (actual !== expected) failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
@@ -4041,11 +3939,11 @@ check(label, viaIndex, viaLinearScan);
 });
 
 if (failures.length > 0) {
-console.error('SLA Extract leadCheckerResultIndexEquivalence self-test FAILED:\n' + failures.join('\n'));
+reportSelfTestFailure('SLA Manager leadCheckerResultIndexEquivalence self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info(`SLA Extract leadCheckerResultIndexEquivalence self-test passed (${cases.length}/${cases.length})`);
+console.info(`SLA Manager leadCheckerResultIndexEquivalence self-test passed (${cases.length}/${cases.length})`);
 }
-})();
+});
 
 // A customer contacted repeatedly (autos typically reach the same
 // person 3-5 times, and an SLA lead can later turn into an auto) kept
@@ -4060,19 +3958,19 @@ console.info(`SLA Extract leadCheckerResultIndexEquivalence self-test passed (${
 // different created time means a genuinely new contact/lead).
 function isAlreadyClassifiedForContact(c, importResults) {
 if (!importResults || importResults.length === 0) return false;
+// Only a row that was actually classified counts. A failed or cancelled
+// row (blank Tier) must be sent to the Lead Checker again.
 const match = findLeadCheckerResultForCustomer(c, importResults);
-return !!match && match.created === c.createdText;
+return !!match && match.tier != null && match.created === c.createdText;
 }
 
-// The point of classifying here (rather than reading results in
-// Konnect Lead Checker's own UI) is to see them on the real lead
-// cards below - alongside Assign, contact details, everything already
-// built for that - not a second flat list duplicating what Booking
-// Check already shows. The actual results render as a badge on each
-// matching card via findLeadCheckerResultForCustomer, and the panel
-// re-renders immediately after classifying so they show up right away.
-// (Rendering itself now lives in renderLeadCheckerPopover, combined
-// with the export/Copy section into one popover.)
+// The point of classifying here (rather than reading results in Konnect
+// Lead Checker's own UI) is to see them on the real lead cards below -
+// alongside Assign, contact details, everything already built for that -
+// not a second flat list duplicating what Booking Check already shows.
+// The actual results render as a badge on each matching card via
+// findLeadCheckerResultForCustomer, and the panel re-renders immediately
+// after classifying so they show up right away.
 
 window._updateLeadCheckerImportInput = function(value) {
 const state = loadLeadCheckerImportState();
@@ -4091,10 +3989,6 @@ function runLeadCheckerClassification(rawInput, buttonEl, originalLabel) {
 // element along with everything else) - reopening it unconditionally
 // afterward was fine when Classify only ever lived inside the popover
 // itself (it was already open, by definition, to have been clicked).
-// Now that Paste & Classify is also a top-level button outside the
-// popover, that same unconditional reopen was forcing the popover
-// (with its manual-paste textarea) open every time, even when the user
-// never opened it - reported as an unwanted extra UI appearing.
 const popoverBeforeEl = document.getElementById('leadCheckerPopover');
 const popoverWasOpen = !!popoverBeforeEl && popoverBeforeEl.style.display !== 'none';
 const parsed = parseLeadCheckerImportTsv(rawInput);
@@ -4115,25 +4009,12 @@ const results = classifyLeadCheckerImportRows(parsed.rows);
 // stale/already-handled the next time this popover is opened, per
 // instruction that it should go blank automatically.
 saveLeadCheckerImportState({ rawInput: '', results });
-// Full panel re-render, not just this popover - the whole point is
-// getting results onto the real lead cards (findLeadCheckerResultFor
-// Customer, rendered per-card in renderTierSection), not just updating
-// this popover's own summary text. buttonEl itself is about to be
-// replaced along with the rest of the panel, so nothing below
-// references it again.
-//
-// displayPendingPanel, not always displayPanel - this popover is shown
-// on both the SLA and Pending pages now; calling displayPanel while on
-// Pending would re-render the wrong page's panel entirely.
-//
-// Explicit lastSlaDiffCounts/lastPendingDiffCounts + invalidateCache:
-// false, not the defaults (0/0/true) - classifying doesn't change which
-// leads exist, it only attaches result badges to already-known ones, so
-// it must neither wipe the real +N/-N diff from the last actual scan
-// nor force another live re-scan of the queue table. Confirmed live:
-// with paste & classify now a one-click top-level button used far more
-// often, the defaults were wiping the +/- indicator and re-scanning the
-// queue on every single classify.
+// Full panel re-render, not just this popover. buttonEl itself is about
+// to be replaced along with the rest of the panel, so nothing below
+// references it again. displayPendingPanel, not always displayPanel -
+// this popover is shown on both the SLA and Pending pages now; calling
+// displayPanel while on Pending would re-render the wrong page's panel
+// entirely.
 if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, lastPendingDiffCounts.newCount, lastPendingDiffCounts.removedCount, false);
 else displayPanel(currentCustomers, lastSlaDiffCounts.newCount, lastSlaDiffCounts.removedCount, false);
 if (popoverWasOpen) {
@@ -4152,12 +4033,10 @@ runLeadCheckerClassification(rawInput, buttonEl, buttonEl.textContent);
 // One click instead of three (switch to the other tab/window, copy,
 // switch back, paste into the textarea, click Classify) - reads the
 // clipboard directly via the async Clipboard API. That API requires
-// clipboard-read permission and can be blocked entirely in some
-// contexts (exactly the kind of restricted, third-party-injected-
-// iframe context copyTextToClipboard's own history in this file's
-// sibling already flagged as real for the WRITE side) - falls back to
-// telling the user to paste manually rather than failing silently, so
-// the existing textarea+Classify path always still works regardless.
+// clipboard-read permission and can be blocked entirely in some contexts
+// - falls back to telling the user to paste manually rather than failing
+// silently, so the existing textarea+Classify path always still works
+// regardless.
 window._pasteAndClassifyLeadChecker = async function(buttonEl) {
 const originalLabel = buttonEl.innerHTML;
 if (!navigator.clipboard || !navigator.clipboard.readText) {
@@ -4174,7 +4053,7 @@ saveLeadCheckerImportState({ rawInput, results: loadLeadCheckerImportState().res
 const ok = runLeadCheckerClassification(rawInput, buttonEl, originalLabel);
 if (ok) return; // displayPanel already rebuilt this button with a fresh label
 } catch (error) {
-buttonEl.textContent = 'Clipboard blocked - paste manually';
+buttonEl.textContent = 'Clipboard blocked: paste by hand';
 setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 2000);
 }
 };
@@ -4211,32 +4090,12 @@ function isLeadCheckerPrioritySortEnabled() {
 return localStorage.getItem(LEAD_CHECKER_PRIORITY_SORT_KEY) === '1';
 }
 
-// Sorts ascending by the imported tier number directly (1 =
-// CONFIRMED DATE & TIME ... 6 = REDIRECT/NO CALL, per lead-
-// classification-spec.md v1.10) - simpler than the old hardcoded
-// two-category special case, and it naturally extends to all 6 tiers
-// instead of only distinguishing two of them. Customers with no
-// Lead Checker result at all (or an unresolved tier) sort after
-// every real tier, keeping their existing relative order - a stable
-// sort on this rank alone, not a full re-sort, so within "no result"
-// the section's own existing order (urgency for SLA, current order
-// for Pending) is left exactly as-is. Array.prototype.sort has been a
-// stable sort in every engine this bookmarklet runs in for years, so
-// this rank-only comparator is enough on its own.
-// Post Closure leads never really get a meaningful tier of their own
-// here - per instruction, they don't appear on the SLA queue at all
-// (not genuinely new leads), and Pending's own "Post Closure" callback
-// type already isolates them into their own section on its own, no
-// separate grouping needed. Within that existing section though, a
-// "Send back through" result should sort ahead of a "Check: needs
-// contact?" one, both ahead of anyone not yet classified by Booking
-// Check at all, regardless of whatever tier the classifier's own
-// pipeline happened to land the lead on underneath.
-// Takes a prebuilt index, not the raw results array - its only caller
-// (sortByLeadCheckerPriority) used to pass the raw array straight
-// through to a linear scan called once per customer being sorted, i.e.
-// O(customers x results) per sort; now the index is built once per
-// sort call instead.
+// Sorts ascending by the imported tier number directly. Customers with
+// no Lead Checker result at all (or an unresolved tier) sort after every
+// real tier, keeping their existing relative order - a stable sort on
+// this rank alone, not a full re-sort, so within "no result" the
+// section's own existing order (urgency for SLA, current order for
+// Pending) is left exactly as-is.
 function leadCheckerPriorityRank(customer, leadCheckerResultIndex) {
 const result = findLeadCheckerResultForCustomerIndexed(customer, leadCheckerResultIndex);
 if (!result) return 7;
@@ -4260,14 +4119,10 @@ if (dueDate.getTime() < thisHourCutoff.getTime()) return 0;
 return 1 + Math.floor((dueDate.getTime() - thisHourCutoff.getTime()) / (60 * 60000));
 }
 
-// getDueDate is optional (existing callers/tests that don't pass one
-// get every customer into the same bucket, i.e. pure rank+original-
-// order, same as before this existed) - when given, priority only ever
-// reorders WITHIN a due-hour bucket. Per instruction: booking-likelihood
-// must not let a lead due hours from now jump ahead of one due within
-// the next few minutes just because it has a "more likely" result -
-// the hour-to-contact grouping stays the dominant sort key, likelihood
-// is the tie-break inside it.
+// getDueDate is optional (existing callers/tests that don't pass one get
+// every customer into the same bucket, i.e. pure rank+original- order,
+// same as before this existed) - when given, priority only ever reorders
+// WITHIN a due-hour bucket.
 function sortByLeadCheckerPriority(customers, leadCheckerResults, getDueDate) {
 const leadCheckerResultIndex = buildLeadCheckerResultIndex(leadCheckerResults);
 return customers
@@ -4280,25 +4135,25 @@ rank: leadCheckerPriorityRank(c, leadCheckerResultIndex)
 .map((entry) => entry.c);
 }
 
-(function sortByLeadCheckerPrioritySelfTest() {
+runSelfTest('sortByLeadCheckerPrioritySelfTest', function sortByLeadCheckerPrioritySelfTest() {
 const failures = [];
 function check(label, actual, expected) {
 if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
 }
 
 const customers = [
-{ name: 'Alice (no result)', email: 'alice@example.com', phone: '' },
-{ name: 'Bob (tier 4)', email: 'bob@example.com', phone: '' },
-{ name: 'Carol (no result)', email: 'carol@example.com', phone: '' },
-{ name: 'Dee (tier 1)', email: 'dee@example.com', phone: '' },
-{ name: 'Eve (tier 5)', email: 'eve@example.com', phone: '' },
-{ name: 'Fay (tier 3)', email: 'fay@example.com', phone: '' }
+{ name: 'Alice (no result)', email: 'alice@example.com', phone: '', createdText: 'T' },
+{ name: 'Bob (tier 4)', email: 'bob@example.com', phone: '', createdText: 'T' },
+{ name: 'Carol (no result)', email: 'carol@example.com', phone: '', createdText: 'T' },
+{ name: 'Dee (tier 1)', email: 'dee@example.com', phone: '', createdText: 'T' },
+{ name: 'Eve (tier 5)', email: 'eve@example.com', phone: '', createdText: 'T' },
+{ name: 'Fay (tier 3)', email: 'fay@example.com', phone: '', createdText: 'T' }
 ];
 const leadCheckerResults = [
-{ email: 'bob@example.com', phone: '', tier: 4, tierName: 'WARM ENQUIRY' },
-{ email: 'dee@example.com', phone: '', tier: 1, tierName: 'CONFIRMED DATE & TIME' },
-{ email: 'eve@example.com', phone: '', tier: 5, tierName: 'NURTURE' },
-{ email: 'fay@example.com', phone: '', tier: 3, tierName: 'LIKELY BOOKING' }
+{ email: 'bob@example.com', phone: '', created: 'T', tier: 4, tierName: 'WARM ENQUIRY' },
+{ email: 'dee@example.com', phone: '', created: 'T', tier: 1, tierName: 'CONFIRMED DATE & TIME' },
+{ email: 'eve@example.com', phone: '', created: 'T', tier: 5, tierName: 'NURTURE' },
+{ email: 'fay@example.com', phone: '', created: 'T', tier: 3, tierName: 'LIKELY BOOKING' }
 ];
 
 const sorted = sortByLeadCheckerPriority(customers, leadCheckerResults).map((c) => c.name);
@@ -4314,11 +4169,11 @@ check('With no Lead Checker results at all, original order is preserved entirely
 check('Disabled by default (LEAD_CHECKER_PRIORITY_SORT_KEY unset)', isLeadCheckerPrioritySortEnabled(), false);
 
 if (failures.length > 0) {
-console.error('SLA Extract sortByLeadCheckerPriority self-test FAILED:\n' + failures.join('\n'));
+reportSelfTestFailure('SLA Manager sortByLeadCheckerPriority self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Extract sortByLeadCheckerPriority self-test passed (7/7)');
+console.info('SLA Manager sortByLeadCheckerPriority self-test passed (7/7)');
 }
-})();
+});
 
 // ===================================================================
 // Self-test for leadCheckerPriorityRank's Post Closure ordering - per
@@ -4327,7 +4182,7 @@ console.info('SLA Extract sortByLeadCheckerPriority self-test passed (7/7)');
 // classified at all, regardless of whatever tier each one's classifier
 // pipeline happened to land on underneath.
 // ===================================================================
-(function leadCheckerPriorityRankPostClosureSelfTest() {
+runSelfTest('leadCheckerPriorityRankPostClosureSelfTest', function leadCheckerPriorityRankPostClosureSelfTest() {
 const failures = [];
 function check(label, actual, expected) {
 const a = JSON.stringify(actual);
@@ -4341,8 +4196,8 @@ const customers = [
 { name: 'Send Back', email: 'sendback@example.com', phone: '', createdText: 'Sat, 26 Sep 2026 10:00' }
 ];
 const leadCheckerResults = [
-{ email: 'check@example.com', phone: '', tier: 4, postClosureAction: 'check: needs contact?' },
-{ email: 'sendback@example.com', phone: '', tier: 6, postClosureAction: 'send back through' }
+{ email: 'check@example.com', phone: '', created: 'Sat, 26 Sep 2026 11:00', tier: 4, postClosureAction: 'check: needs contact?' },
+{ email: 'sendback@example.com', phone: '', created: 'Sat, 26 Sep 2026 10:00', tier: 6, postClosureAction: 'send back through' }
 ];
 const sorted = sortByLeadCheckerPriority(customers, leadCheckerResults).map((c) => c.name);
 check('Send back through comes first, even though its underlying tier (6) is the least urgent one', sorted[0], 'Send Back');
@@ -4350,11 +4205,11 @@ check('Check: needs contact comes second', sorted[1], 'Check Needed');
 check('Not yet classified comes last', sorted[2], 'Not Yet Classified');
 
 if (failures.length > 0) {
-console.error('SLA Extract leadCheckerPriorityRank-postClosure self-test FAILED:\n' + failures.join('\n'));
+reportSelfTestFailure('SLA Manager leadCheckerPriorityRank-postClosure self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Extract leadCheckerPriorityRank-postClosure self-test passed (3/3)');
+console.info('SLA Manager leadCheckerPriorityRank-postClosure self-test passed (3/3)');
 }
-})();
+});
 
 // ===================================================================
 // Self-test for the card badge - per instruction, a Post Closure lead
@@ -4362,9 +4217,10 @@ console.info('SLA Extract leadCheckerPriorityRank-postClosure self-test passed (
 // but its badge shows ONLY the Post Closure decision, replacing the
 // tier badge entirely rather than showing both side by side.
 // ===================================================================
-(function postClosureBadgeReplacementSelfTest() {
+runSelfTest('postClosureBadgeReplacementSelfTest', function postClosureBadgeReplacementSelfTest() {
 const failures = [];
 const originalImportState = localStorage.getItem(LEAD_CHECKER_IMPORT_KEY);
+try {
 saveLeadCheckerImportState({
 rawInput: '',
 results: [{ name: 'Sendback Sam', email: 'sam@example.com', phone: '', created: 'Sat, 26 Sep 2026 10:00', tier: 4, tierName: 'WARM ENQUIRY', postClosureAction: 'send back through' }]
@@ -4376,16 +4232,17 @@ const html = renderTierSection('Tier 1 - Priority', [
 
 if (!html.includes('send back through')) failures.push('Expected the Post Closure badge text to appear on the card');
 if (html.includes('WARM ENQUIRY')) failures.push('Expected the underlying tier badge (WARM ENQUIRY) to be replaced, not shown alongside the Post Closure badge');
-
+} finally {
 if (originalImportState === null) localStorage.removeItem(LEAD_CHECKER_IMPORT_KEY);
 else localStorage.setItem(LEAD_CHECKER_IMPORT_KEY, originalImportState);
+}
 
 if (failures.length > 0) {
-console.error('SLA Extract postClosureBadgeReplacement self-test FAILED:\n' + failures.join('\n'));
+reportSelfTestFailure('SLA Manager postClosureBadgeReplacement self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Extract postClosureBadgeReplacement self-test passed (2/2)');
+console.info('SLA Manager postClosureBadgeReplacement self-test passed (2/2)');
 }
-})();
+});
 
 // ===================================================================
 // Self-test for the hour-bucket grouping in sortByLeadCheckerPriority -
@@ -4395,7 +4252,7 @@ console.info('SLA Extract postClosureBadgeReplacement self-test passed (2/2)');
 // the next clock hour" boundary), not fixed clock times, so this stays
 // correct regardless of what time it's actually run.
 // ===================================================================
-(function sortByLeadCheckerPriorityHourBucketSelfTest() {
+runSelfTest('sortByLeadCheckerPriorityHourBucketSelfTest', function sortByLeadCheckerPriorityHourBucketSelfTest() {
 const failures = [];
 function check(label, actual, expected) {
 if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
@@ -4407,14 +4264,14 @@ const dueThisHourLater = new Date(thisHourCutoff.getTime() - 2 * 60000);
 const dueNextHour = new Date(thisHourCutoff.getTime() + 10 * 60000);
 
 const customers = [
-{ name: 'Amy (this hour, no result)', email: 'amy@example.com', phone: '', slaDate: dueThisHourSoon },
-{ name: 'Ben (next hour, tier 1 - highest likelihood)', email: 'ben@example.com', phone: '', slaDate: dueNextHour },
-{ name: 'Cat (this hour, tier 1)', email: 'cat@example.com', phone: '', slaDate: dueThisHourLater },
-{ name: 'Dee (this hour, no result)', email: 'dee@example.com', phone: '', slaDate: dueThisHourSoon }
+{ name: 'Amy (this hour, no result)', email: 'amy@example.com', phone: '', createdText: 'T', slaDate: dueThisHourSoon },
+{ name: 'Ben (next hour, tier 1 - highest likelihood)', email: 'ben@example.com', phone: '', createdText: 'T', slaDate: dueNextHour },
+{ name: 'Cat (this hour, tier 1)', email: 'cat@example.com', phone: '', createdText: 'T', slaDate: dueThisHourLater },
+{ name: 'Dee (this hour, no result)', email: 'dee@example.com', phone: '', createdText: 'T', slaDate: dueThisHourSoon }
 ];
 const leadCheckerResults = [
-{ email: 'ben@example.com', phone: '', tier: 1, tierName: 'CONFIRMED DATE & TIME' },
-{ email: 'cat@example.com', phone: '', tier: 1, tierName: 'CONFIRMED DATE & TIME' }
+{ email: 'ben@example.com', phone: '', created: 'T', tier: 1, tierName: 'CONFIRMED DATE & TIME' },
+{ email: 'cat@example.com', phone: '', created: 'T', tier: 1, tierName: 'CONFIRMED DATE & TIME' }
 ];
 
 const sorted = sortByLeadCheckerPriority(customers, leadCheckerResults, (c) => c.slaDate).map((c) => c.name);
@@ -4426,11 +4283,11 @@ const noGetter = sortByLeadCheckerPriority(customers, leadCheckerResults).map((c
 check('With no getDueDate passed, hour bucketing is skipped entirely (backward compatible) - Ben (tier 1) sorts to the very top', noGetter[0], 'Ben (next hour, tier 1 - highest likelihood)');
 
 if (failures.length > 0) {
-console.error('SLA Extract sortByLeadCheckerPriority-hour-bucket self-test FAILED:\n' + failures.join('\n'));
+reportSelfTestFailure('SLA Manager sortByLeadCheckerPriority-hour-bucket self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Extract sortByLeadCheckerPriority-hour-bucket self-test passed (4/4)');
+console.info('SLA Manager sortByLeadCheckerPriority-hour-bucket self-test passed (4/4)');
 }
-})();
+});
 
 function setSectionCollapsed(sectionId, collapsed) {
 const set = loadCollapsedSections();
@@ -4474,18 +4331,10 @@ customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen, assignLim
 }
 
 // Reads the persisted cap and, if set, keeps only the first N of an
-// already-priority-sorted list - since prioritizeLeads/prioritizePendingLeads
-// always sort most-urgent-first, capping takes the N most urgent leads
-// and drops the rest for this run, rather than an arbitrary subset. Used
-// by every run-building entry point (manual button, Quick Assign, tile
-// clicks) so "just do 10 of these" works no matter which one is used.
-// agents is required, not optional - every call site already knows its
-// agent list by this point (all four guard "select at least one agent"
-// beforehand), and it's what makes the "per agent" mode possible: with
-// it checked, LIMIT means "this many EACH", so the actual cap is
-// LIMIT * agents.length rather than LIMIT itself - per instruction,
-// so assigning a fixed count per agent doesn't require doing that
-// multiplication by hand first.
+// already-priority-sorted list - since
+// prioritizeLeads/prioritizePendingLeads always sort most-urgent-first,
+// capping takes the N most urgent leads and drops the rest for this run,
+// rather than an arbitrary subset.
 function applyAssignLimit(prioritized, agents) {
 const settings = loadAssignSettings();
 const raw = settings.assignLimit;
@@ -4499,32 +4348,7 @@ return prioritized.slice(0, effectiveLimit);
 // pages' assign sections are identical from the header through the
 // results log (agents/limit/preview/button/results), only diverging in
 // the filters zone below it (tiers/special filters vs callback types)
-// and which run handler the button calls. Was duplicated near-verbatim
-// in both functions; factored out once both were stable rather than
-// during initial development, since the shared shape only became
-// obvious after both existed.
-// Two independent collapse levels, not one: ASSIGN (agents/limit/
-// preview/button/results) is the bulk of this zone's height, and an
-// earlier pass made it permanently visible on the assumption that
-// "always visible" was strictly better - it isn't, especially at the
-// compact/mini panel size, where that alone can push the actual lead
-// list out of view. Collapsible again, defaulting open so nothing
-// changes for anyone who hasn't touched it yet. FILTERS nests inside
-// it (collapsed independently, and only reachable at all while ASSIGN
-// is open) since tier/callback-type/time-window filters only matter
-// when you're about to run a manual assign.
-// The segmented control always shows exactly one tab's content (never
-// "both collapsed") - per confirmed decision, that old fully-collapsed
-// default is gone, and zen mode (see enableZenMode) is now the only way
-// to hide this whole zone. filtersOpen/assignOpen stay as the existing
-// persisted settings keys (every other caller - beginQuickAssign,
-// _toggleAssignSection/_toggleFiltersZone - keeps working unmodified),
-// just made mutually exclusive here: Filters is the active tab only
-// when filtersOpen is explicitly true, Assign otherwise (the default).
-// Shared between this function's initial render and setActiveAssignTab's
-// click-time repaint (below) - both used to hand-type the same three
-// active/inactive values independently, which meant keeping them in
-// sync by hand on every future tweak instead of by construction.
+// and which run handler the button calls.
 const ASSIGN_PILL_ACTIVE_BG = 'white';
 const ASSIGN_PILL_ACTIVE_COLOR = '#1c1c1e';
 const ASSIGN_PILL_ACTIVE_SHADOW = '0 1px 2px rgba(0,0,0,0.08)';
@@ -4539,7 +4363,7 @@ const assignOpen = !filtersOpen;
 const activeTabCss = `background: ${ASSIGN_PILL_ACTIVE_BG}; color: ${ASSIGN_PILL_ACTIVE_COLOR}; box-shadow: ${ASSIGN_PILL_ACTIVE_SHADOW};`;
 const inactiveTabCss = `color: ${ASSIGN_PILL_INACTIVE_COLOR};`;
 return `
-<div id="assignSectionContainer" style="padding: 0 20px 16px; background: #f2f2f7;">
+<div id="assignSectionContainer" style="padding: 0 20px 16px; background: var(--wb-bg, #f2f2f7);">
 <div style="display: flex; background: #e5e5ea; border-radius: 10px; padding: 2px; gap: 2px; margin-bottom: 10px;">
 <div id="assignTabPill" onclick="window._toggleAssignSection()" style="flex: 1; text-align: center; padding: 7px 0; cursor: pointer; border-radius: 8px; font-size: 13px; font-weight: 600; transition: background 0.15s, box-shadow 0.15s; ${assignOpen ? activeTabCss : inactiveTabCss}">Assign</div>
 <div id="filtersTabPill" onclick="window._toggleFiltersZone()" style="flex: 1; text-align: center; padding: 7px 0; cursor: pointer; border-radius: 8px; font-size: 13px; font-weight: 600; transition: background 0.15s, box-shadow 0.15s; ${filtersOpen ? activeTabCss : inactiveTabCss}">Filters</div>
@@ -4547,28 +4371,28 @@ return `
 <div id="assignSectionBody" style="display: ${assignOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 <div style="margin-bottom: 10px;">
 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-<span style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px;">AGENTS ONLINE</span>
+<span style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px;">AGENTS ONLINE</span>
 <span style="display: flex; gap: 8px;">
 <span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #4f46e5; cursor: pointer;">All</span>
 <span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #4f46e5; cursor: pointer;">None</span>
 <span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('refresh', 11)} Refresh</span>
 <span onclick="window._toggleAssignHistory()" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('history', 11)} History</span>
-<span onclick="window._checkAgentQueuePositions(this)" title="Reads each agent's live call queue from Konnect's own Queue by Agent page - shows how many leads each agent hasn't called yet, and where a given lead sits in that queue" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('checklist', 11)} Queue</span>
+<span onclick="window._checkAgentQueuePositions(this)" title="Reads each agent's live call queue from Konnect's Queue by Agent page. Shows how many leads each agent hasn't called yet, and where a given lead sits in that queue" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('checklist', 11)} Queue</span>
 </span>
 </div>
 <div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
-<div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: white; border-radius: 6px; font-size: 11px; color: #1e293b;"></div>
+<div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: var(--wb-surface, white); border-radius: 6px; font-size: 11px; color: var(--wb-text, #1c1c1e);"></div>
 </div>
 <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px;">
 ${renderAssignLimitControl(settings)}
-<span id="assignMatchPreview" style="font-size: 11px; color: #64748b; text-align: right;"></span>
+<span id="assignMatchPreview" style="font-size: 11px; color: var(--wb-muted, #5b6577); text-align: right;"></span>
 </div>
 <button id="assignRunButton" onclick="window.${runHandlerName}()" ${buttonDisabled ? 'disabled' : ''}
 style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#cbd5e1' : '#059669'}; color: white; border: none; border-radius: 8px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
 ${buttonDisabled ? (canCheckAgentRoster() ? 'No agents online' : "Can't check agents right now") : 'Assign Unassigned Leads'}
 </button>
 <div id="assignResultsSummary"></div>
-<div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: #64748b; max-height: 100px; overflow-y: auto;"></div>
+<div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: var(--wb-muted, #5b6577); max-height: 100px; overflow-y: auto;"></div>
 </div>
 <div id="filtersZoneBody" style="display: ${filtersOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
 ${filtersZoneHtml}
@@ -4599,11 +4423,11 @@ const buttonDisabled = agents.length === 0;
 
 const filtersZoneHtml = `
 <div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">TIERS</div>
+<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 6px;">TIERS</div>
 <div style="display: flex; gap: 6px; flex-wrap: wrap;">${tierCheckboxes}</div>
 </div>
 <div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">SPECIAL FILTERS</div>
+<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 6px;">SPECIAL FILTERS</div>
 <div style="display: flex; gap: 6px; flex-wrap: wrap;">
 <label class="chip-label">
 <input type="checkbox" id="assignCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateAssignPreview()">
@@ -4616,7 +4440,7 @@ Email only <span style="opacity: 0.7;">(${emailOnlyCount})</span>
 </div>
 </div>
 <div>
-<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
+<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
 <input id="assignWindowMinutes" type="hidden" value="${settings.windowMinutes || ''}">
 ${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
 </div>`;
@@ -4718,6 +4542,19 @@ return new Date(now.getFullYear(), now.getMonth(), now.getDate(), hh, mm, 0, 0);
 
 // Re-locates a lead's Assign cell fresh at click time - same reasoning as
 // locateAssignCell on the SLA tab.
+function findPendingAssignCells(lead) {
+const found = [];
+const table = document.querySelector('table');
+if (!table) return found;
+const rows = table.querySelectorAll('tbody tr');
+for (const row of rows) {
+const cells = row.querySelectorAll('td');
+if (cells.length < 12) continue;
+const key = `${cells[PC_COL_CUSTOMER]?.textContent?.trim()}||${cells[PC_COL_REG]?.textContent?.trim()}||${cells[PC_COL_CAMPAIGN]?.textContent?.trim()}||${cells[PC_COL_CALLBACK_TYPE]?.textContent?.trim()}||${cells[PC_COL_NEXT_ACTION]?.textContent?.trim() || ''}`;
+if (key === lead.key) found.push(cells[PC_COL_ASSIGN]);
+}
+return found;
+}
 function locatePendingAssignCell(lead) {
 const table = document.querySelector('table');
 if (!table) return null;
@@ -4768,13 +4605,13 @@ renderStatTile('Next hour', dueNextHour, false, `window._quickAssignPendingTile(
 const oneLineSummary = `${dueThisHour} due this hour &middot; ${dueNextHour} due next hour &middot; ${notAssignedCount} unassigned`;
 const expandedBody = `
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
-<div style="font-size: 11px; color: #64748b; margin-bottom: 6px;">${callbackLine}</div>`;
+<div style="font-size: 11px; color: var(--wb-muted, #5b6577); margin-bottom: 6px;">${callbackLine}</div>`;
 
 return `
-<div id="pendingDueSummary" style="padding: 12px 20px 0; background: #f2f2f7; font-size: 13px; color: #1e293b;">
+<div id="pendingDueSummary" style="padding: 12px 20px 0; background: var(--wb-bg, #f2f2f7); font-size: 13px; color: var(--wb-text, #1c1c1e);">
 ${renderStatSummaryShell(oneLineSummary, expandedBody)}
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-<span style="font-size: 11px; color: #94a3b8;">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
+<span style="font-size: 11px; color: var(--wb-muted, #5b6577);">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
 <button onclick="window._clearWholeQueue()" style="background: #dc2626; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('warning', 11)} Clear Queue</button>
 </div>
 </div>`;
@@ -4811,7 +4648,7 @@ const advancedOpenStyle = settings.advancedOpen ? 'display: flex;' : 'display: n
 
 const filtersZoneHtml = `
 <div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">CALLBACK TYPE</div>
+<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 6px;">CALLBACK TYPE</div>
 <div style="display: flex; gap: 6px; flex-wrap: wrap;">${primaryCheckboxes}</div>
 <div onclick="window._toggleAdvancedCallbackTypes()" style="margin-top: 6px; font-size: 11px; color: #4f46e5; cursor: pointer;">
 ${chevronIcon(!settings.advancedOpen, 'advancedCallbackToggle')} Advanced (Manual Rescheduled, Post Closure)
@@ -4819,11 +4656,11 @@ ${chevronIcon(!settings.advancedOpen, 'advancedCallbackToggle')} Advanced (Manua
 <div id="advancedCallbackTypes" style="${advancedOpenStyle} gap: 6px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
 </div>
 <div>
-<div style="font-size: 11px; font-weight: 600; color: #64748b; letter-spacing: 0.3px; margin-bottom: 6px;">DUE BEFORE</div>
+<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 6px;">DUE BEFORE</div>
 <input id="assignCutoffTime" type="hidden" value="${defaultCutoff}">
 <div style="display: flex; align-items: center; gap: 6px;">
 ${renderWheelColumnHtml('assignCutoffHourWheel', HOUR_VALUES, 56)}
-<span style="font-weight: 700; color: #1e293b;">:</span>
+<span style="font-weight: 700; color: var(--wb-text, #1c1c1e);">:</span>
 ${renderWheelColumnHtml('assignCutoffMinuteWheel', MINUTE_VALUES, 56)}
 </div>
 </div>`;
@@ -4837,16 +4674,15 @@ return renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, '_run
 
 // Shared section shell (header/chevron/toggle, collapsed-state,
 // empty-state, the grouped lead-row-card wrapping every row) for both
-// the SLA tier view and the Pending callback-type view - they used to
-// be two ~85-line functions building near-byte-identical cards. The
-// row itself stays a caller-supplied renderRow callback rather than
-// being fully parameterized here, since it genuinely differs per page
-// (contact fields, footer tags, due-date source, urgency).
+// the SLA tier view and the Pending callback-type view. The row itself
+// stays a caller-supplied renderRow callback rather than being fully
+// parameterized here, since it genuinely differs per page (contact
+// fields, footer tags, due-date source, urgency).
 function renderCustomerCardListSection({ label, customers, color, sectionId, toggleHandlerName, renderRow }) {
 if (customers.length === 0) {
 return `<div style="margin-bottom: 16px; padding: 10px 4px; border-bottom: 2px solid ${color};">
 <span style="color: ${color}; font-size: 15px; font-weight: 700;">${escapeHtml(label)}</span>
-<span style="margin-left: 10px; color: #94a3b8; font-size: 13px;">No customers</span>
+<span style="margin-left: 10px; color: var(--wb-muted, #5b6577); font-size: 13px;">No customers</span>
 </div>`;
 }
 const collapsed = isSectionCollapsed(sectionId);
@@ -4854,14 +4690,14 @@ return `<div style="margin-bottom: 16px;">
 <div onclick="window.${toggleHandlerName}('${sectionId}')" style="cursor: pointer; padding: 10px 4px;
 display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
 <div>
-<span style="font-weight: 700; color: #1e293b; font-size: 15px;">${escapeHtml(label)}</span>
-<span style="font-size: 13px; color: #94a3b8; margin-left: 10px;">${customers.length}</span>
+<span style="font-weight: 700; color: var(--wb-text, #1c1c1e); font-size: 15px;">${escapeHtml(label)}</span>
+<span style="font-size: 13px; color: var(--wb-muted, #5b6577); margin-left: 10px;">${customers.length}</span>
 </div>
 <span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + sectionId)}</span>
 </div>
 <div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
 <div class="lead-row-card">
-${customers.map(renderRow).join('<div style="height: 1px; background: #f2f2f7; margin-left: 64px;"></div>')}
+${customers.map(renderRow).join('<div style="height: 1px; background: var(--wb-bg, #f2f2f7); margin-left: 64px;"></div>')}
 </div>
 </div>
 </div>`;
@@ -4874,13 +4710,10 @@ const sectionId = 'cb-' + slugify(typeName);
 const leadCheckerResults = loadLeadCheckerImportState().results;
 const leadCheckerResultIndex = buildLeadCheckerResultIndex(leadCheckerResults);
 const agentQueueSnapshot = loadAgentQueueSnapshot();
-// No hour-bucketing for the Post Closure callback type specifically -
-// per instruction, within that section a Send-back-through result must
-// sort ahead of a Check-needs-contact one, both ahead of anyone not yet
-// classified, full stop, regardless of which hour each happens to be
-// due in. Every other callback type still gets the hour-to-contact
-// grouping as the dominant key (see sortByLeadCheckerPriority's own
-// comment on why booking-likelihood can't override that).
+// No hour-bucketing for the Post Closure callback type specifically.
+// Every other callback type still gets the hour-to-contact grouping as
+// the dominant key (see sortByLeadCheckerPriority's own comment on why
+// booking-likelihood can't override that).
 const orderedCustomers = isLeadCheckerPrioritySortEnabled()
 ? sortByLeadCheckerPriority(customers, leadCheckerResults, typeName === 'Post Closure' ? null : (c) => c.nextActionDate)
 : customers;
@@ -4901,7 +4734,7 @@ const leadCheckerTitle = leadChecker ? [leadChecker.reason, leadChecker.initialN
 const leadCheckerBadge = pickLeadCheckerBadge(leadChecker);
 const urgencyBadge = pickUrgencyBadge(null, queuePosition, c.assigned);
 const secondaryLine = buildSecondaryLine(urgencyBadge, null, queuePosition, c.assigned);
-const urgencyBadgeTitle = urgencyBadge?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.` : '';
+const urgencyBadgeTitle = urgencyBadge?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown), so assigning it may be rejected.` : '';
 const nextActionLabel = c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown';
 // Zen mode's real value is here, not just hiding Assign/Filters - the
 // bulk of a card's footprint is these per-row details, so a genuine
@@ -4917,33 +4750,33 @@ return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLow
 ${renderAvatarCircle(c.name, avatarColor, avatarSize)}
 <div style="flex: 1; min-width: 0;">
 <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: #1c1c1e; font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${escapeHtml(c.name)}</span>
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: var(--wb-text, #1c1c1e); font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${escapeHtml(c.name)}</span>
 ${leadCheckerBadge ? `<span title="${escapeHtml(leadCheckerTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${leadCheckerBadge.color}18; color: ${leadCheckerBadge.color}; white-space: nowrap;">${escapeHtml(leadCheckerBadge.label)}</span>` : ''}
 ${urgencyBadge ? `<span title="${escapeHtml(urgencyBadgeTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${urgencyBadge.color}18; color: ${urgencyBadge.color}; white-space: nowrap;">${escapeHtml(urgencyBadge.label)}</span>` : ''}
 </div>
-<div style="font-size: 12.5px; color: #8e8e93; margin-top: 2px;">${secondaryLine || `Next action: ${nextActionLabel}`}</div>
+<div style="font-size: 12.5px; color: var(--wb-muted, #5b6577); margin-top: 2px;">${secondaryLine || `Next action: ${nextActionLabel}`}</div>
 </div>
 ${c.assigned
 ? `<span title="${escapeHtml(c.agentName || 'Assigned')}" style="flex-shrink: 0;">${svgIcon('check', 18, ' color: #34c759;')}</span>`
 : `<span style="flex-shrink: 0; color: #c7c7cc;">${svgIcon('chevronRight', 16)}</span>`}
 </div>
-${secondaryLine ? `<div style="font-size: 12.5px; color: #8e8e93; margin-bottom: ${zenCompact ? '4px' : '9px'}; margin-left: 50px;">Next action: ${nextActionLabel}</div>` : ''}
+${secondaryLine ? `<div style="font-size: 12.5px; color: var(--wb-muted, #5b6577); margin-bottom: ${zenCompact ? '4px' : '9px'}; margin-left: 50px;">Next action: ${nextActionLabel}</div>` : ''}
 ${zenCompact ? '' : renderContactToggle(`
 <div>
-<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">MOBILE</div>
+<div style="color: var(--wb-muted, #5b6577); font-size: 11px; font-weight: 700; margin-bottom: 4px;">MOBILE</div>
 ${renderCopyableField(c.mobile)}
 </div>
 <div>
-<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
+<div style="color: var(--wb-muted, #5b6577); font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
 ${renderCopyableField(c.email)}
 </div>
 <div>
-<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">LANDLINE</div>
+<div style="color: var(--wb-muted, #5b6577); font-size: 11px; font-weight: 700; margin-bottom: 4px;">LANDLINE</div>
 ${renderCopyableField(c.landline)}
 </div>
 `)}
 ${zenCompact ? '' : `<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-left: 50px;">
-<span style="color: #64748b;">${escapeHtml(c.brand || '')}</span>
+<span style="color: var(--wb-muted, #5b6577);">${escapeHtml(c.brand || '')}</span>
 <span style="color: #34c759;">${escapeHtml(c.campaign || '')}</span>
 </div>`}
 </div>`;
@@ -4976,7 +4809,7 @@ const queuePosition = findAgentQueuePositionInSnapshot(c, agentQueueSnapshot);
 const leadCheckerBadge = pickLeadCheckerBadge(leadChecker);
 const urgencyBadge = pickUrgencyBadge(urgency, queuePosition, c.assigned);
 const secondaryLine = buildSecondaryLine(urgencyBadge, urgency, queuePosition, c.assigned);
-const urgencyBadgeTitle = urgencyBadge?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown) - assigning it may be rejected.` : '';
+const urgencyBadgeTitle = urgencyBadge?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown), so assigning it may be rejected.` : '';
 // Zen mode's real value is here, not just hiding Assign/Filters - the
 // bulk of a card's footprint is these per-row details, so a genuine
 // "focus" mode has to shrink the rows themselves to show meaningfully
@@ -4991,11 +4824,11 @@ return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLow
 ${renderAvatarCircle(c.name, avatarColor, avatarSize)}
 <div style="flex: 1; min-width: 0;">
 <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: #1c1c1e; font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${escapeHtml(c.name)}</span>
+<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: var(--wb-text, #1c1c1e); font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${escapeHtml(c.name)}</span>
 ${leadCheckerBadge ? `<span title="${escapeHtml(leadCheckerTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${leadCheckerBadge.color}18; color: ${leadCheckerBadge.color}; white-space: nowrap;">${escapeHtml(leadCheckerBadge.label)}</span>` : ''}
 ${urgencyBadge ? `<span title="${escapeHtml(urgencyBadgeTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${urgencyBadge.color}18; color: ${urgencyBadge.color}; white-space: nowrap;">${escapeHtml(urgencyBadge.label)}</span>` : ''}
 </div>
-${secondaryLine ? `<div style="font-size: 12.5px; color: #8e8e93; margin-top: 2px;">${secondaryLine}</div>` : ''}
+${secondaryLine ? `<div style="font-size: 12.5px; color: var(--wb-muted, #5b6577); margin-top: 2px;">${secondaryLine}</div>` : ''}
 </div>
 ${c.assigned
 ? `<span title="${escapeHtml(c.agentName || 'Assigned')}" style="flex-shrink: 0;">${svgIcon('check', 18, ' color: #34c759;')}</span>`
@@ -5003,16 +4836,16 @@ ${c.assigned
 </div>
 ${zenCompact ? '' : renderContactToggle(`
 <div>
-<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
+<div style="color: var(--wb-muted, #5b6577); font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
 ${renderCopyableField(c.phone)}
 </div>
 <div>
-<div style="color: #64748b; font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
+<div style="color: var(--wb-muted, #5b6577); font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
 ${renderCopyableField(c.email)}
 </div>
 `)}
 ${zenCompact ? '' : `<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-left: 50px;">
-<span style="color: #64748b;">${escapeHtml(c.source)}</span>
+<span style="color: var(--wb-muted, #5b6577);">${escapeHtml(c.source)}</span>
 <span style="color: #34c759;">${escapeHtml(c.campaign)}</span>
 </div>`}
 </div>`;
@@ -5044,7 +4877,7 @@ const isMinimized = localStorage.getItem(PANEL_STATE_KEY) === 'hidden';
 
 return `
 <div id="${PANEL_BOX_ID}" style="position: fixed; ${positionStyle}
-background: #f2f2f7; box-shadow: 0 20px 50px -12px rgba(0,0,0,0.25);
+background: var(--wb-bg, #f2f2f7); box-shadow: 0 20px 50px -12px rgba(0,0,0,0.25);
 z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 display: flex; flex-direction: column; transition: transform 0.3s ease; ${isMinimized ? 'transform: translateX(150%);' : ''}">
 
@@ -5053,38 +4886,38 @@ display: flex; justify-content: space-between; align-items: center;
 flex-shrink: 0;">
 <div style="display: flex; align-items: center; gap: 8px;">
 <h2 ${onTitleClick ? `onclick="${onTitleClick}" title="Click to refresh the leads and this panel" style="margin: 0; font-size: 15px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 4px;"` : `style="margin: 0; font-size: 15px; font-weight: 700;"`}>${title}${onTitleClick ? svgIcon('refresh', 12, ' opacity: 0.55;') : ''}</h2>
-<span style="color: #94a3b8; font-size: 13px;">${count}</span>
+<span style="color: #cbd5e1; font-size: 13px;">${count}</span>
 ${newCount > 0 ? `<span style="color: #d97706; font-size: 13px; font-weight: 600;">+${newCount}</span>` : ''}
-${removedCount > 0 ? `<span style="color: #94a3b8; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
+${removedCount > 0 ? `<span style="color: #cbd5e1; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
 </div>
 <div style="display: flex; gap: 2px; align-items: center; position: relative;">
 ${showLeadChecker ? `<button onclick="window._toggleLeadCheckerPopover();"
-style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
-title="Lead Checker - copy leads out, classify results back in">${svgIcon('inbox', 14)}</button>` : ''}
+style="background: transparent; border: none; color: #cbd5e1; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#cbd5e1';"
+title="Lead Checker: copy leads out, classify results back in">${svgIcon('inbox', 14)}</button>` : ''}
 <button onclick="window._toggleMorningChecks();"
 style="background: ${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)'}; border: none; color: ${currentPanelMode === 'morningChecks' ? '#fbbf24' : '#cbd5e1'}; cursor: pointer; padding: 5px 9px 5px 7px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center; gap: 4px; margin: 0 4px;"
 onmouseover="this.style.background='rgba(255,255,255,0.18)';" onmouseout="this.style.background='${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)'}';"
 title="${currentPanelMode === 'morningChecks' ? 'Back to queue view' : 'Switch to Morning Checks'}">${svgIcon('checklist', 13)}<span style="font-size: 11px; font-weight: 600;">Checks</span></button>
 ${showLeadChecker ? `<button onclick="window._toggleLeadCheckerPrioritySort();"
-style="background: ${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#94a3b8'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#94a3b8'}';"
-title="${isLeadCheckerPrioritySortEnabled() ? 'Lead Checker priority sort: ON - click to turn off' : 'Lead Checker priority sort: OFF - click to bring Confirmed/Warm leads to the top of each section'}">${svgIcon('bolt', 14)}</button>` : ''}
+style="background: ${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#cbd5e1'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#cbd5e1'}';"
+title="${isLeadCheckerPrioritySortEnabled() ? 'Lead Checker priority sort is on. Click to turn it off' : 'Lead Checker priority sort is off. Click to bring Confirmed and Warm leads to the top of each section'}">${svgIcon('bolt', 14)}</button>` : ''}
 <button onclick="window._toggleZenMode();"
-style="background: ${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isZenModeOn() ? '#38bdf8' : '#94a3b8'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isZenModeOn() ? '#38bdf8' : '#94a3b8'}';"
-title="${isZenModeOn() ? 'Zen mode: on - click to restore the full view' : 'Zen mode - hide Overview/Assign/Filters and shrink every card down to just the essentials, so more leads fit on screen at once'}">${svgIcon('focus', 14)}</button>
+style="background: ${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isZenModeOn() ? '#38bdf8' : '#cbd5e1'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isZenModeOn() ? '#38bdf8' : '#cbd5e1'}';"
+title="${isZenModeOn() ? 'Zen mode is on. Click to restore the full view' : 'Zen mode: hide Overview, Assign and Filters and shrink each card so more leads fit on screen'}">${svgIcon('focus', 14)}</button>
 <button id="_slaSizeBtn" onclick="window._togglePanelSize();"
-style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
+style="background: transparent; border: none; color: #cbd5e1; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#cbd5e1';"
 title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${svgIcon(isFull ? 'shrink' : 'expand', 14)}</button>
 <button onclick="document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0;"
-style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
+style="background: transparent; border: none; color: #cbd5e1; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#cbd5e1';"
 title="Top">${svgIcon('arrowUp', 14)}</button>
 <button id="_slaMinimizeBtn" onclick="window._toggleMinimizePanel();"
-style="background: transparent; border: none; color: #94a3b8; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#94a3b8';"
+style="background: transparent; border: none; color: #cbd5e1; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
+onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#cbd5e1';"
 title="Minimize">${svgIcon(isMinimized ? 'restore' : 'minimize', 14)}</button>
 </div>
 </div>
@@ -5094,29 +4927,86 @@ ${summaryHtml || ''}
 ${assignSectionHtml}
 
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
+${renderSelfTestBanner()}
 ${hideSearch ? '' : `
-${showLeadChecker ? `<button onclick="window._pasteAndClassifyLeadChecker(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 10px;" title="Reads Konnect Lead Checker's &quot;Copy raw for Extract&quot; result straight off the clipboard and classifies it">${svgIcon('copy', 13)}Paste & Classify from Lead Checker</button>` : ''}
-<div style="position: sticky; top: 0; z-index: 2; background: #f2f2f7; padding-bottom: 10px; margin-bottom: 10px;">
+${showLeadChecker ? `<button onclick="window._pasteAndClassifyLeadChecker(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 10px;" title="Reads the results copied from Konnect Lead Checker off the clipboard and classifies them">${svgIcon('copy', 13)}Paste & Classify from Lead Checker</button>` : ''}
+<div style="position: sticky; top: 0; z-index: 2; background: var(--wb-bg, #f2f2f7); padding-bottom: 10px; margin-bottom: 10px;">
 <input type="text" id="customerSearchInput" placeholder="Search by name…" oninput="window._filterCustomerSearch(this.value)"
-style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; color: #1e293b; background: white;">
+style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; font-size: 13px; color: var(--wb-text, #1c1c1e); background: var(--wb-surface, white);">
 </div>`}
 ${bodyHtml}
 </div>
 
-<div style="border-top: 1px solid #cbd5e1; padding: 8px 14px; background: white; flex-shrink: 0; display: flex; justify-content: flex-end; align-items: center; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
+<div style="border-top: 1px solid var(--wb-border, #cbd5e1); padding: 8px 14px; background: var(--wb-surface, white); flex-shrink: 0; display: flex; justify-content: flex-end; align-items: center; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
 <button onclick="window._slaResetBookmarklet();"
-style="padding: 6px 12px; background: transparent; color: #dc2626; border: 1px solid #dc2626; border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
+style="padding: 6px 12px; background: transparent; color: var(--wb-danger, #dc2626); border: 1px solid var(--wb-danger, #dc2626); border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
 </div>
 </div>
 `;
 }
 
+function showTableNotFoundPanel(tableName) {
+mountPanel(renderPanelShell({
+title: 'SLA Manager', count: '', newCount: 0, removedCount: 0, summaryHtml: '', assignSectionHtml: '', hideSearch: true,
+bodyHtml: renderZeroState('warning', `${tableName} table not found`, 'The table has not loaded yet, or the page layout has changed. Reload the page, then click the bookmarklet again.')
+}));
+}
+
+// Gives mouse-only controls (clickable spans/divs, copyable chips, avatars)
+// button semantics and keyboard focus, and names unlabelled inputs and
+// icon-only buttons from their placeholder or tooltip. Idempotent, so it is
+// re-run whenever part of the panel is re-rendered.
+const NATIVE_CONTROL_SELECTOR = 'button, a[href], input, select, textarea, summary';
+function enhancePanelAccessibility(root) {
+if (!root) return;
+root.querySelectorAll('[onclick], .sla-copyable, .avatar-circle').forEach((el) => {
+if (el.matches(NATIVE_CONTROL_SELECTOR) || el.closest('label')) return;
+if (!el.hasAttribute('role')) el.setAttribute('role', 'button');
+if (!el.hasAttribute('tabindex')) el.setAttribute('tabindex', '0');
+if (!el.hasAttribute('aria-label') && el.getAttribute('title') && !el.textContent.trim()) el.setAttribute('aria-label', el.getAttribute('title'));
+});
+root.querySelectorAll('input, select, textarea').forEach((el) => {
+if (el.hasAttribute('aria-label') || el.closest('label') || (el.id && root.querySelector(`label[for="${el.id}"]`))) return;
+const name = el.getAttribute('placeholder') || el.getAttribute('title') || el.getAttribute('name');
+if (name) el.setAttribute('aria-label', name);
+});
+root.querySelectorAll('button').forEach((el) => {
+if (!el.hasAttribute('aria-label') && !el.textContent.trim() && el.getAttribute('title')) el.setAttribute('aria-label', el.getAttribute('title'));
+});
+}
+
 function mountPanel(panelHTML) {
+const isFirstOpen = !panelElement;
+const focusedId = panelElement && panelElement.contains(document.activeElement) ? document.activeElement.id : '';
 if (panelElement) panelElement.remove();
 panelElement = document.createElement('div');
 panelElement.id = PANEL_ID;
+panelElement.setAttribute('role', 'region');
+panelElement.setAttribute('aria-label', 'SLA Manager');
 panelElement.innerHTML = panelHTML;
 document.documentElement.appendChild(panelElement);
+enhancePanelAccessibility(panelElement);
+const mountedPanel = panelElement;
+let enhanceQueued = false;
+new MutationObserver(() => {
+if (enhanceQueued) return;
+enhanceQueued = true;
+setTimeout(() => { enhanceQueued = false; enhancePanelAccessibility(mountedPanel); }, 50);
+}).observe(panelElement, { childList: true, subtree: true });
+panelElement.addEventListener('keydown', (event) => {
+if (event.key !== 'Enter' && event.key !== ' ') return;
+const el = event.target;
+if (!el || el.getAttribute('role') !== 'button' || el.matches(NATIVE_CONTROL_SELECTOR)) return;
+event.preventDefault();
+el.click();
+});
+const panelBox = panelElement.querySelector(`#${PANEL_BOX_ID}`);
+if (focusedId && document.getElementById(focusedId)) {
+document.getElementById(focusedId).focus();
+} else if (isFirstOpen && panelBox) {
+panelBox.setAttribute('tabindex', '-1');
+panelBox.focus({ preventScroll: true });
+}
 
 const contentArea = panelElement.querySelector('.panelContent');
 if (contentArea) {
@@ -5152,7 +5042,7 @@ window._manualAssignLead(el.dataset.pageType, el.dataset.leadKey, el.value, el);
 // call instead of leaking a second one.
 const avatarPopover = document.createElement('div');
 avatarPopover.id = '_slaAvatarAssignPopover';
-avatarPopover.style.cssText = 'display: none; position: fixed; z-index: 100001; width: 190px; background: white; border-radius: 12px; box-shadow: 0 10px 30px -6px rgba(0,0,0,0.25); padding: 10px;';
+avatarPopover.style.cssText = 'display: none; position: fixed; z-index: 100001; width: 190px; background: var(--wb-surface, white); border-radius: 12px; box-shadow: 0 10px 30px -6px rgba(0,0,0,0.25); padding: 10px;';
 panelElement.appendChild(avatarPopover);
 
 function closeAvatarPopover() {
@@ -5176,8 +5066,8 @@ return;
 // anyway - this is a visual acknowledgment of that, not a new rule).
 const assigned = card.dataset.assigned === '1';
 avatarPopover.innerHTML = assigned
-? `<div style="font-size: 11px; font-weight: 700; color: #8e8e93; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Assigned to</div><div style="font-size: 13px; color: #1c1c1e; padding: 4px 2px;">${escapeHtml(card.dataset.agentName || 'Unknown')}</div>`
-: `<div style="font-size: 11px; font-weight: 700; color: #8e8e93; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px;">Assign to</div>${renderManualAssignPicker(card.dataset.leadKey, card.dataset.pageType)}`;
+? `<div style="font-size: 11px; font-weight: 700; color: var(--wb-muted, #5b6577); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Assigned to</div><div style="font-size: 13px; color: var(--wb-text, #1c1c1e); padding: 4px 2px;">${escapeHtml(card.dataset.agentName || 'Unknown')}</div>`
+: `<div style="font-size: 11px; font-weight: 700; color: var(--wb-muted, #5b6577); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px;">Assign to</div>${renderManualAssignPicker(card.dataset.leadKey, card.dataset.pageType)}`;
 avatarPopover.dataset.forCard = card.dataset.leadKey;
 const rect = el.getBoundingClientRect();
 avatarPopover.style.display = 'block';
@@ -5276,7 +5166,8 @@ extracting = true;
 try {
 const table = document.querySelector('table');
 if (!table) {
-console.error('SLA Table not found');
+console.error('[SLA Manager] SLA table not found');
+showTableNotFoundPanel('SLA');
 return;
 }
 await waitForLeadsTableRows(table);
@@ -5322,14 +5213,9 @@ let remaining = pendingCount;
 setBadgeProgress(remaining);
 // Only the newly-seen leads below actually click into a detail modal
 // (cached ones are skipped entirely) - that's what pops the modal
-// open/closed rapidly per row and reads as the screen glitching, so
-// the overlay is only worth showing when there's actually one or more
-// of those, not on every routine scan. The badge's own countdown
-// (setBadgeProgress) is what used to show this - it's still updated
-// the same way below, but the overlay now sits on top of it (same
-// z-index, later in the DOM) for the exact pages this most often runs
-// on, so the remaining count needs to live in the overlay text too or
-// it's invisible for the whole ingestion.
+// open/closed rapidly per row and reads as the screen glitching, so the
+// overlay is only worth showing when there's actually one or more of
+// those, not on every routine scan.
 if (pendingCount > 0) showPageFlashOverlay(`Loading new leads… (${remaining} left)`);
 
 for (const d of rowDescriptors) {
@@ -5400,7 +5286,8 @@ extracting = true;
 try {
 const table = document.querySelector('table');
 if (!table) {
-console.error('Pending Customers table not found');
+console.error('[SLA Manager] Pending Customers table not found');
+showTableNotFoundPanel('Pending Customers');
 return;
 }
 await waitForLeadsTableRows(table);
@@ -5469,11 +5356,7 @@ async function handleBadgeClick() {
 localStorage.setItem(PANEL_STATE_KEY, 'visible');
 // Morning Checks routinely leaves the visible tab sitting on pages
 // runExtraction()/detectPageType() don't recognize at all (Live
-// Campaigns, Inbound API, Voicemails, Queue by Agent) - previously,
-// minimizing while on one of those meant the badge (the only way back,
-// since a minimized panel's own restore button is off-screen with the
-// rest of it) just flashed a warning icon and did nothing, with no way
-// to reopen the panel until navigating back to the SLA/Pending page.
+// Campaigns, Inbound API, Voicemails, Queue by Agent).
 if (currentPanelMode === 'morningChecks') {
 displayMorningChecks();
 return;
@@ -5494,34 +5377,23 @@ try {
 try {
 await refreshAgentQueueSnapshot();
 // Same gap as window._checkAgentQueuePositions/_clearWholeQueue: the
-// navigate-away-and-back this just did only changes the route -
-// Angular still needs a moment to actually repopulate the SLA/Pending
-// table afterward. Rendering immediately here (this is the actual
-// floating-badge "activate" path) was the real source of the reported
-// "no leads match search"/tiles briefly going to zero on Pending
-// Customers - this function has its own inline render call, so it
-// never went through the fix already made in the other two functions.
+// navigate-away-and-back this just did only changes the route - Angular
+// still needs a moment to actually repopulate the SLA/Pending table
+// afterward.
 await waitForLeadsTableReady();
 } catch (error) {
 // The queue check is a nice-to-have layered on top of an otherwise-
 // good leads refresh; it failing outright is not a reason to also
 // withhold the panel the user actually asked to see.
-console.warn('[SLA Extract] Queue check failed during badge activation - showing the panel anyway:', error);
+console.warn('[SLA Manager] Queue check failed during badge activation - showing the panel anyway:', error);
 }
-// This previous try/catch only covered the queue check above - it
-// did NOT cover the render calls themselves, so if displayPanel/
-// displayPendingPanel (or anything inside them - renderAssignSection,
-// mountPanel, etc) throws, that would propagate out uncaught exactly
-// the same way and the panel would still never appear, just one step
-// later than what the last fix actually guarded. Reported live as
-// still happening after that fix, which is what exposed this gap -
-// wrapping the actual render too, and surfacing the error visibly
-// (an alert, not just a console message this session hasn't been able
-// to see) rather than guessing blind a third time.
+// This previous try/catch only covered the queue check above - it did
+// NOT cover the render calls themselves, so if displayPanel/
+// displayPendingPanel (or anything inside them.
 if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, 0, 0, false);
 else displayPanel(currentCustomers, 0, 0, false);
 } catch (error) {
-console.error('[SLA Extract] Panel failed to render after badge activation:', error);
+console.error('[SLA Manager] Panel failed to render after badge activation:', error);
 alert('SLA Manager: the panel failed to load after activating.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
 } finally {
 hidePageFlashOverlay();
@@ -5603,12 +5475,10 @@ currentPageType = null;
 extracting = false;
 
 // Lead Checker's own paste-and-classify box (rawInput + results) is
-// persisted separately from currentCustomers/currentPendingCustomers,
-// so clearing just those left it showing the last scan's leads and
-// classifications the moment the panel was reopened - confirmed live,
-// reported repeatedly: Clear & Stop must genuinely start from nothing,
-// the same discipline Konnect-Lead-Checker.js's own Clear & Stop
-// already follows (clearStoredSession there).
+// persisted separately from currentCustomers/currentPendingCustomers, so
+// clearing just those left it showing the last scan's leads and
+// classifications the moment the panel was reopened.js's own Clear &
+// Stop already follows (clearStoredSession there).
 try { localStorage.removeItem(LEAD_CHECKER_IMPORT_KEY); } catch (error) { /* ignore */ }
 
 if (panelElement) {
@@ -5738,13 +5608,7 @@ setSectionCollapsed(sectionId, !isHidden);
 };
 
 // Segmented control: Assign/Filters are mutually exclusive tabs now
-// (never "both collapsed", never "both open") - switching to one
-// always shows that tab's body and hides the other, and repaints both
-// pills' active styling to match, instead of the old independent
-// chevron-rotate-and-toggle-one-body behavior. The time wheel lives
-// inside Filters' body - scrollTop assignments silently no-op while
-// their container is display:none, so switching TO Filters needs the
-// same re-sync syncAllWheelPositions used to do on open.
+// (never "both collapsed", never "both open").
 function setActiveAssignTab(tab) {
 const assignBody = document.getElementById('assignSectionBody');
 const filtersBody = document.getElementById('filtersZoneBody');
@@ -5787,24 +5651,13 @@ saveAssignSettings({ advancedOpen: shouldOpen });
 // ASSIGN EXECUTION & PREVIEW
 // ===================================================================
 
-// Recomputes and displays what clicking "Assign" would actually do before
-// the button is even clicked, so a filter combination that matches
-// nothing, an unexpectedly large batch, or (previously) a forgotten agent
+// Recomputes and displays what clicking "Assign" would actually do
+// before the button is even clicked, so a filter combination that
+// matches nothing, an unexpectedly large batch, or a forgotten agent
 // selection is visible immediately rather than found out via an empty/
 // surprising results log - or worse, via the button's own "Select at
 // least one agent" rejection after the preview had already implied
-// everything was ready. Agent count now factors directly into what's
-// shown, both for that reason and because seeing the actual per-agent
-// split ("23 -> 4 agents, ~6 each") is the real pre-click control this is
-// meant to give: not just "will something happen" but "is this a
-// reasonable way to divide it up."
-// Shared by every quick-criteria entry point (the general Quick Assign
-// button and each clickable due-summary tile): expands the ASSIGN
-// section if it's collapsed so progress/results are visible, then
-// resolves which agents are actually checked - agent selection is real
-// state the user is deliberately curating and always gets respected,
-// no matter which fixed lead-criteria shortcut triggered the run.
-// Returns null (and leaves a message in the log) if nothing's selected.
+// everything was ready.
 function beginQuickAssign() {
 const body = document.getElementById('assignSectionBody');
 if (body && body.style.display === 'none') {
@@ -5955,9 +5808,7 @@ console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
 if (succeeded > 0) {
 // The newly-assigned leads' real queue position is now something
 // different from whatever the last scan found (or unknown, if there
-// never was one) - per instruction, auto re-scan Queue by Agent so
-// the badges reflect reality immediately, accepting the extra
-// navigation this adds to every successful assign run.
+// never was one).
 showPageFlashOverlay('Checking agent queues…');
 try {
 await refreshAgentQueueSnapshot();
@@ -5976,7 +5827,7 @@ await waitForLeadsTableReady();
 // queue-position rescan is a nice-to-have layered on top of an assign
 // run that already genuinely succeeded; it failing is not a reason to
 // also withhold that assign run's own results.
-console.warn('[SLA Extract] Queue check failed after assign run - showing results anyway:', error);
+console.warn('[SLA Manager] Queue check failed after assign run - showing results anyway:', error);
 } finally {
 hidePageFlashOverlay();
 }
@@ -5995,7 +5846,7 @@ currentCustomers = currentCustomers.map((c) => successByKey.has(c.key) ? { ...c,
 displayPanel(currentCustomers, 0, 0, false);
 }
 } catch (error) {
-console.error('[SLA Extract] Panel failed to render after assign run:', error);
+console.error('[SLA Manager] Panel failed to render after assign run:', error);
 alert('SLA Manager: leads were assigned, but the panel failed to reload.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
 }
 }
@@ -6115,7 +5966,7 @@ selectEl.value = '';
 return;
 }
 
-wrapper.innerHTML = `<span style="font-size: 11px; color: #94a3b8;">Assigning…</span>`;
+wrapper.innerHTML = `<span style="font-size: 11px; color: var(--wb-muted, #5b6577);">Assigning…</span>`;
 
 const locateCellFn = pageType === PAGE_PENDING ? locatePendingAssignCell : locateAssignCell;
 const leads = pageType === PAGE_PENDING ? collectPendingCustomers() : collectAssignableLeads();
@@ -6138,16 +5989,9 @@ appendAssignmentLog(results);
 
 const result = results[0];
 if (result.ok) {
-// Same gap patchCachedLeadsAssigned fixed for executeAssignmentRun -
-// this used to invalidateLeadsCache() (forcing a racy fresh DOM
-// re-scan on whatever read it next) and never re-rendered the panel
-// at all, so a one-tap avatar assign left the card AND the stat tiles
-// showing the pre-assign state until an unrelated full refresh
-// happened to fire. Patch in place and re-render immediately instead,
-// matching the batch-assign path exactly. This also tears down and
-// rebuilds the popover as part of the re-render, so there's nothing
-// left to show a lingering "✓ AgentName" confirmation in - the row
-// itself updating to its new assigned state is the confirmation.
+// Same gap patchCachedLeadsAssigned fixed for executeAssignmentRun.
+// Patch in place and re-render immediately instead, matching the
+// batch-assign path exactly.
 const successByKey = new Map([[lead.key, agent.name]]);
 patchCachedLeadsAssigned(successByKey);
 if (pageType === PAGE_PENDING) {
@@ -6270,7 +6114,7 @@ const perAgent = Math.floor(count / agentCount);
 const remainder = count % agentCount;
 const splitLabel = remainder === 0 ? `${perAgent} each` : `~${perAgent} each`;
 previewEl.textContent = `${count} lead${count === 1 ? '' : 's'}${cappedSuffix} → ${agentCount} agent${agentCount === 1 ? '' : 's'} (${splitLabel})`;
-previewEl.style.color = '#64748b';
+previewEl.style.color = 'var(--wb-muted, #5b6577)';
 };
 
 window._refreshAssignSection = function() {
@@ -6349,31 +6193,14 @@ clearInterval(window._slaAutoDetectInterval);
 // instance's own mountPanel() guard (`if (panelElement) panelElement.
 // remove();`) only knows about ITS OWN panelElement variable - a fresh
 // instance's panelElement starts as null, with no way to know a
-// completely separate previous instance ever created one. Confirmed
-// live: this left two #_slaPanel trees mounted simultaneously, each
-// with their own duplicate-ID children (two "Classify Lead Checker
-// results" buttons, two #leadCheckerImportPopover elements) -
-// getElementById always resolves the FIRST one in DOM order, so a click
-// on the current, visible panel's own button toggled the OLD, off-
-// screen instance's popover instead, with no visible effect at all.
-// createBadge() already does this exact same explicit ID-based cleanup
-// for the badge itself (removing any existing #_slaBadgeNavItem/
-// #_slaBadge before creating its own) - this is that same pattern,
-// applied to the panel, which had no equivalent.
+// completely separate previous instance ever created one.
 document.getElementById(PANEL_ID)?.remove();
 let lastKnownPageType = detectPageType();
 // A changed detection needs to be seen on two consecutive ticks before
-// acting on it, not just one - confirmed live: switching SLA -> Pending
-// correctly loaded Pending, then flipped back to SLA Report on its own
-// a few seconds later, with no further navigation in between. A single
-// transient misread (detectPageType matching a stale/duplicate <table>
-// briefly left in the DOM during Konnect's own unrelated Angular
-// re-render, for instance) was otherwise enough on its own to wrongly
-// flip the panel straight back. Shortened from 2500ms to 600ms (worst
-// case ~1.2s instead of ~5s to confirm a real switch) - the transient
-// misread this guards against is brief enough that two consecutive
-// quick ticks still catches it, it just doesn't need to wait this long
-// to do so.
+// acting on it, not just one. A single transient misread (detectPageType
+// matching a stale/duplicate <table> briefly left in the DOM during
+// Konnect's own unrelated Angular re-render, for instance) was otherwise
+// enough on its own to wrongly flip the panel straight back.
 let pendingPageType = null;
 window._slaAutoDetectInterval = setInterval(() => {
 if (extracting || assigning || runningMorningChecks || refreshingLeads || currentPanelMode === 'morningChecks') return;
