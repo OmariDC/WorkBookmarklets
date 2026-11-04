@@ -411,6 +411,16 @@ flagCtx.noPx = false;
 return R(4, 'Existing Customer: Upgrade', 1, 'medium', 'Existing customer with car/finance with us wanting to change (Section 3.6.4).');
 }
 
+// Manual review submission: a customer asking to hand their current
+// car back under a finance agreement (e.g. a "no fee agreement"
+// return) is a finance/agreement admin redirect, not a sales lead to
+// call - even when it also mentions wanting a new car on finance.
+// Checked after 6.4 so a plain "change my car" upgrade still lands
+// there, and kept to explicit hand-back wording only.
+if (/hand (my|the) (current )?(vehicle|car) back|returning my current (vehicle|car)|no fee agreement/i.test(lowered)) {
+return R(6, 'Agreement Hand-back', 8, 'medium', 'Customer asking to hand back/return their current car under an agreement - redirect, not a sales call (manual review).');
+}
+
 // 6.5: named exec contact, not a rebooking.
 if (/(can|could)\s+[a-z]+\s+[a-z]*\s*call me|following up on discussion with|i have spoken to\s+[a-z]+ and|as discussed with|\bi met\s+[a-z]+\b/i.test(lowered) && !/reservation made for viewing|as discussed by phone, reservation/i.test(lowered)) {
 flagCtx.execRequested = true;
@@ -433,7 +443,11 @@ return R(6, 'Existing Order', 7, 'high', 'Order/reservation cancellation or admi
 }
 
 // 6.9: aftersales.
-if (/recall|\bmot\b|service plan|warranty|spare key|gap policy|courtesy car|rental car|direct debit|account login/i.test(lowered)) {
+// Manual review submission: website account password problems and
+// "do you have a record of the service on my car" questions are
+// aftersales/admin, never a sales enquiry. Narrow phrasing on purpose:
+// "full service history" on a used-car enquiry must NOT match.
+if (/recall|\bmot\b|service plan|warranty|spare key|gap policy|courtesy car|rental car|direct debit|account login|\bpassword\b|record of (the|my) ['"]?service/i.test(lowered)) {
 if (isMotabilityHandback(lowered) && !/next car|newer|replace/i.test(lowered)) flagCtx.motab = true;
 return R(6, 'Aftersales', 8, 'high', 'Aftersales/recall/warranty/admin wording (Section 3.6.9).');
 }
@@ -611,7 +625,7 @@ path = path.replace(/\/$/, '');
 if (/\/24-hour-test-drive\//i.test(path)) return R(5, '24hr EV Test Drive Page', 1, 'high', 'EV 24hr test drive page visit (Section 7.2).');
 if (/\/configurator\/.*\/personalise-finance/i.test(path)) return R(4, 'Valuation + VOI Page', 10, 'medium', 'Configurator personalise-finance page (Section 7.2).');
 if (/\/motability\//i.test(path)) { if (flagCtx) flagCtx.motab = true; return R(4, 'Valuation + VOI Page', 10, 'medium', 'Motability valuation page (Section 7.2).'); }
-if (/\/service\//i.test(path)) return R(5, 'Valuation: Service Page', 14, 'low', 'Service-area valuation page (Section 7.2).');
+if (/\/service\//i.test(path)) return R(5, 'Valuation: Service Page', 14, 'medium', 'Service-area valuation page (Section 7.2, confirmed by manual review).');
 if (/\/used-vehicles\/|\/new-cars-in-stock\//i.test(path)) return R(4, 'Valuation + VOI Page', 10, 'medium', 'Specific stock car valuation page (Section 7.2).');
 if (/\/new\/[^/]+/i.test(path)) return R(4, 'Valuation + VOI Page', 10, 'medium', 'Model/offer page under /new/ with something after it (Section 7.2).');
 if (/^\/(dealers\/[a-z-]+|(peugeot|citroen|ds|vauxhall|fiat|abarth|alfa-romeo|jeep|leapmotor)-[a-z-]+)$/i.test(path)) {
@@ -673,6 +687,31 @@ return R(5, 'Email Campaign (Autofunnel)', 10, 'medium', 'Autofunnel template (S
 function mbMailResult(text, lowered, flagCtx) {
 const findOutMore = (field(text, 'FindOutMore') || '').toLowerCase();
 if (field(text, 'PartExReg')) flagCtx.noPx = false;
+// Newer MB Mail feed shape (manual review submission): "Enquiry = ..."
+// ticked options plus "Purchase = ..." timeframe and "Part = ..." PX
+// answer, no FindOutMore field. The Purchase timeframe is what the
+// reviewers actually tiered on: ASAP / Within 3 Months = Warm
+// Enquiry, Just Browsing = Nurture. The older FindOutMore shape is
+// left exactly as it was (spec cases T23/T24 keep it in Tier 5).
+const enquiry = field(text, 'Enquiry');
+if (!findOutMore && enquiry !== null) {
+const purchase = (field(text, 'Purchase') || '').toLowerCase();
+const part = (field(text, 'Part') || '').toLowerCase();
+if (/^(yes|possibly)$/.test(part) || field(text, 'Reg')) flagCtx.noPx = false;
+if (/finance/i.test(enquiry)) flagCtx.finance = true;
+if (/^(asap|within 3 months)$/.test(purchase)) {
+return R(4, 'MB Mail Enquiry: Near-term Purchase', 12, 'high', `MB Mail form, Purchase = ${field(text, 'Purchase')} (manual review).`);
+}
+if (/^just browsing$/.test(purchase)) {
+// Part-Exchange as the ONLY ticked option was tiered both 5 and 6
+// by reviewers on near-identical leads, so it stays low confidence
+// (Needs Review) until there's a consistent decision for it.
+if (/^part-exchange$/i.test(enquiry.trim())) {
+return R(5, 'MB Mail Enquiry Form', 11, 'low', 'MB Mail form, Just Browsing with Part-Exchange as the only option - reviewers split 5/6 on this shape.');
+}
+return R(5, 'MB Mail Enquiry Form', 11, 'high', 'MB Mail form, Purchase = Just Browsing (manual review).');
+}
+}
 if (/test drive/i.test(findOutMore)) return R(5, 'MB Mail Enquiry Form', 11, 'medium', 'MB Mail form, Test Drive ticked (Section 7.6, top of group).');
 return R(5, 'MB Mail Enquiry Form', 11, 'low', 'MB Mail form (Section 7.6, bottom of group).');
 }
@@ -875,7 +914,7 @@ if (/affiliates-cargurus/i.test(codeLower)) {
 if (/in_the_next_4_weeks/i.test(commentsLower)) return R(4, 'Affiliate Quote: Near-term (CarGurus)', 11, 'medium', 'CarGurus affiliate, in_the_next_4_weeks (Section 8.2, v1.9).');
 return R(5, 'Affiliate Quote (other)', 3, 'medium', 'CarGurus affiliate, other timeframe (Section 8.2).');
 }
-if (/google-search-|google-pmaxsearch-/i.test(codeLower)) return R(5, 'Enquiry: Blank', 9, 'medium', 'Google search marketing code (Section 8.2).');
+if (/google-search-|google-pmaxsearch-|google-demandgen-/i.test(codeLower)) return R(5, 'Enquiry: Blank', 9, 'medium', 'Google search marketing code (Section 8.2).');
 if (/ap-dypiru-dynamic yield/i.test(codeLower)) return R(5, 'Enquiry: Blank', 9, 'medium', 'Dynamic Yield marketing code (Section 8.2).');
 if (/pop-in-stock|brandsite-sales_event_enquiry_/i.test(codeLower)) {
 if (!comments || comments === '-') return R(5, 'Enquiry: Blank', 9, 'medium', 'Pop-in-stock/sales event, blank (Section 8.2).');
@@ -914,7 +953,26 @@ if (/jeep website|alfa romeo - test drive|pop-in-test_drive_/i.test(codeLower)) 
 return R(3, 'Test Drive Request (no date)', 2, 'high', 'Jeep/Alfa/blank test drive marketing code, real request (Section 8.2, v1.9).');
 }
 if (/brandsite-takata_recall_certificate/i.test(codeLower)) return R(6, 'Aftersales', 8, 'high', 'Takata recall certificate marketing code (Section 8.2).');
-if (/brandsite-enquiry/i.test(codeLower)) return null; // classify by comment
+// Blank BrandSite-Enquiry was manually confirmed as Warm Enquiry;
+// anything with real comment text is still classified by the comment.
+if (/brandsite-enquiry/i.test(codeLower)) {
+if (!comments || comments === '-') return R(4, 'Brand Site Enquiry (blank)', 6, 'medium', 'BrandSite-Enquiry marketing code, blank comment (manual review).');
+return null; // classify by comment
+}
+// Hyphenated Pop-in-Test-Drive-* (e.g. "-New_Users_CDP") is a
+// different code family from the underscore Pop-in-Test_Drive_ one
+// above; reviewers tiered it blank as Warm Enquiry (Peugeot). Fiat/
+// Abarth versions are already caught by the Fiat/Abarth branch.
+if (/^pop-in-test-drive-/i.test(codeLower)) {
+if (!comments || comments === '-') return R(4, 'Pop-in Test Drive (CDP)', 6, 'high', 'Pop-in-Test-Drive-* marketing code, blank comment (manual review).');
+return null;
+}
+// "PCH Offers Pages" (no /PCP/CS) on a Fiat offer request, blank,
+// was manually confirmed as Warm Enquiry.
+if (/^pch offers pages$/i.test(codeLower)) {
+if (!comments || comments === '-') return R(4, 'Offer Request: PCH Offers Page', 5, 'medium', 'PCH Offers Pages marketing code, blank comment (manual review).');
+return null;
+}
 if (/register interest|keep me informed/i.test(codeLower)) return R(5, 'Enquiry: Blank', 9, 'medium', 'Register Interest/Keep Me Informed marketing code (Section 8.2, v1.10).');
 if (/Event-\S*TestDrive/i.test(text) && /\d{4}-\d{2}-\d{2}\s*(Slot\s*\d+|Morning|Afternoon|Evening)/i.test(text)) {
 return R(2, 'Event Slot', 4, 'high', 'Event test drive slot template (Section 8.2).');
@@ -2780,7 +2838,24 @@ const cases = [
 // one's actually about the confidence bump to high for this narrower
 // ad-click-through shape (see customerFirstMarketingCode's own
 // comment) - kept here so the tier itself stays regression-tested too.
-['T122', 'Lead ID: 00Qa200000EXAMPLE0 | Marketing Code: Social-Meta-Q4-PCH3 | Customer Comments: PCH Frontera Hybrid GS £339 - https://fb.me/adspreview/facebook/2bqthHxfokGg4VG', 'Vauxhall - Offer Request - New', 'Customer First', 5]
+['T122', 'Lead ID: 00Qa200000EXAMPLE0 | Marketing Code: Social-Meta-Q4-PCH3 | Customer Comments: PCH Frontera Hybrid GS £339 - https://fb.me/adspreview/facebook/2bqthHxfokGg4VG', 'Vauxhall - Offer Request - New', 'Customer First', 5],
+// Manual review submission (Nov 2026): leads that previously fell to
+// low-confidence Needs Review, with the tier reviewers chose.
+['T123', "Comment Line #1: Hi, |  | I was hoping to get some information on returning my current vehicle and getting a new vehicle on finance. |  | I've been told that I may be eligible for a no fee agreement whereby I hand my current vehicle back to you.", 'Enquiry - Used', 'Robins & Day Website', 6],
+['T124', "Comment Line #1: 1)My account email is already registered but I have no password for it ? | 2)Do you have a record of the 'service' on my car, unable to find details of it?", 'Enquiry - Used', 'Robins & Day Website', 6],
+['T125', 'Misc: The following information was present in the lead: | Full Dealer Name = Stellantis &You X | Franchise = Peugeot | Unsub Email = #N/A | Model = PEUGEOT 2008 | Enquiry = Availability,Stock Vehicles,Price List,Test Drive | Purchase = Just Browsing | Part = No', 'Peugeot - Enquiry - New', 'MB Mail', 5],
+['T126', 'Misc: The following information was present in the lead: | Full Dealer Name = Stellantis &You X | Franchise = Peugeot | Unsub Email = #N/A | Model = PEUGEOT 208 | Enquiry = Stock Vehicles,Finance Options | Purchase = ASAP | Part = No', 'Peugeot - Enquiry - New', 'MB Mail', 4],
+['T127', 'Misc: The following information was present in the lead: | Full Dealer Name = Stellantis &You X | Franchise = Peugeot | Unsub Email = #N/A | Model = PEUGEOT 5008 | Enquiry = Finance Options | Purchase = Within 3 Months | Part = No', 'Peugeot - Enquiry - New', 'MB Mail', 4],
+['T128', 'Misc: The following information was present in the lead: | Full Dealer Name = Stellantis &You X | Franchise = Peugeot | Unsub Email = #N/A | Model = New Vauxhall Astra,Vauxhall Mokka | Enquiry = Part-Exchange,Stock Vehicles,Finance Options | Purchase = Just Browsing | Part = Yes | Reg = Wg70 luf | Mileage = 22000', 'Vauxhall - Offer Request - New', 'MB Mail', 5],
+['T129', 'Misc: The following information was present in the lead: | Full Dealer Name = Stellantis &You X | Franchise = Peugeot | Unsub Email = #N/A | Model = NEW PEUGEOT 308 | Enquiry = Availability | Purchase = Just Browsing | Part = Possibly | Reg = Peugeot 3008 2015 | Mileage = 111100', 'Peugeot - Enquiry - New', 'MB Mail', 5],
+['T130', 'Lead ID: 00Qa200000EXAMPLE0 | Marketing Code: BrandSite-Enquiry | Customer Comments: -', 'Citroen - Enquiry - New', 'Customer First', 4],
+['T131', 'Lead ID: 00Qa200000EXAMPLE0 | Marketing Code: Pop-in-Test-Drive-New_Users_CDP | Customer Comments: -', 'Peugeot - Enquiry - New', 'Customer First', 4],
+['T132', 'Lead ID: 00Qa200000EXAMPLE0 | Marketing Code: PCH Offers Pages | First Desired Schedule: 00:00 | Customer Comments: -', 'Fiat - Offer Request - New', 'Customer First', 4],
+['T133', 'Lead ID: 00Qa200000EXAMPLE0 | Marketing Code: Google-DemandGen-Model | Customer Comments: -', 'Peugeot - Enquiry - New', 'Customer First', 5],
+['T134', 'Comment Line #1: The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/citroen/service/offers/citroen-we-care', 'PX Valuation - Used', 'Robins & Day Website', 5],
+// Guard for T124's new aftersales wording: a used-car enquiry asking
+// about service history must stay a sales lead, not Aftersales.
+['T135', 'Comment Line #1: Does this car come with a full service history? Could I view it this Saturday at 11am?', 'Enquiry - Used', 'Robins & Day Website', 1]
 ];
 
 const failures = [];
