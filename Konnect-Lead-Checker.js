@@ -2771,7 +2771,7 @@ const cases = [
 ["T63", "Message from customer: I?m interested in this 2023 Vauxhall Mokka and I?d like to know if it?s still available. (CarGurus IMV: £14,409 / Deal rating: Good Deal)", 'Enquiry - Used', 'Cargurus', 4],
 ['T64', "Message from customer: I?m interested in this 2025 Mazda MX-30... Are you able to transfer this to Brentford for me to test drive? (CarGurus IMV...)", 'Enquiry - Used', 'Cargurus', 3],
 ['T65', 'Transcript (may be truncated): visitor: Tomorrow 12pm visitor: Book appointment for viewing tomorrow', 'Enquiry - Used', 'Cargurus', 1],
-["T66", "Vehicle notes: *£16,981* Reg: AB12CDE | Message from customer: I would like to book a test drive for vehicle Audi Q2... | URL of vehicle of interest:", 'Enquiry - Used', 'AA Cars', 3],
+["T66", "Vehicle notes: *£16,981* Reg: AB19CDE | Message from customer: I would like to book a test drive for vehicle Audi Q2... | URL of vehicle of interest:", 'Enquiry - Used', 'AA Cars', 3],
 ['T67', 'Message from customer: Email Message: | No Message', 'Enquiry - Used', 'CarGeneralEmailDealer', 4],
 ["T68", "Message from customer: Email Message: | Hi seller. I'm interested can I come and test drive on Sunday morning at eleven thirty", 'Enquiry - Used', 'CarGeneralEmailDealer', 1],
 ["T69", "Lead ID: 00Qa1 | Marketing Code: SPOTICAR-TRADE IN-ADS | Quotation showed : 4450 Sterling, purchase : VO", 'Enquiry - Used', 'CF', 5],
@@ -2804,7 +2804,7 @@ const cases = [
 ['T96', 'The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/used-vehicles', 'PX Valuation - Used', 'R&D', 5],
 ['T97', 'The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/car-valuation?utm_source=mbmail&utm_medium=email', 'PX Valuation - Used', 'R&D', 5],
 ['T98', 'The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/alfa-romeo-leicester?utm_source=google', 'PX Valuation - Used', 'R&D', 5],
-['T99', 'Comment Line #1: Vehicle URL: https://example.com/used-vehicles/vauxhall-grandland-electric | Customer comment: Currently have AB12CDE... Owe just under £10900. Wanting a 4 year PCP, £0 deposit, 10k miles per year', 'Enquiry - Used', 'R&D', 3],
+['T99', 'Comment Line #1: Vehicle URL: https://example.com/used-vehicles/vauxhall-grandland-electric | Customer comment: Currently have AB23CDE... Owe just under £10900. Wanting a 4 year PCP, £0 deposit, 10k miles per year', 'Enquiry - Used', 'R&D', 3],
 ['T100', 'Customer interested in dealer transfer -to Bristol - is also interested in any negotiation on price - cash buyer', 'Enquiry - Used', 'blank', 6],
 ['T101', 'Comment Line #1: Vehicle URL: https://example.com/used-vehicles/peugeot-5008-km25eae | Customer comment: | Date/Time: Sat Sep 05 2026 3:00PM', 'Test Drive Request - Used', 'R&D', 1],
 ['T102', 'Comment Line #1: Vehicle URL: https://example.com/peugeot-2008-suv-12-puretech-allure | Customer comment: | Date/Time: Sun Sep 06 2026 11:00AM', 'Test Drive Request - Used', 'R&D', 1],
@@ -2819,7 +2819,7 @@ const cases = [
 ["T111", "I've booked a test drive next weekend but I need to cancel", 'Leapmotor General', 'R&D', 6],
 ["T112", "Hi, i am due to come in tomorrow to test drive the jeep avenger. Ive just realised ive something on. Can i reschedule please?", 'Jeep General', 'R&D', 2],
 ['T113', 'I attempted to book an appointment for Monday 21st around 5:30-6:00 pm but I missed the call...', 'Leapmotor General', 'R&D', 1],
-["T114", "Requesting Return of the Leapmotor B10 (AB12CDE) | Reasons for Requesting Return...", 'Leapmotor General', 'R&D', 6],
+["T114", "Requesting Return of the Leapmotor B10 (AB26CDE) | Reasons for Requesting Return...", 'Leapmotor General', 'R&D', 6],
 ["T115", "I no longer wish to be contacted by yourselves in any way... appalling manner...", 'Alfa Romeo General', 'R&D', 6],
 ['T116', 'Subject: T Level Industry Placement Enquiry, 315 Hours...', 'Leapmotor General', 'R&D', 6],
 ['T117', 'Hello team. I am looking to join the motability scheme and weighing up mid size SUV options. Is there someone I can speak to about the Jeep Compass?', 'Jeep General', 'R&D', 3],
@@ -2830,15 +2830,15 @@ const cases = [
 // branch already does), so this fell to the generic medium-confidence
 // catch-all despite stating a real day. Also exercises the new
 // abbreviated-weekday support ("sat", not "saturday").
-['T120', 'Vehicle notes: *£5,584*    2015    42,025 miles    Petrol    Manual    Reg: AB12CDE | Message from customer: Could we please view this car sat afternoon. | URL of vehicle of interest: https://example.com/track/click/x', 'Enquiry - Used', 'AA Cars', 2],
+['T120', 'Vehicle notes: *£5,584*    2015    42,025 miles    Petrol    Manual    Reg: AB15CDE | Message from customer: Could we please view this car sat afternoon. | URL of vehicle of interest: https://example.com/track/click/x', 'Enquiry - Used', 'AA Cars', 2],
 // Real AA Cars lead, confirms the existing "would like to book a test
 // drive" rule still wins when no day/time is present at all.
-['T121', 'Vehicle notes: *£14,129*    2025    4,182 miles    Petrol    Manual    Reg: AB12CDE | Message from customer: I would like to book a test drive for vehicle Vauxhall Corsa 1.2 Turbo GS | Hatchback 5dr Petrol Manual Euro 6 (s/s) (100 ps) (AB12CDE). | URL of vehicle of interest: https://example.com/track/click/x', 'Enquiry - Used', 'AA Cars', 3],
+['T121', 'Vehicle notes: *£14,129*    2025    4,182 miles    Petrol    Manual    Reg: AB25CDE | Message from customer: I would like to book a test drive for vehicle Vauxhall Corsa 1.2 Turbo GS | Hatchback 5dr Petrol Manual Euro 6 (s/s) (100 ps) (AB25CDE). | URL of vehicle of interest: https://example.com/track/click/x', 'Enquiry - Used', 'AA Cars', 3],
 // Real Social-Meta PCH lead - tier unchanged (already correct), this
 // one's actually about the confidence bump to high for this narrower
 // ad-click-through shape (see customerFirstMarketingCode's own
 // comment) - kept here so the tier itself stays regression-tested too.
-['T122', 'Lead ID: 00Qa200000EXAMPLE0 | Marketing Code: Social-Meta-Q4-PCH3 | Customer Comments: PCH Frontera Hybrid GS £339 - https://fb.me/adspreview/facebook/2bqthHxfokGg4VG', 'Vauxhall - Offer Request - New', 'Customer First', 5],
+['T122', 'Lead ID: 00Qa200000EXAMPLE1 | Marketing Code: Social-Meta-Q4-PCH3 | Customer Comments: PCH Frontera Hybrid GS £339 - https://fb.me/adspreview/facebook/2bqthHxfokGg4VG', 'Vauxhall - Offer Request - New', 'Customer First', 5],
 // Manual review submission (Nov 2026): leads that previously fell to
 // low-confidence Needs Review, with the tier reviewers chose.
 ['T123', "Comment Line #1: Hi, |  | I was hoping to get some information on returning my current vehicle and getting a new vehicle on finance. |  | I've been told that I may be eligible for a no fee agreement whereby I hand my current vehicle back to you.", 'Enquiry - Used', 'Robins & Day Website', 6],
@@ -2848,10 +2848,10 @@ const cases = [
 ['T127', 'Misc: The following information was present in the lead: | Full Dealer Name = Stellantis &You X | Franchise = Peugeot | Unsub Email = #N/A | Model = PEUGEOT 5008 | Enquiry = Finance Options | Purchase = Within 3 Months | Part = No', 'Peugeot - Enquiry - New', 'MB Mail', 4],
 ['T128', 'Misc: The following information was present in the lead: | Full Dealer Name = Stellantis &You X | Franchise = Peugeot | Unsub Email = #N/A | Model = New Vauxhall Astra,Vauxhall Mokka | Enquiry = Part-Exchange,Stock Vehicles,Finance Options | Purchase = Just Browsing | Part = Yes | Reg = Wg70 luf | Mileage = 22000', 'Vauxhall - Offer Request - New', 'MB Mail', 5],
 ['T129', 'Misc: The following information was present in the lead: | Full Dealer Name = Stellantis &You X | Franchise = Peugeot | Unsub Email = #N/A | Model = NEW PEUGEOT 308 | Enquiry = Availability | Purchase = Just Browsing | Part = Possibly | Reg = Peugeot 3008 2015 | Mileage = 111100', 'Peugeot - Enquiry - New', 'MB Mail', 5],
-['T130', 'Lead ID: 00Qa200000EXAMPLE0 | Marketing Code: BrandSite-Enquiry | Customer Comments: -', 'Citroen - Enquiry - New', 'Customer First', 4],
-['T131', 'Lead ID: 00Qa200000EXAMPLE0 | Marketing Code: Pop-in-Test-Drive-New_Users_CDP | Customer Comments: -', 'Peugeot - Enquiry - New', 'Customer First', 4],
-['T132', 'Lead ID: 00Qa200000EXAMPLE0 | Marketing Code: PCH Offers Pages | First Desired Schedule: 00:00 | Customer Comments: -', 'Fiat - Offer Request - New', 'Customer First', 4],
-['T133', 'Lead ID: 00Qa200000EXAMPLE0 | Marketing Code: Google-DemandGen-Model | Customer Comments: -', 'Peugeot - Enquiry - New', 'Customer First', 5],
+['T130', 'Lead ID: 00Qa200000EXAMPLE2 | Marketing Code: BrandSite-Enquiry | Customer Comments: -', 'Citroen - Enquiry - New', 'Customer First', 4],
+['T131', 'Lead ID: 00Qa200000EXAMPLE3 | Marketing Code: Pop-in-Test-Drive-New_Users_CDP | Customer Comments: -', 'Peugeot - Enquiry - New', 'Customer First', 4],
+['T132', 'Lead ID: 00Qa200000EXAMPLE4 | Marketing Code: PCH Offers Pages | First Desired Schedule: 00:00 | Customer Comments: -', 'Fiat - Offer Request - New', 'Customer First', 4],
+['T133', 'Lead ID: 00Qa200000EXAMPLE5 | Marketing Code: Google-DemandGen-Model | Customer Comments: -', 'Peugeot - Enquiry - New', 'Customer First', 5],
 ['T134', 'Comment Line #1: The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/citroen/service/offers/citroen-we-care', 'PX Valuation - Used', 'Robins & Day Website', 5],
 // Guard for T124's new aftersales wording: a used-car enquiry asking
 // about service history must stay a sales lead, not Aftersales.

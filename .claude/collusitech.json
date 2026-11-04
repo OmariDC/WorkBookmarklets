@@ -1,0 +1,10 @@
+{
+  "$comment": "Marks this repository as a Collusitech project so the collusitech guard hook applies. No secrets here.",
+  "protectedBranches": ["main"],
+  "confirmBranches": ["checkpoint"],
+  "keepBranches": ["work"],
+  "protectedSupabaseRefs": [],
+  "keepUntracked": [],
+  "confirmCommands": [],
+  "denyCommands": []
+}

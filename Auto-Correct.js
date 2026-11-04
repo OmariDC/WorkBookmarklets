@@ -374,7 +374,7 @@ AC.baseDict = {
   'dontknow': ['dontknow'],
   'phone call 15:30': [],
   '11th': [],
-  'NEW alfa romeo junior with val AB12CDE 100000': [],
+  'NEW alfa romeo junior with val AB64CDE 100000': [],
   'customer interested in coming down but at work right now would like call to discuss later on and tghen to confirm': []
 };
 AC.baseCanonicalSet = new Set(Object.keys(AC.baseDict).map(c => c.toLowerCase()));
