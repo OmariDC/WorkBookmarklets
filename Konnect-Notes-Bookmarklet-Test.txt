@@ -1,0 +1,6 @@
+Konnect Notes TEST loader (Booking Builder branch)
+Loads Konnect Notes, the phrases and the booking engine from the
+claude/charming-maxwell-pshwb1 branch instead of main. Reload the
+Konnect page first if the normal Konnect Notes is already running.
+
+javascript:(async function(){try{window.KonnectNotesBaseUrl="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/refs/heads/claude/charming-maxwell-pshwb1/";const response=await fetch(window.KonnectNotesBaseUrl+"Konnect-Notes.js?_="+Date.now());if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Konnect Notes (test): "+e);}})();

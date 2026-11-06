@@ -491,7 +491,7 @@
     /* Structured lines and the spec's fixed first notes */
     const isValuationOnly = input.type === 'valuation';
     const anyUsed = vehicles.some((v) => v.condition === 'used');
-    const resExempt = ['national', 'motability', 'valuation'].includes(input.type);
+    const resExempt = ['national', 'motability', 'valuation', 'onlinestore'].includes(input.type);
 
     if (isValuationOnly) {
       const item = pxItems[0] || (input.valuationVehicle || null);

@@ -170,6 +170,8 @@ test('Online Store templates', () => {
   assert.strictEqual(os('similar', PX1), 'Customer is booked in on 10/11 at 10:00 to test drive similar vehicles to online store Peugeot 208 (AB12CDE) and have an accurate valuation of their car');
   assert.strictEqual(os('call', PX1), 'Customer is booked in on 10/11 at 10:00 for a call to discuss online store vehicle: Peugeot 208 (AB12CDE) and have a video walkthrough sent via email and for an accurate valuation of their car');
   assert.strictEqual(os('call'), 'Customer is booked in on 10/11 at 10:00 for a call to discuss online store vehicle: Peugeot 208 (AB12CDE) and have a video walkthrough sent via email');
+  const r = build({ ...D, type: 'onlinestore', subtype: 'discuss', vehicles: USED_MM });
+  assert.ok(!r.lines.includes('-Recommended to res'), 'Online Store never gets Recommended to res');
 });
 
 test('National Reservation block (sheet), no booking sentence, needs reg', () => {
@@ -228,6 +230,12 @@ test('Already reserved replaces Recommended to res', () => {
   const r = build({ ...D, type: 'testdrive', vehicles: USED_MM, reserved: true });
   assert.ok(r.lines.includes('-Customer has already reserved the vehicle'));
   assert.ok(!r.lines.includes('-Recommended to res'));
+});
+
+test('Mixed new and used: per-vehicle wording with a warning', () => {
+  const r = build({ ...D, type: 'testdrive', vehicles: [{ make: 'Peugeot', model: '3008' }, { make: 'Peugeot', model: '2008', reg: 'AB12CDE' }] });
+  assert.strictEqual(r.lines[3], 'Customer is booked in on 10/11 at 10:00 to test drive a new Peugeot 3008 and a used Peugeot 2008 (AB12CDE)');
+  assert.ok(r.warnings.some((w) => /Mixed new and used/.test(w)));
 });
 
 test('Multiple vehicles: same model variants, identical, different makes', () => {

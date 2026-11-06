@@ -9,10 +9,16 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.6.0'
+    version: '1.7.0'
   };
 
-  const CONFIG_URL = 'https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Konnect-Notes-Phrases.json';
+  /* Where the phrases and booking engine are fetched from. A test
+     bookmarklet can point this at a branch by setting
+     window.KonnectNotesBaseUrl before loading this script. */
+  const BASE_URL = String(window.KonnectNotesBaseUrl ||
+    'https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/').replace(/\/?$/, '/');
+  const CONFIG_URL = `${BASE_URL}Konnect-Notes-Phrases.json`;
+  const ENGINE_URL = `${BASE_URL}Konnect-Booking-Engine.js`;
   const STORAGE_KEY = 'konnectNotes:workingConfig:v1';
   const AGENT_NAME_KEY = 'konnectNotes:agentName:v1';
   const STYLE_ID = 'kn-notes-style';
@@ -46,6 +52,10 @@
     editingPhraseId: null,
     statusMessage: '',
     lastPostClosureTransaction: null,
+    booking: null,
+    bookingStatus: null,
+    bookingError: '',
+    bookingScroll: 0,
     applyingPostClosureTransaction: false
   };
 
@@ -601,6 +611,56 @@
       .kn-export { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
       .kn-browse-button { width: 100%; margin-bottom: 8px; }
       .kn-shortcut-hint { text-align: center; }
+      .kn-bk-body { padding: 10px; }
+      .kn-bk-section { margin-bottom: 6px; background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow: hidden; }
+      .kn-bk-head { display: flex; flex-direction: column; align-items: flex-start; width: 100%; padding: 8px 10px; border: none; background: transparent; cursor: pointer; text-align: left; }
+      .kn-bk-head-title { font-size: 10.5px; font-weight: 700; color: #8e8e93; text-transform: uppercase; letter-spacing: 0.3px; }
+      .kn-bk-head-summary { margin-top: 1px; font-size: 13px; font-weight: 600; color: #1c1c1e; line-height: 1.3; }
+      .kn-bk-open .kn-bk-head { background: #fff3ea; }
+      .kn-bk-content { padding: 8px 10px 10px; }
+      .kn-bk-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+      .kn-bk-chips .kn-chip { max-width: 100%; white-space: normal; text-align: left; background: #f2f2f7; box-shadow: none; }
+      .kn-bk-chips .kn-chip.kn-active { background: #f9772e; color: #fff; }
+      .kn-bk-chips .kn-chip:disabled { opacity: 0.4; cursor: default; }
+      .kn-bk-sub .kn-chip { font-size: 11px; padding: 4px 9px; }
+      .kn-bk-field { display: block; flex: 1 1 0; min-width: 0; margin-bottom: 7px; }
+      .kn-bk-label { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; font-size: 11px; font-weight: 600; color: #3a3a3c; }
+      .kn-bk-tag { padding: 0 6px; border-radius: 999px; background: #34c75922; color: #248a3d; font-size: 9.5px; font-weight: 700; }
+      .kn-bk-field .kn-input { padding: 6px 8px; font-size: 13px; background: #f2f2f7; box-shadow: none; }
+      .kn-bk-notes { min-height: 90px; resize: vertical; font-family: inherit; }
+      .kn-bk-row { display: flex; gap: 6px; }
+      .kn-bk-small { flex: 1 1 0; }
+      .kn-bk-days { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 6px; margin-bottom: 6px; }
+      .kn-bk-day { display: flex !important; flex-direction: column; align-items: center; min-width: 40px; padding: 4px 6px !important; background: #f2f2f7 !important; box-shadow: none !important; }
+      .kn-bk-day.kn-active { background: #f9772e !important; color: #fff !important; }
+      .kn-bk-day-name { font-size: 9.5px; font-weight: 600; opacity: 0.8; }
+      .kn-bk-day-num { font-size: 14px; font-weight: 700; }
+      .kn-bk-readout { margin: 2px 0 8px; padding: 7px 9px; border-radius: 10px; background: #1c1c1e; color: #fff; font-size: 13px; font-weight: 700; }
+      .kn-bk-readout.kn-bk-error { background: #ff3b30; color: #fff; }
+      .kn-bk-times { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 8px; }
+      .kn-bk-times .kn-chip { padding: 5px 0; font-size: 11.5px; background: #f2f2f7; box-shadow: none; text-align: center; }
+      .kn-bk-times .kn-chip.kn-active { background: #f9772e; color: #fff; }
+      .kn-bk-card { margin-bottom: 8px; padding: 8px; border-radius: 10px; background: #fafafa; box-shadow: inset 0 0 0 1px #e5e5ea; }
+      .kn-bk-card-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 11px; font-weight: 700; color: #6e6e73; }
+      .kn-bk-remove { border: none; background: none; color: #ff3b30; font-size: 11px; font-weight: 600; cursor: pointer; }
+      .kn-bk-add { width: 100%; margin-bottom: 8px; font-size: 12px; background: #f2f2f7; box-shadow: none; }
+      .kn-bk-gap { margin-bottom: 8px; }
+      .kn-bk-error { color: #ff3b30; font-size: 12px; font-weight: 600; }
+      .kn-bk-warn { color: #b25000; font-size: 12px; }
+      .kn-bk-notice { margin-bottom: 8px; padding: 9px 10px; border-radius: 12px; background: #fff4d6; box-shadow: 0 0 0 1.5px #ffcc00; }
+      .kn-bk-notice-text { font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
+      .kn-bk-notice-actions { display: flex; gap: 6px; }
+      .kn-bk-notice-actions .kn-button { padding: 5px 10px; font-size: 12px; }
+      .kn-bk-footer { flex: 0 0 auto; padding: 8px 10px 10px; background: #fff; border-top: 1px solid #e5e5ea; border-radius: 0 0 20px 20px; }
+      .kn-bk-preview { max-height: 150px; margin: 0 0 6px; padding: 7px 8px; overflow: auto; border-radius: 8px; background: #f2f2f7; color: #1c1c1e; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+      .kn-bk-issues { margin-bottom: 6px; }
+      .kn-bk-status { margin-bottom: 6px; font-size: 12px; font-weight: 600; }
+      .kn-bk-status-ok { color: #248a3d; }
+      .kn-bk-status-warn { color: #b25000; }
+      .kn-bk-status-error { color: #ff3b30; }
+      .kn-bk-actions { display: flex; gap: 6px; align-items: center; }
+      .kn-bk-actions .kn-primary { flex: 1; }
+      .kn-bk-blocked { opacity: 0.55; }
       @media (max-width: 720px) {
         #${PALETTE_ID} { width: 200px; }
       }
@@ -637,19 +697,27 @@
     const anchorRect = state.launcherSection.getBoundingClientRect();
     const railRect = rail?.getBoundingClientRect() || anchorRect;
     const targetRect = state.target.getBoundingClientRect();
-    const isContext = state.view !== 'main';
+    const isContext = !['main', 'booking', 'browse', 'attempt'].includes(state.view);
+    const isBooking = state.view === 'booking';
     let left;
     let top;
     let width;
     let maxHeight;
 
     if (!isContext) {
+      /* Stays in the rail column: never crosses the left edge of Call Notes. */
       const safeRight = Math.max(128, Math.round(targetRect.left) - 18);
-      const preferredWidth = 240;
+      const preferredWidth = isBooking ? 310 : 240;
       left = Math.max(8, Math.min(Math.round(railRect.left) - 18, safeRight - preferredWidth));
-      width = Math.max(120, Math.min(260, safeRight - left));
+      width = Math.max(120, Math.min(isBooking ? 320 : 260, safeRight - left));
       top = Math.max(8, Math.round(anchorRect.bottom + 6));
-      maxHeight = Math.max(160, Math.min(440, window.innerHeight - top - 10));
+      if (isBooking) {
+        const height = Math.max(320, Math.min(1000, window.innerHeight - 20));
+        top = Math.max(8, Math.min(top, window.innerHeight - 10 - height));
+        maxHeight = Math.min(height, window.innerHeight - top - 10);
+      } else {
+        maxHeight = Math.max(160, Math.min(440, window.innerHeight - top - 10));
+      }
     } else {
       const viewportBottom = window.innerHeight - 10;
       const turquoiseCar = findTurquoiseCar(rail);
@@ -762,6 +830,7 @@
     palette.appendChild(renderHeader('Konnect Notes', null, true));
     const body = element('div', 'kn-body');
 
+    body.appendChild(button('Booking  (B)', 'kn-primary kn-browse-button', openBooking));
     if (state.config) {
       const quickGrid = element('div', 'kn-quick-grid');
       state.config.phrases
@@ -1187,6 +1256,1047 @@
     requestAnimationFrame(() => input.focus());
   }
 
+  /* ======================================================================
+     Booking Builder
+     Builds the booking block for Call Notes with tap-only options plus
+     optional typing. Wording comes from Konnect-Booking-Engine.js.
+     Lead values (Vehicle of Interest / Part Exchange) only fill empty
+     booking fields; anything already entered is never changed without
+     the agent tapping "Use it".
+     ====================================================================== */
+
+  const BOOKING_DRAFTS_KEY = 'konnectNotes:bookingDrafts:v1';
+  const BOOKING_DRAFT_MAX_AGE = 3 * 24 * 60 * 60 * 1000;
+
+  const BOOKING_TYPES = [
+    { value: 'testdrive', label: 'Test drive' },
+    { value: 'call', label: 'Call' },
+    { value: 'view', label: 'View' },
+    { value: 'motability', label: 'Motability' },
+    { value: 'onlinestore', label: 'Online Store' },
+    { value: 'valuation', label: 'Valuation only' },
+    { value: 'national', label: 'National Res' }
+  ];
+  const BOOKING_SUBTYPES = {
+    call: [{ value: '', label: 'Discuss + video' }, { value: 'valuation', label: 'Valuation call' }],
+    motability: [{ value: 'testdrive', label: 'Test drive' }, { value: 'view', label: 'View' },
+      { value: 'discuss', label: 'Onsite discuss' }, { value: 'call', label: 'Call' }],
+    onlinestore: [{ value: 'discuss', label: 'Discuss' }, { value: 'call', label: 'Call' },
+      { value: 'similar', label: 'TD similar' }, { value: 'valuationcall', label: 'Valuation call' }],
+    valuation: [{ value: 'onsite', label: 'In person' }, { value: 'call', label: 'Call' }]
+  };
+  const BOOKING_SUBTYPE_DEFAULT = { motability: 'testdrive', onlinestore: 'discuss', valuation: 'onsite', call: '' };
+  const PX_STATUSES = [
+    { value: 'unmentioned', label: 'Not mentioned' },
+    { value: 'yes', label: 'Has PX' },
+    { value: 'none', label: 'No PX' },
+    { value: 'private', label: 'Selling privately' },
+    { value: 'elsewhere', label: 'Selling elsewhere' },
+    { value: 'taking', label: 'Taking elsewhere' }
+  ];
+  const PAYMENT_KINDS = [
+    { value: 'unmentioned', label: 'Not mentioned' },
+    { value: 'cash', label: 'Cash' },
+    { value: 'cashOffers', label: 'Cash + offers' },
+    { value: 'finance', label: 'Finance' },
+    { value: 'both', label: 'Finance or cash' }
+  ];
+  const QUICK_NOTES = [
+    'Call customer beforehand to confirm availability',
+    'Discuss finance options',
+    'Discuss delivery options',
+    'Discuss lead times',
+    'Discuss settlement figure',
+    'Discuss insurance'
+  ];
+  const LEAD_FIELD_LABELS = {
+    'v.reg': 'Vehicle reg',
+    'v.make': 'Vehicle brand',
+    'v.model': 'Vehicle model',
+    'v.descriptor': 'Vehicle fuel type',
+    'v.condition': 'Purchase type',
+    'type': 'Purchase type',
+    'px.make': 'PX brand',
+    'px.model': 'PX model',
+    'px.reg': 'PX reg',
+    'px.mileage': 'PX mileage',
+    'px.roughVal': 'PX valuation'
+  };
+  const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const WEEKDAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
+    'September', 'October', 'November', 'December'];
+
+  let engineLoading = null;
+  let bookingSaveTimer = null;
+  let bookingSyncTimer = null;
+  let bookingRefs = null;
+
+  function bookingEngine() {
+    return window.KonnectBookingEngine || null;
+  }
+
+  function loadBookingEngine() {
+    if (bookingEngine()) return Promise.resolve(bookingEngine());
+    if (!engineLoading) {
+      engineLoading = fetch(`${ENGINE_URL}?_=${Date.now()}`, { cache: 'no-store' })
+        .then((response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.text();
+        })
+        .then((code) => {
+          Function(code)();
+          if (!bookingEngine()) throw new Error('engine did not start');
+          return bookingEngine();
+        })
+        .catch((error) => {
+          engineLoading = null;
+          state.bookingError = `Could not load the booking engine (${error.message}).`;
+          throw error;
+        });
+    }
+    return engineLoading;
+  }
+
+  function blankBooking() {
+    return {
+      contact: 'none',
+      fao: '',
+      type: '',
+      subtype: '',
+      day: '',
+      month: '',
+      time: '',
+      timeQualifier: '',
+      vehicles: [{ make: '', model: '', reg: '', descriptor: '', condition: '' }],
+      category: '',
+      px: { status: 'unmentioned', items: [{ make: '', model: '', reg: '', mileage: '', mileageUnknown: '', roughVal: '', finance: '', financeEnds: '', details: '' }] },
+      sellingReason: '',
+      payment: { kind: 'unmentioned', financeType: '', deposit: '', term: '', mpa: '', budget: '', extra: '' },
+      reserved: false,
+      onBehalfOf: '',
+      notesText: '',
+      emailNote: false,
+      emailAction: ''
+    };
+  }
+
+  function readDrafts() {
+    try {
+      const raw = localStorage.getItem(BOOKING_DRAFTS_KEY);
+      const drafts = raw ? JSON.parse(raw) : {};
+      return drafts && typeof drafts === 'object' ? drafts : {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function writeDrafts(drafts) {
+    const now = Date.now();
+    const kept = Object.entries(drafts)
+      .filter(([, draft]) => draft && now - (draft.updated || 0) < BOOKING_DRAFT_MAX_AGE)
+      .sort((a, b) => (b[1].updated || 0) - (a[1].updated || 0))
+      .slice(0, 30);
+    try {
+      localStorage.setItem(BOOKING_DRAFTS_KEY, JSON.stringify(Object.fromEntries(kept)));
+    } catch (error) {
+      // Drafts are a convenience; the booking still works without them.
+    }
+  }
+
+  function activeLeadPane() {
+    return state.target?.closest('.tab-pane') || null;
+  }
+
+  function leadKey() {
+    const pane = activeLeadPane();
+    const tabs = pane?.closest('.tab-content')?.parentElement;
+    const active = tabs?.querySelector('li.active[id^="salesTab-"]') ||
+      document.querySelector('li.active[id^="salesTab-"]');
+    return active?.id || 'lead';
+  }
+
+  function currentDraft() {
+    const key = leadKey();
+    if (state.booking && state.booking.key === key) return state.booking;
+    const stored = readDrafts()[key];
+    state.booking = stored && stored.data ? {
+      key,
+      data: { ...blankBooking(), ...stored.data },
+      leadSeen: stored.leadSeen || {},
+      fromLead: stored.fromLead || {},
+      notices: stored.notices || [],
+      inserted: stored.inserted || null,
+      openSection: stored.openSection || 'type',
+      updated: stored.updated || Date.now()
+    } : {
+      key,
+      data: blankBooking(),
+      leadSeen: {},
+      fromLead: {},
+      notices: [],
+      inserted: null,
+      openSection: 'type',
+      updated: Date.now()
+    };
+    return state.booking;
+  }
+
+  function saveDraftSoon() {
+    clearTimeout(bookingSaveTimer);
+    bookingSaveTimer = setTimeout(saveDraftNow, 250);
+  }
+
+  function saveDraftNow() {
+    const draft = state.booking;
+    if (!draft) return;
+    draft.updated = Date.now();
+    const drafts = readDrafts();
+    drafts[draft.key] = {
+      data: draft.data,
+      leadSeen: draft.leadSeen,
+      fromLead: draft.fromLead,
+      notices: draft.notices,
+      inserted: draft.inserted,
+      openSection: draft.openSection,
+      updated: draft.updated
+    };
+    writeDrafts(drafts);
+  }
+
+  /* ---------- reading the lead (Vehicle of Interest / Part Exchange) ---------- */
+
+  function leadPanel(pane, headingText) {
+    if (!pane) return null;
+    const heading = Array.from(pane.querySelectorAll('.sales-lead-accordion-heading, .panel-heading'))
+      .find((node) => normaliseText(node.textContent).toLowerCase() === headingText);
+    return heading?.closest('.panel') || null;
+  }
+
+  function inputByPlaceholder(panel, placeholder) {
+    const input = panel?.querySelector(`input[placeholder="${placeholder}"]`);
+    return input ? normaliseText(input.value) : '';
+  }
+
+  function selectedText(select) {
+    if (!(select instanceof HTMLSelectElement)) return '';
+    const option = select.options[select.selectedIndex];
+    const text = normaliseText(option?.textContent);
+    return /^\(?select/i.test(text) ? '' : text;
+  }
+
+  function labelledSelect(pane, labelText) {
+    const label = Array.from(pane?.querySelectorAll('label') || [])
+      .find((node) => normaliseText(node.textContent).toLowerCase() === labelText);
+    return label?.closest('.form-group, .row')?.querySelector('select') || null;
+  }
+
+  function pxSwitchOn(panel) {
+    const toggle = panel?.querySelector('toggle');
+    if (!toggle) return null;
+    try {
+      const ng = window.angular;
+      const model = toggle.getAttribute('ng-model');
+      if (ng && model) {
+        const scope = ng.element(toggle).scope();
+        if (scope) {
+          const value = scope.$eval(model);
+          if (typeof value === 'boolean') return value;
+        }
+      }
+    } catch (error) {
+      // Fall back to the toggle's classes below.
+    }
+    const control = toggle.querySelector('.toggle');
+    if (!control) return null;
+    return !control.classList.contains('off');
+  }
+
+  function readLead() {
+    const pane = activeLeadPane();
+    const voi = leadPanel(pane, 'vehicle of interest');
+    const px = leadPanel(pane, 'part exchange');
+    const fields = {};
+    if (voi) {
+      fields['v.reg'] = inputByPlaceholder(voi, 'Reg Number');
+      fields['v.make'] = inputByPlaceholder(voi, 'Vehicle Brand');
+      fields['v.model'] = inputByPlaceholder(voi, 'Vehicle Model');
+      /* Fuel type only matters for cars without a reg; a reg already pins the car down. */
+      fields['v.descriptor'] = fields['v.reg'] ? '' : inputByPlaceholder(voi, 'Fuel Type');
+      const purchase = selectedText(voi.querySelector('select')).toLowerCase();
+      if (purchase === 'motability') fields.type = 'motability';
+      else if (purchase === 'new' || purchase === 'used' || purchase === 'pre-registered') fields['v.condition'] = purchase;
+    }
+    const pxOn = px ? pxSwitchOn(px) : null;
+    const pxFields = {};
+    if (px) {
+      pxFields['px.make'] = inputByPlaceholder(px, 'Vehicle Brand');
+      pxFields['px.model'] = inputByPlaceholder(px, 'Vehicle Model');
+      pxFields['px.reg'] = inputByPlaceholder(px, 'Reg Number');
+      pxFields['px.mileage'] = inputByPlaceholder(px, 'Mileage');
+      pxFields['px.roughVal'] = inputByPlaceholder(px, 'Valuation');
+    }
+    return {
+      found: Boolean(voi || px),
+      fields,
+      pxOn,
+      pxFields,
+      pxHasValues: Object.values(pxFields).some(Boolean),
+      leadRequest: selectedText(labelledSelect(pane, 'lead request')),
+      source: selectedText(labelledSelect(pane, 'source of enquiry'))
+    };
+  }
+
+  function getBookingField(data, path) {
+    if (path === 'type') return data.type;
+    const [group, key] = path.split('.');
+    if (group === 'v') return data.vehicles[0]?.[key] || '';
+    if (group === 'px') return data.px.items[0]?.[key] || '';
+    return '';
+  }
+
+  function setBookingField(data, path, value) {
+    if (path === 'type') {
+      data.type = value;
+      data.subtype = BOOKING_SUBTYPE_DEFAULT[value] || '';
+      return;
+    }
+    const [group, key] = path.split('.');
+    if (group === 'v') {
+      if (!data.vehicles[0]) data.vehicles[0] = blankBooking().vehicles[0];
+      data.vehicles[0][key] = value;
+    } else if (group === 'px') {
+      if (!data.px.items[0]) data.px.items[0] = blankBooking().px.items[0];
+      data.px.items[0][key] = value;
+    }
+  }
+
+  function sameValue(a, b) {
+    return normaliseText(a).toLowerCase().replace(/\s+/g, '') === normaliseText(b).toLowerCase().replace(/\s+/g, '');
+  }
+
+  function addNotice(draft, notice) {
+    draft.notices = draft.notices.filter((item) => item.path !== notice.path);
+    draft.notices.push(notice);
+  }
+
+  /* Empty booking fields are filled from the lead (and tagged "from lead").
+     A lead value that differs from something already in the booking only
+     raises a notice; the agent decides with Use it / Keep mine. */
+  function syncLead(draft) {
+    const lead = readLead();
+    let changed = false;
+    if (!lead.found) return false;
+    const data = draft.data;
+
+    const consider = (path, value) => {
+      const seen = draft.leadSeen[path];
+      draft.leadSeen[path] = value;
+      if (seen === value || !value) return;
+      const current = getBookingField(data, path);
+      if (!current) {
+        setBookingField(data, path, value);
+        draft.fromLead[path] = true;
+        changed = true;
+      } else if (!sameValue(current, value)) {
+        addNotice(draft, { path, value, label: `${LEAD_FIELD_LABELS[path] || path} on the lead is now "${value}"` });
+        changed = true;
+      }
+    };
+
+    Object.entries(lead.fields).forEach(([path, value]) => consider(path, value));
+
+    const switchState = lead.pxOn === null ? null : (lead.pxOn ? 'on' : 'off');
+    const seenSwitch = draft.leadSeen['px.on'];
+    draft.leadSeen['px.on'] = switchState;
+    if (data.type !== 'valuation' && switchState && switchState !== seenSwitch) {
+      if (switchState === 'on' && data.px.status === 'unmentioned') {
+        data.px.status = 'yes';
+        draft.fromLead['px.status'] = true;
+        changed = true;
+      } else if (switchState === 'on' && data.px.status !== 'yes') {
+        addNotice(draft, { path: 'px.on', value: 'on', label: 'The lead\'s Part Exchange switch is on' });
+        changed = true;
+      } else if (switchState === 'off' && data.px.status === 'yes' && seenSwitch === 'on') {
+        addNotice(draft, { path: 'px.on', value: 'off', label: 'The lead\'s Part Exchange switch is now off' });
+        changed = true;
+      } else if (switchState === 'off' && lead.pxHasValues && data.px.status === 'unmentioned') {
+        addNotice(draft, { path: 'px.on', value: 'on', label: 'PX details are on the lead but its switch is off' });
+        changed = true;
+      }
+    }
+
+    if (lead.pxOn || data.type === 'valuation' || data.px.status === 'yes') {
+      Object.entries(lead.pxFields).forEach(([path, value]) => consider(path, value));
+    } else {
+      Object.entries(lead.pxFields).forEach(([path, value]) => { draft.leadSeen[path] = value; });
+    }
+
+    draft.leadHints = { leadRequest: lead.leadRequest, source: lead.source };
+    if (changed) saveDraftSoon();
+    return changed;
+  }
+
+  function applyNotice(draft, notice, use) {
+    draft.notices = draft.notices.filter((item) => item !== notice);
+    if (use) {
+      if (notice.path === 'px.on') {
+        draft.data.px.status = notice.value === 'on' ? 'yes' : 'unmentioned';
+        if (notice.value === 'on') {
+          const lead = readLead();
+          Object.entries(lead.pxFields).forEach(([path, value]) => {
+            if (value && !getBookingField(draft.data, path)) {
+              setBookingField(draft.data, path, value);
+              draft.fromLead[path] = true;
+            }
+          });
+        }
+      } else {
+        setBookingField(draft.data, notice.path, notice.value);
+        draft.fromLead[notice.path] = true;
+      }
+    }
+    saveDraftNow();
+    renderPalette();
+  }
+
+  function onLeadActivity(event) {
+    if (!state.open || state.view !== 'booking' || !state.booking) return;
+    const target = event.target;
+    if (!(target instanceof Element) || target.closest(`#${PALETTE_ID}`)) return;
+    if (!target.closest('.panel')) return;
+    clearTimeout(bookingSyncTimer);
+    bookingSyncTimer = setTimeout(() => {
+      if (state.booking && syncLead(state.booking)) renderPalette();
+    }, 200);
+  }
+
+  /* ---------- building ---------- */
+
+  function bookingInput(draft) {
+    const d = draft.data;
+    const email = (d.contact === 'email' || d.emailNote) ? findTopEmail() : '';
+    return {
+      agent: getAgentName(),
+      contact: d.contact,
+      email,
+      fao: d.fao,
+      type: d.type,
+      subtype: d.subtype,
+      date: { day: d.day, month: d.month },
+      time: d.time,
+      timeQualifier: d.timeQualifier,
+      vehicles: d.type === 'valuation' ? [] : d.vehicles,
+      category: d.category,
+      px: {
+        status: d.type === 'valuation' ? 'yes' : d.px.status,
+        items: d.px.items.map((item) => ({
+          ...item,
+          details: normaliseText(item.details) ? String(item.details).split(/\s*[|\n]\s*/) : []
+        }))
+      },
+      sellingReason: d.sellingReason,
+      payment: { ...d.payment, extras: d.payment.extra ? String(d.payment.extra).split(/\s*[|\n]\s*/) : [] },
+      reserved: d.reserved,
+      onBehalfOf: d.onBehalfOf,
+      notes: String(d.notesText || '').split('\n'),
+      customerEmail: d.emailNote ? email : '',
+      emailAction: d.emailAction
+    };
+  }
+
+  function buildCurrentBooking(draft) {
+    const engine = bookingEngine();
+    if (!engine) return null;
+    const result = engine.buildBooking(bookingInput(draft));
+    const d = draft.data;
+    if (d.contact === 'email' && !findTopEmail()) result.errors.push('No email address found at the top of the lead');
+    if (d.emailNote && !findTopEmail()) result.warnings.push('No email address found at the top of the lead');
+    return result;
+  }
+
+  function insertBooking(draft) {
+    scanPage();
+    const target = state.target;
+    const result = buildCurrentBooking(draft);
+    if (!(target instanceof HTMLTextAreaElement) || !result) return;
+    if (result.errors.length) {
+      state.bookingStatus = { kind: 'error', text: 'Fix the items in red first.' };
+      renderPalette();
+      return;
+    }
+    const value = target.value;
+    const text = result.text;
+    let start;
+    let end;
+    let replacement;
+    let note = '';
+    const previous = draft.inserted;
+    const at = previous ? value.indexOf(previous) : -1;
+    if (at >= 0) {
+      start = at;
+      end = at + previous.length;
+      replacement = text;
+    } else {
+      start = value.length;
+      end = value.length;
+      replacement = `${value && !value.endsWith('\n') ? '\n' : ''}${text}`;
+      if (previous) note = 'The earlier booking in Call Notes was edited by hand, so the new one was added at the end. Delete the old one.';
+    }
+    const nextValue = value.slice(0, start) + replacement + value.slice(end);
+    replaceTextUndoably(target, start, end, replacement, nextValue);
+    draft.inserted = text;
+    saveDraftNow();
+    state.bookingStatus = note
+      ? { kind: 'warn', text: note }
+      : { kind: 'ok', text: at >= 0 ? 'Call Notes updated.' : 'Inserted into Call Notes.' };
+    renderPalette();
+  }
+
+  /* ---------- small UI helpers ---------- */
+
+  function bkChips(options, current, onPick, extraClass) {
+    const row = element('div', `kn-bk-chips ${extraClass || ''}`.trim());
+    options.forEach((option) => {
+      const chip = element('button', `kn-chip${option.value === current ? ' kn-active' : ''}`, option.label);
+      chip.type = 'button';
+      if (option.disabled) {
+        chip.disabled = true;
+        chip.title = option.disabled;
+      }
+      chip.addEventListener('click', () => onPick(option.value));
+      row.appendChild(chip);
+    });
+    return row;
+  }
+
+  function bkInput(labelText, value, onInput, options) {
+    const settings = options || {};
+    const wrap = element('label', `kn-bk-field ${settings.className || ''}`.trim());
+    if (labelText) {
+      const label = element('span', 'kn-bk-label', labelText);
+      if (settings.fromLead) label.appendChild(element('span', 'kn-bk-tag', 'from lead'));
+      wrap.appendChild(label);
+    }
+    const input = element(settings.multiline ? 'textarea' : 'input', settings.multiline ? 'kn-input kn-bk-notes' : 'kn-input');
+    if (!settings.multiline) input.type = 'text';
+    input.value = value || '';
+    if (settings.placeholder) input.placeholder = settings.placeholder;
+    if (settings.maxLength) input.maxLength = settings.maxLength;
+    if (settings.inputMode) input.inputMode = settings.inputMode;
+    input.addEventListener('input', () => onInput(input.value, input));
+    input.addEventListener('keydown', (event) => event.stopPropagation());
+    wrap.appendChild(input);
+    return wrap;
+  }
+
+  function changed(draft, rerender) {
+    saveDraftSoon();
+    state.bookingStatus = null;
+    if (rerender) renderPalette();
+    else updateBookingLive(draft);
+  }
+
+  function untag(draft, path) {
+    if (draft.fromLead[path]) delete draft.fromLead[path];
+  }
+
+  function dateReadout(draft) {
+    const engine = bookingEngine();
+    const d = draft.data;
+    if (draft.data.type === 'national') {
+      const cal = engine.nationalReservationDate(new Date());
+      return { text: `Calendar: ${cal.text} at ${cal.time} (6 working days)`, error: false };
+    }
+    if (!d.day && !d.time) return { text: 'Pick a day and time', error: false };
+    const parts = [];
+    let error = false;
+    if (d.day) {
+      const date = engine.resolveDate({ day: d.day, month: d.month }, new Date());
+      if (date.error) { parts.push(date.error); error = true; } else {
+        parts.push(`${WEEKDAYS_LONG[date.dateObj.getDay()]} ${date.day} ${MONTHS_LONG[date.month - 1]}`);
+      }
+    } else {
+      parts.push('Day not set');
+    }
+    if (d.time) {
+      const time = engine.resolveTime(d.time);
+      if (time.error) { parts.push(time.error); error = true; } else {
+        parts.push(`at ${time.text}${d.timeQualifier ? ` or ${d.timeQualifier}` : ''}`);
+      }
+    }
+    return { text: parts.join(' '), error };
+  }
+
+  function sectionSummary(draft, id) {
+    const d = draft.data;
+    const label = (list, value) => (list.find((item) => item.value === value) || {}).label || '';
+    if (id === 'contact') {
+      const parts = [];
+      parts.push({ none: 'No contact header', vm: 'VM left', engaged: 'Line engaged', email: 'Email only' }[d.contact]);
+      if (normaliseText(d.fao)) parts.push(`FAO ${normaliseText(d.fao)}`);
+      return parts.join(' · ');
+    }
+    if (id === 'type') {
+      if (!d.type) return 'Pick a type';
+      const sub = BOOKING_SUBTYPES[d.type] ? label(BOOKING_SUBTYPES[d.type], d.subtype) : '';
+      return [label(BOOKING_TYPES, d.type), sub].filter(Boolean).join(' · ');
+    }
+    if (id === 'when') return dateReadout(draft).text;
+    if (id === 'vehicle') {
+      const names = d.vehicles
+        .map((v) => [v.make, v.model].map(normaliseText).filter(Boolean).join(' ') + (normaliseText(v.reg) ? ` (${normaliseText(v.reg).toUpperCase()})` : ''))
+        .filter((name) => name.trim());
+      if (names.length) return names.join(', ');
+      return normaliseText(d.category) || 'Not set';
+    }
+    if (id === 'px') {
+      if (d.type === 'valuation') {
+        const item = d.px.items[0];
+        return [item.make, item.model, item.reg].map(normaliseText).filter(Boolean).join(' ') || 'Not set';
+      }
+      if (d.px.status === 'yes') {
+        const item = d.px.items[0];
+        const name = [item.make, item.model].map(normaliseText).filter(Boolean).join(' ');
+        const reg = normaliseText(item.reg).toUpperCase();
+        const more = d.px.items.length > 1 ? ' + 1 more' : '';
+        return `PX: ${[name, reg ? `(${reg})` : ''].filter(Boolean).join(' ') || 'details needed'}${more}`;
+      }
+      return label(PX_STATUSES, d.px.status);
+    }
+    if (id === 'payment') {
+      if (d.payment.kind === 'finance' || d.payment.kind === 'both') {
+        return [label(PAYMENT_KINDS, d.payment.kind), d.payment.financeType].filter(Boolean).join(' · ');
+      }
+      return label(PAYMENT_KINDS, d.payment.kind);
+    }
+    if (id === 'notes') {
+      const count = String(d.notesText || '').split('\n').filter((line) => line.trim()).length;
+      const extras = [count ? `${count} note${count > 1 ? 's' : ''}` : 'No notes'];
+      if (d.reserved) extras.push('Reserved');
+      if (normaliseText(d.onBehalfOf)) extras.push(`For ${normaliseText(d.onBehalfOf)}`);
+      return extras.join(' · ');
+    }
+    return '';
+  }
+
+  /* ---------- section bodies ---------- */
+
+  function renderContactSection(draft, body) {
+    const d = draft.data;
+    body.appendChild(bkChips([
+      { value: 'none', label: 'None' },
+      { value: 'vm', label: 'VM left' },
+      { value: 'engaged', label: 'Engaged' },
+      { value: 'email', label: 'Email only' }
+    ], d.contact, (value) => { d.contact = value; changed(draft, true); }));
+    if (d.contact === 'email') {
+      const email = findTopEmail();
+      body.appendChild(element('div', email ? 'kn-muted kn-bk-gap' : 'kn-bk-error kn-bk-gap', email ? `Email: ${email}` : 'No email found at the top of the lead'));
+    }
+    body.appendChild(bkInput('FAO (optional)', d.fao, (value) => { d.fao = value; changed(draft); }, { placeholder: 'Name' }));
+  }
+
+  function renderTypeSection(draft, body) {
+    const d = draft.data;
+    const hint = draft.leadHints?.leadRequest;
+    if (hint && !d.type) body.appendChild(element('div', 'kn-muted kn-bk-gap', `Lead request: ${hint}`));
+    body.appendChild(bkChips(BOOKING_TYPES, d.type, (value) => {
+      d.type = value;
+      d.subtype = BOOKING_SUBTYPE_DEFAULT[value] || '';
+      untag(draft, 'type');
+      if (value === 'onlinestore' || value === 'national') d.vehicles = d.vehicles.slice(0, 1);
+      changed(draft, true);
+    }));
+    if (BOOKING_SUBTYPES[d.type]) {
+      body.appendChild(bkChips(BOOKING_SUBTYPES[d.type], d.subtype, (value) => { d.subtype = value; changed(draft, true); }, 'kn-bk-sub'));
+    }
+    if (/online store/i.test(draft.leadHints?.source || '') && d.type !== 'onlinestore' && d.type !== 'national') {
+      body.appendChild(element('div', 'kn-muted kn-bk-gap', `Lead source: ${draft.leadHints.source}`));
+    }
+  }
+
+  function renderWhenSection(draft, body) {
+    const d = draft.data;
+    if (d.type === 'national') {
+      body.appendChild(element('div', 'kn-muted', 'National Reservation has no booking sentence. Create the calendar event for the date below.'));
+      return;
+    }
+    const strip = element('div', 'kn-bk-days');
+    const today = new Date();
+    for (let i = 0; i < 14; i += 1) {
+      const day = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i);
+      const active = Number(d.day) === day.getDate() && Number(d.month) === day.getMonth() + 1;
+      const chip = element('button', `kn-chip kn-bk-day${active ? ' kn-active' : ''}`);
+      chip.type = 'button';
+      chip.appendChild(element('span', 'kn-bk-day-name', i === 0 ? 'Today' : WEEKDAYS[day.getDay()]));
+      chip.appendChild(element('span', 'kn-bk-day-num', String(day.getDate())));
+      chip.addEventListener('click', () => {
+        d.day = String(day.getDate()).padStart(2, '0');
+        d.month = String(day.getMonth() + 1).padStart(2, '0');
+        changed(draft, true);
+      });
+      strip.appendChild(chip);
+    }
+    body.appendChild(strip);
+
+    const row = element('div', 'kn-bk-row');
+    let monthInput = null;
+    const dayField = bkInput('Day', d.day, (value, input) => {
+      const split = value.match(/^(\d{1,2})\s*[/.\-\s]\s*(\d{1,2})/);
+      if (split) {
+        d.day = split[1];
+        d.month = split[2];
+        input.value = d.day;
+        if (monthInput) { monthInput.value = d.month; monthInput.focus(); }
+      } else {
+        d.day = value.replace(/\D/g, '').slice(0, 2);
+        if (d.day.length === 2 && monthInput) monthInput.focus();
+      }
+      changed(draft);
+    }, { placeholder: 'DD', maxLength: 5, inputMode: 'numeric', className: 'kn-bk-small' });
+    const monthField = bkInput('Month', d.month, (value) => {
+      d.month = value.replace(/\D/g, '').slice(0, 2);
+      changed(draft);
+    }, { placeholder: 'MM', maxLength: 2, inputMode: 'numeric', className: 'kn-bk-small' });
+    monthInput = monthField.querySelector('input');
+    const timeField = bkInput('Time', d.time, (value) => { d.time = value; changed(draft); }, { placeholder: 'HH:MM', maxLength: 8, className: 'kn-bk-small' });
+    row.appendChild(dayField);
+    row.appendChild(monthField);
+    row.appendChild(timeField);
+    body.appendChild(row);
+
+    const readout = element('div', 'kn-bk-readout');
+    readout.dataset.role = 'date-readout';
+    body.appendChild(readout);
+
+    const times = element('div', 'kn-bk-times');
+    for (let hour = 8; hour <= 19; hour += 1) {
+      ['00', '30'].forEach((minute) => {
+        const value = `${String(hour).padStart(2, '0')}:${minute}`;
+        const chip = element('button', `kn-chip${d.time === value ? ' kn-active' : ''}`, value);
+        chip.type = 'button';
+        chip.addEventListener('click', () => { d.time = value; changed(draft, true); });
+        times.appendChild(chip);
+      });
+    }
+    body.appendChild(times);
+    const isCall = d.type === 'call' || (d.type === 'motability' && d.subtype === 'call') ||
+      (d.type === 'onlinestore' && /call/.test(d.subtype)) || (d.type === 'valuation' && d.subtype === 'call');
+    if (isCall) {
+      body.appendChild(bkChips([
+        { value: '', label: 'Exact time' },
+        { value: 'before', label: 'or before' },
+        { value: 'after', label: 'or after' }
+      ], d.timeQualifier, (value) => { d.timeQualifier = value; changed(draft, true); }, 'kn-bk-sub'));
+    }
+  }
+
+  function renderVehicleSection(draft, body) {
+    const d = draft.data;
+    const single = d.type === 'onlinestore' || d.type === 'national';
+    d.vehicles.forEach((vehicle, index) => {
+      const card = element('div', 'kn-bk-card');
+      const head = element('div', 'kn-bk-card-head', d.vehicles.length > 1 ? `Vehicle ${index + 1}` : 'Vehicle of interest');
+      if (index > 0) {
+        const remove = element('button', 'kn-bk-remove', 'Remove');
+        remove.type = 'button';
+        remove.addEventListener('click', () => { d.vehicles.splice(index, 1); changed(draft, true); });
+        head.appendChild(remove);
+      }
+      card.appendChild(head);
+      const lead = (key) => index === 0 && draft.fromLead[`v.${key}`];
+      const update = (key) => (value) => { vehicle[key] = value; if (index === 0) untag(draft, `v.${key}`); changed(draft); };
+      const row = element('div', 'kn-bk-row');
+      row.appendChild(bkInput('Make', vehicle.make, update('make'), { fromLead: lead('make'), placeholder: 'Peugeot' }));
+      row.appendChild(bkInput('Model', vehicle.model, update('model'), { fromLead: lead('model'), placeholder: '2008' }));
+      card.appendChild(row);
+      const row2 = element('div', 'kn-bk-row');
+      row2.appendChild(bkInput('Reg', vehicle.reg, update('reg'), { fromLead: lead('reg'), placeholder: 'Optional' }));
+      row2.appendChild(bkInput('Fuel / extra', vehicle.descriptor, update('descriptor'), { fromLead: lead('descriptor'), placeholder: 'petrol hybrid' }));
+      card.appendChild(row2);
+      if (d.type !== 'motability') {
+        const hasReg = normaliseText(vehicle.reg);
+        const current = hasReg ? 'used' : (vehicle.condition === 'used' ? 'used' : 'new');
+        card.appendChild(bkChips([
+          { value: 'new', label: 'New', disabled: hasReg ? 'A reg means used' : '' },
+          { value: 'used', label: hasReg ? 'Used (has reg)' : 'Used' }
+        ], current, (value) => { vehicle.condition = value; if (index === 0) untag(draft, 'v.condition'); changed(draft, true); }, 'kn-bk-sub'));
+      }
+      body.appendChild(card);
+    });
+    if (!single) {
+      body.appendChild(button('+ Add vehicle', 'kn-bk-add', () => {
+        d.vehicles.push(blankBooking().vehicles[0]);
+        changed(draft, true);
+      }));
+    }
+    if (d.type === 'view' || d.type === 'call' || !d.type) {
+      body.appendChild(bkInput('Or browsing a category', d.category, (value) => { d.category = value; changed(draft); },
+        { placeholder: 'used petrol hybrid SUVs' }));
+    }
+  }
+
+  function renderPxItem(draft, item, index, body) {
+    const d = draft.data;
+    const card = element('div', 'kn-bk-card');
+    const head = element('div', 'kn-bk-card-head', d.type === 'valuation' ? 'Customer\'s vehicle' : (d.px.items.length > 1 ? `PX ${index + 1}` : 'Part exchange'));
+    if (index > 0) {
+      const remove = element('button', 'kn-bk-remove', 'Remove');
+      remove.type = 'button';
+      remove.addEventListener('click', () => { d.px.items.splice(index, 1); changed(draft, true); });
+      head.appendChild(remove);
+    }
+    card.appendChild(head);
+    const lead = (key) => index === 0 && draft.fromLead[`px.${key}`];
+    const update = (key) => (value) => { item[key] = value; if (index === 0) untag(draft, `px.${key}`); changed(draft); };
+    const row = element('div', 'kn-bk-row');
+    row.appendChild(bkInput('Make', item.make, update('make'), { fromLead: lead('make') }));
+    row.appendChild(bkInput('Model', item.model, update('model'), { fromLead: lead('model') }));
+    card.appendChild(row);
+    const row2 = element('div', 'kn-bk-row');
+    row2.appendChild(bkInput('Reg', item.reg, update('reg'), { fromLead: lead('reg') }));
+    row2.appendChild(bkInput('Mileage', item.mileage, update('mileage'), { fromLead: lead('mileage'), placeholder: '45000', inputMode: 'numeric' }));
+    card.appendChild(row2);
+    if (!normaliseText(item.mileage)) {
+      card.appendChild(bkChips([
+        { value: '', label: 'Mileage known' },
+        { value: 'call', label: 'Unknown, on call' },
+        { value: 'site', label: 'Unknown, on site' }
+      ], item.mileageUnknown || '', (value) => { item.mileageUnknown = value; changed(draft, true); }, 'kn-bk-sub'));
+    }
+    if (d.type !== 'valuation') {
+      const row3 = element('div', 'kn-bk-row');
+      row3.appendChild(bkInput('Rough val £', item.roughVal, update('roughVal'), { fromLead: lead('roughVal'), inputMode: 'numeric' }));
+      row3.appendChild(bkInput('Current finance', item.finance, update('finance'), { placeholder: 'PCP' }));
+      card.appendChild(row3);
+      card.appendChild(bkInput('Finance ends', item.financeEnds, update('financeEnds'), { placeholder: 'March 2027' }));
+      card.appendChild(bkInput('Condition / extras', item.details, update('details'), { placeholder: 'Full service history | Warranty' }));
+    }
+    body.appendChild(card);
+  }
+
+  function renderPxSection(draft, body) {
+    const d = draft.data;
+    if (d.type === 'valuation') {
+      renderPxItem(draft, d.px.items[0], 0, body);
+      body.appendChild(element('div', 'kn-bk-label', 'Reason'));
+      body.appendChild(bkChips([
+        { value: '', label: 'Not said' },
+        { value: 'sell', label: 'Looking to sell' },
+        { value: 'boughtElsewhere', label: 'Bought another' }
+      ], d.sellingReason, (value) => { d.sellingReason = value; changed(draft, true); }));
+      return;
+    }
+    body.appendChild(bkChips(PX_STATUSES, d.px.status, (value) => {
+      d.px.status = value;
+      untag(draft, 'px.status');
+      changed(draft, true);
+    }));
+    if (d.px.status === 'yes') {
+      d.px.items.forEach((item, index) => renderPxItem(draft, item, index, body));
+      if (d.px.items.length < 2) {
+        body.appendChild(button('+ Add second PX', 'kn-bk-add', () => {
+          d.px.items.push(blankBooking().px.items[0]);
+          changed(draft, true);
+        }));
+      }
+    }
+  }
+
+  function renderPaymentSection(draft, body) {
+    const p = draft.data.payment;
+    body.appendChild(bkChips(PAYMENT_KINDS, p.kind, (value) => { p.kind = value; changed(draft, true); }));
+    if (p.kind === 'finance' || p.kind === 'both') {
+      body.appendChild(bkChips([
+        { value: '', label: 'Not sure' },
+        { value: 'PCP', label: 'PCP' },
+        { value: 'HP', label: 'HP' },
+        { value: 'PCH', label: 'PCH' }
+      ], p.financeType, (value) => { p.financeType = value; changed(draft, true); }, 'kn-bk-sub'));
+      const row = element('div', 'kn-bk-row');
+      row.appendChild(bkInput('Deposit £', p.deposit, (value) => { p.deposit = value; changed(draft); }, { inputMode: 'numeric' }));
+      row.appendChild(bkInput('Months', p.term, (value) => { p.term = value; changed(draft); }, { inputMode: 'numeric' }));
+      body.appendChild(row);
+      const row2 = element('div', 'kn-bk-row');
+      row2.appendChild(bkInput('Miles / year', p.mpa, (value) => { p.mpa = value; changed(draft); }, { placeholder: '10000' }));
+      row2.appendChild(bkInput('Budget £ / month', p.budget, (value) => { p.budget = value; changed(draft); }, { inputMode: 'numeric' }));
+      body.appendChild(row2);
+      body.appendChild(bkInput('Other finance details', p.extra, (value) => { p.extra = value; changed(draft); }, { placeholder: 'Wants APR | Settlement figure' }));
+    }
+  }
+
+  function renderNotesSection(draft, body) {
+    const d = draft.data;
+    body.appendChild(bkInput('Notes (one per line)', d.notesText, (value) => { d.notesText = value; changed(draft); },
+      { multiline: true, placeholder: 'Open to other models\nShort or long wheelbase' }));
+    const quick = element('div', 'kn-bk-chips');
+    QUICK_NOTES.forEach((text) => {
+      const chip = element('button', 'kn-chip', `+ ${text}`);
+      chip.type = 'button';
+      chip.addEventListener('click', () => {
+        const lines = String(d.notesText || '').split('\n').filter((line) => line.trim());
+        if (!lines.some((line) => line.toLowerCase() === text.toLowerCase())) lines.push(text);
+        d.notesText = lines.join('\n');
+        changed(draft, true);
+      });
+      quick.appendChild(chip);
+    });
+    body.appendChild(quick);
+    body.appendChild(bkChips([
+      { value: false, label: 'Not reserved' },
+      { value: true, label: 'Already reserved' }
+    ], d.reserved, (value) => { d.reserved = value; changed(draft, true); }, 'kn-bk-sub'));
+    body.appendChild(bkInput('On behalf of (relation)', d.onBehalfOf, (value) => { d.onBehalfOf = value; changed(draft); }, { placeholder: 'son' }));
+    if (d.contact !== 'email') {
+      body.appendChild(bkChips([
+        { value: false, label: 'No email note' },
+        { value: true, label: 'Add customer email' }
+      ], d.emailNote, (value) => { d.emailNote = value; changed(draft, true); }, 'kn-bk-sub'));
+    }
+    if (d.emailNote || d.contact === 'email') {
+      body.appendChild(bkInput('Email them (optional)', d.emailAction, (value) => { d.emailAction = value; changed(draft); }, { placeholder: 'send brochure' }));
+    }
+  }
+
+  const BOOKING_SECTIONS = [
+    { id: 'contact', title: 'Contact', render: renderContactSection },
+    { id: 'type', title: 'Appointment', render: renderTypeSection },
+    { id: 'when', title: 'When', render: renderWhenSection },
+    { id: 'vehicle', title: 'Vehicle', render: renderVehicleSection, hidden: (d) => d.type === 'valuation' },
+    { id: 'px', title: 'Part exchange', titleFor: (d) => (d.type === 'valuation' ? 'Customer\'s vehicle' : 'Part exchange'), render: renderPxSection, hidden: (d) => d.type === 'national' },
+    { id: 'payment', title: 'Payment', render: renderPaymentSection, hidden: (d) => d.type === 'valuation' || d.type === 'national' },
+    { id: 'notes', title: 'Notes', render: renderNotesSection }
+  ];
+
+  function updateBookingLive(draft) {
+    if (!bookingRefs) return;
+    const result = buildCurrentBooking(draft);
+    if (!result) return;
+    Object.entries(bookingRefs.summaries).forEach(([id, node]) => {
+      node.textContent = sectionSummary(draft, id);
+    });
+    if (bookingRefs.readout) {
+      const readout = dateReadout(draft);
+      bookingRefs.readout.textContent = readout.text;
+      bookingRefs.readout.classList.toggle('kn-bk-error', readout.error);
+    }
+    bookingRefs.preview.textContent = result.text;
+    bookingRefs.issues.textContent = '';
+    result.errors.forEach((text) => bookingRefs.issues.appendChild(element('div', 'kn-bk-error', text)));
+    result.warnings.forEach((text) => bookingRefs.issues.appendChild(element('div', 'kn-bk-warn', text)));
+    bookingRefs.insert.textContent = draft.inserted ? 'Update Call Notes' : 'Insert into Call Notes';
+    bookingRefs.insert.classList.toggle('kn-bk-blocked', result.errors.length > 0);
+  }
+
+  function renderBooking() {
+    const palette = ensurePalette();
+    palette.appendChild(renderHeader('Booking', () => {
+      state.view = 'main';
+      renderPalette();
+    }, false));
+    const body = element('div', 'kn-body kn-bk-body');
+    palette.appendChild(body);
+
+    if (!bookingEngine()) {
+      body.appendChild(element('div', state.bookingError ? 'kn-status kn-status-error' : 'kn-status',
+        state.bookingError || 'Loading the booking engine...'));
+      loadBookingEngine().then(() => { state.bookingError = ''; if (state.open && state.view === 'booking') renderPalette(); })
+        .catch(() => { if (state.open && state.view === 'booking') renderPalette(); });
+      return;
+    }
+
+    const draft = currentDraft();
+    const d = draft.data;
+
+    draft.notices.forEach((notice) => {
+      const card = element('div', 'kn-bk-notice');
+      card.appendChild(element('div', 'kn-bk-notice-text', notice.label));
+      const actions = element('div', 'kn-bk-notice-actions');
+      const offLabel = notice.path === 'px.on' && notice.value === 'off';
+      actions.appendChild(button(offLabel ? 'Remove PX' : 'Use it', 'kn-primary', () => applyNotice(draft, notice, true)));
+      actions.appendChild(button(offLabel ? 'Keep PX' : 'Keep mine', '', () => applyNotice(draft, notice, false)));
+      card.appendChild(actions);
+      body.appendChild(card);
+    });
+
+    bookingRefs = { summaries: {}, readout: null, preview: null, issues: null, insert: null };
+    BOOKING_SECTIONS.filter((section) => !(section.hidden && section.hidden(d))).forEach((section) => {
+      const open = draft.openSection === section.id;
+      const wrap = element('div', `kn-bk-section${open ? ' kn-bk-open' : ''}`);
+      const head = element('button', 'kn-bk-head');
+      head.type = 'button';
+      head.appendChild(element('span', 'kn-bk-head-title', section.titleFor ? section.titleFor(d) : section.title));
+      const summary = element('span', 'kn-bk-head-summary', sectionSummary(draft, section.id));
+      bookingRefs.summaries[section.id] = summary;
+      head.appendChild(summary);
+      head.addEventListener('click', () => {
+        draft.openSection = open ? '' : section.id;
+        saveDraftSoon();
+        renderPalette();
+      });
+      wrap.appendChild(head);
+      if (open) {
+        const content = element('div', 'kn-bk-content');
+        section.render(draft, content);
+        wrap.appendChild(content);
+        const readout = content.querySelector('[data-role="date-readout"]');
+        if (readout) bookingRefs.readout = readout;
+      }
+      body.appendChild(wrap);
+    });
+
+    const footer = element('div', 'kn-bk-footer');
+    const preview = element('pre', 'kn-bk-preview');
+    bookingRefs.preview = preview;
+    footer.appendChild(preview);
+    const issues = element('div', 'kn-bk-issues');
+    bookingRefs.issues = issues;
+    footer.appendChild(issues);
+    if (state.bookingStatus) {
+      footer.appendChild(element('div', `kn-bk-status kn-bk-status-${state.bookingStatus.kind}`, state.bookingStatus.text));
+    }
+    const actions = element('div', 'kn-bk-actions');
+    const insert = button('Insert into Call Notes', 'kn-primary', () => insertBooking(draft));
+    bookingRefs.insert = insert;
+    actions.appendChild(insert);
+    actions.appendChild(button('Copy', '', () => {
+      const result = buildCurrentBooking(draft);
+      if (result) copyText(result.text, null).then((ok) => {
+        state.bookingStatus = ok ? { kind: 'ok', text: 'Copied.' } : { kind: 'warn', text: 'Copy was blocked.' };
+        renderPalette();
+      });
+    }));
+    actions.appendChild(button('Clear', 'kn-danger', () => {
+      if (!window.confirm('Clear this booking and start again?')) return;
+      state.booking = { ...draft, data: blankBooking(), fromLead: {}, notices: [], inserted: draft.inserted, leadSeen: {}, openSection: 'type' };
+      syncLead(state.booking);
+      saveDraftNow();
+      state.bookingStatus = null;
+      renderPalette();
+    }));
+    footer.appendChild(actions);
+    palette.appendChild(footer);
+
+    updateBookingLive(draft);
+    if (state.bookingScroll) body.scrollTop = state.bookingScroll;
+    body.addEventListener('scroll', () => { state.bookingScroll = body.scrollTop; });
+  }
+
+  function openBooking() {
+    scanPage();
+    if (!state.target) return;
+    state.open = true;
+    state.view = 'booking';
+    state.bookingStatus = null;
+    state.bookingScroll = 0;
+    const engineReady = bookingEngine();
+    const draft = currentDraft();
+    syncLead(draft);
+    if (!engineReady) loadBookingEngine().catch(() => {});
+    renderPalette();
+  }
+
   function renderPalette() {
     const palette = ensurePalette();
     palette.textContent = '';
@@ -1199,6 +2309,7 @@
     else if (state.view === 'edit') renderEditor();
     else if (state.view === 'export') renderExport();
     else if (state.view === 'import') renderImport();
+    else if (state.view === 'booking') renderBooking();
     else renderMain();
   }
 
@@ -1215,6 +2326,7 @@
   }
 
   function closePalette() {
+    if (state.booking) saveDraftNow();
     state.open = false;
     state.attemptPhrase = null;
     state.otherAttemptOpen = false;
@@ -1667,10 +2779,21 @@
       togglePalette();
       return;
     }
+    if (event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'b') {
+      event.preventDefault();
+      if (state.open && state.view === 'booking') closePalette();
+      else openBooking();
+      return;
+    }
     if (!state.open) return;
     if (event.key === 'Escape') {
       event.preventDefault();
       closePalette();
+      return;
+    }
+    if (state.view === 'main' && event.key.toLowerCase() === 'b' && !event.altKey && !event.ctrlKey && !event.metaKey) {
+      event.preventDefault();
+      openBooking();
       return;
     }
     if (state.view === 'main' && /^[1-5]$/.test(event.key)) {
@@ -1729,6 +2852,9 @@
     document.addEventListener('select', handleTargetActivity, true);
     document.addEventListener('input', handleTargetActivity, true);
     window.addEventListener('resize', positionPalette);
+    document.addEventListener('change', onLeadActivity, true);
+    document.addEventListener('focusout', onLeadActivity, true);
+    document.addEventListener('click', onLeadActivity, true);
   }
 
   KN.togglePalette = togglePalette;
@@ -1738,6 +2864,8 @@
   KN.scanPage = scanPage;
   KN.findTopEmail = findTopEmail;
   KN.state = state;
+  KN.openBooking = openBooking;
+  KN.readLead = readLead;
 
   init();
 })();
