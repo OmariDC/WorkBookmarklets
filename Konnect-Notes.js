@@ -615,7 +615,19 @@
       .kn-bk-body { padding: 10px; background: #e9e9ee; }
       .kn-bk-section { margin-bottom: 8px; background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; border-left: 4px solid transparent; }
       .kn-bk-section.kn-bk-open { border-left-color: #f9772e; box-shadow: 0 2px 10px rgba(0,0,0,0.12); }
-      .kn-bk-head { display: flex; flex-direction: column; align-items: stretch; width: 100%; padding: 10px 12px; border: none; background: transparent; cursor: pointer; text-align: left; }
+      .kn-bk-head { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 12px; border: none; background: transparent; cursor: pointer; text-align: left; }
+      .kn-bk-head-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+      .kn-bk-badge { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-top: 1px; border-radius: 50%; font-size: 12px; font-weight: 800; }
+      .kn-bk-badge-done { background: #34c759; color: #fff; }
+      .kn-bk-badge-needed { background: #f9772e; color: #fff; }
+      .kn-bk-badge-optional { background: #e5e5ea; color: #6e6e73; }
+      .kn-bk-optional { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #f2f2f7; color: #8e8e93; font-size: 10px; font-weight: 600; vertical-align: 2px; }
+      .kn-bk-prompt { margin-bottom: 9px; font-size: 13px; font-weight: 700; color: #c2410c; }
+      .kn-bk-needed { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 8px; padding: 8px 10px; border-radius: 12px; background: #fff4ec; box-shadow: inset 0 0 0 1.5px #f9772e; }
+      .kn-bk-needed.kn-bk-ready { background: #eafaf0; box-shadow: inset 0 0 0 1.5px #34c759; }
+      .kn-bk-needed-title { font-size: 12.5px; font-weight: 800; color: #1c1c1e; margin-right: 2px; }
+      .kn-bk-ready .kn-bk-needed-title { color: #248a3d; }
+      .kn-bk-needed-chip { border: none; cursor: pointer; padding: 4px 10px; border-radius: 999px; background: #f9772e; color: #fff; font-size: 12px; font-weight: 700; }
       .kn-bk-head:hover { background: #fafafa; }
       .kn-bk-head-top { display: flex; align-items: center; justify-content: space-between; }
       .kn-bk-head-title { font-size: 14px; font-weight: 700; color: #1c1c1e; }
@@ -1998,10 +2010,16 @@
       d.subtype = BOOKING_SUBTYPE_DEFAULT[value] || '';
       untag(draft, 'type');
       if (value === 'onlinestore' || value === 'national') d.vehicles = d.vehicles.slice(0, 1);
+      if (!BOOKING_SUBTYPES[value]) advanceIfDone(draft, 'type');
       changed(draft, true);
     }));
     if (BOOKING_SUBTYPES[d.type]) {
-      body.appendChild(bkChips(BOOKING_SUBTYPES[d.type], d.subtype, (value) => { d.subtype = value; changed(draft, true); }, 'kn-bk-sub'));
+      body.appendChild(element('div', 'kn-bk-label', 'Which kind?'));
+      body.appendChild(bkChips(BOOKING_SUBTYPES[d.type], d.subtype, (value) => {
+        d.subtype = value;
+        advanceIfDone(draft, 'type');
+        changed(draft, true);
+      }, 'kn-bk-sub'));
     }
     if (/online store/i.test(draft.leadHints?.source || '') && d.type !== 'onlinestore' && d.type !== 'national') {
       body.appendChild(element('div', 'kn-muted kn-bk-gap', `Lead source: ${draft.leadHints.source}`));
@@ -2090,7 +2108,7 @@
         slots.forEach((value) => {
           const chip = element('button', `kn-chip${d.time === value ? ' kn-active' : ''}`, value);
           chip.type = 'button';
-          chip.addEventListener('click', () => { d.time = value; untag(draft, 'when'); changed(draft, true); });
+          chip.addEventListener('click', () => { d.time = value; untag(draft, 'when'); advanceIfDone(draft, 'when'); changed(draft, true); });
           times.appendChild(chip);
         });
         body.appendChild(times);
@@ -2278,15 +2296,79 @@
     }
   }
 
+  /* Required sections first, in the order an agent usually fills them. */
   const BOOKING_SECTIONS = [
-    { id: 'contact', title: 'Contact', render: renderContactSection },
-    { id: 'type', title: 'Appointment', render: renderTypeSection },
-    { id: 'when', title: 'When', render: renderWhenSection },
-    { id: 'vehicle', title: 'Vehicle', render: renderVehicleSection, hidden: (d) => d.type === 'valuation' },
-    { id: 'px', title: 'Part exchange', titleFor: (d) => (d.type === 'valuation' ? 'Customer\'s vehicle' : 'Part exchange'), render: renderPxSection, hidden: (d) => d.type === 'national' },
-    { id: 'payment', title: 'Payment', render: renderPaymentSection, hidden: (d) => d.type === 'valuation' || d.type === 'national' },
-    { id: 'notes', title: 'Notes', render: renderNotesSection }
+    { id: 'type', title: 'Appointment', required: true, prompt: 'What is the appointment?', render: renderTypeSection },
+    { id: 'when', title: 'When', required: (d) => d.type !== 'national', prompt: 'Tap a day, then a time', render: renderWhenSection },
+    { id: 'vehicle', title: 'Vehicle', required: true, prompt: 'Which car are they interested in?', render: renderVehicleSection, hidden: (d) => d.type === 'valuation' },
+    { id: 'px', title: 'Part exchange', titleFor: (d) => (d.type === 'valuation' ? 'Customer\'s vehicle' : 'Part exchange'),
+      required: (d) => d.type === 'valuation',
+      prompt: 'Are they part-exchanging a car?', promptFor: (d) => (d.type === 'valuation' ? 'Which car is being valued?' : ''),
+      render: renderPxSection, hidden: (d) => d.type === 'national' },
+    { id: 'payment', title: 'Payment', prompt: 'How are they paying?', render: renderPaymentSection, hidden: (d) => d.type === 'valuation' || d.type === 'national' },
+    { id: 'notes', title: 'Notes', prompt: 'Anything else the dealership should know?', render: renderNotesSection },
+    { id: 'contact', title: 'Contact / FAO', prompt: 'Voicemail, line engaged or email only? Add FAO if asked.', render: renderContactSection }
   ];
+
+  function visibleSections(d) {
+    return BOOKING_SECTIONS.filter((section) => !(section.hidden && section.hidden(d)));
+  }
+
+  function sectionRequired(section, d) {
+    return typeof section.required === 'function' ? section.required(d) : Boolean(section.required);
+  }
+
+  function sectionTouched(draft, id) {
+    const d = draft.data;
+    if (id === 'contact') return d.contact !== 'none' || Boolean(normaliseText(d.fao));
+    if (id === 'px') return d.px.status !== 'unmentioned';
+    if (id === 'payment') return d.payment.kind !== 'unmentioned';
+    if (id === 'notes') return Boolean(normaliseText(d.notesText) || d.reserved || normaliseText(d.onBehalfOf) || d.emailNote);
+    return !sectionMissing(draft, id);
+  }
+
+  /* 'done', 'needed' or 'optional' for the step badge. */
+  function sectionStatus(draft, section) {
+    const d = draft.data;
+    if (sectionRequired(section, d)) return sectionMissing(draft, section.id) ? 'needed' : 'done';
+    if (sectionMissing(draft, section.id)) return 'needed';
+    return sectionTouched(draft, section.id) ? 'done' : 'optional';
+  }
+
+  function nextMissingSection(draft) {
+    const d = draft.data;
+    const next = visibleSections(d).find((section) => sectionRequired(section, d) && sectionMissing(draft, section.id));
+    return next ? next.id : '';
+  }
+
+  /* After a choice that completes a step, open the next step still needed. */
+  function advanceIfDone(draft, id) {
+    if (sectionMissing(draft, id)) return;
+    draft.openSection = nextMissingSection(draft);
+  }
+
+  function renderNeededBar(draft, body) {
+    const d = draft.data;
+    const missing = visibleSections(d).filter((section) => sectionRequired(section, d) && sectionMissing(draft, section.id));
+    const bar = element('div', missing.length ? 'kn-bk-needed' : 'kn-bk-needed kn-bk-ready');
+    bookingRefs.needed = bar;
+    if (!missing.length) {
+      bar.appendChild(element('span', 'kn-bk-needed-title', '✓ Ready to insert'));
+    } else {
+      bar.appendChild(element('span', 'kn-bk-needed-title', 'Still needed:'));
+      missing.forEach((section) => {
+        const chip = element('button', 'kn-bk-needed-chip', section.titleFor ? section.titleFor(d) : section.title);
+        chip.type = 'button';
+        chip.addEventListener('click', () => {
+          draft.openSection = section.id;
+          saveDraftSoon();
+          renderPalette();
+        });
+        bar.appendChild(chip);
+      });
+    }
+    body.appendChild(bar);
+  }
 
   function updateBookingLive(draft) {
     if (!bookingRefs) return;
@@ -2296,6 +2378,20 @@
       node.textContent = sectionSummary(draft, id);
       node.classList.toggle('kn-bk-missing', sectionMissing(draft, id));
     });
+    Object.values(bookingRefs.badges).forEach((ref) => {
+      const status = sectionStatus(draft, ref.section);
+      ref.badge.className = `kn-bk-badge kn-bk-badge-${status}`;
+      ref.badge.textContent = status === 'done' ? '✓' : String(ref.number);
+      ['done', 'needed', 'optional'].forEach((name) => ref.wrap.classList.toggle(`kn-bk-s-${name}`, name === status));
+    });
+    if (bookingRefs.needed) {
+      const parent = bookingRefs.needed.parentNode;
+      const marker = bookingRefs.needed.nextSibling;
+      bookingRefs.needed.remove();
+      const temp = document.createDocumentFragment();
+      renderNeededBar(draft, temp);
+      parent.insertBefore(temp, marker);
+    }
     if (bookingRefs.readout) {
       const readout = dateReadout(draft);
       bookingRefs.readout.textContent = readout.text;
@@ -2340,19 +2436,28 @@
       body.appendChild(card);
     });
 
-    bookingRefs = { summaries: {}, readout: null, preview: null, issues: null, insert: null };
-    BOOKING_SECTIONS.filter((section) => !(section.hidden && section.hidden(d))).forEach((section) => {
+    bookingRefs = { summaries: {}, badges: {}, needed: null, readout: null, preview: null, issues: null, insert: null };
+    renderNeededBar(draft, body);
+    visibleSections(d).forEach((section, index) => {
       const open = draft.openSection === section.id;
-      const wrap = element('div', `kn-bk-section${open ? ' kn-bk-open' : ''}`);
+      const status = sectionStatus(draft, section);
+      const wrap = element('div', `kn-bk-section kn-bk-s-${status}${open ? ' kn-bk-open' : ''}`);
       const head = element('button', 'kn-bk-head');
       head.type = 'button';
+      const badge = element('span', `kn-bk-badge kn-bk-badge-${status}`, status === 'done' ? '✓' : String(index + 1));
+      bookingRefs.badges[section.id] = { badge, wrap, section, number: index + 1 };
+      head.appendChild(badge);
+      const textCol = element('span', 'kn-bk-head-text');
       const top = element('span', 'kn-bk-head-top');
-      top.appendChild(element('span', 'kn-bk-head-title', section.titleFor ? section.titleFor(d) : section.title));
+      const titleNode = element('span', 'kn-bk-head-title', section.titleFor ? section.titleFor(d) : section.title);
+      if (!sectionRequired(section, d)) titleNode.appendChild(element('span', 'kn-bk-optional', 'optional'));
+      top.appendChild(titleNode);
       top.appendChild(element('span', 'kn-bk-chevron', open ? '▾' : '▸'));
-      head.appendChild(top);
+      textCol.appendChild(top);
       const summary = element('span', 'kn-bk-head-summary', sectionSummary(draft, section.id));
       bookingRefs.summaries[section.id] = summary;
-      head.appendChild(summary);
+      textCol.appendChild(summary);
+      head.appendChild(textCol);
       head.addEventListener('click', () => {
         draft.openSection = open ? '' : section.id;
         saveDraftSoon();
@@ -2361,6 +2466,8 @@
       wrap.appendChild(head);
       if (open) {
         const content = element('div', 'kn-bk-content');
+        const prompt = (section.promptFor && section.promptFor(d)) || section.prompt;
+        if (prompt) content.appendChild(element('div', 'kn-bk-prompt', prompt));
         section.render(draft, content);
         wrap.appendChild(content);
         const readout = content.querySelector('[data-role="date-readout"]');
@@ -2415,6 +2522,7 @@
     state.bookingStatus = null;
     state.bookingScroll = 0;
     const draft = currentDraft();
+    if (!draft.openSection && bookingEngine()) draft.openSection = nextMissingSection(draft);
     if (bookingEngine()) {
       syncLead(draft);
     } else {
