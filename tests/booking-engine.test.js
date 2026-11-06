@@ -333,5 +333,50 @@ test('Model casing', () => {
   assert.strictEqual(E.normaliseMake('DS'), 'DS');
 });
 
+/* ---------- Opening hours ---------- */
+
+test('Slots: Mon-Fri 09:00-18:00, Sat to 17:30, Sun 10:00-16:00; calls 30 min, others 1 hour', () => {
+  const mon = new Date(2026, 10, 9);
+  const sat = new Date(2026, 10, 7);
+  const sun = new Date(2026, 10, 8);
+  const td = { type: 'testdrive' };
+  const call = { type: 'call' };
+  const ends = (list) => `${list[0]}-${list[list.length - 1]}`;
+  assert.strictEqual(ends(E.availableSlots(mon, td)), '09:00-17:00');
+  assert.strictEqual(ends(E.availableSlots(mon, call)), '09:00-17:30');
+  assert.strictEqual(ends(E.availableSlots(sat, td)), '09:00-16:30');
+  assert.strictEqual(ends(E.availableSlots(sat, call)), '09:00-17:00');
+  assert.strictEqual(ends(E.availableSlots(sun, td)), '10:00-15:00');
+  assert.strictEqual(ends(E.availableSlots(sun, call)), '10:00-15:30');
+  assert.strictEqual(ends(E.availableSlots(sun, { type: 'motability', subtype: 'call' })), '10:00-15:30');
+  assert.strictEqual(E.availableSlots(new Date(2026, 10, 6), td, { now: NOW })[0], '12:30');
+});
+
+test('Booking outside opening hours is blocked', () => {
+  const r = build({ type: 'testdrive', vehicles: NEW_MM, date: { day: 8, month: 11 }, time: '15:30' });
+  assert.ok(r.errors.includes('Outside opening hours: Sunday appointments can start 10:00 to 15:00'), r.errors.join('; '));
+  assert.deepStrictEqual(build({ type: 'call', vehicles: NEW_MM, date: { day: 8, month: 11 }, time: '15:30' }).errors, []);
+  assert.ok(build({ type: 'testdrive', vehicles: NEW_MM, date: { day: 9, month: 11 }, time: '08:30' }).errors.length);
+});
+
+/* ---------- Requested date/time in Initial Notes ---------- */
+
+test('Initial notes: website forms', () => {
+  const p = (text) => { const r = E.parseRequestedSlot(text); return r && `${r.day}/${r.month} ${r.time}`.trim(); };
+  assert.strictEqual(p('Preferred Date/Time: 2026-09-25, 9:00 AM'), '25/09 09:00');
+  assert.strictEqual(p('Comment Line #1: Vehicle URL: x | Customer comment: | Date/Time: Sat Sep 05 2026 3:00PM'), '05/09 15:00');
+  assert.strictEqual(p('BrandSite-Test_Drive | First Appointment Date Desired: 25/09/2026 | Anytime between 1300 - 1600'), '25/09 13:00');
+  assert.strictEqual(p('BrandSite-Test_Drive | Date: 28/09/2026 | Test drive e-5008'), '28/09');
+  assert.strictEqual(p('Booking date: 2026-10-11'), '11/10');
+  assert.strictEqual(p('Would like to test drive a 3008 hybrid, between 10am and 11am'), '/ 10:00');
+  assert.strictEqual(p('Fiat - Test Drive | First Desired Schedule: 00:00 | -'), null);
+  assert.strictEqual(p('Pop-in-Test_Drive_New_Users | -'), null);
+  const morning = E.parseRequestedSlot('Customer Comments: 2026-09-17 Morning');
+  assert.strictEqual(morning.partOfDay, 'morning');
+  const odd = E.parseRequestedSlot('Date/Time: Sat Sep 05 2026 3:15PM');
+  assert.strictEqual(odd.time, '15:30');
+  assert.ok(odd.rounded);
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

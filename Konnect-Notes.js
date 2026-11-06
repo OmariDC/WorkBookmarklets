@@ -590,7 +590,7 @@
       .kn-result-preview { display: -webkit-box; margin-top: 5px; color: #6e6e73; font-size: 11px; line-height: 1.35; white-space: normal; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
       .kn-alias { display: inline-block; margin: 4px 4px 0 0; padding: 1px 6px; border-radius: 999px; background: #f2f2f7; color: #6e6e73; font-size: 10px; }
       .kn-browse-controls { position: sticky; top: -12px; z-index: 2; margin-top: -12px; padding-top: 12px; background: #f2f2f7; }
-      .kn-muted { color: #8e8e93; font-size: 12px; }
+      .kn-muted { color: #6e6e73; font-size: 12px; }
       .kn-status { margin: 0 0 9px; padding: 8px 10px; background: #fff; border-radius: 10px; color: #6e6e73; font-size: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
       .kn-status.kn-status-error { background: #ff3b3012; color: #ff3b30; font-weight: 600; }
       .kn-attempt-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 14px 0; }
@@ -611,37 +611,45 @@
       .kn-export { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
       .kn-browse-button { width: 100%; margin-bottom: 8px; }
       .kn-shortcut-hint { text-align: center; }
-      .kn-bk-body { padding: 10px; }
-      .kn-bk-section { margin-bottom: 6px; background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow: hidden; }
-      .kn-bk-head { display: flex; flex-direction: column; align-items: flex-start; width: 100%; padding: 8px 10px; border: none; background: transparent; cursor: pointer; text-align: left; }
-      .kn-bk-head-title { font-size: 10.5px; font-weight: 700; color: #8e8e93; text-transform: uppercase; letter-spacing: 0.3px; }
-      .kn-bk-head-summary { margin-top: 1px; font-size: 13px; font-weight: 600; color: #1c1c1e; line-height: 1.3; }
-      .kn-bk-open .kn-bk-head { background: #fff3ea; }
-      .kn-bk-content { padding: 8px 10px 10px; }
+      .kn-stop-button { padding: 3px 9px !important; font-size: 11.5px; color: #ffb4a8 !important; }
+      .kn-bk-body { padding: 10px; background: #e9e9ee; }
+      .kn-bk-section { margin-bottom: 8px; background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; border-left: 4px solid transparent; }
+      .kn-bk-section.kn-bk-open { border-left-color: #f9772e; box-shadow: 0 2px 10px rgba(0,0,0,0.12); }
+      .kn-bk-head { display: flex; flex-direction: column; align-items: stretch; width: 100%; padding: 10px 12px; border: none; background: transparent; cursor: pointer; text-align: left; }
+      .kn-bk-head:hover { background: #fafafa; }
+      .kn-bk-head-top { display: flex; align-items: center; justify-content: space-between; }
+      .kn-bk-head-title { font-size: 14px; font-weight: 700; color: #1c1c1e; }
+      .kn-bk-chevron { font-size: 13px; color: #8e8e93; }
+      .kn-bk-head-summary { margin-top: 2px; font-size: 12.5px; font-weight: 500; color: #3a3a3c; line-height: 1.35; }
+      .kn-bk-head-summary.kn-bk-missing { color: #c2410c; font-weight: 600; }
+      .kn-bk-open .kn-bk-head { background: #fff3ea; border-bottom: 1px solid #fde0cc; }
+      .kn-bk-content { padding: 10px 12px 12px; }
       .kn-bk-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
-      .kn-bk-chips .kn-chip { max-width: 100%; white-space: normal; text-align: left; background: #f2f2f7; box-shadow: none; }
-      .kn-bk-chips .kn-chip.kn-active { background: #f9772e; color: #fff; }
+      .kn-bk-chips .kn-chip { max-width: 100%; white-space: normal; text-align: left; padding: 6px 11px; font-size: 12.5px; background: #fff; box-shadow: inset 0 0 0 1px #d1d1d6; }
+      .kn-bk-chips .kn-chip.kn-active { background: #f9772e; color: #fff; box-shadow: none; font-weight: 600; }
       .kn-bk-chips .kn-chip:disabled { opacity: 0.4; cursor: default; }
       .kn-bk-sub .kn-chip { font-size: 11px; padding: 4px 9px; }
       .kn-bk-field { display: block; flex: 1 1 0; min-width: 0; margin-bottom: 7px; }
-      .kn-bk-label { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; font-size: 11px; font-weight: 600; color: #3a3a3c; }
+      .kn-bk-label { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; font-size: 12px; font-weight: 700; color: #1c1c1e; }
       .kn-bk-tag { padding: 0 6px; border-radius: 999px; background: #34c75922; color: #248a3d; font-size: 9.5px; font-weight: 700; }
-      .kn-bk-field .kn-input { padding: 6px 8px; font-size: 13px; background: #f2f2f7; box-shadow: none; }
+      .kn-bk-field .kn-input { padding: 7px 9px; font-size: 13.5px; background: #fff; box-shadow: inset 0 0 0 1px #c7c7cc; }
+      .kn-bk-field .kn-input:focus { outline: none; box-shadow: inset 0 0 0 2px #f9772e; }
       .kn-bk-notes { min-height: 90px; resize: vertical; font-family: inherit; }
       .kn-bk-row { display: flex; gap: 6px; }
       .kn-bk-small { flex: 1 1 0; }
       .kn-bk-days { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 6px; margin-bottom: 6px; }
-      .kn-bk-day { display: flex !important; flex-direction: column; align-items: center; min-width: 40px; padding: 4px 6px !important; background: #f2f2f7 !important; box-shadow: none !important; }
-      .kn-bk-day.kn-active { background: #f9772e !important; color: #fff !important; }
+      .kn-bk-day { display: flex !important; flex-direction: column; align-items: center; min-width: 42px; padding: 5px 6px !important; background: #fff !important; box-shadow: inset 0 0 0 1px #d1d1d6 !important; }
+      .kn-bk-day.kn-active { background: #f9772e !important; color: #fff !important; box-shadow: none !important; }
+      .kn-bk-day:disabled { opacity: 0.35; cursor: default; }
       .kn-bk-day-name { font-size: 9.5px; font-weight: 600; opacity: 0.8; }
       .kn-bk-day-num { font-size: 14px; font-weight: 700; }
       .kn-bk-readout { margin: 2px 0 8px; padding: 7px 9px; border-radius: 10px; background: #1c1c1e; color: #fff; font-size: 13px; font-weight: 700; }
       .kn-bk-readout.kn-bk-error { background: #ff3b30; color: #fff; }
       .kn-bk-times { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 8px; }
-      .kn-bk-times .kn-chip { padding: 5px 0; font-size: 11.5px; background: #f2f2f7; box-shadow: none; text-align: center; }
+      .kn-bk-times .kn-chip { padding: 6px 0; font-size: 12.5px; font-weight: 600; background: #fff; box-shadow: inset 0 0 0 1px #d1d1d6; text-align: center; }
       .kn-bk-times .kn-chip.kn-active { background: #f9772e; color: #fff; }
-      .kn-bk-card { margin-bottom: 8px; padding: 8px; border-radius: 10px; background: #fafafa; box-shadow: inset 0 0 0 1px #e5e5ea; }
-      .kn-bk-card-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 11px; font-weight: 700; color: #6e6e73; }
+      .kn-bk-card { margin-bottom: 8px; padding: 10px; border-radius: 10px; background: #f7f7f9; box-shadow: inset 0 0 0 1px #e5e5ea; }
+      .kn-bk-card-head { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 12.5px; font-weight: 700; color: #1c1c1e; }
       .kn-bk-remove { border: none; background: none; color: #ff3b30; font-size: 11px; font-weight: 600; cursor: pointer; }
       .kn-bk-add { width: 100%; margin-bottom: 8px; font-size: 12px; background: #f2f2f7; box-shadow: none; }
       .kn-bk-gap { margin-bottom: 8px; }
@@ -652,6 +660,7 @@
       .kn-bk-notice-actions { display: flex; gap: 6px; }
       .kn-bk-notice-actions .kn-button { padding: 5px 10px; font-size: 12px; }
       .kn-bk-footer { flex: 0 0 auto; padding: 8px 10px 10px; background: #fff; border-top: 1px solid #e5e5ea; border-radius: 0 0 20px 20px; }
+      .kn-bk-preview-label { margin-bottom: 4px; font-size: 11px; font-weight: 700; color: #6e6e73; text-transform: uppercase; letter-spacing: 0.3px; }
       .kn-bk-preview { max-height: 150px; margin: 0 0 6px; padding: 7px 8px; overflow: auto; border-radius: 8px; background: #f2f2f7; color: #1c1c1e; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
       .kn-bk-issues { margin-bottom: 6px; }
       .kn-bk-status { margin-bottom: 6px; font-size: 12px; font-weight: 600; }
@@ -758,6 +767,11 @@
       });
       header.appendChild(settings);
     }
+    const stop = element('button', 'kn-icon-button kn-stop-button', 'Stop');
+    stop.type = 'button';
+    stop.title = 'Stop Konnect Notes without refreshing the page. Click the bookmark again to load the latest version. Booking drafts are kept.';
+    stop.addEventListener('click', stopKonnectNotes);
+    header.appendChild(stop);
     const close = element('button', 'kn-icon-button', '×');
     close.type = 'button';
     close.title = 'Close';
@@ -1538,8 +1552,11 @@
       pxFields['px.mileage'] = inputByPlaceholder(px, 'Mileage');
       pxFields['px.roughVal'] = inputByPlaceholder(px, 'Valuation');
     }
+    const engine = bookingEngine();
+    const request = engine ? engine.parseRequestedSlot(readInitialNotes()) : null;
     return {
-      found: Boolean(voi || px),
+      found: Boolean(voi || px || request),
+      request,
       fields,
       pxOn,
       pxFields,
@@ -1634,15 +1651,71 @@
       Object.entries(lead.pxFields).forEach(([path, value]) => { draft.leadSeen[path] = value; });
     }
 
-    draft.leadHints = { leadRequest: lead.leadRequest, source: lead.source };
+    draft.leadHints = { leadRequest: lead.leadRequest, source: lead.source, request: lead.request };
+    if (syncRequestedSlot(draft, lead.request)) changed = true;
     if (changed) saveDraftSoon();
     return changed;
+  }
+
+  function requestKey(request) {
+    return request ? `${request.day}/${request.month}/${request.year || ''} ${request.time}`.trim() : '';
+  }
+
+  function requestIsPast(request) {
+    const engine = bookingEngine();
+    if (!engine || !request || !request.day) return false;
+    const date = engine.resolveDate({ day: request.day, month: request.month, year: request.year }, new Date());
+    return Boolean(date.error);
+  }
+
+  function describeRequest(request) {
+    if (!request) return '';
+    const parts = [];
+    if (request.day) {
+      const when = new Date(request.year || new Date().getFullYear(), Number(request.month) - 1, Number(request.day));
+      parts.push(`${WEEKDAYS[when.getDay()]} ${Number(request.day)} ${MONTHS_LONG[Number(request.month) - 1]}`);
+    }
+    if (request.time) parts.push(`at ${request.time}`);
+    if (request.partOfDay) parts.push(`(${request.partOfDay})`);
+    return parts.join(' ');
+  }
+
+  function applyRequest(draft, request) {
+    const d = draft.data;
+    if (request.day) {
+      d.day = request.day;
+      d.month = request.month;
+    }
+    if (request.time) d.time = request.time;
+    draft.fromLead.when = true;
+  }
+
+  /* A date/time the customer asked for in the Initial Notes fills an empty
+     When section. If the agent has already picked something different,
+     it only raises a notice. Dates that have passed are never filled. */
+  function syncRequestedSlot(draft, request) {
+    const key = requestKey(request);
+    const seen = draft.leadSeen.when;
+    draft.leadSeen.when = key;
+    if (!key || key === seen || requestIsPast(request)) return false;
+    const d = draft.data;
+    if (!d.day && !d.time) {
+      applyRequest(draft, request);
+      return true;
+    }
+    const sameDay = !request.day || (Number(d.day) === Number(request.day) && Number(d.month) === Number(request.month));
+    const sameTime = !request.time || d.time === request.time;
+    if (sameDay && sameTime) return false;
+    addNotice(draft, { path: 'when', value: key, request, label: `Initial notes ask for ${describeRequest(request)}` });
+    return true;
   }
 
   function applyNotice(draft, notice, use) {
     draft.notices = draft.notices.filter((item) => item !== notice);
     if (use) {
-      if (notice.path === 'px.on') {
+      if (notice.path === 'when') {
+        applyRequest(draft, notice.request);
+      } else if (notice.path === 'px.on') {
         draft.data.px.status = notice.value === 'on' ? 'yes' : 'unmentioned';
         if (notice.value === 'on') {
           const lead = readLead();
@@ -1882,6 +1955,15 @@
     return '';
   }
 
+  function sectionMissing(draft, id) {
+    const d = draft.data;
+    if (id === 'type') return !d.type;
+    if (id === 'when') return d.type !== 'national' && (!d.day || !d.time);
+    if (id === 'vehicle') return !d.vehicles.some((v) => normaliseText(v.make) || normaliseText(v.model)) && !normaliseText(d.category);
+    if (id === 'px') return (d.type === 'valuation' || d.px.status === 'yes') && !d.px.items.some((item) => normaliseText(item.reg) || normaliseText(item.make));
+    return false;
+  }
+
   /* ---------- section bodies ---------- */
 
   function renderContactSection(draft, body) {
@@ -1924,6 +2006,14 @@
       body.appendChild(element('div', 'kn-muted', 'National Reservation has no booking sentence. Create the calendar event for the date below.'));
       return;
     }
+    const request = draft.leadHints?.request;
+    if (request) {
+      const past = requestIsPast(request);
+      const text = `Initial notes: ${describeRequest(request)}${request.rounded ? ' (rounded up to a :00 or :30 slot)' : ''}${past ? ' (this date has passed)' : ''}`;
+      body.appendChild(element('div', past ? 'kn-bk-warn kn-bk-gap' : 'kn-muted kn-bk-gap', text));
+    }
+    const engine = bookingEngine();
+    const typeInput = { type: d.type || 'testdrive', subtype: d.subtype };
     const strip = element('div', 'kn-bk-days');
     const today = new Date();
     for (let i = 0; i < 14; i += 1) {
@@ -1931,11 +2021,16 @@
       const active = Number(d.day) === day.getDate() && Number(d.month) === day.getMonth() + 1;
       const chip = element('button', `kn-chip kn-bk-day${active ? ' kn-active' : ''}`);
       chip.type = 'button';
+      if (!engine.availableSlots(day, typeInput, { now: new Date() }).length) {
+        chip.disabled = true;
+        chip.title = 'No times left today';
+      }
       chip.appendChild(element('span', 'kn-bk-day-name', i === 0 ? 'Today' : WEEKDAYS[day.getDay()]));
       chip.appendChild(element('span', 'kn-bk-day-num', String(day.getDate())));
       chip.addEventListener('click', () => {
         d.day = String(day.getDate()).padStart(2, '0');
         d.month = String(day.getMonth() + 1).padStart(2, '0');
+        untag(draft, 'when');
         changed(draft, true);
       });
       strip.appendChild(chip);
@@ -1955,14 +2050,17 @@
         d.day = value.replace(/\D/g, '').slice(0, 2);
         if (d.day.length === 2 && monthInput) monthInput.focus();
       }
+      untag(draft, 'when');
       changed(draft);
-    }, { placeholder: 'DD', maxLength: 5, inputMode: 'numeric', className: 'kn-bk-small' });
+    }, { placeholder: 'DD', maxLength: 5, inputMode: 'numeric', className: 'kn-bk-small', fromLead: draft.fromLead.when });
     const monthField = bkInput('Month', d.month, (value) => {
       d.month = value.replace(/\D/g, '').slice(0, 2);
+      untag(draft, 'when');
       changed(draft);
     }, { placeholder: 'MM', maxLength: 2, inputMode: 'numeric', className: 'kn-bk-small' });
     monthInput = monthField.querySelector('input');
-    const timeField = bkInput('Time', d.time, (value) => { d.time = value; changed(draft); }, { placeholder: 'HH:MM', maxLength: 8, className: 'kn-bk-small' });
+    const timeField = bkInput('Time', d.time, (value) => { d.time = value; untag(draft, 'when'); changed(draft); },
+      { placeholder: 'HH:MM', maxLength: 8, className: 'kn-bk-small' });
     row.appendChild(dayField);
     row.appendChild(monthField);
     row.appendChild(timeField);
@@ -1972,17 +2070,28 @@
     readout.dataset.role = 'date-readout';
     body.appendChild(readout);
 
-    const times = element('div', 'kn-bk-times');
-    for (let hour = 8; hour <= 19; hour += 1) {
-      ['00', '30'].forEach((minute) => {
-        const value = `${String(hour).padStart(2, '0')}:${minute}`;
-        const chip = element('button', `kn-chip${d.time === value ? ' kn-active' : ''}`, value);
-        chip.type = 'button';
-        chip.addEventListener('click', () => { d.time = value; changed(draft, true); });
-        times.appendChild(chip);
-      });
+    const chosen = d.day ? engine.resolveDate({ day: d.day, month: d.month }, new Date()) : null;
+    if (chosen && !chosen.error) {
+      const hours = engine.openingHours[chosen.dateObj.getDay()];
+      const length = engine.appointmentLength(typeInput);
+      body.appendChild(element('div', 'kn-muted kn-bk-gap',
+        `Open ${hours.open} to ${hours.close} · ${length === 30 ? '30 minute call' : '1 hour appointment'}`));
+      const slots = engine.availableSlots(chosen.dateObj, typeInput, { now: new Date() });
+      if (slots.length) {
+        const times = element('div', 'kn-bk-times');
+        slots.forEach((value) => {
+          const chip = element('button', `kn-chip${d.time === value ? ' kn-active' : ''}`, value);
+          chip.type = 'button';
+          chip.addEventListener('click', () => { d.time = value; untag(draft, 'when'); changed(draft, true); });
+          times.appendChild(chip);
+        });
+        body.appendChild(times);
+      } else {
+        body.appendChild(element('div', 'kn-bk-warn kn-bk-gap', 'No times left on this day'));
+      }
+    } else {
+      body.appendChild(element('div', 'kn-muted kn-bk-gap', 'Pick a day to see the available times'));
     }
-    body.appendChild(times);
     const isCall = d.type === 'call' || (d.type === 'motability' && d.subtype === 'call') ||
       (d.type === 'onlinestore' && /call/.test(d.subtype)) || (d.type === 'valuation' && d.subtype === 'call');
     if (isCall) {
@@ -2177,6 +2286,7 @@
     if (!result) return;
     Object.entries(bookingRefs.summaries).forEach(([id, node]) => {
       node.textContent = sectionSummary(draft, id);
+      node.classList.toggle('kn-bk-missing', sectionMissing(draft, id));
     });
     if (bookingRefs.readout) {
       const readout = dateReadout(draft);
@@ -2228,7 +2338,10 @@
       const wrap = element('div', `kn-bk-section${open ? ' kn-bk-open' : ''}`);
       const head = element('button', 'kn-bk-head');
       head.type = 'button';
-      head.appendChild(element('span', 'kn-bk-head-title', section.titleFor ? section.titleFor(d) : section.title));
+      const top = element('span', 'kn-bk-head-top');
+      top.appendChild(element('span', 'kn-bk-head-title', section.titleFor ? section.titleFor(d) : section.title));
+      top.appendChild(element('span', 'kn-bk-chevron', open ? '▾' : '▸'));
+      head.appendChild(top);
       const summary = element('span', 'kn-bk-head-summary', sectionSummary(draft, section.id));
       bookingRefs.summaries[section.id] = summary;
       head.appendChild(summary);
@@ -2249,6 +2362,7 @@
     });
 
     const footer = element('div', 'kn-bk-footer');
+    footer.appendChild(element('div', 'kn-bk-preview-label', 'Goes into Call Notes'));
     const preview = element('pre', 'kn-bk-preview');
     bookingRefs.preview = preview;
     footer.appendChild(preview);
@@ -2292,10 +2406,15 @@
     state.view = 'booking';
     state.bookingStatus = null;
     state.bookingScroll = 0;
-    const engineReady = bookingEngine();
     const draft = currentDraft();
-    syncLead(draft);
-    if (!engineReady) loadBookingEngine().catch(() => {});
+    if (bookingEngine()) {
+      syncLead(draft);
+    } else {
+      loadBookingEngine().then(() => {
+        syncLead(currentDraft());
+        if (state.open && state.view === 'booking') renderPalette();
+      }).catch(() => {});
+    }
     renderPalette();
   }
 
@@ -2859,6 +2978,28 @@
     document.addEventListener('click', onLeadActivity, true);
   }
 
+  /* Fully unloads Konnect Notes from the page (UI, listeners, observer and
+     the cached booking engine) so the bookmark can load a fresh copy
+     without a page refresh. Drafts and settings stay in localStorage. */
+  function stopKonnectNotes() {
+    try { if (state.booking) saveDraftNow(); } catch (error) { /* keep going */ }
+    clearTimeout(state.scanTimer);
+    clearTimeout(bookingSaveTimer);
+    clearTimeout(bookingSyncTimer);
+    if (state.observer) state.observer.disconnect();
+    document.removeEventListener('keydown', handleAbbreviation, true);
+    document.removeEventListener('keydown', handleGlobalKey, false);
+    ['focusin', 'keyup', 'click', 'select', 'input'].forEach((type) =>
+      document.removeEventListener(type, handleTargetActivity, true));
+    ['change', 'focusout', 'click'].forEach((type) =>
+      document.removeEventListener(type, onLeadActivity, true));
+    window.removeEventListener('resize', positionPalette);
+    [PALETTE_ID, STYLE_ID, LAUNCHER_SECTION_ID].forEach((id) => document.getElementById(id)?.remove());
+    try { delete window.KonnectNotes; } catch (error) { window.KonnectNotes = undefined; }
+    try { delete window.KonnectBookingEngine; } catch (error) { window.KonnectBookingEngine = undefined; }
+  }
+
+  KN.stop = stopKonnectNotes;
   KN.togglePalette = togglePalette;
   KN.openPalette = openPalette;
   KN.closePalette = closePalette;

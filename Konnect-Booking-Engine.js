@@ -205,6 +205,135 @@
     return { day: d.getDate(), month: d.getMonth() + 1, year: d.getFullYear(), text: `${pad(d.getDate())}/${pad(d.getMonth() + 1)}`, time: '12:00' };
   }
 
+  /* ---------- opening hours ---------- */
+
+  /* Dealership hours by weekday (0 = Sunday). Appointments must finish by
+     closing: calls last 30 minutes, face to face and test drives 1 hour. */
+  const OPENING_HOURS = {
+    0: { open: '10:00', close: '16:00' },
+    1: { open: '09:00', close: '18:00' },
+    2: { open: '09:00', close: '18:00' },
+    3: { open: '09:00', close: '18:00' },
+    4: { open: '09:00', close: '18:00' },
+    5: { open: '09:00', close: '18:00' },
+    6: { open: '09:00', close: '17:30' }
+  };
+
+  function toMinutes(hhmm) {
+    const [h, m] = String(hhmm).split(':').map(Number);
+    return h * 60 + m;
+  }
+
+  function fromMinutes(total) {
+    return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
+  }
+
+  function appointmentLength(input) {
+    return isCallBooking(input || {}) ? 30 : 60;
+  }
+
+  /* Bookable start times for a day: from opening until closing minus the
+     appointment length, every 30 minutes. With options.now, times that
+     have already passed today are left out. */
+  function availableSlots(dateObj, input, options) {
+    const hours = OPENING_HOURS[dateObj.getDay()];
+    if (!hours) return [];
+    const length = appointmentLength(input);
+    const slots = [];
+    const now = options && options.now ? new Date(options.now) : null;
+    for (let t = toMinutes(hours.open); t + length <= toMinutes(hours.close); t += 30) {
+      if (now) {
+        const when = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate(), Math.floor(t / 60), t % 60);
+        if (when <= now) continue;
+      }
+      slots.push(fromMinutes(t));
+    }
+    return slots;
+  }
+
+  /* ---------- requested date/time in the lead's Initial Notes ---------- */
+
+  const MONTH_ABBR = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+
+  function to24(hour, minute, meridiem) {
+    let h = Number(hour);
+    const m = Number(minute || 0);
+    const ap = String(meridiem || '').toLowerCase();
+    if (ap === 'pm' && h < 12) h += 12;
+    if (ap === 'am' && h === 12) h = 0;
+    return { h, m };
+  }
+
+  /* Rounds up to the next :00 or :30 (spec Section 13). */
+  function roundUpSlot(h, m) {
+    if (m === 0 || m === 30) return { text: `${pad(h)}:${pad(m)}`, rounded: false };
+    if (m < 30) return { text: `${pad(h)}:30`, rounded: true };
+    return { text: `${pad(h + 1)}:00`, rounded: true };
+  }
+
+  function parseTimeToken(token) {
+    const match = String(token || '').trim().toLowerCase().match(/^(\d{1,2})(?::?(\d{2}))?\s*(am|pm)?$/);
+    if (!match) return null;
+    const { h, m } = to24(match[1], match[2], match[3]);
+    if (h > 23 || m > 59) return null;
+    return { h, m };
+  }
+
+  /* Finds a customer-requested date and time in web-form text such as
+       Preferred Date/Time: 2026-09-25, 9:00 AM
+       Date/Time: Sat Sep 05 2026 3:00PM
+       First Appointment Date Desired: 25/09/2026 | Anytime between 1300 - 1600
+       Date: 28/09/2026   Booking date: 2026-10-11   2026-09-17 Morning
+     Returns null when nothing usable is found. */
+  function parseRequestedSlot(text) {
+    const source = String(text || '');
+    if (!source.trim()) return null;
+    let date = null;
+    let time = null;
+    let rounded = false;
+    let match;
+
+    if ((match = source.match(/Preferred Date\/Time:\s*(\d{4})-(\d{1,2})-(\d{1,2}),?\s*(\d{1,2}):(\d{2})\s*([AP]M)?/i))) {
+      date = { year: +match[1], month: +match[2], day: +match[3] };
+      time = to24(match[4], match[5], match[6]);
+    } else if ((match = source.match(/Date\/Time:\s*[A-Za-z]{3}\s+([A-Za-z]{3})\s+(\d{1,2})\s+(\d{4})\s+(\d{1,2}):(\d{2})\s*([AP]M)?/i))) {
+      date = { year: +match[3], month: MONTH_ABBR[match[1].toLowerCase()], day: +match[2] };
+      time = to24(match[4], match[5], match[6]);
+    } else {
+      if ((match = source.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/))) {
+        date = { year: +match[3], month: +match[2], day: +match[1] };
+      } else if ((match = source.match(/(\d{4})-(\d{1,2})-(\d{1,2})/))) {
+        date = { year: +match[1], month: +match[2], day: +match[3] };
+      }
+      const range = source.match(/between\s+(\d{1,2}(?::?\d{2})?\s*(?:am|pm)?)\s*(?:-|to|and)\s*(\d{1,2}(?::?\d{2})?\s*(?:am|pm)?)/i);
+      if (range) {
+        let start = range[1].trim();
+        const end = range[2].trim();
+        const endMeridiem = end.match(/(am|pm)$/i);
+        if (!/(am|pm)$/i.test(start) && endMeridiem) start += endMeridiem[1];
+        time = parseTimeToken(start);
+      }
+    }
+    if (time && time.h === 0 && time.m === 0) time = null; /* "00:00" is a blank form value */
+    if (!date && !time) return null;
+    if (date && (!date.month || date.month > 12 || date.day > 31)) date = null;
+    let timeText = '';
+    if (time) {
+      const slot = roundUpSlot(time.h, time.m);
+      timeText = slot.text;
+      rounded = slot.rounded;
+    }
+    const part = source.match(/\b(morning|afternoon|evening)\b/i);
+    return {
+      day: date ? pad(date.day) : '',
+      month: date ? pad(date.month) : '',
+      year: date ? date.year : null,
+      time: timeText,
+      rounded,
+      partOfDay: part ? part[1].toLowerCase() : ''
+    };
+  }
+
   /* ---------- vehicles ---------- */
 
   function normaliseVehicle(v) {
@@ -480,6 +609,14 @@
       if (!date.error && !time.error && date.dateObj) {
         const when = new Date(date.year, date.month - 1, date.day, time.hour, time.minute);
         if (when < now) errors.push('That time has already passed today');
+        else if (input.type) {
+          const slots = availableSlots(date.dateObj, input);
+          if (!slots.includes(time.text)) {
+            const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][date.dateObj.getDay()];
+            const kind = isCallBooking(input) ? 'calls' : 'appointments';
+            errors.push(`Outside opening hours: ${dayName} ${kind} can start ${slots[0]} to ${slots[slots.length - 1]}`);
+          }
+        }
       }
       const qualifier = input.timeQualifier === 'before' ? ' or before' : input.timeQualifier === 'after' ? ' or after' : '';
       if (qualifier && !isCallBooking(input)) warnings.push('"or before / or after" is normally only used on calls');
@@ -566,6 +703,11 @@
     resolveTime,
     defaultTime,
     nationalReservationDate,
+    availableSlots,
+    appointmentLength,
+    isCallBooking,
+    parseRequestedSlot,
+    openingHours: OPENING_HOURS,
     normaliseReg,
     normaliseMake,
     normaliseModel,
