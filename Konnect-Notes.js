@@ -611,7 +611,8 @@
       .kn-export { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
       .kn-browse-button { width: 100%; margin-bottom: 8px; }
       .kn-shortcut-hint { text-align: center; }
-      .kn-stop-button { padding: 3px 9px !important; font-size: 11.5px; color: #ffb4a8 !important; }
+      .kn-stop-button { padding: 3px 10px !important; font-size: 12px; font-weight: 700 !important; background: #ff3b30 !important; color: #fff !important; }
+      .kn-stop-button:hover { background: #d70015 !important; }
       .kn-bk-body { padding: 10px; background: #e9e9ee; }
       .kn-bk-section { margin-bottom: 8px; background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; border-left: 4px solid transparent; }
       .kn-bk-section.kn-bk-open { border-left-color: #f9772e; box-shadow: 0 2px 10px rgba(0,0,0,0.12); }
@@ -779,7 +780,7 @@
       });
       header.appendChild(settings);
     }
-    const stop = element('button', 'kn-icon-button kn-stop-button', 'Stop');
+    const stop = element('button', 'kn-icon-button kn-stop-button', '■ Stop');
     stop.type = 'button';
     stop.title = 'Stop Konnect Notes without refreshing the page. Click the bookmark again to load the latest version. Booking drafts are kept.';
     stop.addEventListener('click', stopKonnectNotes);
@@ -3110,6 +3111,14 @@
     window.removeEventListener('resize', positionPalette);
     [PALETTE_ID, STYLE_ID, LAUNCHER_SECTION_ID].forEach((id) => document.getElementById(id)?.remove());
     try { delete window.KonnectNotes; } catch (error) { window.KonnectNotes = undefined; }
+    /* Confirmation, styled inline because the stylesheet has just been removed. */
+    const toast = document.createElement('div');
+    toast.textContent = 'Konnect Notes stopped. Click the bookmark to load the latest version.';
+    toast.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483000;' +
+      'padding:10px 16px;border-radius:12px;background:#1c1c1e;color:#fff;font:600 13px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'box-shadow:0 10px 30px rgba(0,0,0,0.3);pointer-events:none';
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
     try { delete window.KonnectBookingEngine; } catch (error) { window.KonnectBookingEngine = undefined; }
   }
 
