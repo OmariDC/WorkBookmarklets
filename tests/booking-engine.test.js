@@ -378,5 +378,23 @@ test('Initial notes: website forms', () => {
   assert.ok(odd.rounded);
 });
 
+test('Make repeated in the model is removed', () => {
+  const mm = (make, model) => { const r = E.splitMakeModel(make, model); return `${r.make}|${r.model}`; };
+  assert.strictEqual(mm('aLFA rOMEO', 'ALFA ROMEO JUNIOR'), 'aLFA rOMEO|JUNIOR');
+  assert.strictEqual(mm('Alfa Romeo', 'Alfa Junior'), 'Alfa Romeo|Junior');
+  assert.strictEqual(mm('Peugeot', 'Peugeot 2008'), 'Peugeot|2008');
+  assert.strictEqual(mm('Citroen', 'Citroën C5 Aircross'), 'Citroen|C5 Aircross');
+  assert.strictEqual(mm('VW', 'Volkswagen Golf'), 'VW|Golf');
+  assert.strictEqual(mm('Mercedes-Benz', 'Mercedes A-Class'), 'Mercedes-Benz|A-Class');
+  assert.strictEqual(mm('', 'Alfa Romeo Junior'), 'Alfa Romeo|Junior');
+  assert.strictEqual(mm('Peugeot', 'Peugeot'), 'Peugeot|Peugeot');
+  assert.strictEqual(mm('Mini', 'Countryman'), 'Mini|Countryman');
+  assert.strictEqual(mm('Land Rover', 'Range Rover Evoque'), 'Land Rover|Range Rover Evoque');
+  assert.strictEqual(sentence({ ...D, type: 'testdrive', vehicles: [{ make: 'aLFA rOMEO', model: 'ALFA ROMEO JUNIOR' }] }),
+    'Customer is booked in on 10/11 at 10:00 to test drive a new Alfa Romeo Junior');
+  const r = build({ ...D, type: 'testdrive', vehicles: NEW_MM, px: { status: 'yes', items: [{ make: 'FORD', model: 'ford fiesta', reg: 'ab12cde', mileage: '40000' }] } });
+  assert.strictEqual(r.lines[4], 'PX: Ford Fiesta (AB12CDE) approx 40000 miles');
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -1903,6 +1903,13 @@
     return { text: parts.join(' '), error };
   }
 
+  function vehicleDisplayName(make, model) {
+    const engine = bookingEngine();
+    if (!engine) return [make, model].map(normaliseText).filter(Boolean).join(' ');
+    const split = engine.splitMakeModel(make, model);
+    return [engine.normaliseMake(split.make), engine.normaliseModel(split.model)].filter(Boolean).join(' ');
+  }
+
   function sectionSummary(draft, id) {
     const d = draft.data;
     const label = (list, value) => (list.find((item) => item.value === value) || {}).label || '';
@@ -1920,7 +1927,7 @@
     if (id === 'when') return dateReadout(draft).text;
     if (id === 'vehicle') {
       const names = d.vehicles
-        .map((v) => [v.make, v.model].map(normaliseText).filter(Boolean).join(' ') + (normaliseText(v.reg) ? ` (${normaliseText(v.reg).toUpperCase()})` : ''))
+        .map((v) => vehicleDisplayName(v.make, v.model) + (normaliseText(v.reg) ? ` (${normaliseText(v.reg).toUpperCase()})` : ''))
         .filter((name) => name.trim());
       if (names.length) return names.join(', ');
       return normaliseText(d.category) || 'Not set';
@@ -1928,11 +1935,12 @@
     if (id === 'px') {
       if (d.type === 'valuation') {
         const item = d.px.items[0];
-        return [item.make, item.model, item.reg].map(normaliseText).filter(Boolean).join(' ') || 'Not set';
+        const reg = normaliseText(item.reg).toUpperCase();
+        return [vehicleDisplayName(item.make, item.model), reg ? `(${reg})` : ''].filter(Boolean).join(' ') || 'Not set';
       }
       if (d.px.status === 'yes') {
         const item = d.px.items[0];
-        const name = [item.make, item.model].map(normaliseText).filter(Boolean).join(' ');
+        const name = vehicleDisplayName(item.make, item.model);
         const reg = normaliseText(item.reg).toUpperCase();
         const more = d.px.items.length > 1 ? ' + 1 more' : '';
         return `PX: ${[name, reg ? `(${reg})` : ''].filter(Boolean).join(' ') || 'details needed'}${more}`;

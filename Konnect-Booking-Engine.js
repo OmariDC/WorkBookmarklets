@@ -99,6 +99,63 @@
     return titleWords(value);
   }
 
+  function plainWords(value) {
+    return clean(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/-/g, ' ').split(' ').filter(Boolean);
+  }
+
+  /* Every spelling that means the same make, longest first:
+     "Alfa Romeo" -> ["alfa romeo", "alfa"], "VW" -> ["volkswagen", "vw"]. */
+  function makeSpellings(canonical, raw) {
+    const target = canonical.toLowerCase();
+    const spellings = new Set([plainWords(canonical).join(' '), plainWords(raw).join(' ')]);
+    Object.entries(MAKES).forEach(([key, value]) => {
+      const valueLower = value.toLowerCase();
+      if (valueLower === target || target.startsWith(`${valueLower}-`) || valueLower.startsWith(`${target}-`)) {
+        spellings.add(plainWords(key).join(' '));
+      }
+    });
+    return Array.from(spellings).filter(Boolean).sort((a, b) => b.split(' ').length - a.split(' ').length);
+  }
+
+  /* Removes a make repeated at the start of the model ("Alfa Romeo" +
+     "Alfa Romeo Junior" -> "Junior"), and pulls the make out of the model
+     when the make box is empty. Returns { make, model } as raw text. */
+  function splitMakeModel(makeRaw, modelRaw) {
+    let make = clean(makeRaw);
+    const modelText = clean(modelRaw);
+    const modelWords = modelText.split(' ').filter(Boolean);
+    const plainModel = plainWords(modelText);
+    const strip = (spelling) => {
+      const words = spelling.split(' ');
+      if (plainModel.length <= words.length) return null;
+      const hyphenParts = [];
+      /* Count original words consumed (a hyphenated word counts as several plain words). */
+      let consumed = 0;
+      let matched = 0;
+      while (matched < words.length && consumed < modelWords.length) {
+        const parts = plainWords(modelWords[consumed]);
+        hyphenParts.push(...parts);
+        matched += parts.length;
+        consumed += 1;
+      }
+      if (hyphenParts.slice(0, words.length).join(' ') !== spelling || hyphenParts.length !== words.length) return null;
+      return modelWords.slice(consumed).join(' ');
+    };
+    if (make) {
+      for (const spelling of makeSpellings(normaliseMake(make), make)) {
+        const rest = strip(spelling);
+        if (rest) return { make, model: rest };
+      }
+      return { make, model: modelText };
+    }
+    const keys = Object.keys(MAKES).sort((a, b) => b.split(' ').length - a.split(' ').length);
+    for (const key of keys) {
+      const rest = strip(plainWords(key).join(' '));
+      if (rest) return { make: MAKES[key], model: rest };
+    }
+    return { make, model: modelText };
+  }
+
   /* Fuel types, transmissions etc. Lower case, abbreviations kept. */
   function normaliseDescriptor(value) {
     return clean(value).split(' ').map((word) => ABBREVIATION_MAP[word.toLowerCase()] || word.toLowerCase()).join(' ');
@@ -342,9 +399,10 @@
     if (condition === 'pre-registered' || condition === 'preregistered') condition = reg ? 'used' : 'new';
     if (reg) condition = 'used';
     if (!condition) condition = 'new';
+    const split = splitMakeModel(v && v.make, v && v.model);
     return {
-      make: normaliseMake(v && v.make),
-      model: normaliseModel(v && v.model),
+      make: normaliseMake(split.make),
+      model: normaliseModel(split.model),
       descriptor: normaliseDescriptor(v && v.descriptor),
       reg,
       condition
@@ -436,7 +494,8 @@
   }
 
   function vehicleLineBody(item, unknownWhere) {
-    const name = [normaliseMake(item.make), normaliseModel(item.model)].filter(Boolean).join(' ');
+    const split = splitMakeModel(item.make, item.model);
+    const name = [normaliseMake(split.make), normaliseModel(split.model)].filter(Boolean).join(' ');
     const reg = normaliseReg(item.reg);
     let text = name;
     if (reg) text = text ? `${text} (${reg})` : `(${reg})`;
@@ -711,6 +770,7 @@
     normaliseReg,
     normaliseMake,
     normaliseModel,
-    normaliseMileage
+    normaliseMileage,
+    splitMakeModel
   };
 });
