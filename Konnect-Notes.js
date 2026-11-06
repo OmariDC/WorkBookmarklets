@@ -2466,8 +2466,6 @@
       wrap.appendChild(head);
       if (open) {
         const content = element('div', 'kn-bk-content');
-        const prompt = (section.promptFor && section.promptFor(d)) || section.prompt;
-        if (prompt) content.appendChild(element('div', 'kn-bk-prompt', prompt));
         section.render(draft, content);
         wrap.appendChild(content);
         const readout = content.querySelector('[data-role="date-readout"]');
