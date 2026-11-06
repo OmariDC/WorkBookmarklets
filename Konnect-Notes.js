@@ -697,7 +697,7 @@
     const anchorRect = state.launcherSection.getBoundingClientRect();
     const railRect = rail?.getBoundingClientRect() || anchorRect;
     const targetRect = state.target.getBoundingClientRect();
-    const isContext = !['main', 'booking', 'browse', 'attempt'].includes(state.view);
+    const isContext = state.view !== 'main';
     const isBooking = state.view === 'booking';
     let left;
     let top;
@@ -705,28 +705,30 @@
     let maxHeight;
 
     if (!isContext) {
-      /* Stays in the rail column: never crosses the left edge of Call Notes. */
       const safeRight = Math.max(128, Math.round(targetRect.left) - 18);
-      const preferredWidth = isBooking ? 310 : 240;
+      const preferredWidth = 240;
       left = Math.max(8, Math.min(Math.round(railRect.left) - 18, safeRight - preferredWidth));
-      width = Math.max(120, Math.min(isBooking ? 320 : 260, safeRight - left));
+      width = Math.max(120, Math.min(260, safeRight - left));
       top = Math.max(8, Math.round(anchorRect.bottom + 6));
-      if (isBooking) {
-        const height = Math.max(320, Math.min(1000, window.innerHeight - 20));
-        top = Math.max(8, Math.min(top, window.innerHeight - 10 - height));
-        maxHeight = Math.min(height, window.innerHeight - top - 10);
-      } else {
-        maxHeight = Math.max(160, Math.min(440, window.innerHeight - top - 10));
-      }
+      maxHeight = Math.max(160, Math.min(440, window.innerHeight - top - 10));
     } else {
+      /* Pop-out beside the rail, level with the turquoise car button (the
+         same spot as the VM attempt picker). The booking panel uses the
+         same spot but is allowed to be taller. */
       const viewportBottom = window.innerHeight - 10;
       const turquoiseCar = findTurquoiseCar(rail);
       const contextAnchor = turquoiseCar?.closest('section.cassini-section') || turquoiseCar;
       const contextRect = contextAnchor?.getBoundingClientRect() || anchorRect;
       left = Math.max(8, Math.round(anchorRect.right + 12));
-      width = Math.max(320, Math.min(540, window.innerWidth - left - 12));
-      top = Math.max(8, Math.min(Math.round(contextRect.top), viewportBottom - 240));
-      maxHeight = Math.max(240, Math.min(460, viewportBottom - top));
+      if (isBooking) {
+        width = Math.max(320, Math.min(400, window.innerWidth - left - 12));
+        top = Math.max(8, Math.min(Math.round(contextRect.top), viewportBottom - 520));
+        maxHeight = Math.max(320, Math.min(1000, viewportBottom - top));
+      } else {
+        width = Math.max(320, Math.min(540, window.innerWidth - left - 12));
+        top = Math.max(8, Math.min(Math.round(contextRect.top), viewportBottom - 240));
+        maxHeight = Math.max(240, Math.min(460, viewportBottom - top));
+      }
     }
 
     state.palette.style.left = `${left}px`;
