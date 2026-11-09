@@ -553,7 +553,8 @@
     none: '-No PX',
     private: '-No PX | Customer is selling their vehicle privately',
     elsewhere: '-No PX | Customer is selling their vehicle elsewhere',
-    taking: '-No PX | Customer is taking their vehicle elsewhere'
+    taking: '-No PX | Customer is taking their vehicle elsewhere',
+    leaseReturn: '-No PX | Customer is returning their current vehicle at the end of their lease'
   };
 
   /* ---------- payment ---------- */
