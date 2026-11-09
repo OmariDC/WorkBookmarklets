@@ -1503,9 +1503,20 @@
     return heading?.closest('.panel') || null;
   }
 
+  /* "-", "n/a", "none" and similar stand-ins in a lead box count as empty. */
+  function isPlaceholderValue(value) {
+    const engine = bookingEngine();
+    if (engine && engine.isPlaceholder) return engine.isPlaceholder(value);
+    return /^[-\s.]*$/.test(normaliseText(value));
+  }
+
+  function realText(value) {
+    return isPlaceholderValue(value) ? '' : normaliseText(value);
+  }
+
   function inputByPlaceholder(panel, placeholder) {
     const input = panel?.querySelector(`input[placeholder="${placeholder}"]`);
-    return input ? normaliseText(input.value) : '';
+    return input ? realText(input.value) : '';
   }
 
   function selectedText(select) {
@@ -1552,7 +1563,9 @@
       fields['v.make'] = inputByPlaceholder(voi, 'Vehicle Brand');
       fields['v.model'] = inputByPlaceholder(voi, 'Vehicle Model');
       /* Fuel type only matters for cars without a reg; a reg already pins the car down. */
-      fields['v.descriptor'] = fields['v.reg'] ? '' : inputByPlaceholder(voi, 'Fuel Type');
+      /* Fuel only describes a car the lead actually names, and only when there is no reg. */
+      const named = fields['v.make'] || fields['v.model'];
+      fields['v.descriptor'] = named && !fields['v.reg'] ? inputByPlaceholder(voi, 'Fuel Type') : '';
       const purchase = selectedText(voi.querySelector('select')).toLowerCase();
       if (purchase === 'motability') fields.type = 'motability';
       else if (purchase === 'new' || purchase === 'used' || purchase === 'pre-registered') fields['v.condition'] = purchase;
@@ -1574,7 +1587,7 @@
       fields,
       pxOn,
       pxFields,
-      pxHasValues: Object.values(pxFields).some(Boolean),
+      pxHasValues: Boolean(pxFields['px.make'] || pxFields['px.model'] || pxFields['px.reg'] || pxFields['px.mileage']),
       leadRequest: selectedText(labelledSelect(pane, 'lead request')),
       source: selectedText(labelledSelect(pane, 'source of enquiry'))
     };
@@ -1643,7 +1656,10 @@
     const seenSwitch = draft.leadSeen['px.on'];
     draft.leadSeen['px.on'] = switchState;
     if (data.type !== 'valuation' && switchState && switchState !== seenSwitch) {
-      if (switchState === 'on' && data.px.status === 'unmentioned') {
+      if (switchState === 'on' && !lead.pxHasValues) {
+        /* Switch on but only blanks or "-" in the boxes: nothing to use yet. */
+        draft.leadSeen['px.on'] = seenSwitch;
+      } else if (switchState === 'on' && data.px.status === 'unmentioned') {
         data.px.status = 'yes';
         draft.fromLead['px.status'] = true;
         changed = true;
@@ -1926,7 +1942,9 @@
     return { text: parts.join(' '), error };
   }
 
-  function vehicleDisplayName(make, model) {
+  function vehicleDisplayName(rawMake, rawModel) {
+    const make = realText(rawMake);
+    const model = realText(rawModel);
     const engine = bookingEngine();
     if (!engine) return [make, model].map(normaliseText).filter(Boolean).join(' ');
     const split = engine.splitMakeModel(make, model);
@@ -1950,21 +1968,21 @@
     if (id === 'when') return dateReadout(draft).text;
     if (id === 'vehicle') {
       const names = d.vehicles
-        .map((v) => vehicleDisplayName(v.make, v.model) + (normaliseText(v.reg) ? ` (${normaliseText(v.reg).toUpperCase()})` : ''))
+        .map((v) => vehicleDisplayName(v.make, v.model) + (realText(v.reg) ? ` (${realText(v.reg).toUpperCase()})` : ''))
         .filter((name) => name.trim());
       if (names.length) return names.join(', ');
-      return normaliseText(d.category) || 'Not set';
+      return realText(d.category) || 'Not set';
     }
     if (id === 'px') {
       if (d.type === 'valuation') {
         const item = d.px.items[0];
-        const reg = normaliseText(item.reg).toUpperCase();
+        const reg = realText(item.reg).toUpperCase();
         return [vehicleDisplayName(item.make, item.model), reg ? `(${reg})` : ''].filter(Boolean).join(' ') || 'Not set';
       }
       if (d.px.status === 'yes') {
         const item = d.px.items[0];
         const name = vehicleDisplayName(item.make, item.model);
-        const reg = normaliseText(item.reg).toUpperCase();
+        const reg = realText(item.reg).toUpperCase();
         const more = d.px.items.length > 1 ? ' + 1 more' : '';
         return `PX: ${[name, reg ? `(${reg})` : ''].filter(Boolean).join(' ') || 'details needed'}${more}`;
       }
@@ -1991,8 +2009,8 @@
     const d = draft.data;
     if (id === 'type') return !d.type;
     if (id === 'when') return d.type !== 'national' && (!d.day || !d.time);
-    if (id === 'vehicle') return !d.vehicles.some((v) => normaliseText(v.make) || normaliseText(v.model)) && !normaliseText(d.category);
-    if (id === 'px') return (d.type === 'valuation' || d.px.status === 'yes') && !d.px.items.some((item) => normaliseText(item.reg) || normaliseText(item.make));
+    if (id === 'vehicle') return !d.vehicles.some((v) => realText(v.make) || realText(v.model) || realText(v.reg)) && !realText(d.category);
+    if (id === 'px') return (d.type === 'valuation' || d.px.status === 'yes') && !d.px.items.some((item) => realText(item.reg) || realText(item.make) || realText(item.model));
     return false;
   }
 

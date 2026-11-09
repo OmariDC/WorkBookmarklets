@@ -60,6 +60,30 @@
     return String(value == null ? '' : value).replace(/\s+/g, ' ').trim();
   }
 
+  /* Lead boxes often hold a stand-in instead of nothing: "-", "n/a" etc. */
+  const PLACEHOLDER_RX = /^(?:[-\u2013\u2014_.\/\\*\s]*|n\s*\/?\s*a|none|null|nil|unknown|not known|tbc|tba|undefined|0)$/i;
+
+  function isPlaceholder(value) {
+    return PLACEHOLDER_RX.test(clean(value));
+  }
+
+  /* Copy of a vehicle / PX object with every placeholder value blanked. */
+  function withoutPlaceholders(obj) {
+    if (!obj || typeof obj !== 'object') return obj;
+    const out = {};
+    Object.entries(obj).forEach(([key, value]) => {
+      out[key] = typeof value === 'string' && isPlaceholder(value) ? '' : value;
+    });
+    return out;
+  }
+
+  /* A vehicle only counts when it has a make, model or reg. A fuel type
+     or a "-" on its own is not a vehicle. */
+  function hasVehicleDetails(v) {
+    const item = withoutPlaceholders(v || {});
+    return Boolean(clean(item.make) || clean(item.model) || clean(item.reg));
+  }
+
   function stripFullStop(line) {
     return String(line).replace(/(?<!\.)\.\s*$/, '').trimEnd();
   }
@@ -630,9 +654,10 @@
     const errors = [];
     const lines = [];
     const agent = clean(input.agent);
-    const vehicles = (input.vehicles || []).filter((v) => v && (clean(v.make) || clean(v.model) || clean(v.reg))).map(normaliseVehicle);
+    const vehicles = (input.vehicles || []).filter(hasVehicleDetails).map(withoutPlaceholders).map(normaliseVehicle);
     const px = input.px || { status: 'unmentioned' };
-    const pxItems = (px.items || []).filter((item) => item && (clean(item.make) || clean(item.model) || clean(item.reg) || clean(item.mileage)));
+    const pxItems = (px.items || []).map(withoutPlaceholders)
+      .filter((item) => item && (clean(item.make) || clean(item.model) || clean(item.reg) || clean(item.mileage)));
     const pxActive = px.status === 'yes' && pxItems.length > 0;
     const effectivePx = { ...px, items: pxItems, status: pxActive ? 'yes' : (px.status === 'yes' ? 'unmentioned' : px.status) };
 
@@ -690,7 +715,7 @@
     const resExempt = ['national', 'motability', 'valuation', 'onlinestore'].includes(input.type);
 
     if (isValuationOnly) {
-      const item = pxItems[0] || (input.valuationVehicle || null);
+      const item = pxItems[0] || (input.valuationVehicle ? withoutPlaceholders(input.valuationVehicle) : null);
       if (item) {
         const body = vehicleLineBody(item, input.subtype === 'call' ? 'call' : 'site');
         lines.push(`Vehicle: ${body.text}${body.parts.length ? ` | ${body.parts.join(' | ')}` : ''}`);
@@ -771,6 +796,8 @@
     normaliseMake,
     normaliseModel,
     normaliseMileage,
-    splitMakeModel
+    splitMakeModel,
+    isPlaceholder,
+    hasVehicleDetails
   };
 });

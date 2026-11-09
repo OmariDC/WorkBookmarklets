@@ -396,5 +396,22 @@ test('Make repeated in the model is removed', () => {
   assert.strictEqual(r.lines[4], 'PX: Ford Fiesta (AB12CDE) approx 40000 miles');
 });
 
+test('Placeholder values such as "-" are not a vehicle or PX', () => {
+  ['-', ' - ', '--', 'n/a', 'N/A', 'none', 'null', 'unknown', 'TBC', '\u2014'].forEach((v) => assert.ok(E.isPlaceholder(v), v));
+  ['Peugeot', '2008', 'AB12CDE', 'Petrol'].forEach((v) => assert.ok(!E.isPlaceholder(v), v));
+  assert.ok(!E.hasVehicleDetails({ make: '-', model: '-', reg: '-', descriptor: 'Petrol' }));
+  assert.ok(!E.hasVehicleDetails({ make: '', model: '', reg: '', descriptor: 'Diesel' }));
+  assert.ok(E.hasVehicleDetails({ make: '-', model: '208', reg: '-' }));
+  const r = build({ ...D, type: 'testdrive', vehicles: [{ make: '-', model: '-', reg: '-', descriptor: 'Petrol' }],
+    px: { status: 'yes', items: [{ make: '-', model: '-', reg: '-', mileage: '-' }] } });
+  assert.ok(r.errors.includes('Add the vehicle of interest'));
+  assert.ok(!r.text.includes('PX:'));
+  assert.ok(!r.text.includes('valuation'));
+  const r2 = build({ ...D, type: 'testdrive', vehicles: [{ make: 'Peugeot', model: '208', reg: '-' }],
+    px: { status: 'yes', items: [{ make: 'Ford', model: 'Focus', reg: 'n/a', mileage: '-' }] } });
+  assert.ok(r2.lines[3].includes('a new Peugeot 208 and have an accurate valuation'), r2.lines[3]);
+  assert.strictEqual(r2.lines[4], 'PX: Ford Focus');
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
