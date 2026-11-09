@@ -2365,12 +2365,12 @@ return best.id;
 
 async function searchAndOpenNationalCustomer(group, session) {
 const sample = group.rows[0];
-const names = [stripNameTitle(sample.name), sample.name].filter((n, i, all) => n && all.indexOf(n) === i);
+// Konnect's name search does not match names with a title in front.
 let search = { status: 'SEARCH_NO_RESULTS' };
-for (const name of names) {
+const name = stripNameTitle(sample.name);
+if (name) {
 search = await runNationalSearch('name', name, session);
 if (search.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
-if (search.status === 'OK') break;
 }
 // Nothing by name: the reg (or lead reference) is the other way in.
 if (search.status !== 'OK') {
