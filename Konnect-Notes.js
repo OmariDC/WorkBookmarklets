@@ -1406,7 +1406,8 @@
       onBehalfOf: '',
       notesText: '',
       emailNote: false,
-      emailAction: ''
+      emailAction: '',
+      td24: false
     };
   }
 
@@ -1787,10 +1788,16 @@
       payment: { ...d.payment, extras: d.payment.extra ? String(d.payment.extra).split(/\s*[|\n]\s*/) : [] },
       reserved: d.reserved,
       onBehalfOf: d.onBehalfOf,
-      notes: String(d.notesText || '').split('\n'),
+      notes: [...(d.td24 ? [td24Note(d)] : []), ...String(d.notesText || '').split('\n')],
       customerEmail: d.emailNote ? email : '',
       emailAction: d.emailAction
     };
+  }
+
+  /* With a contact header the customer has not confirmed yet, so the
+     24 hour request is only potential. */
+  function td24Note(d) {
+    return d.contact && d.contact !== 'none' ? 'Potential 24 hour test drive request' : '24 hour test drive request';
   }
 
   function buildCurrentBooking(draft) {
@@ -1835,10 +1842,13 @@
     replaceTextUndoably(target, start, end, replacement, nextValue);
     draft.inserted = text;
     saveDraftNow();
-    state.bookingStatus = note
-      ? { kind: 'warn', text: note }
-      : { kind: 'ok', text: at >= 0 ? 'Call Notes updated.' : 'Inserted into Call Notes.' };
-    renderPalette();
+    if (note) {
+      state.bookingStatus = { kind: 'warn', text: note };
+      renderPalette();
+      return;
+    }
+    state.bookingStatus = null;
+    closePalette();
   }
 
   /* ---------- small UI helpers ---------- */
@@ -1968,10 +1978,11 @@
     }
     if (id === 'notes') {
       const count = String(d.notesText || '').split('\n').filter((line) => line.trim()).length;
-      const extras = [count ? `${count} note${count > 1 ? 's' : ''}` : 'No notes'];
+      const extras = count ? [`${count} note${count > 1 ? 's' : ''}`] : [];
       if (d.reserved) extras.push('Reserved');
       if (normaliseText(d.onBehalfOf)) extras.push(`For ${normaliseText(d.onBehalfOf)}`);
-      return extras.join(' · ');
+      if (d.td24) extras.push(d.contact !== 'none' ? 'Potential 24 hr TD' : '24 hr TD');
+      return extras.join(' · ') || 'No notes';
     }
     return '';
   }
@@ -2282,6 +2293,10 @@
     });
     body.appendChild(quick);
     body.appendChild(bkChips([
+      { value: false, label: 'No 24 hr request' },
+      { value: true, label: td24Note(d) }
+    ], Boolean(d.td24), (value) => { d.td24 = value; changed(draft, true); }, 'kn-bk-sub'));
+    body.appendChild(bkChips([
       { value: false, label: 'Not reserved' },
       { value: true, label: 'Already reserved' }
     ], d.reserved, (value) => { d.reserved = value; changed(draft, true); }, 'kn-bk-sub'));
@@ -2324,7 +2339,7 @@
     if (id === 'contact') return d.contact !== 'none' || Boolean(normaliseText(d.fao));
     if (id === 'px') return d.px.status !== 'unmentioned';
     if (id === 'payment') return d.payment.kind !== 'unmentioned';
-    if (id === 'notes') return Boolean(normaliseText(d.notesText) || d.reserved || normaliseText(d.onBehalfOf) || d.emailNote);
+    if (id === 'notes') return Boolean(normaliseText(d.notesText) || d.reserved || normaliseText(d.onBehalfOf) || d.emailNote || d.td24);
     return !sectionMissing(draft, id);
   }
 
