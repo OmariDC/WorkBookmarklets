@@ -1623,8 +1623,30 @@ return extractVisibleLeadId(postClosureEntries[0]);
 }
 
 function isPostClosureLeadAlreadyEngaged(targetLeadId) {
+if (dealerScheduledCallAfterSend(readAllTimelineItems())) return true;
 if (!targetLeadId) return false;
 return hasAlreadyEngagedCallEntry(targetLeadId) || hasRejectedTimelineRow(targetLeadId) || hasOtherLeadRejected(targetLeadId);
+}
+
+// Pure. The dealership a lead was sent to via Enquiry Max has since
+// scheduled a call with the customer. Dealers often log this against a
+// different lead (the earlier one, or a walk-in lead they create), so the
+// lead ID is not compared, only the dealer named and the time.
+function dealerScheduledCallAfterSend(items) {
+const dealerOfCall = (item) => {
+const m = String(item.Description || '').match(/\bat\s+(.+?)\s*\.?\s*$/i);
+return m ? m[1].trim().toLowerCase() : '';
+};
+const sends = items.filter((i) => Number(i.TimelineItemType) === 2)
+.map((i) => ({ dealer: emDealerOf(i).toLowerCase(), at: eventTimeMs(i.EventTime) }))
+.filter((s) => s.dealer && s.at != null);
+if (sends.length === 0) return false;
+return items.some((i) => {
+if (Number(i.TimelineItemType) !== 3 || !/\bscheduled a call\b/i.test(String(i.BelowLineTitle || ''))) return false;
+const at = eventTimeMs(i.EventTime);
+const dealer = dealerOfCall(i);
+return at != null && !!dealer && sends.some((s) => s.dealer === dealer && at >= s.at);
+});
 }
 
 // ===================================================================
@@ -3865,6 +3887,19 @@ const sam = parsed.rows[1];
 check('columns read by name', [sam.name, sam.phone, sam.email, sam.campaign, sam.source, sam.created], ['Mr. Sam Buyer', '07700900456', 'sam@example.com', 'PX Valuation - Used', 'Post Closure Processing', '']);
 check('rows are queued without a created time', parsed.rows.map((r) => r.status), ['QUEUED', 'QUEUED', 'QUEUED']);
 check('a row with only a name is grouped by name', parsed.rows[2].groupKey, 'name:' + normalizeCustomerName('Jo Example'));
+const t = (type, lead, time, below, desc, agent) => ({ TimelineItemType: type, LeadID: lead, EventTime: `2026-11-${time}:00+00:00`, BelowLineTitle: below, Description: desc, IsContactCentreAgent: agent });
+const walkIn = [
+t(1, 1400100, '08T10:25', 'Manually Created Sales Lead from Customer First', '', false),
+t(2, 1400100, '08T14:15', 'Lead sent to Enquiry Max', 'Lead sent by Agent A and successfuly received at Preston', false),
+t(3, 1400101, '08T14:17', 'Dealer B Scheduled a call', 'New Enquiry at Preston', false),
+t(1, 1400101, '08T14:18', '', 'Walk-in lead created in Enquiry Max at Preston', false),
+t(1, 1400102, '09T15:15', 'Manually Created Sales Lead from Post Closure Processing', '', false)
+];
+check('dealer scheduled a call on another lead after the send', dealerScheduledCallAfterSend(walkIn), true);
+check('a call scheduled by another dealership does not count', dealerScheduledCallAfterSend(walkIn.map((i) => (i.TimelineItemType === 3 ? { ...i, Description: 'New Enquiry at Crawley' } : i))), false);
+check('a call scheduled before the send does not count', dealerScheduledCallAfterSend(walkIn.map((i) => (i.TimelineItemType === 3 ? { ...i, EventTime: '2026-11-08T09:00:00+00:00' } : i))), false);
+check('an ordinary call is not a scheduled call', dealerScheduledCallAfterSend(walkIn.map((i) => (i.TimelineItemType === 3 ? { ...i, BelowLineTitle: 'Agent A called the customer with an outcome of No Answer' } : i))), false);
+check('no send means nothing to compare', dealerScheduledCallAfterSend(walkIn.filter((i) => i.TimelineItemType !== 2)), false);
 check('scenario labels', ['standard', 'national', 'postClosureList', undefined].map((m) => checkScenarioOf(m).label), ['Normal check', 'National check', 'Post Closure check', 'Normal check']);
 check('the usual batch header still works', parseBatchInput('Name\tPhone\tEmail\tSource\tCampaign\tCreated\nA\t07700900123\t\tX\tY\tSat, 26 Sep 2026 18:05').headerOk, true);
 if (failures.length) console.error('KonnectLeadChecker post-closure-search self-test FAILED:\n' + failures.join('\n'));
