@@ -1883,12 +1883,36 @@ return response.text();
 }
 
 const NATIONAL_EXPORT_HASH = '#/fileexport/Sales/all';
+// A sibling export page, used to make Konnect load the All list afresh.
+const NATIONAL_EXPORT_SIBLING_HASH = '#/fileexport/Sales/calls';
+
+function allFilesListed() {
+return readExportFileRows().some((x) => /^All\b/i.test(String(x.file.Filename || '')));
+}
+
+async function waitForAllFilesList(timeout) {
+const deadline = Date.now() + timeout;
+while (Date.now() < deadline) {
+if (allFilesListed()) { await sleep(400); return true; }
+await sleep(250);
+}
+return false;
+}
 
 async function openExportFilePage() {
 if (window.location.hash !== NATIONAL_EXPORT_HASH) window.location.hash = NATIONAL_EXPORT_HASH;
-const firstRow = await waitForElement('tr[ng-repeat="file in exportFiles"]', 20000);
-if (firstRow) await sleep(400);
-return !!firstRow;
+return waitForAllFilesList(20000);
+}
+
+// The All list is only loaded when the page opens, so a rebuild that
+// finishes in the background still shows the old time and link. Leaving
+// for the Calls page and coming back makes Konnect load it again.
+async function reloadExportFilePage() {
+window.location.hash = NATIONAL_EXPORT_SIBLING_HASH;
+const deadline = Date.now() + 10000;
+while (allFilesListed() && Date.now() < deadline) await sleep(250);
+window.location.hash = NATIONAL_EXPORT_HASH;
+return waitForAllFilesList(20000);
 }
 
 function clickRecreate(row) {
@@ -1921,8 +1945,11 @@ const { year, month, before, clickedAt } = started;
 let reclicked = false;
 const deadline = Date.now() + 5 * 60 * 1000;
 setNationalProgress('Waiting for the Customer Hub file…');
+let firstPass = true;
 while (Date.now() < deadline) {
-if (!(await openExportFilePage())) return { error: 'Could not find the Customer Hub file list. Stopped.' };
+const listed = firstPass ? await openExportFilePage() : await reloadExportFilePage();
+firstPass = false;
+if (!listed) return { error: 'Could not find the Customer Hub file list. Stopped.' };
 const row = findExportFileRow(year, month);
 if (row && !row.file.recreating) {
 const modified = parseLastModified(row.file.LastModified);
@@ -1930,16 +1957,29 @@ const changed = row.file.LastModified !== before;
 const sinceClick = modified && modified.getTime() >= clickedAt - 60 * 1000;
 if (changed || sinceClick) {
 setNationalProgress('Reading Customer Hub file…');
-return { text: await fetchExportText(row.file) };
+return { text: await fetchExportText(row.file), previousVersion: before };
 }
 if (!reclicked && Date.now() - clickedAt > 30 * 1000) {
 reclicked = clickRecreate(row);
 if (reclicked) setNationalProgress('Recreating Customer Hub file…');
 }
 }
-await sleep(2000);
+await sleep(3000);
 }
 return { error: 'The Customer Hub file did not finish recreating within 5 minutes.' };
+}
+
+// True when the newest activity in the file is older than the time the
+// previous version was made, which means the download was the old file.
+function isHubFileOlderThan(rows, previousVersion) {
+const previous = parseLastModified(previousVersion);
+if (!previous) return false;
+let newest = 0;
+rows.forEach((r) => {
+const d = parseHubIsoDate(r['Intervention Created Date']);
+if (d && d.getTime() > newest) newest = d.getTime();
+});
+return newest > 0 && newest < previous.getTime() - 60 * 1000;
 }
 
 async function buildNationalCheckResult(started, fetched) {
@@ -1956,9 +1996,11 @@ if (rows.length === 0 || !('ActivityID' in rows[0]) || !('Dealer' in rows[0])) {
 return { ok: null, summary: 'The Customer Hub file did not have the expected columns. Stopped.' };
 }
 const leads = prescreenNationalLeads(rows, now);
+const stale = isHubFileOlderThan(rows, fetched.previousVersion);
 return {
 ok: null,
-summary: `${leads.length} national lead${leads.length === 1 ? '' : 's'} in the last 3 days, ready to check on Konnect Live`,
+summary: `${leads.length} national lead${leads.length === 1 ? '' : 's'} in the last 3 days, ready to check on Konnect Live`
++ (stale ? '. Warning: the file has no activity newer than its previous version, so it may not have refreshed. Run the check again before relying on it.' : ''),
 nationalBatchTsv: buildNationalBatchTsv(leads),
 nationalCount: leads.length
 };
@@ -2098,6 +2140,10 @@ const batch = buildNationalBatchTsv(leads).split('\n');
 check('batch header', batch[0], NATIONAL_BATCH_HEADER.join('\t'));
 check('batch row count', batch.length, 3);
 check('batch row starts with national and has every column', [batch[1].split('\t')[0], batch[1].split('\t').length], ['national', NATIONAL_BATCH_HEADER.length]);
+const freshRows = [{ 'Intervention Created Date': '2026-11-09 12:30:00' }];
+check('file with activity after the previous version is fresh', isHubFileOlderThan(freshRows, '09/11/2026 08:53'), false);
+check('file with nothing newer than the previous version is flagged', isHubFileOlderThan([{ 'Intervention Created Date': '2026-11-09 08:40:00' }], '09/11/2026 12:38'), true);
+check('no previous version time means no warning', isHubFileOlderThan(freshRows, ''), false);
 check('values with tabs are cleaned', buildNationalBatchTsv([{ ...alex, customer: 'Alex\tSample' }]).split('\n')[1].split('\t')[1], 'Alex Sample');
 const resultTsv = [NATIONAL_RESULT_HEADER.join('\t'),
 ['national', 'Alex Sample', '70000001', '1400001', 'OK', 'Closed with Max Attempts', '3', 'Max Attempts Reached', '', '', '', '', '', ''].join('\t'),
