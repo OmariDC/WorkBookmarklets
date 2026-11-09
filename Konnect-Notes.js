@@ -2280,6 +2280,13 @@
     body.appendChild(bkInput('Notes (one per line)', d.notesText, (value) => { d.notesText = value; changed(draft); },
       { multiline: true, placeholder: 'Open to other models\nShort or long wheelbase' }));
     const quick = element('div', 'kn-bk-chips');
+    /* A plain option like the others: off until tapped. Its wording turns
+       to "Potential ..." while a contact header is picked. */
+    const td24 = element('button', `kn-chip${d.td24 ? ' kn-active' : ''}`, `${d.td24 ? '✓' : '+'} ${td24Note(d)}`);
+    td24.type = 'button';
+    td24.title = d.td24 ? 'Tap to remove' : 'Tap to add';
+    td24.addEventListener('click', () => { d.td24 = !d.td24; changed(draft, true); });
+    quick.appendChild(td24);
     QUICK_NOTES.forEach((text) => {
       const chip = element('button', 'kn-chip', `+ ${text}`);
       chip.type = 'button';
@@ -2292,10 +2299,6 @@
       quick.appendChild(chip);
     });
     body.appendChild(quick);
-    body.appendChild(bkChips([
-      { value: false, label: 'No 24 hr request' },
-      { value: true, label: td24Note(d) }
-    ], Boolean(d.td24), (value) => { d.td24 = value; changed(draft, true); }, 'kn-bk-sub'));
     body.appendChild(bkChips([
       { value: false, label: 'Not reserved' },
       { value: true, label: 'Already reserved' }
