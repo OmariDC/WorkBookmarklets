@@ -3117,8 +3117,7 @@ document.head.appendChild(style);
 ensurePanelThemeStyles();
 }
 
-// Shared tokens (same names as the Lead Checker panel) with a dark-mode
-// override, a visible keyboard focus ring, reduced motion and a width cap
+// Shared tokens (same names as the Lead Checker panel), a visible keyboard focus ring, reduced motion and a width cap
 // so the panel never runs off a narrow window.
 function ensurePanelThemeStyles() {
 if (document.getElementById('_slaThemeStyles')) return;
@@ -3126,10 +3125,6 @@ const style = document.createElement('style');
 style.id = '_slaThemeStyles';
 style.textContent = `
 #${PANEL_ID} { --wb-bg: #f2f2f7; --wb-surface: #ffffff; --wb-text: #1c1c1e; --wb-muted: #5b6577; --wb-border: #cbd5e1; --wb-accent: #22365D; --wb-danger: #dc2626; color: var(--wb-text); }
-@media (prefers-color-scheme: dark) {
-#${PANEL_ID} { --wb-bg: #1c1c1e; --wb-surface: #2c2c2e; --wb-text: #f2f2f7; --wb-muted: #a1a1aa; --wb-border: #3a3a3c; --wb-accent: #8fa8d8; --wb-danger: #f87171; }
-#${PANEL_ID} input, #${PANEL_ID} select, #${PANEL_ID} textarea { background: var(--wb-surface); color: var(--wb-text); }
-}
 #${PANEL_ID} :focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; box-shadow: 0 0 0 4px #ffffff; }
 #${PANEL_BOX_ID} { max-width: calc(100vw - 32px); }
 #leadCheckerPopover { max-width: calc(100vw - 64px); box-sizing: border-box; }

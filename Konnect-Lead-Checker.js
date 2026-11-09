@@ -3831,8 +3831,9 @@ function postClosureColor(action) {
 return action === 'send back through' ? '#0891b2' : '#d97706';
 }
 
+// The panels always use the light palette to match the Konnect pages.
 function prefersDarkScheme() {
-try { return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch (error) { return false; }
+return false;
 }
 
 function hexToRgb(hex) {
@@ -4836,17 +4837,6 @@ root.innerHTML = `
 --wb-copy-bg: #eef2ff; --wb-copy-text: #1e293b; --wb-notice-bg: #fef2f2; --wb-notice-text: #991b1b; --wb-notice-border: #fca5a5;
 color-scheme: light;
 }
-@media (prefers-color-scheme: dark) {
-:host {
---wb-bg: #1c1c1e; --wb-surface: #2c2c2e; --wb-control: #3a3a3c; --wb-control-hover: #48484a;
---wb-text: #f2f2f7; --wb-text-2: #d1d5db; --wb-muted: #a1a1aa;
---wb-border: #3a3a3c; --wb-border-strong: #545458; --wb-border-soft: #333336;
---wb-danger: #ff6961; --wb-focus-inner: #f2f2f7;
---wb-review-bg: #2f2610; --wb-review-border: #a16207; --wb-review-text: #fcd34d; --wb-review-divider: #5c4510;
---wb-copy-bg: #312e81; --wb-copy-text: #e0e7ff; --wb-notice-bg: #3b1416; --wb-notice-text: #fecaca; --wb-notice-border: #7f1d1d;
-color-scheme: dark;
-}
-}
 /* Two-tone ring: visible on light surfaces, the dark header and the accent buttons. */
 :focus-visible { outline: 2px solid var(--wb-focus-inner); outline-offset: 0; box-shadow: 0 0 0 4px var(--wb-focus-outer); }
 .header :focus-visible { outline-color: var(--wb-focus-outer); box-shadow: none; }
@@ -5103,11 +5093,6 @@ lcNotices.otherTab = true;
 notifyNoticesChanged();
 }
 });
-
-try {
-const darkQuery = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
-if (darkQuery && darkQuery.addEventListener) darkQuery.addEventListener('change', () => render());
-} catch (error) { /* older browsers: colours update on the next render */ }
 
 function focusPanel() {
 const target = topSectionEl.open ? pasteBox : root.getElementById('btnStart');
