@@ -1640,9 +1640,17 @@ const SEND_BACK_REASONS = { dealer: 'Actioned by dealership', emailOnly: 'Email 
 // would not commit, sent with booking or information notes).
 function sendBackReasonFromTimeline(items, postClosureLeadId, engagedOnLead) {
 if (engagedOnLead) return SEND_BACK_REASONS.dealer;
+// The checked lead's own sends count as well as the matching earlier
+// lead's, as does any dealer action logged on either lead.
 const match = postClosureSourceLead(items, postClosureLeadId);
+const leadIds = [String(postClosureLeadId)].concat(match ? [String(match.source.LeadID)] : []);
+const ownSends = items.filter((i) => Number(i.TimelineItemType) === 2 && String(i.LeadID) === String(postClosureLeadId))
+.map((i) => ({ dealer: emDealerOf(i).toLowerCase(), at: eventTimeMs(i.EventTime) }))
+.filter((x) => x.dealer && x.at != null);
+const allSends = ownSends.concat(match ? match.sends : []);
+if (items.some((i) => isDealerAction(i) && leadIds.includes(String(i.LeadID)))) return SEND_BACK_REASONS.dealer;
+if (dealerActedAfterSend(items, allSends)) return SEND_BACK_REASONS.dealer;
 if (!match || match.sends.length === 0) return '';
-if (dealerActedAfterSend(items, match.sends)) return SEND_BACK_REASONS.dealer;
 const lastSend = Math.max(...match.sends.map((x) => x.at));
 const hubCalls = items.filter((i) => Number(i.TimelineItemType) === 3 && String(i.LeadID) === String(match.source.LeadID)
 && i.IsContactCentreAgent !== false && (eventTimeMs(i.EventTime) || Infinity) <= lastSend);
@@ -1681,25 +1689,42 @@ const sends = items.filter((i) => Number(i.TimelineItemType) === 2 && String(i.L
 return { source, sends };
 }
 
-// A dealer entry (scheduled call, offer sent, spoke to the customer) from
-// the dealership a send went to, after that send, on any lead.
-function dealerActedAfterSend(items, sends, actionPattern) {
-const pattern = actionPattern || /\bscheduled a call\b|\boffer\b|\bspoke to customer\b/i;
-const dealerOfCall = (item) => {
-const m = String(item.Description || '').match(/\bat\s+(.+?)\s*\.?\s*$/i);
+// Pure. The dealership a timeline entry names: "... at Preston" or
+// "Offer Sent by X for Preston". The last such phrase wins.
+function dealerNamedIn(item) {
+const m = String(item.Description || '').match(/^.*\b(?:at|for)\s+(.+?)\s*\.?\s*$/i);
 return m ? m[1].trim().toLowerCase() : '';
-};
+}
+
+// Pure. Entries only a dealership creates: an offer sent, an advisor
+// confirming, a final outcome it set (No Sale, Lead Rejected, Sale), or a
+// call its staff scheduled, completed or held with the customer.
+function isDealerAction(item) {
+const type = Number(item.TimelineItemType);
+const title = String(item.BelowLineTitle || '');
+if (type === 13 || type === 16) return true;
+if (type === 9) return item.IsContactCentreAgent !== true && /\bset by\b/i.test(String(item.Description || ''));
+if (type === 3) {
+if (/\bscheduled a call\b/i.test(title)) return true;
+return item.IsContactCentreAgent === false && /\bcompleted a call\b|\bspoke to customer\b|\boffer\b/i.test(title);
+}
+return false;
+}
+
+// A dealer action from the dealership a send went to, after that send,
+// on any lead (dealers often log against a walk-in lead they create).
+function dealerActedAfterSend(items, sends, actionTest) {
+const test = actionTest || isDealerAction;
 return items.some((i) => {
-if (Number(i.TimelineItemType) !== 3 || !pattern.test(String(i.BelowLineTitle || ''))) return false;
-if (i.IsContactCentreAgent === true && !/\bscheduled a call\b/i.test(String(i.BelowLineTitle || ''))) return false;
+if (!test(i)) return false;
 const at = eventTimeMs(i.EventTime);
-return at != null && sends.some((x) => x.dealer === dealerOfCall(i) && at >= x.at);
+return at != null && sends.some((x) => x.dealer === dealerNamedIn(i) && at >= x.at);
 });
 }
 
 function dealerScheduledCallAfterSend(items, postClosureLeadId) {
 const match = postClosureSourceLead(items, postClosureLeadId);
-return !!match && dealerActedAfterSend(items, match.sends, /\bscheduled a call\b/i);
+return !!match && dealerActedAfterSend(items, match.sends, (i) => Number(i.TimelineItemType) === 3 && /\bscheduled a call\b/i.test(String(i.BelowLineTitle || '')));
 }
 
 // ===================================================================
@@ -3971,6 +3996,23 @@ check('email only lead sent through', sendBackReasonFromTimeline(hubSent('Agent 
 check('sent through after speaking to the customer', sendBackReasonFromTimeline(hubSent('Agent A called the customer with an outcome of Spoke To Customer', 'New Enquiry at Preston'), 1400102, false), "In market won't commit");
 check('sent through with no hub contact or dealer action needs contact', sendBackReasonFromTimeline(hubSent('Agent A called the customer with an outcome of No Answer', 'No Activity Outcome at Preston'), 1400102, false), '');
 check('not sent through needs contact', sendBackReasonFromTimeline(hubSent('Agent A called the customer with an outcome of Spoke To Customer', '').filter((i) => i.TimelineItemType !== 2), 1400102, false), '');
+const offered = [
+t(1, 1400200, '02T13:31', '', "New Sales Lead, 'Test Drive - New Request' for Preston Lead routed", false),
+t(1, 1400201, '04T14:00', '', "New Sales Lead, 'Offer - New Request' for Preston Lead routed", false),
+t(2, 1400201, '04T14:05', 'Lead sent to Enquiry Max', 'Lead sent by Agent A and successfuly received at Preston', false),
+t(13, 1400202, '06T10:20', 'Offer Sent', 'Offer Sent by Dealer C for Preston', false)
+];
+check('an offer sent by the dealership after the checked lead was sent', sendBackReasonFromTimeline(offered, 1400201, false), 'Actioned by dealership');
+check('an offer from another dealership does not count', sendBackReasonFromTimeline(edit(offered, 13, { Description: 'Offer Sent by Dealer C for Crawley' }), 1400201, false), '');
+const noSale = offered.filter((i) => i.TimelineItemType !== 13).concat(t(9, 1400201, '07T14:24', 'No Sale', "Final Outcome 'No Sale' set by Dealer D at Preston", false));
+check('a final outcome the dealership set on the lead', sendBackReasonFromTimeline(noSale, 1400201, false), 'Actioned by dealership');
+check('dealer entries are recognised', [
+isDealerAction(t(16, 1, '01T09:00', 'Advisor Confirmed', 'Advisor Confirmed appointment by Dealer B', false)),
+isDealerAction(t(3, 1, '01T09:00', 'Dealer B Completed a call', 'Unknown reason for call at Preston', false)),
+isDealerAction(t(3, 1, '01T09:00', 'Agent A called the customer with an outcome of No Answer', 'New Enquiry at Preston', true)),
+isDealerAction(t(9, 1, '01T09:00', 'Sale (Offer Accepted)', "Final Outcome 'Sale (Offer Accepted)' set by Dealer B at Preston", false))
+], [true, true, false, true]);
+check('the dealership named in an entry', [dealerNamedIn({ Description: 'Offer Sent by Dealer C for Preston' }), dealerNamedIn({ Description: "Final Outcome 'No Sale' set by Dealer D at Preston" })], ['preston', 'preston']);
 check('reason shown with the action', postClosureLabel({ postClosureAction: 'send back through', postClosureReason: 'Email only' }), 'send back through: Email only');
 check('scenario labels', ['standard', 'national', 'postClosureList', undefined].map((m) => checkScenarioOf(m).label), ['Normal check', 'National check', 'Post Closure check', 'Normal check']);
 check('the usual batch header still works', parseBatchInput('Name\tPhone\tEmail\tSource\tCampaign\tCreated\nA\t07700900123\t\tX\tY\tSat, 26 Sep 2026 18:05').headerOk, true);
