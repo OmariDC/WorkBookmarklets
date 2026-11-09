@@ -2435,13 +2435,27 @@ return item ? Object.assign({}, item, { __row: row }) : null;
 
 // Pure: every lead-created (type 1) item whose time matches the batch's
 // LeadCreated to the minute.
+// The export and the timeline can disagree by a minute (seen on a lead
+// created from a phone call: 14:15 in the export, 14:14 on the timeline),
+// so the closest lead within a couple of minutes is taken.
+const NATIONAL_CREATED_TOLERANCE_MINUTES = 2;
+
 function findNationalLeadIds(items, parsedCreated) {
-const ids = new Set();
+const target = minutesSinceEpoch(parsedCreated);
+if (target === null) return [];
+let bestDiff = Infinity;
+let ids = [];
 items.forEach((item) => {
 if (Number(item.TimelineItemType) !== 1 || item.LeadID == null) return;
-if (datetimesMatchAtMinute(parseTimelineEventTime(item.EventTime), parsedCreated)) ids.add(String(item.LeadID));
+const minutes = minutesSinceEpoch(parseTimelineEventTime(item.EventTime));
+if (minutes === null) return;
+const diff = Math.abs(minutes - target);
+if (diff > NATIONAL_CREATED_TOLERANCE_MINUTES) return;
+const id = String(item.LeadID);
+if (diff < bestDiff) { bestDiff = diff; ids = [id]; }
+else if (diff === bestDiff && !ids.includes(id)) ids.push(id);
 });
-return Array.from(ids);
+return ids;
 }
 
 function emDealerOf(item) {
@@ -4689,6 +4703,10 @@ const items = [
 ];
 check('lead mapped by created minute', findNationalLeadIds(items, { year: 2026, month: 10, day: 4, hour: 15, minute: 32 }), ['1400001']);
 check('no lead at that minute', findNationalLeadIds(items, { year: 2026, month: 10, day: 4, hour: 16, minute: 0 }), []);
+const phoneLead = [{ TimelineItemType: 1, LeadID: 1400009, EventTime: '2026-11-08T14:14:50+00:00' }];
+check('a lead a minute away is still found', findNationalLeadIds(phoneLead, { year: 2026, month: 10, day: 8, hour: 14, minute: 15 }), ['1400009']);
+check('a lead three minutes away is not', findNationalLeadIds(phoneLead, { year: 2026, month: 10, day: 8, hour: 14, minute: 17 }), []);
+check('the closest of two nearby leads wins', findNationalLeadIds(items, { year: 2026, month: 10, day: 4, hour: 15, minute: 33 }), ['1400002']);
 
 
 const exportSession = {
