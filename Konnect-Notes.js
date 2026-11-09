@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.7.1'
+    version: '1.7.2'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -1322,7 +1322,8 @@
     { value: 'none', label: 'No PX' },
     { value: 'private', label: 'Selling privately' },
     { value: 'elsewhere', label: 'Selling elsewhere' },
-    { value: 'taking', label: 'Taking elsewhere' }
+    { value: 'taking', label: 'Taking elsewhere' },
+    { value: 'leaseReturn', label: 'Lease ending' }
   ];
   const PAYMENT_KINDS = [
     { value: 'unmentioned', label: 'Not mentioned' },

@@ -224,6 +224,10 @@ test('No PX variants (private / elsewhere / taking)', () => {
   assert.strictEqual(first('private'), '-No PX | Customer is selling their vehicle privately');
   assert.strictEqual(first('elsewhere'), '-No PX | Customer is selling their vehicle elsewhere');
   assert.strictEqual(first('taking'), '-No PX | Customer is taking their vehicle elsewhere');
+  assert.strictEqual(first('leaseReturn'), '-No PX | Customer is returning their current vehicle at the end of their lease');
+  const lease = build({ ...D, type: 'testdrive', vehicles: USED_MM, px: { status: 'leaseReturn' } });
+  assert.ok(!lease.lines[3].includes('valuation'));
+  assert.strictEqual(lease.lines[5], '-Recommended to res');
 });
 
 test('Already reserved replaces Recommended to res', () => {
