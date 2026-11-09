@@ -2260,18 +2260,26 @@ function stripNameTitle(name) {
 return String(name || '').replace(/^\s*(mr|mrs|miss|ms|mx|dr)\b\.?\s+/i, '').replace(/\s+/g, ' ').trim();
 }
 
-// Pure. The distinct customer IDs a National search could mean: those
-// whose name matches, or every linked row when none match by name.
-function nationalCandidateIds(rows, expectedName) {
+// Pure. The distinct customer IDs a search could mean, best first. An
+// exact name (titles ignored) wins outright: "Ben Barr" must not pull in
+// "Ben Barrett". A looser "contains" match is only used when nothing is
+// exact, and every linked row only when no name matches at all. Rows
+// carrying one of the batch regs go first.
+function nationalCandidateIds(rows, expectedName, regs) {
 const withLinks = rows.filter((r) => r.link && r.customerId);
 const name = normalizeCustomerName(expectedName);
-const named = withLinks.filter((r) => {
+const exact = withLinks.filter((r) => name && normalizeCustomerName(r.customerName) === name);
+const loose = withLinks.filter((r) => {
 const candidate = normalizeCustomerName(r.customerName);
-return candidate && name && (candidate === name || candidate.includes(name) || name.includes(candidate));
+return candidate && name && (candidate.includes(name) || name.includes(candidate));
 });
-const pool = named.length > 0 ? named : withLinks;
+const pool = exact.length > 0 ? exact : (loose.length > 0 ? loose : withLinks);
+const wanted = (regs || []).map(normalizeReg).filter(Boolean);
+const ordered = wanted.length
+? pool.filter((r) => wanted.includes(normalizeReg(r.registrationNumber))).concat(pool.filter((r) => !wanted.includes(normalizeReg(r.registrationNumber))))
+: pool;
 const ids = [];
-pool.forEach((r) => { if (!ids.includes(r.customerId)) ids.push(r.customerId); });
+ordered.forEach((r) => { if (!ids.includes(r.customerId)) ids.push(r.customerId); });
 return ids.slice(0, 5);
 }
 
@@ -2382,7 +2390,8 @@ if (byReg.status === 'OK') { search = byReg; break; }
 }
 if (search.status !== 'OK') return { status: 'FAILED', exception: search.status };
 
-const ids = nationalCandidateIds(search.rows, sample.name);
+const regs = group.rows.map((r) => r.reg).filter(Boolean);
+const ids = nationalCandidateIds(search.rows, sample.name, regs);
 if (ids.length === 0) return { status: 'FAILED', exception: 'CUSTOMER_NOT_LINKED' };
 if (ids.length === 1) {
 const row = search.rows.find((r) => r.customerId === ids[0]);
@@ -2393,8 +2402,18 @@ return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
 }
 
 // More than one record: keep the one whose timeline holds these leads.
-const chosen = await openRecordHoldingLeads(ids, group, session);
+let chosen = await openRecordHoldingLeads(ids, group, session);
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
+// None of the name matches holds them: the reg points straight at the record.
+for (const reg of chosen ? [] : regs) {
+const byReg = await runNationalSearch('reg', reg, session);
+if (byReg.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
+if (byReg.status !== 'OK') continue;
+const regIds = nationalCandidateIds(byReg.rows, sample.name, [reg]).filter((id) => !ids.includes(id));
+if (regIds.length === 0) continue;
+chosen = await openRecordHoldingLeads(regIds, group, session);
+if (chosen) break;
+}
 if (!chosen) return { status: 'FAILED', exception: 'LEAD_NOT_ON_MATCHING_CUSTOMERS' };
 return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
 }
@@ -2418,6 +2437,15 @@ const rows = [
 check('duplicate rows for one record count once; other records with the name are candidates', nationalCandidateIds(rows, 'Mr. Alex Sample'), ['501', '502']);
 check('no name match falls back to every linked record', nationalCandidateIds(rows, 'Unknown Person'), ['501', '502', '503']);
 check('rows without a link are ignored', nationalCandidateIds([{ link: null, customerId: '9', customerName: 'Alex Sample' }], 'Alex Sample'), []);
+const similar = [
+{ link, customerId: '601', customerName: 'Sam Buyerson' },
+{ link, customerId: '602', customerName: 'Sam Buyers' },
+{ link, customerId: '603', customerName: 'Mr Sam Buyer', registrationNumber: 'AB12CDE' },
+{ link, customerId: '604', customerName: 'Sam Buyer', registrationNumber: 'CD34EFG' }
+];
+check('an exact name shuts out longer names that contain it', nationalCandidateIds(similar, 'Sam Buyer'), ['603', '604']);
+check('a row with a batch reg goes first', nationalCandidateIds(similar, 'Sam Buyer', ['CD34 EFG']), ['604', '603']);
+check('with no exact name, names containing it are used', nationalCandidateIds(similar.slice(0, 2), 'Sam Buyer'), ['601', '602']);
 if (failures.length > 0) {
 console.error('KonnectLeadChecker national-search self-test FAILED:\n' + failures.join('\n'));
 } else {
