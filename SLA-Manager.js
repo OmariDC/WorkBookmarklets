@@ -2457,7 +2457,8 @@ return `<div class="avatar-circle" style="cursor: pointer; width: ${size}px; hei
 function pickLeadCheckerBadge(leadChecker) {
 if (!leadChecker) return null;
 if (leadChecker.postClosureAction) {
-return { label: leadChecker.postClosureAction, color: postClosureActionColor(leadChecker.postClosureAction), source: 'leadChecker' };
+const label = leadChecker.postClosureReason ? `${leadChecker.postClosureAction}: ${leadChecker.postClosureReason}` : leadChecker.postClosureAction;
+return { label, color: postClosureActionColor(leadChecker.postClosureAction), source: 'leadChecker' };
 }
 if (leadChecker.tierName) {
 return { label: leadChecker.tierName, color: leadCheckerImportCategoryColor(leadChecker.tier), source: 'leadChecker' };
@@ -4076,7 +4077,7 @@ const LEAD_CHECKER_IMPORT_KEY = '_slaLeadCheckerImportState';
 // Matches Konnect-Lead-Checker.js's own buildRawNotesTsvForExtract
 // header exactly - kept in lockstep since the two files can't share a
 // module.
-const LEAD_CHECKER_IMPORT_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank'];
+const LEAD_CHECKER_IMPORT_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank', 'PostClosureReason'];
 
 function loadLeadCheckerImportState() {
 try {
@@ -4110,7 +4111,10 @@ const lines = String(rawText || '').split(/\r\n|\r|\n/).filter((line) => line.tr
 if (lines.length === 0) return { rows: [], headerOk: false, error: 'No input.' };
 
 const header = lines[0].split('\t').map((h) => h.trim());
-const headerOk = header.length === LEAD_CHECKER_IMPORT_HEADER.length && header.every((h, i) => h === LEAD_CHECKER_IMPORT_HEADER[i]);
+// An export from a Lead Checker opened before the reason column existed
+// is one column shorter and still accepted.
+const headerOk = header.length >= LEAD_CHECKER_IMPORT_HEADER.length - 1 && header.length <= LEAD_CHECKER_IMPORT_HEADER.length
+&& header.every((h, i) => h === LEAD_CHECKER_IMPORT_HEADER[i]);
 if (!headerOk) {
 return { rows: [], headerOk: false, error: `Header does not match expected columns: ${LEAD_CHECKER_IMPORT_HEADER.join('\t')}` };
 }
@@ -4141,6 +4145,7 @@ confidence: (cells[12] || '').trim(),
 reason: (cells[13] || '').trim(),
 dedupeKey: (cells[14] || '').trim(),
 postClosureAction: (cells[15] || '').trim(),
+postClosureReason: (cells[17] || '').trim(),
 priorityRank: Number.isFinite(parsedRank) ? parsedRank : 700
 };
 });
@@ -4178,6 +4183,15 @@ const ordered = classifyLeadCheckerImportRows(parsed.rows);
 if (!(ordered[0] && ordered[0].name === 'Ben Brown')) failures.push(`Expected Ben Brown (rank 103) to sort first, got "${ordered[0] && ordered[0].name}"`);
 if (!(ordered[1] && ordered[1].name === 'Cara Chen')) failures.push(`Expected Cara Chen (rank 409) to sort second, got "${ordered[1] && ordered[1].name}"`);
 if (!(ordered[2] && ordered[2].name === 'Amy Adams')) failures.push(`Expected Amy Adams (rank 509) to sort third, got "${ordered[2] && ordered[2].name}"`);
+
+const withReason = parseLeadCheckerImportTsv([
+LEAD_CHECKER_IMPORT_HEADER.join('\t'),
+['Eve Evans', '07700900005', 'eve@example.com', 'Post Closure Processing', 'Citroen - Enquiry - New', '', '-', '5', 'NURTURE', '', '', '', 'medium', '', '', 'send back through', '-2', 'Email only'].join('\t')
+].join('\n'));
+if (!(withReason.rows[0] && withReason.rows[0].postClosureReason === 'Email only')) failures.push('Expected the PostClosureReason column to be read');
+if (pickLeadCheckerBadge(withReason.rows[0]).label !== 'send back through: Email only') failures.push('Expected the badge to show the send back reason');
+const olderExport = parseLeadCheckerImportTsv(sampleTsv.split('\n').map((l) => l.split('\t').slice(0, 17).join('\t')).join('\n'));
+if (!olderExport.headerOk) failures.push('Expected an export without the reason column to still be accepted');
 
 const badHeader = parseLeadCheckerImportTsv('Name\tPhone\tEmail');
 if (badHeader.headerOk) failures.push('Expected a mismatched/old-shape header to be rejected, not accepted');

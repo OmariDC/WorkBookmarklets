@@ -1623,9 +1623,33 @@ return extractVisibleLeadId(postClosureEntries[0]);
 }
 
 function isPostClosureLeadAlreadyEngaged(targetLeadId) {
-if (!targetLeadId) return false;
-if (dealerScheduledCallAfterSend(readAllTimelineItems(), targetLeadId)) return true;
-return hasAlreadyEngagedCallEntry(targetLeadId) || hasRejectedTimelineRow(targetLeadId) || hasOtherLeadRejected(targetLeadId);
+return !!postClosureSendBackReason(targetLeadId);
+}
+
+// Why a Post Closure lead goes back through, or '' when it needs contact.
+function postClosureSendBackReason(targetLeadId) {
+if (!targetLeadId) return '';
+const engagedOnLead = hasAlreadyEngagedCallEntry(targetLeadId) || hasRejectedTimelineRow(targetLeadId) || hasOtherLeadRejected(targetLeadId);
+return sendBackReasonFromTimeline(readAllTimelineItems(), targetLeadId, engagedOnLead);
+}
+
+const SEND_BACK_REASONS = { dealer: 'Actioned by dealership', emailOnly: 'Email only', inMarket: "In market won't commit" };
+
+// Pure. Dealer action wins; otherwise how the hub sent the matching lead
+// through: email only, or after speaking to the customer (in market but
+// would not commit, sent with booking or information notes).
+function sendBackReasonFromTimeline(items, postClosureLeadId, engagedOnLead) {
+if (engagedOnLead) return SEND_BACK_REASONS.dealer;
+const match = postClosureSourceLead(items, postClosureLeadId);
+if (!match || match.sends.length === 0) return '';
+if (dealerActedAfterSend(items, match.sends)) return SEND_BACK_REASONS.dealer;
+const lastSend = Math.max(...match.sends.map((x) => x.at));
+const hubCalls = items.filter((i) => Number(i.TimelineItemType) === 3 && String(i.LeadID) === String(match.source.LeadID)
+&& i.IsContactCentreAgent !== false && (eventTimeMs(i.EventTime) || Infinity) <= lastSend);
+const text = (i) => `${i.BelowLineTitle || ''} ${i.Description || ''}`;
+if (hubCalls.some((i) => /email only|no phone number/i.test(text(i)))) return SEND_BACK_REASONS.emailOnly;
+if (hubCalls.some((i) => /outcome of spoke to customer|won'?t commit|in market/i.test(text(i)))) return SEND_BACK_REASONS.inMarket;
+return '';
 }
 
 // Pure. The lead the Post Closure lead was made from is the latest earlier
@@ -1640,28 +1664,42 @@ const m = String(item.Description || '').match(/'([^']+)'\s+for\s+(.+?)\s+Lead\b
 return m ? `${m[1].trim().toLowerCase()}|${m[2].trim().toLowerCase()}` : '';
 }
 
-function dealerScheduledCallAfterSend(items, postClosureLeadId) {
+// Pure. The matching earlier lead and its Enquiry Max sends, or null.
+function postClosureSourceLead(items, postClosureLeadId) {
 const leads = items.filter((i) => Number(i.TimelineItemType) === 1);
 const postClosure = leads.find((i) => String(i.LeadID) === String(postClosureLeadId));
 const key = postClosure ? leadRequestKey(postClosure) : '';
 const createdAt = postClosure ? eventTimeMs(postClosure.EventTime) : null;
-if (!key || createdAt == null) return false;
+if (!key || createdAt == null) return null;
 const source = leads
 .filter((i) => String(i.LeadID) !== String(postClosureLeadId) && leadRequestKey(i) === key && (eventTimeMs(i.EventTime) || Infinity) < createdAt)
 .sort((x, y) => eventTimeMs(y.EventTime) - eventTimeMs(x.EventTime))[0];
-if (!source) return false;
+if (!source) return null;
 const sends = items.filter((i) => Number(i.TimelineItemType) === 2 && String(i.LeadID) === String(source.LeadID))
 .map((i) => ({ dealer: emDealerOf(i).toLowerCase(), at: eventTimeMs(i.EventTime) }))
 .filter((x) => x.dealer && x.at != null);
+return { source, sends };
+}
+
+// A dealer entry (scheduled call, offer sent, spoke to the customer) from
+// the dealership a send went to, after that send, on any lead.
+function dealerActedAfterSend(items, sends, actionPattern) {
+const pattern = actionPattern || /\bscheduled a call\b|\boffer\b|\bspoke to customer\b/i;
 const dealerOfCall = (item) => {
 const m = String(item.Description || '').match(/\bat\s+(.+?)\s*\.?\s*$/i);
 return m ? m[1].trim().toLowerCase() : '';
 };
 return items.some((i) => {
-if (Number(i.TimelineItemType) !== 3 || !/\bscheduled a call\b/i.test(String(i.BelowLineTitle || ''))) return false;
+if (Number(i.TimelineItemType) !== 3 || !pattern.test(String(i.BelowLineTitle || ''))) return false;
+if (i.IsContactCentreAgent === true && !/\bscheduled a call\b/i.test(String(i.BelowLineTitle || ''))) return false;
 const at = eventTimeMs(i.EventTime);
 return at != null && sends.some((x) => x.dealer === dealerOfCall(i) && at >= x.at);
 });
+}
+
+function dealerScheduledCallAfterSend(items, postClosureLeadId) {
+const match = postClosureSourceLead(items, postClosureLeadId);
+return !!match && dealerActedAfterSend(items, match.sends, /\bscheduled a call\b/i);
 }
 
 // ===================================================================
@@ -3493,7 +3531,7 @@ customerMatchMethod: null, timelineTimestamp: null, visibleLeadId: null,
 modalDate: null, sourceValidation: null, campaignValidation: null,
 initialNotes: null,
 tier: null, tierName: null, subCategory: null, subRank: null,
-flags: [], dedupeKey: null, postClosureAction: null,
+flags: [], dedupeKey: null, postClosureAction: null, postClosureReason: '',
 reason: null, confidence: null,
 warnings: [], status: 'PROCESSING', exception: null,
 processingTimestamp: null
@@ -3689,10 +3727,12 @@ if (callFallback.status === 'OK') {
 workingCandidates = [callFallback.candidate];
 } else if (callFallback.status === 'AMBIGUOUS_CALL_MATCH' && String(row.source || '').toLowerCase() === 'post closure processing') {
 const fallbackLeadId = findUnambiguousPostClosureLeadId();
-const engaged = isPostClosureLeadAlreadyEngaged(fallbackLeadId);
+const sendBackReason = postClosureSendBackReason(fallbackLeadId);
+const engaged = !!sendBackReason;
 return finalizeResult(result, {
 status: 'CLASSIFIED', source: row.source,
 postClosureAction: engaged ? 'send back through' : 'check: needs contact?',
+postClosureReason: sendBackReason,
 reason: engaged
 ? 'Post Closure lead - which specific lead cycle this row belongs to was ambiguous by time, but it was identified directly by its own "Post Closure Processing" heading, and an engagement signal (Scheduled a call / Spoke To Customer / Lead Rejected) was found.'
 : 'Post Closure lead, but which specific lead cycle this row belongs to was ambiguous (multiple leads had calls close together) - no engagement signal found, so defaulted to the safe "check" outcome rather than guessing.',
@@ -3716,10 +3756,12 @@ return { raw, parsed: raw ? parseTimelineTimestamp(raw, referenceNow) : null };
 }));
 if (String(row.source || '').toLowerCase() === 'post closure processing') {
 const fallbackLeadId = findUnambiguousPostClosureLeadId();
-const engaged = isPostClosureLeadAlreadyEngaged(fallbackLeadId);
+const sendBackReason = postClosureSendBackReason(fallbackLeadId);
+const engaged = !!sendBackReason;
 return finalizeResult(result, {
 status: 'CLASSIFIED', source: row.source,
 postClosureAction: engaged ? 'send back through' : 'check: needs contact?',
+postClosureReason: sendBackReason,
 reason: engaged
 ? 'Post Closure lead - its Created/Last Actioned value didn\'t match any lead or call on the page, but it was identified directly by its own "Post Closure Processing" heading, and an engagement signal (Scheduled a call / Spoke To Customer / Lead Rejected) was found.'
 : 'Post Closure lead, but its Created/Last Actioned value didn\'t match any lead or call on the page - no engagement signal found, so defaulted to the safe "check" outcome rather than guessing.',
@@ -3836,7 +3878,8 @@ const resolvedSource = row.source || panelFields.source;
 // the customer's whole currently-loaded timeline, no reason to pay for
 // that on every other row.
 const isPostClosureLead = String(resolvedSource || '').toLowerCase() === 'post closure processing';
-const alreadyEngagedCallEntry = isPostClosureLead && isPostClosureLeadAlreadyEngaged(candidate.leadId);
+const sendBackReason = isPostClosureLead ? postClosureSendBackReason(candidate.leadId) : '';
+const alreadyEngagedCallEntry = !!sendBackReason;
 const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry });
 if (classification.confidence === 'low') {
 // tier/subCategory/flags/reason/confidence are stored even though
@@ -3849,6 +3892,7 @@ status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', initialNotes,
 source: classification.source,
 tier: classification.tier, tierName: classification.tierName, subCategory: classification.subCategory, subRank: classification.subRank,
 flags: classification.flags, dedupeKey: classification.dedupeKey, postClosureAction: classification.postClosureAction,
+postClosureReason: classification.postClosureAction === 'send back through' ? sendBackReason : '',
 reason: classification.reason, confidence: classification.confidence, ...auditPatch
 });
 }
@@ -3858,6 +3902,7 @@ status: 'CLASSIFIED',
 source: classification.source,
 tier: classification.tier, tierName: classification.tierName, subCategory: classification.subCategory, subRank: classification.subRank,
 flags: classification.flags, dedupeKey: classification.dedupeKey, postClosureAction: classification.postClosureAction,
+postClosureReason: classification.postClosureAction === 'send back through' ? sendBackReason : '',
 reason: classification.reason,
 confidence: classification.confidence,
 initialNotes,
@@ -3918,6 +3963,15 @@ check('an ordinary call is not a scheduled call', dealerScheduledCallAfterSend(e
 check('a send from a lead that does not match the Post Closure lead does not count', dealerScheduledCallAfterSend(walkIn.map((i) => (i.LeadID === 1400100 && i.TimelineItemType === 1 ? { ...i, Description: "New Sales Lead, 'Offer Request' for Preston Lead routed" } : i)), 1400102), false);
 check('a matching lead sent to another dealership does not count', dealerScheduledCallAfterSend(edit(walkIn, 2, { Description: 'Lead sent by Agent A and successfuly received at Crawley' }), 1400102), false);
 check('the Post Closure lead must be known', dealerScheduledCallAfterSend(walkIn, 1499999), false);
+check('a dealer action is the reason', sendBackReasonFromTimeline(walkIn, 1400102, false), 'Actioned by dealership');
+check('engagement on the lead itself is a dealer action', sendBackReasonFromTimeline([], 1400102, true), 'Actioned by dealership');
+check('an offer from the dealership counts', sendBackReasonFromTimeline(edit(walkIn, 3, { BelowLineTitle: 'Dealer B sent an offer' }), 1400102, false), 'Actioned by dealership');
+const hubSent = (below, desc) => walkIn.filter((i) => i.TimelineItemType !== 3).concat(t(3, 1400100, '08T14:10', below, desc, true));
+check('email only lead sent through', sendBackReasonFromTimeline(hubSent('Agent A called the customer with an outcome of No Answer', 'Sales -> Customer Hub Team -> Ongoing -> Email Only Lead at Preston'), 1400102, false), 'Email only');
+check('sent through after speaking to the customer', sendBackReasonFromTimeline(hubSent('Agent A called the customer with an outcome of Spoke To Customer', 'New Enquiry at Preston'), 1400102, false), "In market won't commit");
+check('sent through with no hub contact or dealer action needs contact', sendBackReasonFromTimeline(hubSent('Agent A called the customer with an outcome of No Answer', 'No Activity Outcome at Preston'), 1400102, false), '');
+check('not sent through needs contact', sendBackReasonFromTimeline(hubSent('Agent A called the customer with an outcome of Spoke To Customer', '').filter((i) => i.TimelineItemType !== 2), 1400102, false), '');
+check('reason shown with the action', postClosureLabel({ postClosureAction: 'send back through', postClosureReason: 'Email only' }), 'send back through: Email only');
 check('scenario labels', ['standard', 'national', 'postClosureList', undefined].map((m) => checkScenarioOf(m).label), ['Normal check', 'National check', 'Post Closure check', 'Normal check']);
 check('the usual batch header still works', parseBatchInput('Name\tPhone\tEmail\tSource\tCampaign\tCreated\nA\t07700900123\t\tX\tY\tSat, 26 Sep 2026 18:05').headerOk, true);
 if (failures.length) console.error('KonnectLeadChecker post-closure-search self-test FAILED:\n' + failures.join('\n'));
@@ -4126,7 +4180,7 @@ true);
 // in the right columns, not just that the header row's shape is right.
 const rawExtractTsv = buildRawNotesTsvForExtract(fakeSession);
 const rawExtractLines = rawExtractTsv.split('\n');
-check('raw Extract export header shape', rawExtractLines[0], 'Name\tPhone\tEmail\tSource\tCampaign\tCreated\tInitialNotes\tTier\tTierName\tSubCategory\tSubRank\tFlags\tConfidence\tReason\tDedupeKey\tPostClosureAction\tPriorityRank');
+check('raw Extract export header shape', rawExtractLines[0], 'Name\tPhone\tEmail\tSource\tCampaign\tCreated\tInitialNotes\tTier\tTierName\tSubCategory\tSubRank\tFlags\tConfidence\tReason\tDedupeKey\tPostClosureAction\tPriorityRank\tPostClosureReason');
 const aliceAgainCells = rawExtractLines[2].split('\t');
 check('raw Extract export: TierName column carries the computed tier name', aliceAgainCells[8], 'CONFIRMED DATE & TIME');
 check('raw Extract export: Flags column carries the computed flags', aliceAgainCells[11], 'PX');
@@ -4382,7 +4436,7 @@ const icon = svgIcon('warning', 10, ' margin-right: 3px;');
 return `<span class="category-badge" title="${escapeHtmlForUi(r.exception)}" style="background: ${color}1a; color: ${readableTextColor(color)};">${icon}${escapeHtmlForUi(exceptionLabel(r.exception))}</span>`;
 }
 if (r.postClosureAction) {
-const pcPill = `<span class="category-badge" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(r.postClosureAction)}</span>`;
+const pcPill = `<span class="category-badge" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(postClosureLabel(r))}</span>`;
 const tierLabel = r.tierName ? `<span class="subcat-label" title="${escapeHtmlForUi(r.tierName)}">${escapeHtmlForUi(r.tierName)}</span>` : '';
 return pcPill + tierLabel;
 }
@@ -4533,8 +4587,13 @@ return [header, ...lines].join('\n');
 }
 
 // Feeds the reverse handoff into SLA-Manager.js.
+// "send back through: Email only" when a reason is known.
+function postClosureLabel(r) {
+return r.postClosureReason ? `${r.postClosureAction}: ${r.postClosureReason}` : r.postClosureAction;
+}
+
 function buildRawNotesTsvForExtract(session) {
-const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank'];
+const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank', 'PostClosureReason'];
 const lines = orderedResults(session).map((r) => [
 r.name, r.phone, r.email, r.source, r.campaign, r.created,
 (r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
@@ -4543,7 +4602,8 @@ String(r.tier || ''), r.tierName || '', r.subCategory || '', String(r.subRank !=
 r.confidence || '',
 (r.reason || r.exception || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
 r.dedupeKey || '', r.postClosureAction || '',
-String(bookingPriorityRankValue(r))
+String(bookingPriorityRankValue(r)),
+r.postClosureReason || ''
 ].join('\t'));
 return [header.join('\t'), ...lines].join('\n');
 }
@@ -5705,7 +5765,7 @@ parts.push(`<div class="field"><b>Campaign:</b> ${escapeHtmlForUi(r.campaign || 
 parts.push(`<div class="field"><b>Created:</b> ${escapeHtmlForUi(r.created || '-')}</div>`);
 if (r.flags && r.flags.length > 0) parts.push(`<div class="field"><b>Flags:</b> ${escapeHtmlForUi(r.flags.join(', '))}</div>`);
 if (r.postClosureAction) {
-parts.push(`<div class="field"><b>Post Closure:</b> <span style="color: ${readableTextColor(postClosureColor(r.postClosureAction))}; font-weight: 700;">${escapeHtmlForUi(r.postClosureAction)}</span></div>`);
+parts.push(`<div class="field"><b>Post Closure:</b> <span style="color: ${readableTextColor(postClosureColor(r.postClosureAction))}; font-weight: 700;">${escapeHtmlForUi(postClosureLabel(r))}</span></div>`);
 }
 if (r.reason) parts.push(`<div class="reason">${escapeHtmlForUi(r.reason)}</div>`);
 if (r.initialNotes) parts.push(`<div class="notes-block">${escapeHtmlForUi(r.initialNotes)}</div>`);
