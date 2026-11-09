@@ -2134,6 +2134,7 @@ if (lines.length === 0) return { rows: [], headerOk: false, error: 'No input.' }
 
 const header = lines[0].split('\t').map((h) => h.trim());
 if (isNationalHeader(header)) return parseNationalBatch(lines);
+if (isCustomerSearchHeader(header)) return parsePostClosureSearchBatch(header, lines);
 const headerOk = header.length === EXPECTED_BATCH_HEADER.length && header.every((h, i) => h === EXPECTED_BATCH_HEADER[i]);
 if (!headerOk) {
 return { rows: [], headerOk: false, error: `Header does not match expected columns: ${EXPECTED_BATCH_HEADER.join('\t')}` };
@@ -2168,6 +2169,54 @@ status, exception
 });
 
 return { rows, headerOk: true, error: null };
+}
+
+// The agent desktop's customer search table, pasted to check Post Closure
+// leads. It has no created time, so each customer's newest Post Closure
+// Processing lead is the one checked.
+const POST_CLOSURE_LIST_SOURCE = 'Post Closure Processing';
+function isCustomerSearchHeader(header) {
+return header[0] === 'Name' && header.includes('Magic Num') && header.includes('Best Number') && header.includes('Campaign');
+}
+
+function parsePostClosureSearchBatch(header, lines) {
+const col = (name) => header.indexOf(name);
+const rows = lines.slice(1).map((line, index) => {
+const cells = line.split('\t');
+const cell = (name) => (col(name) >= 0 ? (cells[col(name)] || '').trim() : '');
+const name = cell('Name');
+const phone = cell('Best Number');
+const email = cell('Email');
+const normalizedEmail = normalizeEmail(email);
+const normalizedPhone = normalizePhone(phone);
+const hasIdentifier = normalizedEmail.length > 0 || normalizedPhone.length > 0 || stripNameTitle(name).length > 0;
+return {
+inputIndex: index, mode: 'postClosureList',
+name, phone, email, source: POST_CLOSURE_LIST_SOURCE, campaign: cell('Campaign'), created: '', dealer: cell('Dealer'),
+normalizedEmail, normalizedPhone, parsedCreated: null,
+groupKey: normalizedEmail || normalizedPhone || 'name:' + normalizeCustomerName(name),
+status: hasIdentifier ? 'QUEUED' : 'INVALID_INPUT', exception: hasIdentifier ? null : 'NO_SEARCH_IDENTIFIER'
+};
+});
+return { rows, headerOk: true, error: null, mode: 'postClosureList' };
+}
+
+// The newest Post Closure Processing lead entries loaded on the timeline,
+// as lead candidates. More than one at the same minute stays ambiguous.
+function findNewestPostClosureCandidates(referenceDate) {
+const referenceNow = referenceDate || new Date();
+const entries = getLoadedLeadEntries().filter((row) => {
+const heading = row.querySelector('.connected-customer-title-pink');
+return heading && /post closure processing/i.test(heading.textContent);
+}).map((row) => {
+const rawTimestamp = extractTimelineTimestamp(row);
+const parsed = rawTimestamp ? parseTimelineTimestamp(rawTimestamp, referenceNow) : null;
+return { row, rawTimestamp, parsed, leadId: extractVisibleLeadId(row) };
+}).filter((c) => c.parsed);
+if (entries.length === 0) return [];
+const minutes = (c) => minutesSinceEpoch(c.parsed);
+const newest = Math.max(...entries.map(minutes));
+return entries.filter((c) => minutes(c) === newest);
 }
 
 // ===================================================================
@@ -3508,6 +3557,7 @@ return { status: 'SEARCH_TIMEOUT' };
 
 // True when the open timeline has a lead created at this row's time.
 function timelineHoldsSlaLead(row) {
+if (row.mode === 'postClosureList') return findNewestPostClosureCandidates(new Date()).length > 0;
 return findMatchingLeadCandidates(row.created, new Date()).candidates.length > 0;
 }
 
@@ -3567,6 +3617,7 @@ return { status: 'FAILED', exception: lastException };
 async function processLeadRow(row, session) {
 const result = makeResultBase(row);
 const referenceNow = new Date();
+if (row.mode === 'postClosureList') return processPostClosureListRow(row, session, result, referenceNow);
 
 const { target, candidates } = findMatchingLeadCandidates(row.created, referenceNow);
 if (!target) {
@@ -3641,6 +3692,12 @@ confidence: 'low'
 return finalizeResult(result, { status: 'EXCEPTION', exception: 'TARGET_CREATED_DATETIME_NOT_FOUND' });
 }
 
+return classifyCandidates(row, session, result, workingCandidates);
+}
+
+// Opens each candidate lead, keeps the one that validates and classifies
+// its Initial Notes.
+async function classifyCandidates(row, session, result, workingCandidates) {
 const validated = [];
 const candidateFailures = [];
 const candidateFailureDetails = [];
@@ -3770,6 +3827,38 @@ initialNotes,
 ...auditPatch
 });
 }
+
+async function processPostClosureListRow(row, session, result, referenceNow) {
+let candidates = findNewestPostClosureCandidates(referenceNow);
+for (let attempt = 0; candidates.length === 0 && attempt < 5; attempt++) {
+if (isCancelled(session)) return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
+const scroll = await loadOlderTimelineEntries();
+candidates = findNewestPostClosureCandidates(referenceNow);
+if (scroll.status !== 'OK' || !scroll.loadedNewEntries) break;
+}
+if (candidates.length === 0) return finalizeResult(result, { status: 'EXCEPTION', exception: 'POST_CLOSURE_LEAD_NOT_FOUND' });
+return classifyCandidates(row, session, result, candidates);
+}
+
+runSelfTest('postClosureSearchBatchSelfTest', function postClosureSearchBatchSelfTest() {
+const failures = [];
+const check = (label, actual, expected) => { if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`); };
+const pasted = [
+'Name\tDetails\tVehicles\tMagic Num\tDealer\tBrand\tCampaign\tBest Number\tEmail\tAddress\tConfirm',
+'Alex Sample\tView\t\t\tPreston\tPeugeot\tPeugeot - Enquiry - New\t07700 900123\talex@example.com\t\t',
+'Mr. Sam Buyer\tView\tAB12CDE\t\tWimbledon\tStellantis &You\tPX Valuation - Used\t07700900456\tsam@example.com\t\t',
+'Jo Example\tView\t\t\tCrawley\tCitroen\tCitroen - Offer Request - New\t\t'
+].join('\n');
+const parsed = parseBatchInput(pasted);
+check('customer search table accepted', [parsed.headerOk, parsed.mode, parsed.rows.length], [true, 'postClosureList', 3]);
+const sam = parsed.rows[1];
+check('columns read by name', [sam.name, sam.phone, sam.email, sam.campaign, sam.source, sam.created], ['Mr. Sam Buyer', '07700900456', 'sam@example.com', 'PX Valuation - Used', 'Post Closure Processing', '']);
+check('rows are queued without a created time', parsed.rows.map((r) => r.status), ['QUEUED', 'QUEUED', 'QUEUED']);
+check('a row with only a name is grouped by name', parsed.rows[2].groupKey, 'name:' + normalizeCustomerName('Jo Example'));
+check('the usual batch header still works', parseBatchInput('Name\tPhone\tEmail\tSource\tCampaign\tCreated\nA\t07700900123\t\tX\tY\tSat, 26 Sep 2026 18:05').headerOk, true);
+if (failures.length) console.error('KonnectLeadChecker post-closure-search self-test FAILED:\n' + failures.join('\n'));
+else console.info('KonnectLeadChecker post-closure-search self-test passed');
+});
 
 // Codes that are a normal outcome, not a sign the page has changed.
 const STREAK_IGNORED_EXCEPTIONS = new Set(['CLASSIFICATION_REVIEW_REQUIRED', 'CANCELLED', 'INVALID_INPUT']);
@@ -4183,6 +4272,7 @@ return r.tierName || 'PENDING';
 // next to the customer name, hurting scannability in the collapsed
 // summary row.
 const EXCEPTION_LABELS = {
+POST_CLOSURE_LEAD_NOT_FOUND: 'No Post Closure lead on this customer',
 CLASSIFICATION_REVIEW_REQUIRED: 'Needs review',
 CANCELLED: 'Cancelled',
 INVALID_INPUT: 'Row could not be read',
