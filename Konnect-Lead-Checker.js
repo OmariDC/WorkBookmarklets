@@ -1137,21 +1137,6 @@ await sleep(150);
 return input.value === value;
 }
 
-// Returns null if a search never detectably started or never finished
-// within timeout - callers treat that as SEARCH_TIMEOUT, not a
-// zero-result search.
-async function submitSearchAndWaitForResults(timeout = 15000) {
-const button = findSearchButton();
-if (!button || button.disabled) return null;
-button.click();
-const started = await waitForSpinnerState(true, 5000);
-if (!started) return null;
-const finished = await waitForSpinnerState(false, timeout);
-if (!finished) return null;
-const raw = findRecordsFoundValue();
-return raw !== null && raw !== '' ? Number(raw) : null;
-}
-
 function readSearchResultRows() {
 const grid = document.getElementById('grid');
 if (!grid) return [];
@@ -1171,29 +1156,6 @@ summary: row.querySelector('[col-id="Summary"]')?.textContent?.trim() || ''
 });
 }
 
-function normalizeForNameMatch(value) {
-return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
-}
-
-// If every matching row already points at the same customer ID, it
-// doesn't matter which one gets clicked (multiple leads/visits under one
-// profile) - only genuinely different customer IDs need the name
-// fallback, which is a weaker signal than the original plan intended but
-// the only one actually available in this grid.
-function chooseCustomerResult(rows, expectedName) {
-if (rows.length === 0) return { status: 'SEARCH_NO_RESULTS' };
-const withLinks = rows.filter(r => r.link && r.customerId);
-if (withLinks.length === 0) return { status: 'CUSTOMER_NOT_LINKED' };
-
-const uniqueIds = new Set(withLinks.map(r => r.customerId));
-if (uniqueIds.size === 1) return { status: 'OK', result: withLinks[0] };
-
-const expected = normalizeForNameMatch(expectedName);
-const nameMatches = withLinks.filter(r => normalizeForNameMatch(r.customerName).includes(expected));
-if (nameMatches.length === 1) return { status: 'OK', result: nameMatches[0] };
-return { status: 'CUSTOMER_AMBIGUOUS' };
-}
-
 function isSafeCustomerLink(link) {
 const href = (link.getAttribute('href') || '').trim().toLowerCase();
 return !href.startsWith('mailto:') && !href.startsWith('tel:');
@@ -1202,9 +1164,7 @@ return !href.startsWith('mailto:') && !href.startsWith('tel:');
 window.KonnectLeadChecker.openSearchPage = openSearchPage;
 window.KonnectLeadChecker.selectSearchType = selectSearchType;
 window.KonnectLeadChecker.enterSearchIdentifier = enterSearchIdentifier;
-window.KonnectLeadChecker.submitSearchAndWaitForResults = submitSearchAndWaitForResults;
 window.KonnectLeadChecker.readSearchResultRows = readSearchResultRows;
-window.KonnectLeadChecker.chooseCustomerResult = chooseCustomerResult;
 window.KonnectLeadChecker.isSafeCustomerLink = isSafeCustomerLink;
 
 // ===================================================================
@@ -2319,10 +2279,10 @@ function searchGridSignature() {
 return readSearchResultRows().map((r) => r.customerId || r.customerName).join('|') + '#' + (findRecordsFoundValue() || '');
 }
 
-// A name search can finish before the spinner is ever seen, which the
-// email/phone path would report as a timeout. This accepts either a full
-// spinner cycle or, without one, a page that has changed and settled.
-async function submitNationalSearch(timeout = 20000) {
+// A search can finish before the spinner is ever seen, which would be
+// reported as a timeout. This accepts either a full spinner cycle or,
+// without one, a page that has changed and settled. Used by every search.
+async function submitSearchAndSettle(timeout = 20000) {
 const button = findSearchButton();
 if (!button || button.disabled) return null;
 const before = searchGridSignature();
@@ -2350,7 +2310,7 @@ if (isCancelled(session)) return { status: 'CANCELLED' };
 if (!opened) continue;
 if (!(await selectSearchType(type))) continue;
 if (!(await enterSearchIdentifier(value))) continue;
-const count = await submitNationalSearch();
+const count = await submitSearchAndSettle();
 if (isCancelled(session)) return { status: 'CANCELLED' };
 if (count === null) continue;
 if (count === 0) return { status: 'SEARCH_NO_RESULTS' };
@@ -2366,17 +2326,41 @@ window.location.hash = `#/connectedCustomer/${customerId}?redirectRoute=%2Fsearc
 return waitForTimelineReady(15000);
 }
 
-// How many of this customer's batch leads are on the open timeline.
-async function countGroupLeadsOnTimeline(group, session) {
-const count = (items) => group.rows.filter((r) => r.parsedCreated && findNationalLeadIds(items, r.parsedCreated).length > 0).length;
-let found = count(readAllTimelineItems());
+// How many of this customer's batch leads are on the open timeline,
+// loading older entries if some are missing.
+async function countGroupLeadsOnTimeline(group, session, holdsLead) {
+const check = holdsLead || ((row) => row.parsedCreated && findNationalLeadIds(readAllTimelineItems(), row.parsedCreated).length > 0);
+const count = () => group.rows.filter((r) => check(r)).length;
+let found = count();
 for (let i = 0; found < group.rows.length && i < 3; i++) {
 if (isCancelled(session)) break;
 const scroll = await loadOlderTimelineEntries();
-found = count(readAllTimelineItems());
+found = count();
 if (scroll.status !== 'OK' || !scroll.loadedNewEntries) break;
 }
 return found;
+}
+
+// Opens each candidate record in turn and keeps the one whose timeline
+// holds the most of this group's leads. Stops at the first that holds
+// them all, which is the usual case: one person's search rows all open
+// the same timeline. Returns null when none hold any of them.
+async function openRecordHoldingLeads(ids, group, session, holdsLead) {
+let best = { id: null, found: 0 };
+for (const id of ids) {
+if (isCancelled(session)) return null;
+const state = await openNationalCustomerById(id);
+if (state.state === 'FAILED') continue;
+const found = await countGroupLeadsOnTimeline(group, session, holdsLead);
+if (found > best.found) best = { id, found };
+if (found === group.rows.length) break;
+}
+if (!best.id) return null;
+if (!window.location.hash.includes(`/connectedCustomer/${best.id}`)) {
+const state = await openNationalCustomerById(best.id);
+if (state.state === 'FAILED') return null;
+}
+return best.id;
 }
 
 async function searchAndOpenNationalCustomer(group, session) {
@@ -2408,22 +2392,10 @@ if (timelineState.state === 'FAILED') return { status: 'FAILED', exception: 'TIM
 return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
 }
 
-// The same person often has more than one customer record. Open each and
-// keep the one whose timeline holds these leads.
-let best = { id: null, found: 0 };
-for (const id of ids) {
+// More than one record: keep the one whose timeline holds these leads.
+const chosen = await openRecordHoldingLeads(ids, group, session);
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
-const state = await openNationalCustomerById(id);
-if (state.state === 'FAILED') continue;
-const found = await countGroupLeadsOnTimeline(group, session);
-if (found > best.found) best = { id, found };
-if (found === group.rows.length) break;
-}
-if (!best.id) return { status: 'FAILED', exception: 'LEAD_NOT_ON_MATCHING_CUSTOMERS' };
-if (!CONNECTED_CUSTOMER_ROUTE_PATTERN.test(window.location.hash) || !window.location.hash.includes(`/${best.id}`)) {
-const state = await openNationalCustomerById(best.id);
-if (state.state === 'FAILED') return { status: 'FAILED', exception: 'TIMELINE_TIMEOUT' };
-}
+if (!chosen) return { status: 'FAILED', exception: 'LEAD_NOT_ON_MATCHING_CUSTOMERS' };
 return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
 }
 
@@ -3318,47 +3290,71 @@ function isCancelled(session) {
 return !!(session && session.cancelled);
 }
 
+// Runs one search (with one retry) and returns {status, rows}.
+async function runCustomerSearch(type, value, session) {
+for (let attempt = 0; attempt < 2; attempt++) {
+const opened = await openSearchPage();
+if (isCancelled(session)) return { status: 'CANCELLED' };
+if (!opened) continue;
+if (!(await selectSearchType(type))) continue;
+if (!(await enterSearchIdentifier(value))) continue;
+const count = await submitSearchAndSettle();
+if (isCancelled(session)) return { status: 'CANCELLED' };
+if (count === null) continue;
+if (count === 0) return { status: 'SEARCH_NO_RESULTS' };
+return { status: 'OK', rows: readSearchResultRows() };
+}
+return { status: 'SEARCH_TIMEOUT' };
+}
+
+// True when the open timeline has a lead created at this row's time.
+function timelineHoldsSlaLead(row) {
+return findMatchingLeadCandidates(row.created, new Date()).candidates.length > 0;
+}
+
 async function searchAndOpenCustomer(group, session) {
 const sample = group.rows[0];
 if (sample.mode === 'national') return searchAndOpenNationalCustomer(group, session);
 const attempts = [];
 if (sample.normalizedEmail) attempts.push({ type: 'email', value: sample.email });
 if (sample.normalizedPhone) attempts.push({ type: 'phone', value: sample.phone });
+// Last resort: the name. A name can belong to someone else, so a record
+// found this way is only used if its timeline holds the lead.
+const nameValue = stripNameTitle(sample.name);
+if (nameValue) attempts.push({ type: 'name', value: nameValue, needsLeadProof: true });
 if (attempts.length === 0) return { status: 'FAILED', exception: 'NO_SEARCH_IDENTIFIER' };
 
 let lastException = 'NO_SEARCH_IDENTIFIER';
 for (const attempt of attempts) {
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
-const opened = await openSearchPage();
-if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
-if (!opened) { lastException = 'SEARCH_TIMEOUT'; continue; }
+const search = await runCustomerSearch(attempt.type, attempt.value, session);
+if (search.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
+if (search.status !== 'OK') { lastException = search.status; continue; }
 
-const typeSelected = await selectSearchType(attempt.type);
-if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
-if (!typeSelected) { lastException = 'SEARCH_TIMEOUT'; continue; }
+const linked = search.rows.filter((r) => r.link && r.customerId);
+if (linked.length === 0) { lastException = 'CUSTOMER_NOT_LINKED'; continue; }
+const ids = Array.from(new Set(linked.map((r) => r.customerId)));
+const candidateIds = ids.length === 1 ? ids : nationalCandidateIds(linked, sample.name);
 
-const entered = await enterSearchIdentifier(attempt.value);
-if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
-if (!entered) { lastException = 'SEARCH_TIMEOUT'; continue; }
-
-const count = await submitSearchAndWaitForResults();
-if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
-if (count === null) { lastException = 'SEARCH_TIMEOUT'; continue; }
-if (count === 0) { lastException = 'SEARCH_NO_RESULTS'; continue; }
-
-const rows = readSearchResultRows();
-const choice = chooseCustomerResult(rows, sample.name);
-if (choice.status !== 'OK') {
-return { status: 'FAILED', exception: choice.status };
-}
-
-const timelineState = await openCustomerAndWaitForTimeline(choice.result);
+if (candidateIds.length === 1 && !attempt.needsLeadProof) {
+const row = linked.find((r) => r.customerId === candidateIds[0]);
+const timelineState = await openCustomerAndWaitForTimeline(row);
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 if (timelineState.state === 'FAILED') return { status: 'FAILED', exception: 'TIMELINE_TIMEOUT' };
 if (timelineState.state === 'READY_WITH_ZERO_ELIGIBLE_SALES_LEADS') {
 return { status: 'OK', matchMethod: attempt.type, noEligibleEvents: true };
 }
 return { status: 'OK', matchMethod: attempt.type, noEligibleEvents: false };
+}
+
+// Several records (or a name search): keep the one holding the lead.
+const chosen = await openRecordHoldingLeads(candidateIds, group, session, timelineHoldsSlaLead);
+if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
+if (chosen) return { status: 'OK', matchMethod: attempt.type, noEligibleEvents: false };
+lastException = attempt.needsLeadProof ? 'LEAD_NOT_ON_MATCHING_CUSTOMERS' : 'CUSTOMER_AMBIGUOUS';
+// An email or phone that matched records without the lead is not worth
+// a name search on top.
+if (!attempt.needsLeadProof) return { status: 'FAILED', exception: lastException };
 }
 
 return { status: 'FAILED', exception: lastException };
