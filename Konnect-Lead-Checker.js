@@ -2294,71 +2294,164 @@ return row;
 return { rows, headerOk: true, error: null, mode: 'national' };
 }
 
-// Pure. Prefers an exact name match, then the batch reg, before giving up.
-function chooseNationalCustomerResult(rows, expectedName, expectedReg) {
-if (rows.length === 0) return { status: 'SEARCH_NO_RESULTS' };
+// "Mr. Ahsan Sheikh" -> "Ahsan Sheikh": Konnect stores the title apart from
+// the name, so searching with it finds nothing.
+function stripNameTitle(name) {
+return String(name || '').replace(/^\s*(mr|mrs|miss|ms|mx|dr)\b\.?\s+/i, '').replace(/\s+/g, ' ').trim();
+}
+
+// Pure. The distinct customer IDs a National search could mean: those
+// whose name matches, or every linked row when none match by name.
+function nationalCandidateIds(rows, expectedName) {
 const withLinks = rows.filter((r) => r.link && r.customerId);
-if (withLinks.length === 0) return { status: 'CUSTOMER_NOT_LINKED' };
 const name = normalizeCustomerName(expectedName);
 const named = withLinks.filter((r) => {
 const candidate = normalizeCustomerName(r.customerName);
-return candidate && (candidate === name || candidate.includes(name) || name.includes(candidate));
+return candidate && name && (candidate === name || candidate.includes(name) || name.includes(candidate));
 });
 const pool = named.length > 0 ? named : withLinks;
-const ids = new Set(pool.map((r) => r.customerId));
-if (ids.size === 1 && named.length > 0) return { status: 'OK', result: pool[0] };
-const reg = normalizeReg(expectedReg);
-if (reg) {
-const byReg = pool.filter((r) => normalizeReg(r.registrationNumber) === reg);
-if (new Set(byReg.map((r) => r.customerId)).size === 1) return { status: 'OK', result: byReg[0] };
+const ids = [];
+pool.forEach((r) => { if (!ids.includes(r.customerId)) ids.push(r.customerId); });
+return ids.slice(0, 5);
 }
-if (named.length === 0 && ids.size === 1) return { status: 'OK', result: pool[0] };
-return { status: 'CUSTOMER_AMBIGUOUS' };
+
+function searchGridSignature() {
+return readSearchResultRows().map((r) => r.customerId || r.customerName).join('|') + '#' + (findRecordsFoundValue() || '');
+}
+
+// A name search can finish before the spinner is ever seen, which the
+// email/phone path would report as a timeout. This accepts either a full
+// spinner cycle or, without one, a page that has changed and settled.
+async function submitNationalSearch(timeout = 20000) {
+const button = findSearchButton();
+if (!button || button.disabled) return null;
+const before = searchGridSignature();
+button.click();
+const startedAt = Date.now();
+let sawSpinner = false;
+while (Date.now() - startedAt < timeout) {
+await sleep(200);
+if (isSearchSpinnerActive(findSearchSpinnerIcon())) { sawSpinner = true; continue; }
+const elapsed = Date.now() - startedAt;
+const changed = searchGridSignature() !== before;
+if (sawSpinner || (changed && elapsed > 1000) || elapsed > 6000) {
+const raw = findRecordsFoundValue();
+if (raw !== null && raw !== '' && !isNaN(Number(raw))) return Number(raw);
+return readSearchResultRows().length;
+}
+}
+return null;
 }
 
 async function runNationalSearch(type, value, session) {
+for (let attempt = 0; attempt < 2; attempt++) {
 const opened = await openSearchPage();
 if (isCancelled(session)) return { status: 'CANCELLED' };
-if (!opened) return { status: 'SEARCH_TIMEOUT' };
-if (!(await selectSearchType(type))) return { status: 'SEARCH_TIMEOUT' };
-if (!(await enterSearchIdentifier(value))) return { status: 'SEARCH_TIMEOUT' };
-const count = await submitSearchAndWaitForResults();
+if (!opened) continue;
+if (!(await selectSearchType(type))) continue;
+if (!(await enterSearchIdentifier(value))) continue;
+const count = await submitNationalSearch();
 if (isCancelled(session)) return { status: 'CANCELLED' };
-if (count === null) return { status: 'SEARCH_TIMEOUT' };
+if (count === null) continue;
 if (count === 0) return { status: 'SEARCH_NO_RESULTS' };
 return { status: 'OK', rows: readSearchResultRows() };
+}
+return { status: 'SEARCH_TIMEOUT' };
+}
+
+async function openNationalCustomerById(customerId) {
+// Leave the current timeline first so the old one is never read as the new one.
+await openSearchPage();
+window.location.hash = `#/connectedCustomer/${customerId}?redirectRoute=%2Fsearch`;
+return waitForTimelineReady(15000);
+}
+
+// How many of this customer's batch leads are on the open timeline.
+async function countGroupLeadsOnTimeline(group, session) {
+const count = (items) => group.rows.filter((r) => r.parsedCreated && findNationalLeadIds(items, r.parsedCreated).length > 0).length;
+let found = count(readAllTimelineItems());
+for (let i = 0; found < group.rows.length && i < 3; i++) {
+if (isCancelled(session)) break;
+const scroll = await loadOlderTimelineEntries();
+found = count(readAllTimelineItems());
+if (scroll.status !== 'OK' || !scroll.loadedNewEntries) break;
+}
+return found;
 }
 
 async function searchAndOpenNationalCustomer(group, session) {
 const sample = group.rows[0];
-const regs = group.rows.map((r) => r.reg).filter(Boolean);
-let choice = { status: 'SEARCH_NO_RESULTS' };
-const byName = await runNationalSearch('name', sample.name, session);
-if (byName.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
-if (byName.status === 'OK') {
-for (const reg of regs.length ? regs : ['']) {
-choice = chooseNationalCustomerResult(byName.rows, sample.name, reg);
-if (choice.status === 'OK') break;
+const names = [stripNameTitle(sample.name), sample.name].filter((n, i, all) => n && all.indexOf(n) === i);
+let search = { status: 'SEARCH_NO_RESULTS' };
+for (const name of names) {
+search = await runNationalSearch('name', name, session);
+if (search.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
+if (search.status === 'OK') break;
 }
-} else {
-choice = { status: byName.status };
-}
-// A second search by reg settles two customers with the same name.
-if (choice.status !== 'OK' && regs.length > 0 && choice.status !== 'SEARCH_TIMEOUT') {
-for (const reg of regs) {
+// Nothing by name: the reg (or lead reference) is the other way in.
+if (search.status !== 'OK') {
+for (const reg of group.rows.map((r) => r.reg).filter(Boolean)) {
 const byReg = await runNationalSearch('reg', reg, session);
 if (byReg.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
-if (byReg.status !== 'OK') continue;
-const regChoice = chooseNationalCustomerResult(byReg.rows, sample.name, reg);
-if (regChoice.status === 'OK') { choice = regChoice; break; }
+if (byReg.status === 'OK') { search = byReg; break; }
 }
 }
-if (choice.status !== 'OK') return { status: 'FAILED', exception: choice.status };
-const timelineState = await openCustomerAndWaitForTimeline(choice.result);
+if (search.status !== 'OK') return { status: 'FAILED', exception: search.status };
+
+const ids = nationalCandidateIds(search.rows, sample.name);
+if (ids.length === 0) return { status: 'FAILED', exception: 'CUSTOMER_NOT_LINKED' };
+if (ids.length === 1) {
+const row = search.rows.find((r) => r.customerId === ids[0]);
+const timelineState = await openCustomerAndWaitForTimeline(row);
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 if (timelineState.state === 'FAILED') return { status: 'FAILED', exception: 'TIMELINE_TIMEOUT' };
 return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
 }
+
+// The same person often has more than one customer record. Open each and
+// keep the one whose timeline holds these leads.
+let best = { id: null, found: 0 };
+for (const id of ids) {
+if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
+const state = await openNationalCustomerById(id);
+if (state.state === 'FAILED') continue;
+const found = await countGroupLeadsOnTimeline(group, session);
+if (found > best.found) best = { id, found };
+if (found === group.rows.length) break;
+}
+if (!best.id) return { status: 'FAILED', exception: 'LEAD_NOT_ON_MATCHING_CUSTOMERS' };
+if (!CONNECTED_CUSTOMER_ROUTE_PATTERN.test(window.location.hash) || !window.location.hash.includes(`/${best.id}`)) {
+const state = await openNationalCustomerById(best.id);
+if (state.state === 'FAILED') return { status: 'FAILED', exception: 'TIMELINE_TIMEOUT' };
+}
+return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
+}
+
+runSelfTest('nationalSearchSelfTest', function nationalSearchSelfTest() {
+const failures = [];
+const check = (label, actual, expected) => {
+if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+};
+check('title removed with full stop', stripNameTitle('Mr. Alex Sample'), 'Alex Sample');
+check('title removed without full stop', stripNameTitle('Miss Jo Example'), 'Jo Example');
+check('name without a title is unchanged', stripNameTitle('Sam Buyer'), 'Sam Buyer');
+check('a name starting with title letters is unchanged', stripNameTitle('Mrsa Smith'), 'Mrsa Smith');
+const link = {};
+const rows = [
+{ link, customerId: '501', customerName: 'Alex Sample' },
+{ link, customerId: '501', customerName: 'Alex Sample' },
+{ link, customerId: '502', customerName: 'Mr Alex Sample' },
+{ link, customerId: '503', customerName: 'Jo Example' }
+];
+check('duplicate rows for one record count once; other records with the name are candidates', nationalCandidateIds(rows, 'Mr. Alex Sample'), ['501', '502']);
+check('no name match falls back to every linked record', nationalCandidateIds(rows, 'Unknown Person'), ['501', '502', '503']);
+check('rows without a link are ignored', nationalCandidateIds([{ link: null, customerId: '9', customerName: 'Alex Sample' }], 'Alex Sample'), []);
+if (failures.length > 0) {
+console.error('KonnectLeadChecker national-search self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('KonnectLeadChecker national-search self-test passed');
+}
+});
 
 function readAllTimelineItems(readScope) {
 const resolveScope = readScope || readTimelineItemScope;
@@ -3903,6 +3996,7 @@ SEARCH_TIMEOUT: 'Search timed out',
 SEARCH_NO_RESULTS: 'Customer not found',
 CUSTOMER_NOT_LINKED: 'Customer result not linked',
 CUSTOMER_AMBIGUOUS: 'More than one matching customer',
+LEAD_NOT_ON_MATCHING_CUSTOMERS: 'Lead not on any customer with this name',
 TIMELINE_TIMEOUT: 'Timeline did not load',
 TIMELINE_SCROLL_CONTAINER_UNKNOWN: 'Could not scroll the timeline',
 NO_ELIGIBLE_LEAD_EVENTS: 'No sales leads on the timeline',
@@ -4600,12 +4694,6 @@ const items = [
 check('lead mapped by created minute', findNationalLeadIds(items, { year: 2026, month: 10, day: 4, hour: 15, minute: 32 }), ['1400001']);
 check('no lead at that minute', findNationalLeadIds(items, { year: 2026, month: 10, day: 4, hour: 16, minute: 0 }), []);
 
-const link = {};
-const row = (id, name, reg) => ({ link, customerId: id, customerName: name, registrationNumber: reg });
-check('single exact name match', chooseNationalCustomerResult([row('1', 'Alex Sample', 'AB12CDE'), row('2', 'Sam Buyer', '')], 'Mr. Alex Sample', '').result.customerId, '1');
-check('same name, reg decides', chooseNationalCustomerResult([row('1', 'Alex Sample', 'AB12CDE'), row('2', 'Alex Sample', '91000001SALESLEAD')], 'Alex Sample', '91000001 SALESLEAD').result.customerId, '2');
-check('same name, no reg is ambiguous', chooseNationalCustomerResult([row('1', 'Alex Sample', 'AB12CDE'), row('2', 'Alex Sample', 'CD34EFG')], 'Alex Sample', '').status, 'CUSTOMER_AMBIGUOUS');
-check('no rows', chooseNationalCustomerResult([], 'Alex Sample', '').status, 'SEARCH_NO_RESULTS');
 
 const exportSession = {
 rows: [{ inputIndex: 0 }, { inputIndex: 1 }, { inputIndex: 2 }],
