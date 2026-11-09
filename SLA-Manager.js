@@ -1835,17 +1835,20 @@ const lines = leads.map((l) => ['national', l.customer, l.reg, l.activityId, l.l
 return [NATIONAL_BATCH_HEADER.join('\t'), ...lines].join('\n');
 }
 
-// Returns {ok, results, error}. The header must match exactly.
+// Reads columns by name, so an export from an older or newer Lead Checker
+// (fewer or extra columns) still imports. Returns {ok, results, error}.
 function parseNationalResultsTsv(text) {
-const lines = String(text || '').replace(/\r/g, '').split('\n').filter((l) => l.trim() !== '');
+const lines = String(text || '').replace(/^\uFEFF/, '').replace(/\r/g, '').split('\n').filter((l) => l.trim() !== '');
 if (lines.length === 0) return { ok: false, results: [], error: 'Nothing on the clipboard.' };
-if (lines[0] !== NATIONAL_RESULT_HEADER.join('\t')) {
-return { ok: false, results: [], error: 'This is not a National results export from the Lead Checker.' };
-}
-const results = lines.slice(1).map((line) => {
+const headerAt = lines.findIndex((l) => l.split('\t')[0].trim() === 'NationalResult');
+if (headerAt < 0) return { ok: false, results: [], error: 'This is not a National results export from the Lead Checker.' };
+const header = lines[headerAt].split('\t').map((h) => h.trim());
+const missing = ['Customer', 'ActivityID', 'Verdict'].filter((h) => !header.includes(h));
+if (missing.length) return { ok: false, results: [], error: `The National results are missing ${missing.join(', ')}. Copy them again from the Lead Checker.` };
+const results = lines.slice(headerAt + 1).map((line) => {
 const cells = line.split('\t');
 const r = {};
-NATIONAL_RESULT_HEADER.forEach((h, i) => { r[h] = (cells[i] || '').trim(); });
+NATIONAL_RESULT_HEADER.forEach((h) => { const i = header.indexOf(h); r[h] = i >= 0 ? (cells[i] || '').trim() : ''; });
 return r;
 }).filter((r) => r.NationalResult === 'national');
 return { ok: true, results, error: null };
@@ -2048,6 +2051,8 @@ if (rows.length === 0 || !('ActivityID' in rows[0]) || !('Dealer' in rows[0])) {
 return { ok: null, summary: 'The Customer Hub file did not have the expected columns. Stopped.' };
 }
 const leads = prescreenNationalLeads(rows, now);
+// A new check starts from nothing: the last run's verdicts are dropped.
+removeStoredKey(NATIONAL_RESULTS_KEY);
 const stale = isHubFileOlderThan(rows, fetched.previousVersion);
 return {
 ok: null,
@@ -2214,6 +2219,10 @@ const parsed = parseNationalResultsTsv(resultTsv);
 check('results import accepts the exact header', parsed.ok, true);
 check('verdict counts', countNationalVerdicts(parsed.results), { Reset: 1, Check: 0, 'Not found': 1, OK: 1 });
 check('results import rejects another header', parseNationalResultsTsv('Name\tPhone\nx\ty').ok, false);
+const olderExport = resultTsv.split('\n').map((l) => l.split('\t').slice(0, 14).join('\t')).join('\n');
+check('an export without the newer columns still imports', [parseNationalResultsTsv(olderExport).ok, parseNationalResultsTsv(olderExport).results[1].Verdict, parseNationalResultsTsv(olderExport).results[1].Reg], [true, 'Reset', '']);
+check('a stray line or byte order mark before the header is ignored', parseNationalResultsTsv('\uFEFFcopied from Lead Checker\n' + resultTsv).results.length, 3);
+check('an export missing a needed column is refused', parseNationalResultsTsv('NationalResult\tCustomer\nnational\tAlex').ok, false);
 check('reset block', buildNationalResetBlock(parsed.results[1]).split('\n')[0], 'Campaign: Enquiry - Used');
 check('reset block keeps the notes line breaks', buildNationalResetBlock(parsed.results[1]).split('\n').slice(1, 3), ['Initial notes: Looking for a hatchback', 'Petrol']);
 if (failures.length > 0) {

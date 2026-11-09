@@ -3305,6 +3305,8 @@ const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 let lastSavedSessionJson = null;
 
 function saveSession(session) {
+// A cleared session is never written back, even by a check still finishing.
+if (!session || session.discarded) return;
 try {
 session.schema = SESSION_SCHEMA;
 session.classifierVersion = CLASSIFIER_VERSION;
@@ -3425,7 +3427,9 @@ const rows = parsed.rows;
 const results = {};
 
 const carriedResultsByIdentity = new Map();
-if (previousSession) {
+// National verdicts depend on what has happened since, so they are always
+// checked again rather than carried into a new paste.
+if (previousSession && previousSession.mode !== 'national' && parsed.mode !== 'national') {
 previousSession.rows.forEach((prevRow) => {
 const prevResult = previousSession.results[prevRow.inputIndex];
 // A result from an older classifier is re-checked, not carried over.
@@ -4624,6 +4628,13 @@ const first = newSession(batch);
 first.results[0] = finalizeResult(makeResultBase(first.rows[0]), { status: 'CLASSIFIED', tier: 2, tierName: 'DATE ONLY' });
 check('Classified results are stamped with the classifier version', first.results[0].classifierVersion, CLASSIFIER_VERSION);
 check('Same-version results carry into a new paste', !!newSession(batch, first).results[0], true);
+const nationalBatch = [NATIONAL_BATCH_HEADER.join('\t'), ['national', 'Alex Sample', 'AB12CDE', '70000001', '07/11/2026 09:00', 'Enquiry - Used', 'National', '07/11/2026 10:00', 'Completed', 'Email Only Lead', '2', '0', '0', 'closed'].join('\t')].join('\n');
+const nationalFirst = newSession(nationalBatch);
+nationalFirst.results[0] = finalizeResult(makeResultBase(nationalFirst.rows[0]), { status: 'CLASSIFIED', verdict: 'Reset' });
+check('National verdicts are never carried into a new paste', !!newSession(nationalBatch, nationalFirst).results[0], false);
+const storedBefore = localStorage.getItem(SESSION_STORAGE_KEY);
+saveSession({ ...nationalFirst, discarded: true });
+check('A cleared session is never saved again', localStorage.getItem(SESSION_STORAGE_KEY), storedBefore);
 first.results[0] = Object.assign({}, first.results[0], { classifierVersion: 'older' });
 check('Results from an older classifier are re-checked, not carried', newSession(batch, first).results[0], undefined);
 const now = Date.now();
@@ -5992,7 +6003,7 @@ showButtonFeedback(btn, `✓ Retrying ${retryCount}`, false);
 });
 
 root.getElementById('btnClear').addEventListener('click', () => {
-if (session) session.cancelled = true;
+if (session) { session.cancelled = true; session.discarded = true; }
 clearStoredSession();
 session = null;
 recentCompletions = [];
@@ -6022,7 +6033,7 @@ text = await navigator.clipboard.readText();
 showButtonFeedback(btn, 'Clipboard blocked: paste manually', true);
 return;
 }
-if (session) session.cancelled = true;
+if (session) { session.cancelled = true; session.discarded = true; }
 clearStoredSession();
 session = null;
 recentCompletions = [];
@@ -6042,7 +6053,7 @@ showButtonFeedback(btn, s.headerOk ? 'No rows parsed' : `Header error: ${s.heade
 // session, and tears down the panel - so reopening always starts from a
 // clean slate.
 root.getElementById('btnClearStop').addEventListener('click', () => {
-if (session) session.cancelled = true;
+if (session) { session.cancelled = true; session.discarded = true; }
 isRunning = false;
 hidePageFlashOverlay();
 clearStoredSession();

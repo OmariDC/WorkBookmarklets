@@ -75,17 +75,20 @@ fields: parseResetFields(r)
 }));
 }
 
-// Same format the Lead Checker copies. Returns {ok, results, error}.
+// Same export the Lead Checker copies. Reads columns by name, so an export from an older or newer Lead Checker
+// (fewer or extra columns) still imports. Returns {ok, results, error}.
 function parseResultsTsv(text) {
-const lines = String(text || '').replace(/\r/g, '').split('\n').filter((l) => l.trim() !== '');
+const lines = String(text || '').replace(/^\uFEFF/, '').replace(/\r/g, '').split('\n').filter((l) => l.trim() !== '');
 if (lines.length === 0) return { ok: false, results: [], error: 'Nothing on the clipboard.' };
-if (lines[0] !== NATIONAL_RESULT_HEADER.join('\t')) {
-return { ok: false, results: [], error: 'This is not a National results export from the Lead Checker.' };
-}
-const results = lines.slice(1).map((line) => {
+const headerAt = lines.findIndex((l) => l.split('\t')[0].trim() === 'NationalResult');
+if (headerAt < 0) return { ok: false, results: [], error: 'This is not a National results export from the Lead Checker.' };
+const header = lines[headerAt].split('\t').map((h) => h.trim());
+const missing = ['Customer', 'ActivityID', 'Verdict'].filter((h) => !header.includes(h));
+if (missing.length) return { ok: false, results: [], error: `The National results are missing ${missing.join(', ')}. Copy them again from the Lead Checker.` };
+const results = lines.slice(headerAt + 1).map((line) => {
 const cells = line.split('\t');
 const r = {};
-NATIONAL_RESULT_HEADER.forEach((h, i) => { r[h] = (cells[i] || '').trim(); });
+NATIONAL_RESULT_HEADER.forEach((h) => { const i = header.indexOf(h); r[h] = i >= 0 ? (cells[i] || '').trim() : ''; });
 return r;
 }).filter((r) => r.NationalResult === 'national');
 return { ok: true, results, error: null };
@@ -156,6 +159,7 @@ const tsv = [NATIONAL_RESULT_HEADER.join('\t'),
 const parsed = parseResultsTsv(tsv);
 check('accepts the Lead Checker export', parsed.ok, true);
 check('rejects another header', parseResultsTsv('Name\tPhone\nx\ty').ok, false);
+check('reads an export without the newer columns', resetLeadsFrom(parseResultsTsv(tsv.split('\n').map((l) => l.split('\t').slice(0, 14).join('\t')).join('\n')).results).map((l) => [l.activityId, l.notes]), [['70000002', 'Line one | Line two']]);
 const leads = resetLeadsFrom(parsed.results);
 check('only Reset leads are kept', leads.map((l) => l.activityId), ['70000002']);
 check('exact notes come from the reset fields', leads[0].notes, 'Line one\nLine two');
@@ -807,7 +811,7 @@ ${button('carry', state.paused.carryOnLabel, true)}${button('retry', 'Try again'
 : '';
 const controls = state.running
 ? (state.paused ? '' : button('stop', 'Stop after this step'))
-: `${remaining ? button('start', 'Start resets', true) : ''}${button('paste', 'Paste results')}${Object.keys(progress.byActivity).length ? button('clear', 'Clear progress') : ''}`;
+: `${remaining ? button('start', 'Start resets', true) : ''}${button('paste', 'Paste results')}${Object.keys(progress.byActivity).length || readJson(PASTED_RESULTS_KEY) ? button('clear', 'Clear') : ''}`;
 const log = state.log.length ? `<details style="margin-top:6px;"><summary style="cursor:pointer;color:${COLORS.grey};">Activity</summary><div style="font-size:11px;color:${COLORS.grey};max-height:140px;overflow:auto;">${state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div></details>` : '';
 
 panel.querySelector('[data-body]').innerHTML = `${banner}${where}${sourceLine}
@@ -845,7 +849,13 @@ return;
 }
 if (action === 'start') { runAll(); return; }
 if (action === 'paste') { pasteResults(); return; }
-if (action === 'clear') { saveProgress({ byActivity: {} }); render(); return; }
+if (action === 'clear') {
+// Wipes everything this tool keeps, so the next start is from scratch.
+try { localStorage.removeItem(PROGRESS_KEY); localStorage.removeItem(PASTED_RESULTS_KEY); } catch (error) { /* ignore */ }
+state.log = [];
+render();
+return;
+}
 if (action === 'stop' && !state.paused) { state.stopRequested = true; addLog('Stopping after this step'); return; }
 answerPause(action);
 }
