@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.7.0'
+    version: '1.7.1'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -683,6 +683,7 @@
       .kn-bk-actions { display: flex; gap: 6px; align-items: center; }
       .kn-bk-actions .kn-primary { flex: 1; }
       .kn-bk-blocked { opacity: 0.55; }
+      .kn-bk-version { margin-top: 6px; text-align: right; font-size: 10px; color: #aeaeb2; }
       @media (max-width: 720px) {
         #${PALETTE_ID} { width: 200px; }
       }
@@ -1827,8 +1828,7 @@
   }
 
   function insertBooking(draft) {
-    scanPage();
-    const target = state.target;
+    const target = callNotesBox();
     const result = buildCurrentBooking(draft);
     if (!(target instanceof HTMLTextAreaElement) || !result) return;
     if (result.errors.length) {
@@ -1870,25 +1870,46 @@
     closePalette();
   }
 
-  /* Empties the whole Call Notes box as a normal edit, so Ctrl+Z in the
-     box brings the text back. */
-  function clearCallNotes() {
+  /* The Call Notes box for the open lead. Falls back to Konnect's own field
+     name so it is still found when the section is folded shut. */
+  function callNotesBox() {
     scanPage();
-    const target = state.target;
-    if (!(target instanceof HTMLTextAreaElement) || !target.value) return;
-    target.focus({ preventScroll: true });
-    target.setSelectionRange(0, target.value.length);
-    let done = false;
+    if (state.target instanceof HTMLTextAreaElement && state.target.isConnected) return state.target;
+    const selector = 'textarea[ng-model$="LeadDetails.Notes"]';
+    const pane = document.querySelector('.tab-pane.active');
+    return pane?.querySelector(selector) || document.querySelector(selector) || null;
+  }
+
+  /* Empties the whole Call Notes box as a normal edit, so Ctrl+Z in the
+     box brings the text back, and clears Konnect's copy of the value too.
+     Returns the number of characters removed, or -1 if the box was not found. */
+  function clearCallNotes() {
+    const target = callNotesBox();
+    if (!(target instanceof HTMLTextAreaElement)) return -1;
+    const removed = target.value.length;
+    if (!removed) return 0;
     try {
-      done = document.execCommand('delete', false);
+      target.focus({ preventScroll: true });
+      target.setSelectionRange(0, target.value.length);
+      document.execCommand('delete', false);
     } catch (error) {
-      done = false;
+      // Fallback below.
     }
-    if (!done || target.value !== '') {
-      setNativeValue(target, '');
-      target.dispatchEvent(new Event('input', { bubbles: true }));
+    if (target.value !== '') setNativeValue(target, '');
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+    try {
+      const ng = window.angular;
+      const model = ng ? ng.element(target).controller('ngModel') : null;
+      if (model && model.$viewValue) {
+        model.$setViewValue('');
+        model.$render();
+      }
+    } catch (error) {
+      // Konnect still gets the input/change events above.
     }
     state.lastSelection = { target, start: 0, end: 0 };
+    return removed;
   }
 
   /* ---------- writing the booking's car details back to the lead ---------- */
@@ -2686,16 +2707,19 @@
       });
     }));
     const clear = button('Clear', 'kn-danger', () => {
-      clearCallNotes();
+      const removed = clearCallNotes();
       state.booking = { ...draft, data: blankBooking(), fromLead: {}, notices: [], inserted: null, leadSeen: {}, openSection: 'type' };
       syncLead(state.booking);
       saveDraftNow();
-      state.bookingStatus = { kind: 'ok', text: 'Cleared. Press Ctrl+Z in Call Notes to undo.' };
+      state.bookingStatus = removed < 0
+        ? { kind: 'error', text: 'Couldn\'t find the Call Notes box, so it was not cleared. The booking form was reset.' }
+        : { kind: 'ok', text: removed ? `Cleared Call Notes (${removed} characters). Ctrl+Z in Call Notes undoes it.` : 'Call Notes was already empty. Booking form reset.' };
       renderPalette();
     });
     clear.title = 'Empties the whole Call Notes box and resets this booking (Ctrl+Z in Call Notes undoes it)';
     actions.appendChild(clear);
     footer.appendChild(actions);
+    footer.appendChild(element('div', 'kn-bk-version', `Konnect Notes v${KN.version}`));
     palette.appendChild(footer);
 
     updateBookingLive(draft);
