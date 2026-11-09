@@ -54,7 +54,15 @@ const text = mask(el.textContent || el.value || el.getAttribute('title') || el.g
 return { tag: el.tagName.toLowerCase(), text, relevant: KEY.test(text + ' ' + (el.getAttribute('ng-click') || '')), ...attrs(el) };
 })
 .filter((c) => c.text || c['ng-click'])
-.slice(0, 300);
+// Identical controls (one icon per timeline row) are listed once with a count.
+.reduce((list, c) => {
+const sig = JSON.stringify(c);
+const found = list.find((x) => x.sig === sig);
+if (found) found.count++; else list.push({ sig, count: 1, c });
+return list;
+}, [])
+.map(({ count, c }) => (count > 1 ? { ...c, count } : c))
+.slice(0, 200);
 
 // Radio buttons and selects: the Konnect Live search type options live here.
 report.radios = Array.from(document.querySelectorAll('input[type="radio"]')).map((r) => ({
@@ -152,6 +160,58 @@ tag: f.tagName.toLowerCase(), ...attrs(f), value: undefined, contentLength: clea
 })),
 controls: Array.from(modal.querySelectorAll('button, a[ng-click]')).filter(vis).map((b) => ({ text: mask(b.textContent), ...attrs(b) }))
 };
+}
+
+// Angular data behind the screens this check needs: Call History
+// (surveyAttemptData), Follow Up (surveyDetailData), the export file list,
+// the agent desktop's live activities and an open lead's own record.
+// Values are kept only for fields that describe the process (outcomes,
+// types, states, dates, dealers, campaigns, IDs); anything that could be
+// customer data is reduced to its type and length.
+const SAFE_KEY = /outcome|type|state|status|date|time|dealer|campaign|source|attempt|brand|module|agent|advisor|severity|enquiry|request|created|completed|recreating|sent|id$/i;
+const UNSAFE_KEY = /name|email|phone|mobile|landline|reg|note|comment|description|address|postcode|content|token|url|href|message|text/i;
+// Dealer, campaign, source and outcome values are what the check is about,
+// so they are kept even when the key also says "Name".
+const PROCESS_KEY = /^(?!.*customer).*(dealer|campaign|source|brand|outcome|status|state)/i;
+const keepValue = (key) => PROCESS_KEY.test(key) || (SAFE_KEY.test(key) && !UNSAFE_KEY.test(key));
+function safeValue(key, v, depth) {
+if (v === null || v === undefined) return v;
+if (Array.isArray(v)) return depth > 0 ? v.slice(0, 3).map((x) => safeValue(key, x, depth - 1)).concat(v.length > 3 ? [`(+${v.length - 3} more)`] : []) : `array(${v.length})`;
+if (typeof v === 'object') return depth > 0 ? safeObject(v, depth - 1) : 'object';
+if (typeof v === 'string') return keepValue(key) ? mask(v) : `string(${v.length})`;
+return keepValue(key) ? v : typeof v;
+}
+function safeObject(obj, depth) {
+const out = {};
+Object.keys(obj || {}).filter((k) => !k.startsWith('$')).slice(0, 80).forEach((k) => { out[k] = safeValue(k, obj[k], depth); });
+return out;
+}
+if (report.angular) {
+const scopeData = {};
+const WANTED = /surveyAttemptData|surveyDetailData|exportFiles|liveActivities|Call\.RecentHistory|customerTimeLine/;
+document.querySelectorAll('[ng-repeat]').forEach((el) => {
+const expr = el.getAttribute('ng-repeat') || '';
+if (!WANTED.test(expr)) return;
+const key = expr.split(' in ')[0].trim();
+let item = null;
+try { item = angular.element(el).scope()[key]; } catch (e) { /* no scope */ }
+if (!item || typeof item !== 'object') return;
+const bucket = scopeData[maskDigits(expr).slice(0, 80)] || (scopeData[maskDigits(expr).slice(0, 80)] = []);
+if (bucket.length < 6) bucket.push(safeObject(item, 1));
+});
+report.scopeData = scopeData;
+// The open modal's own record (lead details, outcomes, dealer, next action).
+const openModal = Array.from(document.querySelectorAll('.modal, [role="dialog"]')).find(vis);
+if (openModal) {
+try {
+const scope = angular.element(openModal.querySelector('.modal-content') || openModal).scope();
+const records = {};
+['results', 'survey', 'selected', 'lead', 'activity', 'theActivity'].forEach((name) => {
+if (scope && scope[name] && typeof scope[name] === 'object') records[name] = safeObject(scope[name], 2);
+});
+report.modalRecord = records;
+} catch (e) { report.modalRecord = 'unreadable'; }
+}
 }
 
 const json = JSON.stringify(report, null, 1);
