@@ -8,7 +8,7 @@ Browser bookmarklets used by staff inside the Konnect CRM. The main tools are:
 
 ## How the tools are released
 
-Each bookmarklet in `Bookmarklets.txt` fetches its script from the `main` branch on every click. **`main` is production**: anything on it is live for every user straight away. Develop on `work` (or the session branch), and change `main` only on a deliberate release.
+Each bookmarklet in `Bookmarklets.txt` fetches its script from the `main` branch on every click. **`main` is production**: anything on it is live for every user straight away. The tools are built, so minor edits go straight to `main` once the checks below pass.
 
 ## Checks before every push
 
