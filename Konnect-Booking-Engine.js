@@ -486,7 +486,7 @@
     return withReg([baseName(v), v.descriptor].filter(Boolean).join(' '), v);
   }
 
-  /* "a new Peugeot 5008" / "a used Ford Puma (MM73NXR)" /
+  /* "a new Peugeot 5008" / "a used Ford Puma (CD73EFG)" /
      "the used Peugeot 3008 and 2008 petrol automatic" / "used Peugeot 208s" */
   function voiPhrase(vehicles, category, warnings, options) {
     const motability = options && options.motability;

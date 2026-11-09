@@ -48,11 +48,11 @@ test('Example 1: two used Peugeots, petrol automatic, PX by reg and mileage', ()
       { make: 'peugeot', model: '3008', condition: 'used', descriptor: 'petrol automatic' },
       { make: 'peugeot', model: '2008', condition: 'used', descriptor: 'petrol automatic' }
     ],
-    px: { status: 'yes', items: [{ reg: 'KN70PLX', mileage: '44100' }] },
+    px: { status: 'yes', items: [{ reg: 'AB70CDE', mileage: '44100' }] },
     notes: ['looking to explore options']
   }, [...P,
     'Customer is booked in on 09/11 at 16:00 to test drive the used Peugeot 3008 and 2008 petrol automatic and have an accurate valuation of their car',
-    'PX: (KN70PLX) approx 44100 miles',
+    'PX: (AB70CDE) approx 44100 miles',
     '-Recommended to res',
     '-Looking to explore options']);
   assert.strictEqual(r.title, 'Peugeot 3008 And 2008 Petrol Automatic');
@@ -61,18 +61,18 @@ test('Example 1: two used Peugeots, petrol automatic, PX by reg and mileage', ()
 test('Example 2: Ford Puma from the lead, FAO Lee', () => {
   expectLines({
     type: 'testdrive', fao: 'lee', date: { day: 15, month: 11 }, time: '11:00AM',
-    vehicles: [{ make: 'Ford', model: 'Puma', reg: 'MM73NXR' }]
+    vehicles: [{ make: 'Ford', model: 'Puma', reg: 'CD73EFG' }]
   }, ['FAO Lee', ...P,
-    'Customer is booked in on 15/11 at 11:00 to test drive a used Ford Puma (MM73NXR)',
+    'Customer is booked in on 15/11 at 11:00 to test drive a used Ford Puma (CD73EFG)',
     '-Recommended to res']);
 });
 
 test('Example 3: VM left, Citroen C5 Aircross', () => {
   expectLines({
     type: 'testdrive', contact: 'vm', date: { day: 8, month: 11 }, time: '11:00AM',
-    vehicles: [{ make: 'Citroen', model: 'C5 Aircross', reg: 'WG68EVC' }]
+    vehicles: [{ make: 'Citroen', model: 'C5 Aircross', reg: 'EF68GHJ' }]
   }, [VM, ...P,
-    'Customer is booked in on 08/11 at 11:00 to test drive a used Citroen C5 Aircross (WG68EVC)',
+    'Customer is booked in on 08/11 at 11:00 to test drive a used Citroen C5 Aircross (EF68GHJ)',
     '-Recommended to res']);
 });
 
@@ -97,12 +97,12 @@ test('Example 5: VM left, new Peugeot 5008, 9:00 AM', () => {
 test('Partner example: test drive with call beforehand, no PX, cash', () => {
   expectLines({
     type: 'testdrive', date: { day: 7 }, time: '11:00',
-    vehicles: [{ make: 'Peugeot', model: 'Partner', reg: 'BD21 OWJ' }],
+    vehicles: [{ make: 'Peugeot', model: 'Partner', reg: 'GH21 JKL' }],
     px: { status: 'none' },
     payment: { kind: 'cash' },
     notes: ['Send video walkthrough today and call customer beforehand to confirm availability.', 'Open to other models | Short or long wheelbase']
   }, [...P,
-    'Customer is booked in on 07/11 at 11:00 to test drive a used Peugeot Partner (BD21OWJ)',
+    'Customer is booked in on 07/11 at 11:00 to test drive a used Peugeot Partner (GH21JKL)',
     '-No PX',
     '-Recommended to res',
     '-Send video walkthrough today and call customer beforehand to confirm availability',
@@ -115,7 +115,7 @@ test('Partner example: test drive with call beforehand, no PX, cash', () => {
 const D = { date: { day: 10, month: 11 }, time: '10:00' };
 const NEW_MM = [{ make: 'Peugeot', model: '208' }];
 const USED_MM = [{ make: 'Peugeot', model: '208', reg: 'AB12CDE' }];
-const PX1 = { status: 'yes', items: [{ make: 'mini', model: 'countryman', reg: 'au64 pdz', mileage: '83,737' }] };
+const PX1 = { status: 'yes', items: [{ make: 'mini', model: 'countryman', reg: 'jk64 lmn', mileage: '83,737' }] };
 
 test('Test drive new / used with PX (sheet)', () => {
   assert.strictEqual(sentence({ ...D, type: 'testdrive', vehicles: NEW_MM, px: PX1 }),
@@ -126,7 +126,7 @@ test('Test drive new / used with PX (sheet)', () => {
 
 test('PX line casing, reg and mileage normalised', () => {
   const r = build({ ...D, type: 'testdrive', vehicles: USED_MM, px: PX1 });
-  assert.strictEqual(r.lines[4], 'PX: Mini Countryman (AU64PDZ) approx 83737 miles');
+  assert.strictEqual(r.lines[4], 'PX: Mini Countryman (JK64LMN) approx 83737 miles');
   assert.strictEqual(r.lines[5], '-Recommended to res');
 });
 
