@@ -1733,7 +1733,7 @@ function nationalWindowStart(now) {
 return new Date(now.getFullYear(), now.getMonth(), now.getDate() - NATIONAL_WINDOW_DAYS);
 }
 const NATIONAL_BATCH_HEADER = ['NationalCheck', 'Customer', 'Reg', 'ActivityID', 'LeadCreated', 'Campaign', 'Dealer', 'LastContact', 'State', 'ExportOutcome', 'Attempts', 'ManualReschedules', 'AutoReschedules', 'ExportHint'];
-const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx'];
+const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx', 'Reg', 'ResetFields'];
 const NATIONAL_VERDICTS = ['Reset', 'Check', 'Not found', 'OK'];
 const NATIONAL_RESULTS_KEY = '_slaNationalCheckResults';
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -1780,6 +1780,12 @@ const p = (n) => String(n).padStart(2, '0');
 return `${p(date.getDate())}/${p(date.getMonth() + 1)}/${date.getFullYear()} ${p(date.getHours())}:${p(date.getMinutes())}`;
 }
 
+function lastCallDate(list) {
+const calls = list.filter((r) => /call/i.test(r['Communication Type'] || ''));
+const last = calls[calls.length - 1];
+return last ? parseHubIsoDate(last['Intervention Created Date']) : null;
+}
+
 // One entry per national lead whose latest contact falls in the window.
 function prescreenNationalLeads(rows, now) {
 const nowMs = (now || new Date()).getTime();
@@ -1810,7 +1816,9 @@ activityId,
 leadCreated: hubUkDateToMinute(last['Activity Created Date']),
 campaign: last['Campaign'],
 dealer: last['Dealer'],
-lastContact: formatHubDate(lastDate),
+// The last call, not a notification email sent after it: the Lead
+// Checker compares Enquiry Max sends with this time.
+lastContact: formatHubDate(lastCallDate(list) || lastDate),
 state,
 outcome: open ? '' : (last['ActivityOutcome'] || ''),
 attempts,
@@ -1827,17 +1835,20 @@ const lines = leads.map((l) => ['national', l.customer, l.reg, l.activityId, l.l
 return [NATIONAL_BATCH_HEADER.join('\t'), ...lines].join('\n');
 }
 
-// Returns {ok, results, error}. The header must match exactly.
+// Reads columns by name, so an export from an older or newer Lead Checker
+// (fewer or extra columns) still imports. Returns {ok, results, error}.
 function parseNationalResultsTsv(text) {
-const lines = String(text || '').replace(/\r/g, '').split('\n').filter((l) => l.trim() !== '');
+const lines = String(text || '').replace(/^\uFEFF/, '').replace(/\r/g, '').split('\n').filter((l) => l.trim() !== '');
 if (lines.length === 0) return { ok: false, results: [], error: 'Nothing on the clipboard.' };
-if (lines[0] !== NATIONAL_RESULT_HEADER.join('\t')) {
-return { ok: false, results: [], error: 'This is not a National results export from the Lead Checker.' };
-}
-const results = lines.slice(1).map((line) => {
+const headerAt = lines.findIndex((l) => l.split('\t')[0].trim() === 'NationalResult');
+if (headerAt < 0) return { ok: false, results: [], error: 'This is not a National results export from the Lead Checker.' };
+const header = lines[headerAt].split('\t').map((h) => h.trim());
+const missing = ['Customer', 'ActivityID', 'Verdict'].filter((h) => !header.includes(h));
+if (missing.length) return { ok: false, results: [], error: `The National results are missing ${missing.join(', ')}. Copy them again from the Lead Checker.` };
+const results = lines.slice(headerAt + 1).map((line) => {
 const cells = line.split('\t');
 const r = {};
-NATIONAL_RESULT_HEADER.forEach((h, i) => { r[h] = (cells[i] || '').trim(); });
+NATIONAL_RESULT_HEADER.forEach((h) => { const i = header.indexOf(h); r[h] = i >= 0 ? (cells[i] || '').trim() : ''; });
 return r;
 }).filter((r) => r.NationalResult === 'national');
 return { ok: true, results, error: null };
@@ -1850,10 +1861,19 @@ results.forEach((r) => { counts[r.Verdict] = (counts[r.Verdict] || 0) + 1; });
 return counts;
 }
 
+// The exact notes, line breaks included, travel inside ResetFields.
+function nationalResetNotes(r) {
+try {
+const fields = JSON.parse(r.ResetFields || '{}');
+if (fields && typeof fields.InitialNotes === 'string') return fields.InitialNotes;
+} catch (error) { /* fall back to the flattened column */ }
+return r.ResetInitialNotes || '';
+}
+
 function buildNationalResetBlock(r) {
 return [
 `Campaign: ${r.ResetCampaign || ''}`,
-`Initial notes: ${r.ResetInitialNotes || ''}`,
+`Initial notes: ${nationalResetNotes(r)}`,
 `Vehicle of interest: ${r.ResetVoi || ''}`,
 `Part exchange: ${r.ResetPx || ''}`
 ].join('\n');
@@ -2031,6 +2051,8 @@ if (rows.length === 0 || !('ActivityID' in rows[0]) || !('Dealer' in rows[0])) {
 return { ok: null, summary: 'The Customer Hub file did not have the expected columns. Stopped.' };
 }
 const leads = prescreenNationalLeads(rows, now);
+// A new check starts from nothing: the last run's verdicts are dropped.
+removeStoredKey(NATIONAL_RESULTS_KEY);
 const stale = isHubFileOlderThan(rows, fetched.previousVersion);
 return {
 ok: null,
@@ -2164,6 +2186,10 @@ const earlyRows = parseCustomerHubTsv([header,
 row('6', '2026-11-06 08:00:00', 'National', 'Early Example', 'New', '70000005', 'Manual Rescheduled', 'In Progress', '1', ''),
 row('7', '2026-11-05 23:59:00', 'National', 'Too Early', 'New', '70000006', 'Manual Rescheduled', 'In Progress', '1', '')].join('\n'));
 check('window is whole days: a Monday afternoon run keeps Friday morning but not Thursday', prescreenNationalLeads(earlyRows, new Date(2026, 10, 9, 14, 30)).map((l) => l.activityId), ['70000005']);
+const emailAfter = parseCustomerHubTsv([header,
+row('8', '2026-11-08 09:59:00', 'Stellantis &You National Used Cars', 'Alex Sample', 'New', '70000007', 'Spoke to Customer', 'Completed', '1', 'Face to Face - National UCS'),
+row('9', '2026-11-08 10:15:00', 'Stellantis &You National Used Cars', 'Alex Sample', 'Completed', '70000007', 'Notification Sent', 'Completed', '1', 'Face to Face - National UCS').replace('Outbound Call', 'Outbound Email')].join('\n'));
+check('last contact is the last call, not a later notification email', prescreenNationalLeads(emailAfter, new Date(2026, 10, 9, 9, 0))[0].lastContact, '08/11/2026 09:59');
 const alex = leads.find((l) => l.activityId === '70000001');
 check('latest row wins for state', alex.state, 'Completed');
 check('latest row wins for outcome', alex.outcome, 'Max Attempts Reached -  No Answer');
@@ -2185,15 +2211,20 @@ check('file with nothing newer than the previous version is flagged', isHubFileO
 check('no previous version time means no warning', isHubFileOlderThan(freshRows, ''), false);
 check('values with tabs are cleaned', buildNationalBatchTsv([{ ...alex, customer: 'Alex\tSample' }]).split('\n')[1].split('\t')[1], 'Alex Sample');
 const resultTsv = [NATIONAL_RESULT_HEADER.join('\t'),
-['national', 'Alex Sample', '70000001', '1400001', 'OK', 'Closed with Max Attempts', '3', 'Max Attempts Reached', '', '', '', '', '', ''].join('\t'),
-['national', 'Sam Buyer', '70000002', '1400002', 'Reset', 'Closed with no dealership', '2', 'Email Only Lead', '', 'Customer asked for a call back', 'Enquiry - Used', 'Looking for a hatchback', 'AB12CDE', 'No'].join('\t'),
-['national', 'Jo Example', '70000003', '', 'Not found', 'No matching lead', '', '', '', '', '', '', '', ''].join('\t')
+['national', 'Alex Sample', '70000001', '1400001', 'OK', 'Closed with Max Attempts', '3', 'Max Attempts Reached', '', '', '', '', '', '', 'AB12CDE', ''].join('\t'),
+['national', 'Sam Buyer', '70000002', '1400002', 'Reset', 'Closed with no dealership', '2', 'Email Only Lead', '', 'Customer asked for a call back', 'Enquiry - Used', 'Looking for a hatchback | Petrol', 'AB12CDE', 'No', 'AB12CDE', JSON.stringify({ InitialNotes: 'Looking for a hatchback\nPetrol' })].join('\t'),
+['national', 'Jo Example', '70000003', '', 'Not found', 'No matching lead', '', '', '', '', '', '', '', '', '', ''].join('\t')
 ].join('\n');
 const parsed = parseNationalResultsTsv(resultTsv);
 check('results import accepts the exact header', parsed.ok, true);
 check('verdict counts', countNationalVerdicts(parsed.results), { Reset: 1, Check: 0, 'Not found': 1, OK: 1 });
 check('results import rejects another header', parseNationalResultsTsv('Name\tPhone\nx\ty').ok, false);
+const olderExport = resultTsv.split('\n').map((l) => l.split('\t').slice(0, 14).join('\t')).join('\n');
+check('an export without the newer columns still imports', [parseNationalResultsTsv(olderExport).ok, parseNationalResultsTsv(olderExport).results[1].Verdict, parseNationalResultsTsv(olderExport).results[1].Reg], [true, 'Reset', '']);
+check('a stray line or byte order mark before the header is ignored', parseNationalResultsTsv('\uFEFFcopied from Lead Checker\n' + resultTsv).results.length, 3);
+check('an export missing a needed column is refused', parseNationalResultsTsv('NationalResult\tCustomer\nnational\tAlex').ok, false);
 check('reset block', buildNationalResetBlock(parsed.results[1]).split('\n')[0], 'Campaign: Enquiry - Used');
+check('reset block keeps the notes line breaks', buildNationalResetBlock(parsed.results[1]).split('\n').slice(1, 3), ['Initial notes: Looking for a hatchback', 'Petrol']);
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager national-check self-test FAILED:\n' + failures.join('\n'));
 } else {

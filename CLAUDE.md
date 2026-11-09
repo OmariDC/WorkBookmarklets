@@ -1,9 +1,10 @@
 # WorkBookmarklets
 
-Browser bookmarklets used by staff inside the Konnect CRM. The two main tools are:
+Browser bookmarklets used by staff inside the Konnect CRM. The main tools are:
 
 - `SLA-Manager.js` runs on Konnect Manager. It lists SLA and Pending leads, exports them for the Lead Checker and imports its results back onto the lead cards.
 - `Konnect-Lead-Checker.js` runs on Konnect Live. It takes the pasted batch, finds each lead, classifies its Initial Notes into six tiers and sends the results back.
+- `Lead-Reset.js` runs on the agent desktop. It takes the National check's Reset leads and adds each one back as a new lead, then parks the call. It never presses Finished.
 
 ## How the tools are released
 
@@ -13,10 +14,10 @@ Each bookmarklet in `Bookmarklets.txt` fetches its script from the `main` branch
 
 ```sh
 node tests/run-self-tests.mjs
-node --check SLA-Manager.js && node --check Konnect-Lead-Checker.js
+node --check SLA-Manager.js && node --check Konnect-Lead-Checker.js && node --check Lead-Reset.js
 ```
 
-The runner loads both tools with a minimal DOM stub, runs every built-in self-test and checks that the values shared between the two files still match. Any failure exits non-zero.
+The runner loads both tools with a minimal DOM stub, runs every built-in self-test and checks that the values shared between the files still match. Any failure exits non-zero.
 
 ## Rules
 
