@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Runs every built-in self-test in the two main tools outside the browser,
-// then checks the values the two files must share. Exit 1 on any failure.
+// Runs every built-in self-test in the main tools outside the browser,
+// then checks the values the files must share. Exit 1 on any failure.
 //
 //   node tests/run-self-tests.mjs
 import { readFileSync } from 'node:fs';
@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
 import vm from 'node:vm';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const TOOLS = ['Konnect-Lead-Checker.js', 'SLA-Manager.js'];
+const TOOLS = ['Konnect-Lead-Checker.js', 'SLA-Manager.js', 'Lead-Reset.js'];
 let failed = false;
 
 // Just enough DOM for the scripts to load and run their self-tests. The UI
@@ -71,6 +71,7 @@ function runTool(file) {
 function sharedContractChecks() {
   const lc = readFileSync(join(root, 'Konnect-Lead-Checker.js'), 'utf8');
   const sla = readFileSync(join(root, 'SLA-Manager.js'), 'utf8');
+  const reset = readFileSync(join(root, 'Lead-Reset.js'), 'utf8');
   const problems = [];
   const grab = (src, re, what) => {
     const m = src.match(re);
@@ -89,7 +90,11 @@ function sharedContractChecks() {
       [grab(sla, /const NATIONAL_BATCH_HEADER = (\[[^\]]*\])/, 'NATIONAL_BATCH_HEADER (SLA Manager)')]],
     ['National check results header',
       grab(lc, /const NATIONAL_RESULT_HEADER = (\[[^\]]*\])/, 'NATIONAL_RESULT_HEADER (Lead Checker)'),
-      [grab(sla, /const NATIONAL_RESULT_HEADER = (\[[^\]]*\])/, 'NATIONAL_RESULT_HEADER (SLA Manager)')]],
+      [grab(sla, /const NATIONAL_RESULT_HEADER = (\[[^\]]*\])/, 'NATIONAL_RESULT_HEADER (SLA Manager)'),
+        grab(reset, /const NATIONAL_RESULT_HEADER = (\[[^\]]*\])/, 'NATIONAL_RESULT_HEADER (Lead Reset)')]],
+    ['National results storage key',
+      grab(sla, /const NATIONAL_RESULTS_KEY = ('[^']*')/, 'NATIONAL_RESULTS_KEY (SLA Manager)'),
+      [grab(reset, /const NATIONAL_RESULTS_KEY = ('[^']*')/, 'NATIONAL_RESULTS_KEY (Lead Reset)')]],
     ['Tier colours',
       grab(lc, /const TIER_COLORS = (\{[^}]*\})/, 'TIER_COLORS'),
       [grab(sla, /const LEAD_CHECKER_TIER_COLORS = (\{[^}]*\})/, 'LEAD_CHECKER_TIER_COLORS')]],
@@ -99,7 +104,7 @@ function sharedContractChecks() {
   ];
   for (const [label, a, others] of pairs) {
     if (a == null) continue;
-    if (!others.length) problems.push(`${label}: nothing found on the SLA Manager side`);
+    if (!others.length) problems.push(`${label}: nothing found on the other side`);
     for (const b of others) if (b != null && a !== b) problems.push(`${label} differ:\n    ${a}\n    ${b}`);
   }
   for (const value of ["'send back through'", "'check: needs contact?'", "'Post Closure Processing'"]) {

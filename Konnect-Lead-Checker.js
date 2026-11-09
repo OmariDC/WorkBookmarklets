@@ -2181,7 +2181,7 @@ return { rows, headerOk: true, error: null };
 // ===================================================================
 
 const NATIONAL_BATCH_HEADER = ['NationalCheck', 'Customer', 'Reg', 'ActivityID', 'LeadCreated', 'Campaign', 'Dealer', 'LastContact', 'State', 'ExportOutcome', 'Attempts', 'ManualReschedules', 'AutoReschedules', 'ExportHint'];
-const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx'];
+const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx', 'Reg', 'ResetFields'];
 const NATIONAL_VERDICT_ORDER = ['Reset', 'Check', 'Not found', 'OK'];
 const NATIONAL_ADMIN_OUTCOMES = /test lead|duplicate record|invalid contact details|s&y invalid lead drop|multiple lead enq|gdpr restricted/i;
 // Closing outcomes that leave a national lead with nowhere to go unless it
@@ -2691,6 +2691,22 @@ const text = comments.map((c) => `${c.CreatedDate || ''} ${c.CreatedBy || ''}: $
 return text.length > 500 ? text.slice(0, 497) + '...' : text;
 }
 
+// Pure. The closed lead's dropdown values the Lead Reset tool copies onto
+// the new lead. Konnect Live and the agent desktop share these key names.
+const RESET_FIELD_KEYS = /^(LeadType|ChannelBadge|SourceOfEnquiry|LeadRequest|VehicleOfInterest|HasPartExchange)/;
+function pickResetFields(leadDetails, leadRequestText, exactNotes) {
+const fields = {};
+Object.keys(leadDetails || {}).forEach((key) => {
+const value = leadDetails[key];
+if (!RESET_FIELD_KEYS.test(key) || value == null || value === '' || typeof value === 'object') return;
+fields[key] = value;
+});
+if (leadRequestText) fields.LeadRequestText = leadRequestText;
+// JSON keeps the line breaks that the TSV cell would flatten.
+if (exactNotes) fields.InitialNotes = exactNotes;
+return fields;
+}
+
 // Opens one lead's window and reads what a reset needs. Returns null when
 // the window could not be read; the verdict stands either way.
 async function readNationalLeadDetails(leadId, items) {
@@ -2705,6 +2721,9 @@ const campaign = extractCampaignField(panel);
 details.campaign = campaign.primary || '';
 details.leadRequest = campaign.parenthetical || '';
 details.initialNotes = extractInitialNotes(panel) || '';
+// The reset copies the notes onto the new lead exactly, line breaks included.
+const notesEl = panel.querySelector('#txtInitialNotes');
+details.exactInitialNotes = notesEl ? String(('value' in notesEl && notesEl.value) || notesEl.innerText || notesEl.textContent || '').trim() : details.initialNotes;
 let results = null;
 const modelInput = modal.querySelector('input[ng-model^="results."]');
 try { results = modelInput ? angular.element(modelInput).scope().results : null; } catch (error) { results = null; }
@@ -2718,6 +2737,7 @@ const pxRadio = Array.from(modal.querySelectorAll('input[type="radio"]')).find((
 const pxValue = leadDetails.HasPartExchange;
 details.px = pxValue === true ? 'Has Part Exchange' : pxValue === false ? 'No Part Exchange'
 : (pxRadio ? (pxRadio.closest('label') || pxRadio.parentElement).textContent.replace(/\s+/g, ' ').trim() : '');
+details.fields = pickResetFields(leadDetails, details.leadRequest, details.exactInitialNotes);
 if (await clickModalTab(modal, 'Follow Up')) await waitForRepeat(modal, 'item in surveyDetailData', 1500);
 details.followUp = scopeItemsFor(modal, 'item in surveyDetailData');
 if (await clickModalTab(modal, 'Call History')) await waitForRepeat(modal, 'item in surveyAttemptData', 1500);
@@ -2732,9 +2752,9 @@ await closeLeadModal();
 
 async function processNationalRow(row, session, group) {
 const result = Object.assign(makeResultBase(row), {
-mode: 'national', activityId: row.activityId, leadId: null, verdict: null, verdictReason: null,
+mode: 'national', activityId: row.activityId, reg: row.reg, leadId: null, verdict: null, verdictReason: null,
 attempts: null, finalOutcome: null, enquiryMaxDealer: null, followUpNotes: '', callHistory: [],
-resetCampaign: '', resetInitialNotes: '', resetVoi: '', resetPx: ''
+resetCampaign: '', resetInitialNotes: '', resetVoi: '', resetPx: '', resetFields: ''
 });
 let items = readAllTimelineItems();
 let ids = findNationalLeadIds(items, row.parsedCreated);
@@ -2792,6 +2812,7 @@ patch.resetCampaign = details.campaign || row.campaign;
 patch.resetInitialNotes = details.initialNotes;
 patch.resetVoi = details.voi;
 patch.resetPx = details.px;
+patch.resetFields = JSON.stringify(details.fields || {});
 }
 }
 }
@@ -2806,7 +2827,8 @@ const reason = exception ? `Could not check: ${exceptionLabel(r.exception)}` : (
 const isReset = verdict === 'Reset';
 return ['national', r.name, r.activityId, r.leadId, verdict, reason,
 r.attempts != null ? String(r.attempts) : '', r.finalOutcome, r.enquiryMaxDealer, r.followUpNotes,
-isReset ? r.resetCampaign : '', isReset ? r.resetInitialNotes : '', isReset ? r.resetVoi : '', isReset ? r.resetPx : ''
+isReset ? r.resetCampaign : '', isReset ? r.resetInitialNotes : '', isReset ? r.resetVoi : '', isReset ? r.resetPx : '',
+r.reg || '', isReset ? r.resetFields : ''
 ].map(tsvCell).join('\t');
 });
 return [NATIONAL_RESULT_HEADER.join('\t'), ...rows].join('\n');
@@ -4867,7 +4889,7 @@ check('nearest lead created times are listed', nearestLeadCreatedTimes(callItems
 const exportSession = {
 rows: [{ inputIndex: 0 }, { inputIndex: 1 }, { inputIndex: 2 }],
 results: {
-0: { inputIndex: 0, status: 'CLASSIFIED', name: 'Alex Sample', activityId: '70000001', leadId: '1400001', verdict: 'Reset', verdictReason: 'Closed as Email Only Lead without being sent to a dealership', attempts: 2, finalOutcome: 'Email Only Lead', enquiryMaxDealer: '', followUpNotes: 'Fri 6th Nov 2026 09:43 Agent A: no reply\tyet', resetCampaign: 'Enquiry - Used', resetInitialNotes: 'Line one\nLine two', resetVoi: 'Peugeot 208 Petrol AB12CDE', resetPx: 'No Part Exchange' },
+0: { inputIndex: 0, status: 'CLASSIFIED', name: 'Alex Sample', activityId: '70000001', leadId: '1400001', verdict: 'Reset', verdictReason: 'Closed as Email Only Lead without being sent to a dealership', attempts: 2, finalOutcome: 'Email Only Lead', enquiryMaxDealer: '', followUpNotes: 'Fri 6th Nov 2026 09:43 Agent A: no reply\tyet', resetCampaign: 'Enquiry - Used', resetInitialNotes: 'Line one\nLine two', resetVoi: 'Peugeot 208 Petrol AB12CDE', resetPx: 'No Part Exchange', reg: 'AB12CDE', resetFields: JSON.stringify({ LeadTypeID: 2, InitialNotes: 'Line one\nLine two' }) },
 1: { inputIndex: 1, status: 'CLASSIFIED', name: 'Sam Buyer', activityId: '70000002', leadId: '1400002', verdict: 'OK', verdictReason: 'Sent to Preston via Enquiry Max', attempts: 1, finalOutcome: 'Face to Face - National UCS', enquiryMaxDealer: 'Preston', followUpNotes: '', resetCampaign: 'should not export', resetInitialNotes: '', resetVoi: '', resetPx: '' },
 2: { inputIndex: 2, status: 'EXCEPTION', exception: 'SEARCH_TIMEOUT', name: 'Jo Example', activityId: '70000003' }
 }
@@ -4875,8 +4897,12 @@ results: {
 const lines = buildNationalResultsExport(exportSession).split('\n');
 check('results header', lines[0], NATIONAL_RESULT_HEADER.join('\t'));
 check('every row has every column', lines.every((l) => l.split('\t').length === NATIONAL_RESULT_HEADER.length), true);
-check('reset row carries reset details, tabs and newlines cleaned', lines[1].split('\t').slice(9), ['Fri 6th Nov 2026 09:43 Agent A: no reply yet', 'Enquiry - Used', 'Line one | Line two', 'Peugeot 208 Petrol AB12CDE', 'No Part Exchange']);
-check('OK row leaves reset columns blank', lines[2].split('\t').slice(10), ['', '', '', '']);
+check('reset row carries reset details, tabs and newlines cleaned', lines[1].split('\t').slice(9, 14), ['Fri 6th Nov 2026 09:43 Agent A: no reply yet', 'Enquiry - Used', 'Line one | Line two', 'Peugeot 208 Petrol AB12CDE', 'No Part Exchange']);
+check('OK row leaves reset columns blank', lines[2].split('\t').slice(10, 14), ['', '', '', '']);
+check('reset fields travel as JSON in the last column', JSON.parse(lines[1].split('\t')[15]), { LeadTypeID: 2, InitialNotes: 'Line one\nLine two' });
+check('reg travels with every row', lines[1].split('\t')[14], 'AB12CDE');
+check('reset fields keep only lead dropdowns and vehicle of interest', pickResetFields({ LeadTypeID: 2, LeadRequestID: 9, VehicleOfInterestMake: 'Peugeot', HasPartExchange: false, MonthlyPayment: 199, Deposit: null, Extra: { a: 1 } }, 'Enquiry - Used', 'A\nB'),
+{ LeadTypeID: 2, LeadRequestID: 9, VehicleOfInterestMake: 'Peugeot', HasPartExchange: false, LeadRequestText: 'Enquiry - Used', InitialNotes: 'A\nB' });
 check('exception row exported as Check with a reason', lines[3].split('\t').slice(4, 6), ['Check', 'Could not check: Search timed out']);
 
 const ui = { isCustomerOpen: () => false, isTierOpen: (k, d) => d, avatar: () => '' };

@@ -1733,7 +1733,7 @@ function nationalWindowStart(now) {
 return new Date(now.getFullYear(), now.getMonth(), now.getDate() - NATIONAL_WINDOW_DAYS);
 }
 const NATIONAL_BATCH_HEADER = ['NationalCheck', 'Customer', 'Reg', 'ActivityID', 'LeadCreated', 'Campaign', 'Dealer', 'LastContact', 'State', 'ExportOutcome', 'Attempts', 'ManualReschedules', 'AutoReschedules', 'ExportHint'];
-const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx'];
+const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx', 'Reg', 'ResetFields'];
 const NATIONAL_VERDICTS = ['Reset', 'Check', 'Not found', 'OK'];
 const NATIONAL_RESULTS_KEY = '_slaNationalCheckResults';
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -1858,10 +1858,19 @@ results.forEach((r) => { counts[r.Verdict] = (counts[r.Verdict] || 0) + 1; });
 return counts;
 }
 
+// The exact notes, line breaks included, travel inside ResetFields.
+function nationalResetNotes(r) {
+try {
+const fields = JSON.parse(r.ResetFields || '{}');
+if (fields && typeof fields.InitialNotes === 'string') return fields.InitialNotes;
+} catch (error) { /* fall back to the flattened column */ }
+return r.ResetInitialNotes || '';
+}
+
 function buildNationalResetBlock(r) {
 return [
 `Campaign: ${r.ResetCampaign || ''}`,
-`Initial notes: ${r.ResetInitialNotes || ''}`,
+`Initial notes: ${nationalResetNotes(r)}`,
 `Vehicle of interest: ${r.ResetVoi || ''}`,
 `Part exchange: ${r.ResetPx || ''}`
 ].join('\n');
@@ -2197,15 +2206,16 @@ check('file with nothing newer than the previous version is flagged', isHubFileO
 check('no previous version time means no warning', isHubFileOlderThan(freshRows, ''), false);
 check('values with tabs are cleaned', buildNationalBatchTsv([{ ...alex, customer: 'Alex\tSample' }]).split('\n')[1].split('\t')[1], 'Alex Sample');
 const resultTsv = [NATIONAL_RESULT_HEADER.join('\t'),
-['national', 'Alex Sample', '70000001', '1400001', 'OK', 'Closed with Max Attempts', '3', 'Max Attempts Reached', '', '', '', '', '', ''].join('\t'),
-['national', 'Sam Buyer', '70000002', '1400002', 'Reset', 'Closed with no dealership', '2', 'Email Only Lead', '', 'Customer asked for a call back', 'Enquiry - Used', 'Looking for a hatchback', 'AB12CDE', 'No'].join('\t'),
-['national', 'Jo Example', '70000003', '', 'Not found', 'No matching lead', '', '', '', '', '', '', '', ''].join('\t')
+['national', 'Alex Sample', '70000001', '1400001', 'OK', 'Closed with Max Attempts', '3', 'Max Attempts Reached', '', '', '', '', '', '', 'AB12CDE', ''].join('\t'),
+['national', 'Sam Buyer', '70000002', '1400002', 'Reset', 'Closed with no dealership', '2', 'Email Only Lead', '', 'Customer asked for a call back', 'Enquiry - Used', 'Looking for a hatchback | Petrol', 'AB12CDE', 'No', 'AB12CDE', JSON.stringify({ InitialNotes: 'Looking for a hatchback\nPetrol' })].join('\t'),
+['national', 'Jo Example', '70000003', '', 'Not found', 'No matching lead', '', '', '', '', '', '', '', '', '', ''].join('\t')
 ].join('\n');
 const parsed = parseNationalResultsTsv(resultTsv);
 check('results import accepts the exact header', parsed.ok, true);
 check('verdict counts', countNationalVerdicts(parsed.results), { Reset: 1, Check: 0, 'Not found': 1, OK: 1 });
 check('results import rejects another header', parseNationalResultsTsv('Name\tPhone\nx\ty').ok, false);
 check('reset block', buildNationalResetBlock(parsed.results[1]).split('\n')[0], 'Campaign: Enquiry - Used');
+check('reset block keeps the notes line breaks', buildNationalResetBlock(parsed.results[1]).split('\n').slice(1, 3), ['Initial notes: Looking for a hatchback', 'Petrol']);
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager national-check self-test FAILED:\n' + failures.join('\n'));
 } else {
