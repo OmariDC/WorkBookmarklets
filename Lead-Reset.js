@@ -524,14 +524,15 @@ if (link && panel && !panel.classList.contains('panel-open')) link.click();
 });
 }
 
-// The notes go into the call's own notes box (Internal Notes), not a box on
-// the lead. Manage Appointments carries them onto the new lead, and the box
+// The notes go into the call notes box (Internal Notes), never the lead's
+// Initial notes box. Manage Appointments carries them onto the new lead, and the box
 // is cleared afterwards.
 function findCallNotesBox() {
 const inSection = document.querySelector('#section-call-notes textarea, [id*="call-notes"] textarea');
 if (inSection) return inSection;
 return visibleFirst(Array.from(document.querySelectorAll('textarea')).filter((t) =>
-/note/i.test(t.getAttribute('ng-model') || '') && !t.closest('[ng-repeat^="theActivity in liveActivities"]')));
+/note/i.test(t.getAttribute('ng-model') || '') && !/initial/i.test(t.getAttribute('ng-model') || '')
+&& !t.closest('[ng-repeat^="theActivity in liveActivities"]')));
 }
 
 async function fillNotes(ctx, lead) {
