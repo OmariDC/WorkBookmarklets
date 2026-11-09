@@ -119,6 +119,18 @@ if (hits.length === 1 || sameCustomer(hits)) return { index: hits[0], reason: ex
 return { index: -1, reason: exact.length > 1 ? 'several' : 'none' };
 }
 
+// The customer's lead list holds closed leads too, so a lead only counts
+// as an earlier reset when staff created it by hand on the same campaign
+// after the closed lead. Each lead's ID is the export's ActivityID.
+function findEarlierReset(activities, lead) {
+const closed = activities.find((a) => String(a.ID) === String(lead.activityId));
+const closedAt = closed ? new Date(closed.CreatedDate).getTime() : NaN;
+return activities.find((a) => String(a.ID) !== String(lead.activityId)
+&& a.ManuallyCreated === true
+&& normalise(a.CampaignName) === normalise(lead.campaign)
+&& (!Number.isFinite(closedAt) || new Date(a.CreatedDate).getTime() > closedAt)) || null;
+}
+
 // Exact text first, then a single option that contains the wanted text.
 function chooseOptionIndex(optionTexts, wanted) {
 const w = normalise(wanted);
@@ -191,6 +203,16 @@ check('placeholder option spotted', [isPlaceholderOption('(Select a Lead Type)')
 check('part exchange from fields first', wantedPartExchange({ fields: { HasPartExchange: true }, px: 'No Part Exchange' }), true);
 check('part exchange from text', wantedPartExchange({ fields: {}, px: 'No Part Exchange' }), false);
 check('part exchange unknown', wantedPartExchange({ fields: {}, px: '' }), null);
+const history = [
+{ ID: 77000001, CampaignName: 'Peugeot - PX Valuation - New', ManuallyCreated: false, CreatedDate: '2026-10-02T07:10:35+01:00' },
+{ ID: 77000002, CampaignName: 'Peugeot - PX Valuation - New', ManuallyCreated: false, CreatedDate: '2026-10-03T18:45:32+01:00' },
+{ ID: 77000003, CampaignName: 'Enquiry - Used', ManuallyCreated: false, CreatedDate: '2026-11-07T07:52:39+00:00' }
+];
+const pxLead = { activityId: '77000001', campaign: 'Peugeot - PX Valuation - New' };
+check('closed leads on the same campaign are not an earlier reset', findEarlierReset(history, pxLead), null);
+const resetDone = { ID: 77000009, CampaignName: 'Peugeot - PX Valuation - New', ManuallyCreated: true, CreatedDate: '2026-11-09T16:00:00+00:00' };
+check('a hand-made lead on the campaign after the closed one is', findEarlierReset(history.concat(resetDone), pxLead), resetDone);
+check('a hand-made lead from before the closed one is not', findEarlierReset(history.concat({ ...resetDone, CreatedDate: '2026-09-01T09:00:00+01:00' }), pxLead), null);
 } catch (error) {
 failures.push('threw: ' + (error && error.message));
 }
@@ -460,12 +482,17 @@ throw new NeedsYou(ambiguous
 
 async function checkNotAlreadyReset(ctx, lead) {
 await sleep(500);
-const same = liveActivities().filter(({ activity }) => normalise(activity.CampaignName) === normalise(lead.campaign));
-if (same.length && !ctx.allowExisting) {
-ctx.allowExisting = true;
-throw new NeedsYou(`This customer already has an open ${lead.campaign} lead, so it may already be reset. Press Skip lead to leave it, or carry on to add another.`, { carryOnLabel: 'Add another lead' });
+const activities = liveActivities().map(({ activity }) => activity);
+if (lead.activityId && activities.length && !activities.some((a) => String(a.ID) === String(lead.activityId)) && !ctx.allowOtherCustomer) {
+ctx.allowOtherCustomer = true;
+throw new NeedsYou(`The closed lead is not on this customer, so this may be the wrong ${lead.name}. Go back and pick the right customer, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on' });
 }
-return same.length ? 'Adding another lead as asked' : 'No open lead on this campaign';
+const earlier = findEarlierReset(activities, lead);
+if (earlier && !ctx.allowExisting) {
+ctx.allowExisting = true;
+throw new NeedsYou(`This customer already has a ${lead.campaign} lead added by hand after the closed one, so it may already be reset. Press Skip lead to leave it, or carry on to add another.`, { carryOnLabel: 'Add another lead' });
+}
+return earlier ? 'Adding another lead as asked' : 'Closed lead found on this customer, not reset yet';
 }
 
 async function chooseUpdateOutcomes() {
@@ -652,7 +679,7 @@ return 'Call parked';
 const STEPS = [
 { label: 'Open New Manual Outbound Call', run: openManualOutbound },
 { label: 'Find the customer', run: searchAndOpenCustomer },
-{ label: 'Check for an open lead', run: checkNotAlreadyReset },
+{ label: 'Check it is not already reset', run: checkNotAlreadyReset },
 { label: 'Choose Update Outcomes', run: chooseUpdateOutcomes },
 { label: 'Add the new lead', run: addNewLead },
 { label: 'Find the new lead', run: findNewLead },
