@@ -2523,9 +2523,16 @@ const ctx = context || {};
 const byTime = (a, b) => (eventTimeMs(a.EventTime) || 0) - (eventTimeMs(b.EventTime) || 0);
 const own = [...itemsForLead].sort(byTime);
 const attempts = own.filter(isAttemptItem).length;
-const sends = own.filter((i) => Number(i.TimelineItemType) === 2).map(emDealerOf).filter(Boolean);
-const dealerSend = sends.find((d) => !isNationalDealer(d));
-const nationalSend = sends.find((d) => isNationalDealer(d));
+// Only a send after the last call attempt is what ended the lead. An
+// earlier send (the lead was sent once, came back and was worked again)
+// does not cover how it was closed later.
+const lastAttemptMs = own.filter(isAttemptItem).reduce((max, i) => Math.max(max, eventTimeMs(i.EventTime) || 0), 0);
+const sendItems = own.filter((i) => Number(i.TimelineItemType) === 2 && emDealerOf(i));
+const currentSends = sendItems.filter((i) => (eventTimeMs(i.EventTime) || 0) >= lastAttemptMs - 2 * 60 * 1000).map(emDealerOf);
+const earlierDealerSend = sendItems.filter((i) => (eventTimeMs(i.EventTime) || 0) < lastAttemptMs - 2 * 60 * 1000)
+.map(emDealerOf).find((d) => !isNationalDealer(d));
+const dealerSend = currentSends.find((d) => !isNationalDealer(d));
+const nationalSend = currentSends.find((d) => isNationalDealer(d));
 const latestOutcome = own.filter((i) => Number(i.TimelineItemType) === 3).map((i) => outcomeFromCallDescription(i.Description)).filter(Boolean).pop();
 const finalOutcome = latestOutcome || String(batchRow.exportOutcome || '').trim();
 const base = { attempts, finalOutcome, enquiryMaxDealer: dealerSend || nationalSend || '' };
@@ -2557,7 +2564,10 @@ if (cover && NATIONAL_HANDOVER_OUTCOMES.test(finalOutcome)) return verdict('OK',
 // 2. Sent, but only to National.
 if (nationalSend) return verdict('Reset', 'Sent to Enquiry Max at National, went nowhere');
 // 7. Closed with nowhere to go.
-if (finalOutcome && NATIONAL_DEAD_END_OUTCOMES.test(finalOutcome)) return verdict('Reset', `Closed as ${finalOutcome} without being sent to a dealership`);
+if (finalOutcome && NATIONAL_DEAD_END_OUTCOMES.test(finalOutcome)) {
+const earlier = earlierDealerSend ? ` (it was sent to ${earlierDealerSend} earlier, but not after the last call)` : '';
+return verdict('Reset', `Closed as ${finalOutcome} without being sent to a dealership${earlier}`);
+}
 // 8. Unknown.
 return verdict('Check', `Outcome not seen before: ${finalOutcome || 'none recorded'}`);
 }
@@ -4819,6 +4829,12 @@ check('Email Only with no send is Reset', [r3.verdict, r3.finalOutcome], ['Reset
 // Even with a newer lead booked in at a dealership.
 const emailOnlyWithNewer = emailOnly.concat([created(1400010, '07T07:52'), it(1, 1400011, '07T09:16', 'New Sales Lead from Phone Call', 'Walk-in lead created in Enquiry Max at Walton', false), it(8, 1400010, '07T09:21', 'Appointment Created', 'Appointment Created by Agent A of type Face To Face', false)]);
 check('Email Only is still Reset when a newer lead exists', run(1400003, emailOnlyWithNewer, {}).verdict, 'Reset');
+// Sent to a dealership once, came back, then closed with nothing sent: the
+// old send does not cover the later closure.
+const sentThenClosed = [created(1400012, '02T07:10'), call(1400012, '02T09:52', 'Update Outcomes (No Call Made)', 'New Enquiry at Walton'), sent(1400012, '02T09:53', 'Walton'),
+call(1400012, '07T09:00', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400012, '07T13:07', 'No Answer - No Message Left', `Sales -> Customer Hub Team -> Ongoing -> Email Only Lead at ${NAT}`)];
+const r12 = run(1400012, sentThenClosed, {});
+check('an earlier send does not cover a later dead-end closure', [r12.verdict, /Walton earlier/.test(r12.reason)], ['Reset', true]);
 
 // Face to Face National UCS, sent to Preston.
 const f2f = [created(1400004, '07T17:47'), call(1400004, '08T10:04', 'Spoke to Customer', `Sales -> National Used Stock -> Reserve Appointment -> Face to Face - National UCS at ${NAT}`), it(8, 1400004, '08T10:05', 'Appointment Created', 'Appointment Created by Agent A of type Face To Face', false), sent(1400004, '08T10:05', 'Preston')];

@@ -1723,7 +1723,13 @@ displayMorningChecks();
 // ===================================================================
 
 const NATIONAL_DEALERS = ['National', 'Stellantis &You National Used Cars'];
-const NATIONAL_WINDOW_MS = 72 * 60 * 60 * 1000;
+// Whole days: today plus the 3 days before it, from midnight. A rolling 72
+// hours would drop the morning of the earliest day depending on the time
+// the check is run (a Monday afternoon run missed Friday morning).
+const NATIONAL_WINDOW_DAYS = 3;
+function nationalWindowStart(now) {
+return new Date(now.getFullYear(), now.getMonth(), now.getDate() - NATIONAL_WINDOW_DAYS);
+}
 const NATIONAL_BATCH_HEADER = ['NationalCheck', 'Customer', 'Reg', 'ActivityID', 'LeadCreated', 'Campaign', 'Dealer', 'LastContact', 'State', 'ExportOutcome', 'Attempts', 'ManualReschedules', 'AutoReschedules', 'ExportHint'];
 const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx'];
 const NATIONAL_VERDICTS = ['Reset', 'Check', 'Not found', 'OK'];
@@ -1775,6 +1781,7 @@ return `${p(date.getDate())}/${p(date.getMonth() + 1)}/${date.getFullYear()} ${p
 // One entry per national lead whose latest contact falls in the window.
 function prescreenNationalLeads(rows, now) {
 const nowMs = (now || new Date()).getTime();
+const windowStartMs = nationalWindowStart(now || new Date()).getTime();
 const byActivity = new Map();
 rows.forEach((r) => {
 if (!NATIONAL_DEALERS.includes(r['Dealer'])) return;
@@ -1788,7 +1795,7 @@ byActivity.forEach((list, activityId) => {
 list.sort((a, b) => (parseHubIsoDate(a['Intervention Created Date']) || 0) - (parseHubIsoDate(b['Intervention Created Date']) || 0));
 const last = list[list.length - 1];
 const lastDate = parseHubIsoDate(last['Intervention Created Date']);
-if (!lastDate || nowMs - lastDate.getTime() > NATIONAL_WINDOW_MS || lastDate.getTime() > nowMs + 60000) return;
+if (!lastDate || lastDate.getTime() < windowStartMs || lastDate.getTime() > nowMs + 60000) return;
 const attempts = list.reduce((max, r) => Math.max(max, parseInt(r['AttemptNumber'], 10) || 0), 0);
 const manualReschedules = list.filter((r) => r['Callback Type'] === 'Manual Rescheduled' || r['Call Outcome'] === 'Manual Rescheduled').length;
 const autoReschedules = list.filter((r) => r['Callback Type'] === 'Auto Rescheduled').length;
@@ -2025,7 +2032,7 @@ const leads = prescreenNationalLeads(rows, now);
 const stale = isHubFileOlderThan(rows, fetched.previousVersion);
 return {
 ok: null,
-summary: `${leads.length} national lead${leads.length === 1 ? '' : 's'} in the last 3 days, ready to check on Konnect Live`
+summary: `${leads.length} national lead${leads.length === 1 ? '' : 's'} since ${formatHubDate(nationalWindowStart(now)).slice(0, 5)}, ready to check on Konnect Live`
 + (stale ? '. Warning: the file has no activity newer than its previous version, so it may not have refreshed. Run the check again before relying on it.' : ''),
 nationalBatchTsv: buildNationalBatchTsv(leads),
 nationalCount: leads.length
@@ -2151,6 +2158,10 @@ check('parse row count', rows.length, 5);
 check('parse reads a column by header', rows[0]['ActivityID'], '70000001');
 const leads = prescreenNationalLeads(rows, new Date(2026, 10, 9, 9, 0));
 check('dealer filter and 3-day window keep two leads', leads.map((l) => l.activityId), ['70000001', '70000002']);
+const earlyRows = parseCustomerHubTsv([header,
+row('6', '2026-11-06 08:00:00', 'National', 'Early Example', 'New', '70000005', 'Manual Rescheduled', 'In Progress', '1', ''),
+row('7', '2026-11-05 23:59:00', 'National', 'Too Early', 'New', '70000006', 'Manual Rescheduled', 'In Progress', '1', '')].join('\n'));
+check('window is whole days: a Monday afternoon run keeps Friday morning but not Thursday', prescreenNationalLeads(earlyRows, new Date(2026, 10, 9, 14, 30)).map((l) => l.activityId), ['70000005']);
 const alex = leads.find((l) => l.activityId === '70000001');
 check('latest row wins for state', alex.state, 'Completed');
 check('latest row wins for outcome', alex.outcome, 'Max Attempts Reached -  No Answer');
