@@ -35,7 +35,8 @@ try { localStorage.removeItem(key); } catch (error) { /* ignore */ }
 const selfTestFailures = [];
 function reportSelfTestFailure(message) {
 console.error(message);
-selfTestFailures.push(String(message).split('\n')[0]);
+const lines = String(message).split('\n');
+selfTestFailures.push(lines.slice(0, 2).join(': ').replace(/ self-test FAILED:?:?/, ''));
 }
 function runSelfTest(name, fn) {
 try {
@@ -46,7 +47,8 @@ reportSelfTestFailure(`SLA Manager ${name} threw: ${error && error.message}`);
 }
 function renderSelfTestBanner() {
 if (selfTestFailures.length === 0) return '';
-return `<div role="alert" style="margin:0 0 10px;padding:8px 10px;border-radius:8px;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-size:12px;">Self-test failed: some results may be wrong. Check the console.</div>`;
+const list = selfTestFailures.slice(0, 3).map((f) => `<div style="margin-top:4px;">${escapeHtml(f)}</div>`).join('');
+return `<div role="alert" style="margin:0 0 10px;padding:8px 10px;border-radius:8px;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-size:12px;"><strong>Self-test failed:</strong> some results may be wrong. Please send this message on.${list}</div>`;
 }
 
 function getPanelSize() {
@@ -4696,7 +4698,19 @@ check('No-result customers sort after every real tier, keeping their original re
 const untouched = sortByLeadCheckerPriority(customers, []);
 check('With no Lead Checker results at all, original order is preserved entirely', untouched.map((c) => c.name).join(', '), customers.map((c) => c.name).join(', '));
 
+// Checks the default with the setting cleared, then puts the user's own
+// choice back: reading their saved setting made this fail for anyone who
+// had switched priority sort on.
+let savedPrioritySort = null;
+try { savedPrioritySort = localStorage.getItem(LEAD_CHECKER_PRIORITY_SORT_KEY); } catch (error) { /* ignore */ }
+try {
+try { localStorage.removeItem(LEAD_CHECKER_PRIORITY_SORT_KEY); } catch (error) { /* ignore */ }
 check('Disabled by default (LEAD_CHECKER_PRIORITY_SORT_KEY unset)', isLeadCheckerPrioritySortEnabled(), false);
+} finally {
+if (savedPrioritySort !== null) {
+try { localStorage.setItem(LEAD_CHECKER_PRIORITY_SORT_KEY, savedPrioritySort); } catch (error) { /* ignore */ }
+}
+}
 
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager sortByLeadCheckerPriority self-test FAILED:\n' + failures.join('\n'));
