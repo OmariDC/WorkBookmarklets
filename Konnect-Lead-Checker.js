@@ -2440,6 +2440,39 @@ return item ? Object.assign({}, item, { __row: row }) : null;
 // so the closest lead within a couple of minutes is taken.
 const NATIONAL_CREATED_TOLERANCE_MINUTES = 2;
 
+// Pure. Fallback when no lead's created time matches: the lead whose call
+// (type 3) is closest to the export's last contact, within the tolerance.
+function findNationalLeadIdsByContact(items, parsedContact) {
+const target = minutesSinceEpoch(parsedContact);
+if (target === null) return [];
+let bestDiff = Infinity;
+let ids = [];
+items.forEach((item) => {
+if (Number(item.TimelineItemType) !== 3 || item.LeadID == null || !Number(item.LeadID)) return;
+const minutes = minutesSinceEpoch(parseTimelineEventTime(item.EventTime));
+if (minutes === null) return;
+const diff = Math.abs(minutes - target);
+if (diff > NATIONAL_CREATED_TOLERANCE_MINUTES) return;
+const id = String(item.LeadID);
+if (diff < bestDiff) { bestDiff = diff; ids = [id]; }
+else if (diff === bestDiff && !ids.includes(id)) ids.push(id);
+});
+return ids;
+}
+
+// Pure. The lead-created times nearest a target, for a "Not found" reason.
+function nearestLeadCreatedTimes(items, parsedCreated, limit = 3) {
+const target = minutesSinceEpoch(parsedCreated);
+return items
+.filter((item) => Number(item.TimelineItemType) === 1 && item.LeadID != null && Number(item.LeadID))
+.map((item) => ({ parsed: parseTimelineEventTime(item.EventTime) }))
+.filter((x) => x.parsed)
+.map((x) => ({ ...x, diff: target === null ? 0 : Math.abs(minutesSinceEpoch(x.parsed) - target) }))
+.sort((a, b) => a.diff - b.diff)
+.slice(0, limit)
+.map(({ parsed: p }) => `${String(p.day).padStart(2, '0')}/${String(p.month + 1).padStart(2, '0')} ${String(p.hour).padStart(2, '0')}:${String(p.minute).padStart(2, '0')}`);
+}
+
 function findNationalLeadIds(items, parsedCreated) {
 const target = minutesSinceEpoch(parsedCreated);
 if (target === null) return [];
@@ -2612,7 +2645,14 @@ ids = findNationalLeadIds(items, row.parsedCreated);
 if (scroll.status !== 'OK' || !scroll.loadedNewEntries) break;
 }
 if (ids.length === 0) {
-return finalizeResult(result, { status: 'CLASSIFIED', verdict: 'Not found', verdictReason: `No lead created at ${row.created} on the timeline` });
+// The created time can differ between the export and Konnect Live, so
+// try the lead's last contact against the calls on the timeline.
+ids = findNationalLeadIdsByContact(items, parseNationalCreated(row.lastContact));
+}
+if (ids.length === 0) {
+const nearest = nearestLeadCreatedTimes(items, row.parsedCreated);
+const hint = nearest.length ? ` (nearest leads on the timeline: ${nearest.join(', ')})` : ' (no leads on the timeline)';
+return finalizeResult(result, { status: 'CLASSIFIED', verdict: 'Not found', verdictReason: `No lead created at ${row.created} or contacted at ${row.lastContact || 'the last contact time'} on the timeline${hint}` });
 }
 if (ids.length > 1) {
 return finalizeResult(result, { status: 'CLASSIFIED', verdict: 'Check', verdictReason: 'More than one lead created at that time' });
@@ -4707,6 +4747,14 @@ const phoneLead = [{ TimelineItemType: 1, LeadID: 1400009, EventTime: '2026-11-0
 check('a lead a minute away is still found', findNationalLeadIds(phoneLead, { year: 2026, month: 10, day: 8, hour: 14, minute: 15 }), ['1400009']);
 check('a lead three minutes away is not', findNationalLeadIds(phoneLead, { year: 2026, month: 10, day: 8, hour: 14, minute: 17 }), []);
 check('the closest of two nearby leads wins', findNationalLeadIds(items, { year: 2026, month: 10, day: 4, hour: 15, minute: 33 }), ['1400002']);
+const callItems = [
+{ TimelineItemType: 1, LeadID: 1400010, EventTime: '2026-11-08T11:58:00+00:00' },
+{ TimelineItemType: 3, LeadID: 1400010, EventTime: '2026-11-08T16:56:30+00:00' },
+{ TimelineItemType: 3, LeadID: 0, EventTime: '2026-11-08T16:56:00+00:00' }
+];
+check('falls back to the call at the last contact time', findNationalLeadIdsByContact(callItems, { year: 2026, month: 10, day: 8, hour: 16, minute: 56 }), ['1400010']);
+check('no call near the last contact', findNationalLeadIdsByContact(callItems, { year: 2026, month: 10, day: 8, hour: 18, minute: 0 }), []);
+check('nearest lead created times are listed', nearestLeadCreatedTimes(callItems, { year: 2026, month: 10, day: 8, hour: 12, minute: 9 }), ['08/11 11:58']);
 
 
 const exportSession = {
