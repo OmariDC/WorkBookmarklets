@@ -1882,45 +1882,70 @@ if (!response.ok) throw new Error(`download failed (HTTP ${response.status})`);
 return response.text();
 }
 
-async function recreateAndFetchCurrentMonth(now) {
+const NATIONAL_EXPORT_HASH = '#/fileexport/Sales/all';
+
+async function openExportFilePage() {
+if (window.location.hash !== NATIONAL_EXPORT_HASH) window.location.hash = NATIONAL_EXPORT_HASH;
+const firstRow = await waitForElement('tr[ng-repeat="file in exportFiles"]', 20000);
+if (firstRow) await sleep(400);
+return !!firstRow;
+}
+
+function clickRecreate(row) {
+const link = row.tr.querySelector('a[ng-click="recreateExportFile(file);"]');
+if (!link) return false;
+link.click();
+return true;
+}
+
+// Step 1: press Recreate on this month's file and note its old time. The
+// file rebuilds on the server, so the other morning checks can run while
+// it does.
+async function startNationalRecreate(now) {
+if (!(await openExportFilePage())) return { error: 'Could not find the Customer Hub file list. Stopped.' };
 const year = now.getFullYear();
 const month = now.getMonth() + 1;
-let row = findExportFileRow(year, month);
+const row = findExportFileRow(year, month);
 if (!row) return { error: `Could not find the ${MONTH_NAMES[month - 1]} ${year} file on the Customer Hub page.` };
 const before = row.file.LastModified;
-const link = row.tr.querySelector('a[ng-click="recreateExportFile(file);"]');
-if (!link) return { error: 'Could not find the Recreate link for the current month.' };
-setNationalProgress('Recreating Customer Hub file…');
-link.click();
-const started = Date.now();
-await sleep(2000);
-while (Date.now() - started < 5 * 60 * 1000) {
-row = findExportFileRow(year, month);
+if (!clickRecreate(row)) return { error: 'Could not find the Recreate link for the current month.' };
+setNationalProgress('Recreating Customer Hub file in the background…');
+return { now, year, month, before, clickedAt: Date.now() };
+}
+
+// Step 2: come back to the file list, wait until the new file is ready,
+// then read it. If the rebuild did not start (the time never moves and
+// nothing is spinning), Recreate is pressed once more.
+async function finishNationalRecreate(started) {
+const { year, month, before, clickedAt } = started;
+let reclicked = false;
+const deadline = Date.now() + 5 * 60 * 1000;
+setNationalProgress('Waiting for the Customer Hub file…');
+while (Date.now() < deadline) {
+if (!(await openExportFilePage())) return { error: 'Could not find the Customer Hub file list. Stopped.' };
+const row = findExportFileRow(year, month);
 if (row && !row.file.recreating) {
 const modified = parseLastModified(row.file.LastModified);
 const changed = row.file.LastModified !== before;
-const recent = modified && Math.abs(Date.now() - modified.getTime()) <= 10 * 60 * 1000;
-if (changed || recent) break;
+const sinceClick = modified && modified.getTime() >= clickedAt - 60 * 1000;
+if (changed || sinceClick) {
+setNationalProgress('Reading Customer Hub file…');
+return { text: await fetchExportText(row.file) };
+}
+if (!reclicked && Date.now() - clickedAt > 30 * 1000) {
+reclicked = clickRecreate(row);
+if (reclicked) setNationalProgress('Recreating Customer Hub file…');
+}
 }
 await sleep(2000);
 }
-row = findExportFileRow(year, month);
-if (!row || row.file.recreating) return { error: 'The Customer Hub file did not finish recreating within 5 minutes.' };
-setNationalProgress('Downloading Customer Hub file…');
-return { text: await fetchExportText(row.file) };
+return { error: 'The Customer Hub file did not finish recreating within 5 minutes.' };
 }
 
-window._checkNationalLeads = async function(skipRestore) {
-const originalHash = window.location.hash;
-try {
-window.location.hash = '#/fileexport/Sales/all';
-const firstRow = await waitForElement('tr[ng-repeat="file in exportFiles"]', 20000);
-if (!firstRow) return { ok: null, summary: 'Could not find the Customer Hub file list. Stopped.' };
-await sleep(400);
-const now = new Date();
-const current = await recreateAndFetchCurrentMonth(now);
-if (current.error) return { ok: null, summary: current.error };
-let rows = parseCustomerHubTsv(current.text);
+async function buildNationalCheckResult(started, fetched) {
+if (fetched.error) return { ok: null, summary: fetched.error };
+const now = started.now;
+let rows = parseCustomerHubTsv(fetched.text);
 // The 3-day window reaches into last month for the first days of a month.
 if (now.getDate() <= 3) {
 const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -1937,8 +1962,23 @@ summary: `${leads.length} national lead${leads.length === 1 ? '' : 's'} in the l
 nationalBatchTsv: buildNationalBatchTsv(leads),
 nationalCount: leads.length
 };
+}
+
+async function finishNationalLeads(started) {
+try {
+if (!started || started.error) return { ok: null, summary: (started && started.error) || 'The Customer Hub file was not recreated.' };
+return await buildNationalCheckResult(started, await finishNationalRecreate(started));
 } catch (error) {
 return { ok: null, summary: `Could not complete the National leads check: ${error && error.message ? error.message : error}` };
+}
+}
+
+window._checkNationalLeads = async function(skipRestore) {
+const originalHash = window.location.hash;
+try {
+let started;
+try { started = await startNationalRecreate(new Date()); } catch (error) { started = { error: `Could not start the recreate: ${error && error.message ? error.message : error}` }; }
+return await finishNationalLeads(started);
 } finally {
 if (!skipRestore) window.location.hash = originalHash;
 }
@@ -2076,7 +2116,9 @@ console.info('SLA Manager national-check self-test passed');
 }
 });
 
-const MORNING_CHECKS_EXECUTION_ORDER = ['sla', 'routedTo', 'leadType', 'inProgress', 'voicemail', 'national'];
+// National leads is not in this list: its slow file recreate is started
+// before these run and finished after them (see _runAllMorningChecks).
+const MORNING_CHECKS_EXECUTION_ORDER = ['sla', 'routedTo', 'leadType', 'inProgress', 'voicemail'];
 
 // Runs the five real checks - Email Only Count is a sixth displayed row
 // but has no check function of its own, populated as a side effect of
@@ -2094,14 +2136,21 @@ sla: () => window._checkSlaCount(originalHash),
 inProgress: () => window._checkInProgress(true),
 leadType: () => window._checkLeadTypes(true),
 routedTo: () => window._checkRoutedTo(true),
-voicemail: () => window._checkVoicemails(true),
-national: () => window._checkNationalLeads(true)
+voicemail: () => window._checkVoicemails(true)
 };
 
 morningChecksResults = MORNING_CHECKS_ORDER.map(step => ({ ...step, status: 'pending' }));
 displayMorningChecks();
 
+let overlayShown = true;
 try {
+// Start the Customer Hub recreate first so it rebuilds while the other
+// checks run.
+morningChecksResults = morningChecksResults.map(r => r.key === 'national' ? { ...r, status: 'running' } : r);
+displayMorningChecks();
+let nationalStarted;
+try { nationalStarted = await startNationalRecreate(new Date()); } catch (err) { nationalStarted = { error: `Could not start the recreate: ${err && err.message ? err.message : err}` }; }
+
 for (const key of MORNING_CHECKS_EXECUTION_ORDER) {
 morningChecksResults = morningChecksResults.map(r => r.key === key ? { ...r, status: 'running' } : r);
 displayMorningChecks();
@@ -2126,10 +2175,19 @@ morningChecksResults = morningChecksResults.map(r => r.key === 'emailOnly' ? { .
 }
 displayMorningChecks();
 }
+
+// Every other check is done: lift the overlay so their results can be
+// read while the National leads file finishes.
+hidePageFlashOverlay();
+overlayShown = false;
+saveMorningChecksLastRun(morningChecksResults, Date.now() - runStartedAt);
+const nationalResult = await finishNationalLeads(nationalStarted);
+morningChecksResults = morningChecksResults.map(r => r.key === 'national' ? { ...r, status: 'done', progress: '', ...nationalResult } : r);
+displayMorningChecks();
 } finally {
 runningMorningChecks = false;
 window.location.hash = originalHash;
-hidePageFlashOverlay();
+if (overlayShown) hidePageFlashOverlay();
 saveMorningChecksLastRun(morningChecksResults, Date.now() - runStartedAt);
 // The loop's own last displayMorningChecks() call (right after the
 // final check's result lands) still had runningMorningChecks === true
