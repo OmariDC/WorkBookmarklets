@@ -226,6 +226,7 @@ const MORNING_CHECKS_ORDER = [
 { key: 'leadType', label: 'Lead Type Check' },
 { key: 'routedTo', label: 'All Leads Are Routed To' },
 { key: 'voicemail', label: 'Voicemail' },
+{ key: 'national', label: 'National leads' },
 ];
 const PAGE_FLASH_OVERLAY_ID = '_slaPageFlashOverlay';
 
@@ -1545,7 +1546,7 @@ const color = morningCheckStatusColor(row);
 const isSettled = row.status === 'done';
 const isRunning = row.status === 'running';
 const isPending = row.status === 'pending';
-const rightText = isSettled ? (row.summary || '') : (isRunning ? 'Running…' : 'Waiting');
+const rightText = isSettled ? (row.summary || '') : (isRunning ? (row.progress || 'Running…') : 'Waiting');
 const hasDetails = isSettled && Array.isArray(row.details) && row.details.length > 0;
 const detailsId = `_mcDetails_${row.key}`;
 const chevronId = `_mcChevron_${row.key}`;
@@ -1572,6 +1573,7 @@ ${hasDetails ? `
 <div id="${detailsId}" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f1f5f9; font-size: 11px; color: #475569; line-height: 1.6;">
 ${row.details.map(d => `<div>${escapeHtml(d)}</div>`).join('')}
 </div>` : ''}
+${row.key === 'national' ? renderNationalRowExtras(row) : ''}
 </div>`;
 }
 
@@ -1587,7 +1589,7 @@ if (morningChecksResults.length === 0) {
 return `
 <div style="padding: 24px 4px; text-align: center;">
 <div style="color: #cbd5e1; margin-bottom: 12px;">${svgIcon('checklist', 40, ' stroke-width: 1.5;')}</div>
-<p style="color: var(--wb-muted, #5b6577); margin: 0 0 20px 0; font-size: 14px; line-height: 1.6;">Runs the five morning checks in order: SLA Count, In Progress, Lead Type Check, All Leads Are Routed To, Voicemail - and reports each result here.</p>
+<p style="color: var(--wb-muted, #5b6577); margin: 0 0 20px 0; font-size: 14px; line-height: 1.6;">Runs the morning checks in order: SLA Count, In Progress, Lead Type Check, All Leads Are Routed To, Voicemail and National leads, and reports each result here.</p>
 <button onclick="window._runAllMorningChecks();" style="padding: 10px 20px; background: #1e293b; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;">Run All Checks</button>
 ${renderLastRunLine(lastRun)}
 </div>`;
@@ -1683,7 +1685,398 @@ displayMorningChecks();
 // the page without a fresh navigation only stays correct because
 // nothing after leadType depends on it being back on Today (see the
 // comment on window._checkRoutedTo).
-const MORNING_CHECKS_EXECUTION_ORDER = ['sla', 'routedTo', 'leadType', 'inProgress', 'voicemail'];
+// ===================================================================
+// NATIONAL LEADS CHECK
+//
+// National leads must be manually rescheduled until closed with a
+// correct outcome, or sent to a dealership through Enquiry Max. This
+// step pulls the Customer Hub "All" export, keeps the national leads
+// touched in the last 3 days, and hands them to the Lead Checker on
+// Konnect Live, which reads each lead's timeline to give the verdict.
+// The export cannot see Enquiry Max sends, so every lead goes across.
+// ===================================================================
+
+const NATIONAL_DEALERS = ['National', 'Stellantis &You National Used Cars'];
+const NATIONAL_WINDOW_MS = 72 * 60 * 60 * 1000;
+const NATIONAL_BATCH_HEADER = ['NationalCheck', 'Customer', 'Reg', 'ActivityID', 'LeadCreated', 'Campaign', 'Dealer', 'LastContact', 'State', 'ExportOutcome', 'Attempts', 'ManualReschedules', 'AutoReschedules', 'ExportHint'];
+const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx'];
+const NATIONAL_VERDICTS = ['Reset', 'Check', 'Not found', 'OK'];
+const NATIONAL_RESULTS_KEY = '_slaNationalCheckResults';
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+function tsvClean(value) {
+return String(value == null ? '' : value).replace(/[\t\r\n]+/g, ' ').trim();
+}
+
+// Tab separated. A field may be wrapped in double quotes with "" inside.
+function splitTsvLine(line) {
+return line.split('\t').map((cell) => {
+const c = cell.replace(/\r$/, '');
+if (c.length >= 2 && c.startsWith('"') && c.endsWith('"')) return c.slice(1, -1).replace(/""/g, '"');
+return c;
+});
+}
+
+function parseCustomerHubTsv(text) {
+const lines = String(text || '').split(/\n/).filter((l) => l.trim() !== '');
+if (lines.length === 0) return [];
+const header = splitTsvLine(lines[0]).map((h) => h.trim());
+return lines.slice(1).map((line) => {
+const cells = splitTsvLine(line);
+const row = {};
+header.forEach((h, i) => { row[h] = (cells[i] || '').trim(); });
+return row;
+});
+}
+
+// "2026-11-08 15:58:46" -> Date (local time)
+function parseHubIsoDate(value) {
+const m = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/);
+return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)) : null;
+}
+
+// "08/11/2026 12:05:33" -> "08/11/2026 12:05"
+function hubUkDateToMinute(value) {
+const m = String(value || '').match(/^(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2})/);
+return m ? `${m[1]} ${m[2]}` : String(value || '').trim();
+}
+
+function formatHubDate(date) {
+const p = (n) => String(n).padStart(2, '0');
+return `${p(date.getDate())}/${p(date.getMonth() + 1)}/${date.getFullYear()} ${p(date.getHours())}:${p(date.getMinutes())}`;
+}
+
+// One entry per national lead whose latest contact falls in the window.
+function prescreenNationalLeads(rows, now) {
+const nowMs = (now || new Date()).getTime();
+const byActivity = new Map();
+rows.forEach((r) => {
+if (!NATIONAL_DEALERS.includes(r['Dealer'])) return;
+const id = r['ActivityID'];
+if (!id) return;
+if (!byActivity.has(id)) byActivity.set(id, []);
+byActivity.get(id).push(r);
+});
+const leads = [];
+byActivity.forEach((list, activityId) => {
+list.sort((a, b) => (parseHubIsoDate(a['Intervention Created Date']) || 0) - (parseHubIsoDate(b['Intervention Created Date']) || 0));
+const last = list[list.length - 1];
+const lastDate = parseHubIsoDate(last['Intervention Created Date']);
+if (!lastDate || nowMs - lastDate.getTime() > NATIONAL_WINDOW_MS || lastDate.getTime() > nowMs + 60000) return;
+const attempts = list.reduce((max, r) => Math.max(max, parseInt(r['AttemptNumber'], 10) || 0), 0);
+const manualReschedules = list.filter((r) => r['Callback Type'] === 'Manual Rescheduled' || r['Call Outcome'] === 'Manual Rescheduled').length;
+const autoReschedules = list.filter((r) => r['Callback Type'] === 'Auto Rescheduled').length;
+const state = last['Activity State'];
+const open = /in progress/i.test(state);
+leads.push({
+customer: last['Customer'],
+reg: last['Reg Number'],
+activityId,
+leadCreated: hubUkDateToMinute(last['Activity Created Date']),
+campaign: last['Campaign'],
+dealer: last['Dealer'],
+lastContact: formatHubDate(lastDate),
+state,
+outcome: open ? '' : (last['ActivityOutcome'] || ''),
+attempts,
+manualReschedules,
+autoReschedules,
+exportHint: open ? (autoReschedules > 0 ? 'open-auto' : 'open') : 'closed'
+});
+});
+return leads.sort((a, b) => a.customer.localeCompare(b.customer) || a.leadCreated.localeCompare(b.leadCreated));
+}
+
+function buildNationalBatchTsv(leads) {
+const lines = leads.map((l) => ['national', l.customer, l.reg, l.activityId, l.leadCreated, l.campaign, l.dealer, l.lastContact, l.state, l.outcome, l.attempts, l.manualReschedules, l.autoReschedules, l.exportHint].map(tsvClean).join('\t'));
+return [NATIONAL_BATCH_HEADER.join('\t'), ...lines].join('\n');
+}
+
+// Returns {ok, results, error}. The header must match exactly.
+function parseNationalResultsTsv(text) {
+const lines = String(text || '').replace(/\r/g, '').split('\n').filter((l) => l.trim() !== '');
+if (lines.length === 0) return { ok: false, results: [], error: 'Nothing on the clipboard.' };
+if (lines[0] !== NATIONAL_RESULT_HEADER.join('\t')) {
+return { ok: false, results: [], error: 'This is not a National results export from the Lead Checker.' };
+}
+const results = lines.slice(1).map((line) => {
+const cells = line.split('\t');
+const r = {};
+NATIONAL_RESULT_HEADER.forEach((h, i) => { r[h] = (cells[i] || '').trim(); });
+return r;
+}).filter((r) => r.NationalResult === 'national');
+return { ok: true, results, error: null };
+}
+
+function countNationalVerdicts(results) {
+const counts = {};
+NATIONAL_VERDICTS.forEach((v) => { counts[v] = 0; });
+results.forEach((r) => { counts[r.Verdict] = (counts[r.Verdict] || 0) + 1; });
+return counts;
+}
+
+function buildNationalResetBlock(r) {
+return [
+`Campaign: ${r.ResetCampaign || ''}`,
+`Initial notes: ${r.ResetInitialNotes || ''}`,
+`Vehicle of interest: ${r.ResetVoi || ''}`,
+`Part exchange: ${r.ResetPx || ''}`
+].join('\n');
+}
+
+function saveNationalResults(results) {
+try {
+localStorage.setItem(NATIONAL_RESULTS_KEY, JSON.stringify({ savedAt: new Date().toISOString(), results }));
+return true;
+} catch (error) {
+console.warn('SLA Manager: could not save National results.');
+return false;
+}
+}
+
+function loadNationalResults() {
+try {
+const raw = JSON.parse(localStorage.getItem(NATIONAL_RESULTS_KEY) || 'null');
+if (!raw || !isStoredTimeFresh(raw.savedAt) || !Array.isArray(raw.results)) {
+removeStoredKey(NATIONAL_RESULTS_KEY);
+return null;
+}
+return raw.results;
+} catch (error) {
+return null;
+}
+}
+
+// ---- Page step (Data > Customer Hub > All) ----
+
+function readExportFileRows() {
+return Array.from(document.querySelectorAll('tr[ng-repeat="file in exportFiles"]')).map((tr) => {
+let file = null;
+try { file = window.angular ? window.angular.element(tr).scope().file : null; } catch (error) { file = null; }
+return { tr, file };
+}).filter((x) => x.file);
+}
+
+function findExportFileRow(year, month) {
+const rows = readExportFileRows();
+const exact = rows.find((x) => Number(x.file.Year) === year && Number(x.file.Month) === month);
+if (exact) return exact;
+const name = `${year}-${String(month).padStart(2, '0')}-${MONTH_NAMES[month - 1]}`;
+return rows.find((x) => String(x.file.Filename || '').includes(name)) || null;
+}
+
+// "09/11/2026 12:38" -> Date
+function parseLastModified(value) {
+const m = String(value || '').match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})/);
+return m ? new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5]) : null;
+}
+
+function setNationalProgress(text) {
+morningChecksResults = morningChecksResults.map((r) => r.key === 'national' ? { ...r, progress: text } : r);
+if (currentPanelMode === 'morningChecks') displayMorningChecks();
+}
+
+async function fetchExportText(file) {
+const response = await fetch(file.Url, { credentials: 'include' });
+if (!response.ok) throw new Error(`download failed (HTTP ${response.status})`);
+return response.text();
+}
+
+async function recreateAndFetchCurrentMonth(now) {
+const year = now.getFullYear();
+const month = now.getMonth() + 1;
+let row = findExportFileRow(year, month);
+if (!row) return { error: `Could not find the ${MONTH_NAMES[month - 1]} ${year} file on the Customer Hub page.` };
+const before = row.file.LastModified;
+const link = row.tr.querySelector('a[ng-click="recreateExportFile(file);"]');
+if (!link) return { error: 'Could not find the Recreate link for the current month.' };
+setNationalProgress('Recreating Customer Hub file…');
+link.click();
+const started = Date.now();
+await sleep(2000);
+while (Date.now() - started < 5 * 60 * 1000) {
+row = findExportFileRow(year, month);
+if (row && !row.file.recreating) {
+const modified = parseLastModified(row.file.LastModified);
+const changed = row.file.LastModified !== before;
+const recent = modified && Math.abs(Date.now() - modified.getTime()) <= 10 * 60 * 1000;
+if (changed || recent) break;
+}
+await sleep(2000);
+}
+row = findExportFileRow(year, month);
+if (!row || row.file.recreating) return { error: 'The Customer Hub file did not finish recreating within 5 minutes.' };
+setNationalProgress('Downloading Customer Hub file…');
+return { text: await fetchExportText(row.file) };
+}
+
+window._checkNationalLeads = async function(skipRestore) {
+const originalHash = window.location.hash;
+try {
+window.location.hash = '#/fileexport/Sales/all';
+const firstRow = await waitForElement('tr[ng-repeat="file in exportFiles"]', 20000);
+if (!firstRow) return { ok: null, summary: 'Could not find the Customer Hub file list. Stopped.' };
+await sleep(400);
+const now = new Date();
+const current = await recreateAndFetchCurrentMonth(now);
+if (current.error) return { ok: null, summary: current.error };
+let rows = parseCustomerHubTsv(current.text);
+// The 3-day window reaches into last month for the first days of a month.
+if (now.getDate() <= 3) {
+const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+const prevRow = findExportFileRow(prev.getFullYear(), prev.getMonth() + 1);
+if (prevRow) rows = rows.concat(parseCustomerHubTsv(await fetchExportText(prevRow.file)));
+}
+if (rows.length === 0 || !('ActivityID' in rows[0]) || !('Dealer' in rows[0])) {
+return { ok: null, summary: 'The Customer Hub file did not have the expected columns. Stopped.' };
+}
+const leads = prescreenNationalLeads(rows, now);
+return {
+ok: null,
+summary: `${leads.length} national lead${leads.length === 1 ? '' : 's'} in the last 3 days, ready to check on Konnect Live`,
+nationalBatchTsv: buildNationalBatchTsv(leads),
+nationalCount: leads.length
+};
+} catch (error) {
+return { ok: null, summary: `Could not complete the National leads check: ${error && error.message ? error.message : error}` };
+} finally {
+if (!skipRestore) window.location.hash = originalHash;
+}
+};
+
+function nationalButtonStyle(primary) {
+return `padding: 6px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer; border: 1px solid ${primary ? '#1e293b' : 'var(--wb-border, #cbd5e1)'}; background: ${primary ? '#1e293b' : 'var(--wb-surface, #fff)'}; color: ${primary ? '#fff' : 'var(--wb-text, #1c1c1e)'};`;
+}
+
+// Extra block under the National leads row: the handoff buttons and,
+// once pasted back, the Lead Checker's verdicts.
+function renderNationalRowExtras(row) {
+if (row.status !== 'done') return '';
+const results = loadNationalResults();
+const buttons = `
+<div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;">
+${row.nationalBatchTsv ? `<button type="button" onclick="window._copyNationalBatch(this)" style="${nationalButtonStyle(true)}">Copy for Lead Checker (National)</button>` : ''}
+<button type="button" onclick="window._pasteNationalResults(this)" style="${nationalButtonStyle(false)}">Paste National results</button>
+</div>`;
+if (!results) return buttons;
+const counts = countNationalVerdicts(results);
+const countLine = NATIONAL_VERDICTS.map((v) => `${escapeHtml(v)}: ${counts[v] || 0}`).join(' &middot; ');
+const flagged = results.filter((r) => r.Verdict === 'Reset' || r.Verdict === 'Check');
+const list = flagged.map((r) => {
+const index = results.indexOf(r);
+const notes = r.FollowUpNotes ? `<div style="color: var(--wb-muted, #5b6577);">Notes: ${escapeHtml(r.FollowUpNotes.slice(0, 160))}${r.FollowUpNotes.length > 160 ? '…' : ''}</div>` : '';
+return `
+<div style="border: 1px solid var(--wb-border, #e2e8f0); border-left: 3px solid ${r.Verdict === 'Reset' ? '#dc2626' : '#d97706'}; border-radius: 6px; padding: 6px 8px; margin-top: 6px;">
+<div><strong>${escapeHtml(r.Verdict)}</strong>: ${escapeHtml(r.Customer)} <span style="color: var(--wb-muted, #5b6577);">(lead ${escapeHtml(r.ActivityID)})</span></div>
+<div>${escapeHtml(r.Reason)}</div>
+${r.FinalOutcome ? `<div style="color: var(--wb-muted, #5b6577);">Final outcome: ${escapeHtml(r.FinalOutcome)}</div>` : ''}
+${notes}
+${r.Verdict === 'Reset' ? `<button type="button" onclick="window._copyNationalReset(${index}, this)" style="${nationalButtonStyle(false)} margin-top: 4px;">Copy reset details</button>` : ''}
+</div>`;
+}).join('');
+return `${buttons}
+<div style="margin-top: 8px; font-size: 11px; color: var(--wb-text, #1c1c1e);">${countLine}</div>
+${list}`;
+}
+
+function flashNationalButton(btn, text) {
+if (!btn) return;
+const original = btn.textContent;
+btn.textContent = text;
+setTimeout(() => { btn.textContent = original; }, 1800);
+}
+
+window._copyNationalBatch = function(btn) {
+const row = morningChecksResults.find((r) => r.key === 'national');
+if (!row || !row.nationalBatchTsv) return;
+navigator.clipboard.writeText(row.nationalBatchTsv).then(
+() => flashNationalButton(btn, `Copied ${row.nationalCount || 0}`),
+() => flashNationalButton(btn, 'Clipboard blocked')
+);
+};
+
+window._pasteNationalResults = async function(btn) {
+let text = '';
+try {
+text = await navigator.clipboard.readText();
+} catch (error) {
+flashNationalButton(btn, 'Clipboard blocked');
+return;
+}
+const parsed = parseNationalResultsTsv(text);
+if (!parsed.ok) {
+flashNationalButton(btn, parsed.error);
+return;
+}
+saveNationalResults(parsed.results);
+displayMorningChecks();
+};
+
+window._copyNationalReset = function(index, btn) {
+const results = loadNationalResults() || [];
+const r = results[index];
+if (!r) return;
+navigator.clipboard.writeText(buildNationalResetBlock(r)).then(
+() => flashNationalButton(btn, 'Copied'),
+() => flashNationalButton(btn, 'Clipboard blocked')
+);
+};
+
+runSelfTest('national-check', function() {
+const failures = [];
+const check = (label, actual, expected) => {
+const a = JSON.stringify(actual); const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+};
+const header = ['InterventionID', 'Intervention Created Date', 'Communication Type', 'Campaign', 'Dealer', 'Reg Number', 'Customer', 'Callback Type', 'ActivityID', 'Activity Created Date', 'Call Outcome', 'Activity State', 'AttemptNumber', 'ActivityOutcome'].join('\t');
+const row = (iid, when, dealer, customer, cbType, aid, outcome, state, attempt, actOutcome) =>
+[iid, when, 'Outbound Call', 'Enquiry - Used', dealer, 'AB12CDE', customer, cbType, aid, '07/11/2026 09:00:00', outcome, state, attempt, actOutcome].join('\t');
+const tsv = [header,
+row('1', '2026-11-07 09:10:00', 'Stellantis &You National Used Cars', 'Alex Sample', 'New', '70000001', 'Manual Rescheduled', 'In Progress', '1', ''),
+row('2', '2026-11-08 10:00:00', 'Stellantis &You National Used Cars', 'Alex Sample', 'Manual Rescheduled', '70000001', 'No Answer - Message Left', 'Completed', '3', 'Max Attempts Reached -  No Answer'),
+row('3', '2026-11-08 11:00:00', 'National', 'Sam Buyer', 'Auto Rescheduled', '70000002', 'Manual Rescheduled', 'In Progress', '2', ''),
+row('4', '2026-11-08 11:00:00', 'Stellantis &You Croydon', 'Jo Example', 'New', '70000003', 'Spoke to Customer', 'Completed', '1', 'Test Drive'),
+row('5', '2026-11-01 11:00:00', 'National', 'Old Example', 'New', '70000004', 'No Answer - Message Left', 'Completed', '1', 'Email Only Lead')
+].join('\n');
+const rows = parseCustomerHubTsv(tsv);
+check('parse row count', rows.length, 5);
+check('parse reads a column by header', rows[0]['ActivityID'], '70000001');
+const leads = prescreenNationalLeads(rows, new Date(2026, 10, 9, 9, 0));
+check('dealer filter and 3-day window keep two leads', leads.map((l) => l.activityId), ['70000001', '70000002']);
+const alex = leads.find((l) => l.activityId === '70000001');
+check('latest row wins for state', alex.state, 'Completed');
+check('latest row wins for outcome', alex.outcome, 'Max Attempts Reached -  No Answer');
+check('attempts is the highest attempt number', alex.attempts, 3);
+check('manual reschedules counted', alex.manualReschedules, 2);
+check('closed lead hint', alex.exportHint, 'closed');
+check('lead created trimmed to the minute', alex.leadCreated, '07/11/2026 09:00');
+const sam = leads.find((l) => l.activityId === '70000002');
+check('auto reschedule counted', sam.autoReschedules, 1);
+check('open lead with an auto reschedule', sam.exportHint, 'open-auto');
+check('open lead has no outcome', sam.outcome, '');
+const batch = buildNationalBatchTsv(leads).split('\n');
+check('batch header', batch[0], NATIONAL_BATCH_HEADER.join('\t'));
+check('batch row count', batch.length, 3);
+check('batch row starts with national and has every column', [batch[1].split('\t')[0], batch[1].split('\t').length], ['national', NATIONAL_BATCH_HEADER.length]);
+check('values with tabs are cleaned', buildNationalBatchTsv([{ ...alex, customer: 'Alex\tSample' }]).split('\n')[1].split('\t')[1], 'Alex Sample');
+const resultTsv = [NATIONAL_RESULT_HEADER.join('\t'),
+['national', 'Alex Sample', '70000001', '1400001', 'OK', 'Closed with Max Attempts', '3', 'Max Attempts Reached', '', '', '', '', '', ''].join('\t'),
+['national', 'Sam Buyer', '70000002', '1400002', 'Reset', 'Closed with no dealership', '2', 'Email Only Lead', '', 'Customer asked for a call back', 'Enquiry - Used', 'Looking for a hatchback', 'AB12CDE', 'No'].join('\t'),
+['national', 'Jo Example', '70000003', '', 'Not found', 'No matching lead', '', '', '', '', '', '', '', ''].join('\t')
+].join('\n');
+const parsed = parseNationalResultsTsv(resultTsv);
+check('results import accepts the exact header', parsed.ok, true);
+check('verdict counts', countNationalVerdicts(parsed.results), { Reset: 1, Check: 0, 'Not found': 1, OK: 1 });
+check('results import rejects another header', parseNationalResultsTsv('Name\tPhone\nx\ty').ok, false);
+check('reset block', buildNationalResetBlock(parsed.results[1]).split('\n')[0], 'Campaign: Enquiry - Used');
+if (failures.length > 0) {
+reportSelfTestFailure('SLA Manager national-check self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Manager national-check self-test passed');
+}
+});
+
+const MORNING_CHECKS_EXECUTION_ORDER = ['sla', 'routedTo', 'leadType', 'inProgress', 'voicemail', 'national'];
 
 // Runs the five real checks - Email Only Count is a sixth displayed row
 // but has no check function of its own, populated as a side effect of
@@ -1701,7 +2094,8 @@ sla: () => window._checkSlaCount(originalHash),
 inProgress: () => window._checkInProgress(true),
 leadType: () => window._checkLeadTypes(true),
 routedTo: () => window._checkRoutedTo(true),
-voicemail: () => window._checkVoicemails(true)
+voicemail: () => window._checkVoicemails(true),
+national: () => window._checkNationalLeads(true)
 };
 
 morningChecksResults = MORNING_CHECKS_ORDER.map(step => ({ ...step, status: 'pending' }));
