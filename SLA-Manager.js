@@ -1450,15 +1450,41 @@ if (!skipRestore) window.location.hash = originalHash;
 // Morning Checks can be entered from whatever page the user happened to
 // be on, this only navigates if the SLA table isn't already showing -
 // normally it will be, since that's the page the panel is opened from.
-window._checkSlaCount = async function(returnHash) {
+// The SLA page ("Customer Hub Leads Pending SLA"). Read from Konnect's own
+// menu link when it is there, so a changed route is picked up.
+const SLA_PAGE_HASH = '#/Queue/SalesLeadsPending';
+function findSlaPageHash() {
+const link = Array.from(document.querySelectorAll('a[href^="#/Queue/"]'))
+.find((a) => /leads pending sla/i.test(a.textContent || ''));
+return (link && link.getAttribute('href')) || SLA_PAGE_HASH;
+}
+
+async function waitForSlaPage(timeout = 15000) {
+const deadline = Date.now() + timeout;
+while (Date.now() < deadline) {
+if (detectPageType() === PAGE_SLA) return true;
+await sleep(250);
+}
+return false;
+}
+
+window._checkSlaCount = async function() {
 if (detectPageType() !== PAGE_SLA) {
-window.location.hash = returnHash;
-await waitForElement('table', 15000);
+window.location.hash = findSlaPageHash();
+await waitForSlaPage();
+}
+if (detectPageType() !== PAGE_SLA) {
+return { ok: null, summary: 'Could not open the SLA page (Customer Hub Leads Pending SLA). Stopped.' };
+}
+const table = document.querySelector('table');
+await waitForLeadsTableRows(table);
 await sleep(300);
-}
-if (detectPageType() !== PAGE_SLA) {
-return { ok: null, summary: 'Could not find the SLA queue table. Stopped.' };
-}
+// The Email Only count needs each lead's phone and email, which come from
+// loading the leads. Load any not seen yet, so this works without the SLA
+// page having been opened in the panel first.
+const cachedKeys = new Set(currentCustomers.map((c) => c.key));
+const unseen = collectAssignableLeads().some((l) => !cachedKeys.has(l.key));
+if (unseen) await extractAndExportSla({ quiet: true });
 // isEmailOnly is already computed per-lead by collectAssignableLeads
 // (same field the Assign section's own "Email only" checkbox count
 // uses) - the Email Only Count row above this one is populated from
@@ -2178,7 +2204,7 @@ const runStartedAt = Date.now();
 showPageFlashOverlay('Running morning checks…');
 
 const checkFns = {
-sla: () => window._checkSlaCount(originalHash),
+sla: () => window._checkSlaCount(),
 inProgress: () => window._checkInProgress(true),
 leadType: () => window._checkLeadTypes(true),
 routedTo: () => window._checkRoutedTo(true),
@@ -5652,8 +5678,11 @@ showLeadChecker: true
 // EXTRACTION & EXPORT
 // ===================================================================
 
-async function extractAndExportSla() {
-if (extracting || assigning || runningMorningChecks) return;
+// options.quiet: called from the morning checks. Loads the leads into the
+// cache without switching the panel away from the morning checks.
+async function extractAndExportSla(options = {}) {
+const quiet = !!options.quiet;
+if (extracting || assigning || (runningMorningChecks && !quiet)) return;
 extracting = true;
 
 try {
@@ -5757,6 +5786,12 @@ showPageFlashOverlay(`Loading new leads… (${remaining} left)`);
 const removedCount = currentCustomers.filter(c => !seenKeys.has(c.key)).length;
 lastSlaDiffCounts = { newCount: addedCount, removedCount };
 
+if (quiet) {
+currentCustomers = customers;
+currentPageType = PAGE_SLA;
+invalidateLeadsCache();
+return;
+}
 const startTime = Date.now();
 displayPanel(customers, addedCount, removedCount);
 const totalTime = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -5766,7 +5801,7 @@ console.error('SLA Export Error:', error);
 } finally {
 setBadgeProgress(0);
 extracting = false;
-hidePageFlashOverlay();
+if (quiet) showPageFlashOverlay('Running morning checks…'); else hidePageFlashOverlay();
 }
 }
 
