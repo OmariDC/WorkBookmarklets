@@ -2534,6 +2534,26 @@ const last = lines[0].split('->').pop().trim();
 return last.replace(/\s+at\s+[^>]+$/i, '').trim();
 }
 
+// Agreed standards for a Misdirected closure: the lead was never a sales
+// enquiry. A Service Plan request, either named in the campaign's lead
+// request or as the MB Mail aftersales notes ("Annual Mileage: ...
+// Customer Number: ..."). Anything else stays for a person to check.
+const NOT_SALES_LEAD_REQUEST_RE = /service plan/i;
+const AFTERSALES_NOTES_RE = /annual mileage:[\s\S]*customer number:/i;
+
+// Pure. Returns an OK verdict when the lead details confirm a Misdirected
+// closure was right, otherwise null (the Check stands).
+function resolveMisdirected(finalOutcome, details) {
+if (!/misdirected/i.test(String(finalOutcome || '')) || !details) return null;
+if (NOT_SALES_LEAD_REQUEST_RE.test(details.leadRequest || '')) {
+return { verdict: 'OK', reason: `Misdirected correctly: not a sales lead (${details.leadRequest})` };
+}
+if (AFTERSALES_NOTES_RE.test(details.initialNotes || '')) {
+return { verdict: 'OK', reason: 'Misdirected correctly: not a sales lead (Service Plan notes)' };
+}
+return null;
+}
+
 function parsedToMs(parsed) {
 return parsed ? new Date(parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute).getTime() : null;
 }
@@ -2601,6 +2621,10 @@ if (walkIn && !isNationalDealer(walkIn[1])) return true;
 return type === 1 && (ctx.openLeadIds || []).map(String).includes(String(i.LeadID));
 });
 if (cover && NATIONAL_HANDOVER_OUTCOMES.test(finalOutcome)) return verdict('OK', `Covered by newer lead ${formatShortTime(eventTimeMs(cover.EventTime))}`);
+// Misdirected: the agent decided it was not a sales lead. Right only if
+// the lead itself confirms that, which needs its window read (see
+// resolveMisdirected), so it starts as Check.
+if (/misdirected/i.test(finalOutcome)) return verdict('Check', 'Misdirected: check the lead was not for sales');
 // 2. Sent, but only to National.
 if (nationalSend) return verdict('Reset', 'Sent to Enquiry Max at National, went nowhere');
 // 7. Closed with nowhere to go.
@@ -2653,6 +2677,7 @@ const { modal, panel } = state;
 const details = { campaign: '', initialNotes: '', voi: '', px: '', followUp: [], callHistory: [] };
 const campaign = extractCampaignField(panel);
 details.campaign = campaign.primary || '';
+details.leadRequest = campaign.parenthetical || '';
 details.initialNotes = extractInitialNotes(panel) || '';
 let results = null;
 const modelInput = modal.querySelector('input[ng-model^="results."]');
@@ -2731,6 +2756,11 @@ patch.verdictReason = `${evaluation.reason}. Notes not read`;
 patch.followUpNotes = formatFollowUpNotes(details.followUp);
 patch.callHistory = details.callHistory;
 patch.initialNotes = details.initialNotes;
+const misdirected = resolveMisdirected(evaluation.finalOutcome, details);
+if (misdirected) {
+patch.verdict = misdirected.verdict;
+patch.verdictReason = misdirected.reason;
+}
 if (evaluation.verdict === 'Reset') {
 patch.resetCampaign = details.campaign || row.campaign;
 patch.resetInitialNotes = details.initialNotes;
@@ -4895,6 +4925,14 @@ check('an old send does not cover a later Email Only closure (export times)', [r
 const booked = [created(1400022, '07T17:47'), sent(1400022, '08T10:05', 'Preston with EMax confirmation')];
 const r22 = run(1400022, booked, { exportOutcome: 'Face to Face - National UCS', attempts: '1', lastContact: '08/11/2026 09:59' });
 check('send after the last call is OK, dealer name without the confirmation note', [r22.verdict, r22.enquiryMaxDealer], ['OK', 'Preston']);
+
+// Misdirected starts as Check; the lead details decide it.
+const misdirectedLead = [created(1400023, '08T20:24')];
+check('Misdirected starts as Check', run(1400023, misdirectedLead, { exportOutcome: 'Misdirected - Created VR Message', attempts: '1', lastContact: '09/11/2026 12:52' }).verdict, 'Check');
+check('Misdirected on a Service Plan request is OK', resolveMisdirected('Misdirected - Created VR Message', { leadRequest: 'Service Plan Request', initialNotes: '' }).verdict, 'OK');
+check('Misdirected with aftersales notes is OK', resolveMisdirected('Misdirected - Created VR Message', { leadRequest: '', initialNotes: 'Annual Mileage: 5000 TO 6000 Customer Number: 10000001' }).verdict, 'OK');
+check('Misdirected on a sales enquiry stays Check', resolveMisdirected('Misdirected - Created VR Message', { leadRequest: 'Enquiry Request', initialNotes: 'Can I test drive the 208 on Saturday?' }), null);
+check('other outcomes are not touched', resolveMisdirected('Email Only Lead', { leadRequest: 'Service Plan Request', initialNotes: '' }), null);
 
 // Face to Face National UCS, sent to Preston.
 const f2f = [created(1400004, '07T17:47'), call(1400004, '08T10:04', 'Spoke to Customer', `Sales -> National Used Stock -> Reserve Appointment -> Face to Face - National UCS at ${NAT}`), it(8, 1400004, '08T10:05', 'Appointment Created', 'Appointment Created by Agent A of type Face To Face', false), sent(1400004, '08T10:05', 'Preston')];
