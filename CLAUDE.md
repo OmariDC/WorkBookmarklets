@@ -1,0 +1,27 @@
+# WorkBookmarklets
+
+Browser bookmarklets used by staff inside the Konnect CRM. The two main tools are:
+
+- `SLA-Manager.js` runs on Konnect Manager. It lists SLA and Pending leads, exports them for the Lead Checker and imports its results back onto the lead cards.
+- `Konnect-Lead-Checker.js` runs on Konnect Live. It takes the pasted batch, finds each lead, classifies its Initial Notes into six tiers and sends the results back.
+
+## How the tools are released
+
+Each bookmarklet in `Bookmarklets.txt` fetches its script from the `main` branch on every click. **`main` is production**: anything on it is live for every user straight away. Develop on `work` (or the session branch), and change `main` only on a deliberate release.
+
+## Checks before every push
+
+```sh
+node tests/run-self-tests.mjs
+node --check SLA-Manager.js && node --check Konnect-Lead-Checker.js
+```
+
+The runner loads both tools with a minimal DOM stub, runs every built-in self-test and checks that the values shared between the two files still match. Any failure exits non-zero.
+
+## Rules
+
+- Never commit real customer data. Test fixtures use fictional values only: `07700 900xxx` phone numbers, `example.com` emails, `AB12CDE` style registrations and `00Qa200000EXAMPLE` lead IDs.
+- Do not log customer data to the console outside the debug flag.
+- Keep the TSV handoff headers in step on both sides. The shared-contract check in the test runner fails if they drift.
+- Comments explain non-obvious decisions in a line or two. Change history belongs in Git and Notion.
+- Plain English, no em dashes, in UI text and comments.
