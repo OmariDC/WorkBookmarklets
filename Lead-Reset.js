@@ -131,6 +131,24 @@ return activities.find((a) => String(a.ID) !== String(lead.activityId)
 && (!Number.isFinite(closedAt) || new Date(a.CreatedDate).getTime() > closedAt)) || null;
 }
 
+// The closed lead is on the agent desktop page too, so its own campaign,
+// dropdowns and notes are used over what the Lead Checker read. Returns
+// the lead to reset and where its notes came from.
+const CLOSED_FIELD_KEYS = /^(LeadType|ChannelBadge|SourceOfEnquiry|LeadRequest|VehicleOfInterest|HasPartExchange)/;
+function adoptClosedLead(lead, closed, pageNotes) {
+if (!closed) return { lead, notesFrom: lead.notes ? 'the Lead Checker' : '' };
+const details = (closed.SalesLead && closed.SalesLead.LeadDetails) || {};
+const fields = { ...lead.fields };
+Object.keys(details).forEach((key) => {
+const value = details[key];
+if (CLOSED_FIELD_KEYS.test(key) && value != null && value !== '' && typeof value !== 'object') fields[key] = value;
+});
+const noteKey = Object.keys(details).find((k) => /initial.?notes?$/i.test(k) && typeof details[k] === 'string' && details[k].trim());
+const notes = noteKey ? details[noteKey] : (pageNotes && pageNotes.trim() ? pageNotes : lead.notes);
+const notesFrom = noteKey || (pageNotes && pageNotes.trim()) ? 'the closed lead' : (lead.notes ? 'the Lead Checker' : '');
+return { lead: { ...lead, campaign: closed.CampaignName || lead.campaign, fields, notes }, notesFrom };
+}
+
 // Exact text first, then a single option that contains the wanted text.
 function chooseOptionIndex(optionTexts, wanted) {
 const w = normalise(wanted);
@@ -210,6 +228,12 @@ const history = [
 ];
 const pxLead = { activityId: '77000001', campaign: 'Peugeot - PX Valuation - New' };
 check('closed leads on the same campaign are not an earlier reset', findEarlierReset(history, pxLead), null);
+const fromPage = adoptClosedLead({ activityId: '77000003', campaign: 'Peugeot - PX Valuation - New', notes: '', fields: { LeadTypeID: 1 } },
+{ ID: 77000003, CampaignName: 'Enquiry - Used', SalesLead: { LeadDetails: { LeadTypeID: 2, InitialNotes: 'Wants a call\nafter 5', MonthlyPayment: 199 } } }, '');
+check('the closed lead on the page sets the campaign', fromPage.lead.campaign, 'Enquiry - Used');
+check('and its dropdowns and notes', [fromPage.lead.fields.LeadTypeID, fromPage.lead.notes, fromPage.notesFrom, 'MonthlyPayment' in fromPage.lead.fields], [2, 'Wants a call\nafter 5', 'the closed lead', false]);
+check('notes fall back to the Lead Checker', adoptClosedLead({ campaign: 'X', notes: 'Read on Live', fields: {} }, { CampaignName: 'X', SalesLead: { LeadDetails: {} } }, '').notesFrom, 'the Lead Checker');
+check('no notes anywhere is reported', adoptClosedLead({ campaign: 'X', notes: '', fields: {} }, null, '').notesFrom, '');
 const resetDone = { ID: 77000009, CampaignName: 'Peugeot - PX Valuation - New', ManuallyCreated: true, CreatedDate: '2026-11-09T16:00:00+00:00' };
 check('a hand-made lead on the campaign after the closed one is', findEarlierReset(history.concat(resetDone), pxLead), resetDone);
 check('a hand-made lead from before the closed one is not', findEarlierReset(history.concat({ ...resetDone, CreatedDate: '2026-09-01T09:00:00+01:00' }), pxLead), null);
@@ -480,19 +504,31 @@ throw new NeedsYou(ambiguous
 : `No customer found for ${lead.name}${lead.reg ? ' or ' + lead.reg : ''}. Search and press Select yourself.`);
 }
 
+function closedLeadPageNotes(el) {
+if (!el) return '';
+const box = Array.from(el.querySelectorAll('textarea')).find((t) => /initial/i.test(t.getAttribute('ng-model') || '') && t.value.trim());
+return box ? box.value : '';
+}
+
 async function checkNotAlreadyReset(ctx, lead) {
 await sleep(500);
-const activities = liveActivities().map(({ activity }) => activity);
-if (lead.activityId && activities.length && !activities.some((a) => String(a.ID) === String(lead.activityId)) && !ctx.allowOtherCustomer) {
+const entries = liveActivities();
+const activities = entries.map(({ activity }) => activity);
+const closed = entries.find(({ activity }) => String(activity.ID) === String(lead.activityId));
+if (lead.activityId && activities.length && !closed && !ctx.allowOtherCustomer) {
 ctx.allowOtherCustomer = true;
 throw new NeedsYou(`The closed lead is not on this customer, so this may be the wrong ${lead.name}. Go back and pick the right customer, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on' });
 }
+const adopted = adoptClosedLead(lead, closed && closed.activity, closedLeadPageNotes(closed && closed.el));
+Object.assign(lead, adopted.lead);
+ctx.notesFrom = adopted.notesFrom;
 const earlier = findEarlierReset(activities, lead);
 if (earlier && !ctx.allowExisting) {
 ctx.allowExisting = true;
 throw new NeedsYou(`This customer already has a ${lead.campaign} lead added by hand after the closed one, so it may already be reset. Press Skip lead to leave it, or carry on to add another.`, { carryOnLabel: 'Add another lead' });
 }
-return earlier ? 'Adding another lead as asked' : 'Closed lead found on this customer, not reset yet';
+if (earlier) return 'Adding another lead as asked';
+return closed ? `Closed ${lead.campaign} lead found on this customer, not reset yet` : 'Closed lead not checked on this customer';
 }
 
 async function chooseUpdateOutcomes() {
@@ -547,12 +583,25 @@ if (tabLink && normalise(tabLink.textContent).includes(normalise(lead.campaign).
 return 'New lead found';
 }
 
-function openAccordions(container) {
-['Details', 'Lead', 'Vehicle of Interest', 'Part Exchange'].forEach((title) => {
-const link = byText(container, 'a[ng-click="toggleOpen()"]', new RegExp('^' + title + '$', 'i'))[0];
-const panel = link && link.closest('.panel');
-if (link && panel && !panel.classList.contains('panel-open')) link.click();
+// Konnect draws each lead's sections in a shared tab area, away from the
+// lead's own block, so a lead's controls are found by the lead they belong
+// to rather than by where they sit on the page.
+function controlsOf(activity, selector) {
+return Array.from(document.querySelectorAll(selector)).filter((el) => {
+// Widgets with their own scope reach the lead through their parents.
+for (let scope = scopeOf(el), depth = 0; scope && depth < 8; scope = scope.$parent, depth++) {
+if (scope.theActivity === activity) return true;
+}
+return false;
 });
+}
+
+// Opens the closed section around a control so the result can be seen.
+function revealSection(el) {
+const panel = el && el.closest('.panel');
+if (!panel || panel.classList.contains('panel-open')) return;
+const toggle = panel.querySelector('.accordion-toggle, a[ng-click="toggleOpen()"]');
+if (toggle) toggle.click();
 }
 
 // The notes go into the call notes box (Internal Notes), never the lead's
@@ -567,6 +616,9 @@ return visibleFirst(Array.from(document.querySelectorAll('textarea')).filter((t)
 }
 
 async function fillNotes(ctx, lead) {
+if (!String(lead.notes || '').trim()) {
+throw new NeedsYou('No initial notes were found for this lead. Copy them from the closed lead into the call notes yourself.');
+}
 const box = findCallNotesBox();
 if (!box) {
 try { await navigator.clipboard.writeText(lead.notes); } catch (error) { /* shown below */ }
@@ -579,7 +631,7 @@ if (box.value !== lead.notes) {
 try { await navigator.clipboard.writeText(lead.notes); } catch (error) { /* shown below */ }
 throw new NeedsYou('The notes did not copy exactly. They are on your clipboard: paste them over what is in the call notes.');
 }
-return 'Initial notes copied exactly into the call notes';
+return `Initial notes from ${ctx.notesFrom || 'the closed lead'} copied exactly into the call notes`;
 }
 
 async function clearCallNotes(ctx) {
@@ -601,12 +653,12 @@ const fieldLabel = (key) => FIELD_LABELS[key] || key.replace(/ID$/, '');
 
 async function fillLeadFields(ctx, lead) {
 if (!ctx.newLead) return 'No new lead found, dropdowns left alone';
-const container = ctx.newLead.el;
-openAccordions(container);
-await sleep(400);
+const activity = ctx.newLead.activity;
 const missed = [];
 const done = [];
-const selects = container.querySelectorAll('select[ng-model^="theActivity.SalesLead.LeadDetails."]');
+const selects = controlsOf(activity, 'select[ng-model^="theActivity.SalesLead.LeadDetails."]');
+selects.forEach(revealSection);
+await sleep(400);
 if (selects.length === 0) missed.push('Lead dropdowns (not found on the new lead)');
 selects.forEach((select) => {
 const key = select.getAttribute('ng-model').split('.').pop();
@@ -620,14 +672,14 @@ else missed.push(fieldLabel(key));
 });
 ['VehicleOfInterestMake', 'VehicleOfInterestModel', 'VehicleOfInterestFuelType', 'VehicleOfInterestReg'].forEach((key) => {
 if (!lead.fields[key]) return;
-const input = container.querySelector(`input[ng-model$="LeadDetails.${key}"]`);
+const input = controlsOf(activity, `input[ng-model$="LeadDetails.${key}"]`)[0];
 if (!input) { missed.push(fieldLabel(key)); return; }
 setFieldValue(input, String(lead.fields[key]));
 done.push(fieldLabel(key));
 });
 const px = wantedPartExchange(lead);
 if (px != null) {
-const toggle = byClick(container, 'onSwitch');
+const toggle = visibleFirst(controlsOf(activity, '[ng-click^="onSwitch"]'));
 if (!toggle) missed.push('Part exchange');
 else {
 const box = toggle.querySelector('input[type="checkbox"]');
@@ -641,8 +693,7 @@ return `Filled ${done.length ? done.join(', ') : 'nothing'}${missed.length ? '. 
 }
 
 async function manageAppointments(ctx) {
-const container = ctx.newLead ? ctx.newLead.el : document;
-const button = byClick(container, 'manageSalesEventBookings');
+const button = ctx.newLead ? visibleFirst(controlsOf(ctx.newLead.activity, '[ng-click^="manageSalesEventBookings"]')) : null;
 if (!button) throw new NeedsYou('Press Manage Appointments on the new lead, then close the diary yourself.');
 button.click();
 const diary = await waitFor(() => openModal((m) => /manage appointments/i.test(m.textContent || '')), 15000);

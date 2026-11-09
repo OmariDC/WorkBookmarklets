@@ -2707,6 +2707,15 @@ if (exactNotes) fields.InitialNotes = exactNotes;
 return fields;
 }
 
+// Pure. The export and the lead window can word a campaign slightly
+// differently, so one containing the other still counts. A blank side
+// cannot be checked and is accepted.
+function nationalCampaignsMatch(windowCampaign, exportCampaign) {
+const a = normalizeForCompare(windowCampaign);
+const b = normalizeForCompare(exportCampaign);
+return !a || !b || a === b || a.includes(b) || b.includes(a);
+}
+
 // Opens one lead's window and reads what a reset needs. Returns null when
 // the window could not be read; the verdict stands either way.
 async function readNationalLeadDetails(leadId, items) {
@@ -2795,9 +2804,12 @@ attempts: evaluation.attempts, finalOutcome: evaluation.finalOutcome, enquiryMax
 };
 if (evaluation.verdict === 'Reset' || evaluation.verdict === 'Check') {
 if (isCancelled(session)) return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
-const details = await readNationalLeadDetails(leadId, items);
+const read = await readNationalLeadDetails(leadId, items);
+// A window for a different lead must not supply notes or reset details.
+const details = read && nationalCampaignsMatch(read.campaign, row.campaign) ? read : null;
 if (!details) {
-patch.verdictReason = `${evaluation.reason}. Notes not read`;
+patch.verdictReason = `${evaluation.reason}. ${read ? `The lead window showed ${read.campaign}, not ${row.campaign}, so its notes were not used` : 'Notes not read'}`;
+if (evaluation.verdict === 'Reset') patch.resetCampaign = row.campaign;
 } else {
 patch.followUpNotes = formatFollowUpNotes(details.followUp);
 patch.callHistory = details.callHistory;
@@ -2808,7 +2820,8 @@ patch.verdict = misdirected.verdict;
 patch.verdictReason = misdirected.reason;
 }
 if (evaluation.verdict === 'Reset') {
-patch.resetCampaign = details.campaign || row.campaign;
+// The export's campaign is the lead's own; the window's may be worded differently.
+patch.resetCampaign = row.campaign || details.campaign;
 patch.resetInitialNotes = details.initialNotes;
 patch.resetVoi = details.voi;
 patch.resetPx = details.px;
@@ -4912,6 +4925,8 @@ check('reset row carries reset details, tabs and newlines cleaned', lines[1].spl
 check('OK row leaves reset columns blank', lines[2].split('\t').slice(10, 14), ['', '', '', '']);
 check('reset fields travel as JSON in the last column', JSON.parse(lines[1].split('\t')[15]), { LeadTypeID: 2, InitialNotes: 'Line one\nLine two' });
 check('reg travels with every row', lines[1].split('\t')[14], 'AB12CDE');
+check('lead window on the same campaign is trusted', nationalCampaignsMatch('Enquiry - Used', 'enquiry - used'), true);
+check('lead window on another campaign is not', nationalCampaignsMatch('Peugeot - PX Valuation - New', 'Enquiry - Used'), false);
 check('reset fields keep only lead dropdowns and vehicle of interest', pickResetFields({ LeadTypeID: 2, LeadRequestID: 9, VehicleOfInterestMake: 'Peugeot', HasPartExchange: false, MonthlyPayment: 199, Deposit: null, Extra: { a: 1 } }, 'Enquiry - Used', 'A\nB'),
 { LeadTypeID: 2, LeadRequestID: 9, VehicleOfInterestMake: 'Peugeot', HasPartExchange: false, LeadRequestText: 'Enquiry - Used', InitialNotes: 'A\nB' });
 check('exception row exported as Check with a reason', lines[3].split('\t').slice(4, 6), ['Check', 'Could not check: Search timed out']);
