@@ -1858,6 +1858,9 @@
     replaceTextUndoably(target, start, end, replacement, nextValue);
     draft.inserted = text;
     saveDraftNow();
+    writeBookingToLead(draft).then((updated) => {
+      if (updated.length) showToast(`Lead updated: ${updated.join(', ')}`);
+    });
     if (note) {
       state.bookingStatus = { kind: 'warn', text: note };
       renderPalette();
@@ -1865,6 +1868,134 @@
     }
     state.bookingStatus = null;
     closePalette();
+  }
+
+  /* ---------- writing the booking's car details back to the lead ---------- */
+
+  function showToast(text) {
+    const toast = document.createElement('div');
+    toast.className = 'kn-toast';
+    toast.textContent = text;
+    toast.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483000;' +
+      'max-width:80vw;padding:10px 16px;border-radius:12px;background:#1c1c1e;color:#fff;' +
+      'font:600 13px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'box-shadow:0 10px 30px rgba(0,0,0,0.3);pointer-events:none';
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 4500);
+  }
+
+  /* Sets a Konnect (AngularJS) box so its ng-model picks the value up. */
+  function setLeadControl(control, value) {
+    if (!control) return false;
+    if (control instanceof HTMLSelectElement) {
+      const option = Array.from(control.options).find((item) => normaliseText(item.textContent).toLowerCase() === value.toLowerCase());
+      if (!option || control.value === option.value) return false;
+      control.value = option.value;
+      control.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+    if (normaliseText(control.value) === value) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+    if (descriptor?.set) descriptor.set.call(control, value);
+    else control.value = value;
+    control.dispatchEvent(new Event('input', { bubbles: true }));
+    control.dispatchEvent(new Event('change', { bubbles: true }));
+    control.dispatchEvent(new Event('blur'));
+    return true;
+  }
+
+  function fuelFromDescriptor(descriptor) {
+    const match = String(descriptor || '').match(/\b(plug-?in hybrid|mild hybrid|petrol hybrid|diesel hybrid|petrol|diesel|hybrid|electric|phev|mhev|hev|bev|ev)\b/i);
+    if (!match) return '';
+    const word = match[1].toLowerCase();
+    const upper = { phev: 'PHEV', mhev: 'MHEV', hev: 'HEV', bev: 'BEV', ev: 'EV' };
+    return upper[word] || word.replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  function turnPxSwitchOn(panel) {
+    const toggle = panel?.querySelector('toggle');
+    if (!toggle || pxSwitchOn(panel) !== false) return false;
+    try {
+      const ng = window.angular;
+      const model = toggle.getAttribute('ng-model');
+      const scope = ng && model ? ng.element(toggle).scope() : null;
+      if (scope) {
+        scope.$apply(`${model} = true`);
+        return true;
+      }
+    } catch (error) {
+      // Fall back to clicking the switch.
+    }
+    (toggle.querySelector('.toggle') || toggle).click();
+    return true;
+  }
+
+  /* Copies the booking's vehicle of interest and PX into the lead's boxes.
+     Only fills or corrects: an empty booking value never clears a lead box.
+     Returns the names of the boxes that changed. */
+  function writeBookingToLead(draft) {
+    const engine = bookingEngine();
+    const pane = activeLeadPane();
+    const d = draft.data;
+    const updated = [];
+    if (!engine || !pane) return Promise.resolve(updated);
+    const tidy = (make, model) => {
+      const split = engine.splitMakeModel(realText(make), realText(model));
+      return { make: engine.normaliseMake(split.make), model: engine.normaliseModel(split.model) };
+    };
+    const put = (panel, placeholder, value, label, onlyIfEmpty) => {
+      if (!value) return;
+      const control = panel?.querySelector(`input[placeholder="${placeholder}"]`);
+      if (!control) return;
+      if (onlyIfEmpty && realText(control.value)) return;
+      if (setLeadControl(control, value)) updated.push(label);
+    };
+
+    const voi = leadPanel(pane, 'vehicle of interest');
+    const vehicle = d.type !== 'valuation' ? d.vehicles.find((v) => realText(v.make) || realText(v.model) || realText(v.reg)) : null;
+    if (voi && vehicle) {
+      const names = tidy(vehicle.make, vehicle.model);
+      put(voi, 'Reg Number', engine.normaliseReg(realText(vehicle.reg)), 'Reg');
+      put(voi, 'Vehicle Brand', names.make, 'Brand');
+      put(voi, 'Vehicle Model', names.model, 'Model');
+      put(voi, 'Fuel Type', fuelFromDescriptor(vehicle.descriptor), 'Fuel Type', true);
+      const select = voi.querySelector('select');
+      const current = selectedText(select);
+      let purchase = '';
+      if (d.type === 'motability') purchase = 'Motability';
+      else if (!current) purchase = realText(vehicle.reg) || vehicle.condition === 'used' ? 'Used' : 'New';
+      if (purchase && setLeadControl(select, purchase)) updated.push('Purchase Type');
+      /* Record what was written as already seen, so it is not reported back as a lead change. */
+      Object.entries(readLead().fields).forEach(([path, value]) => { draft.leadSeen[path] = value; });
+    }
+
+    const item = d.px.items[0];
+    const wantPx = (d.type === 'valuation' || d.px.status === 'yes') && item &&
+      (realText(item.make) || realText(item.model) || realText(item.reg) || realText(item.mileage));
+    const pxPanel = leadPanel(pane, 'part exchange');
+    if (!wantPx || !pxPanel) {
+      saveDraftSoon();
+      return Promise.resolve(updated);
+    }
+    const switched = turnPxSwitchOn(pxPanel);
+    if (switched) updated.push('PX switch on');
+    return new Promise((resolve) => {
+      /* The PX boxes can be redrawn when the switch changes. */
+      setTimeout(() => {
+        const panel = leadPanel(activeLeadPane(), 'part exchange');
+        const names = tidy(item.make, item.model);
+        put(panel, 'Vehicle Brand', names.make, 'PX Brand');
+        put(panel, 'Vehicle Model', names.model, 'PX Model');
+        put(panel, 'Reg Number', engine.normaliseReg(realText(item.reg)), 'PX Reg');
+        put(panel, 'Mileage', engine.normaliseMileage(realText(item.mileage)), 'PX Mileage');
+        put(panel, 'Valuation', String(realText(item.roughVal)).replace(/[^\d.]/g, ''), 'PX Valuation');
+        const lead = readLead();
+        Object.entries(lead.pxFields).forEach(([path, value]) => { draft.leadSeen[path] = value; });
+        if (lead.pxOn !== null) draft.leadSeen['px.on'] = lead.pxOn ? 'on' : 'off';
+        saveDraftSoon();
+        resolve(updated);
+      }, switched ? 150 : 0);
+    });
   }
 
   /* ---------- small UI helpers ---------- */
