@@ -91,9 +91,11 @@ return r;
 return { ok: true, results, error: null };
 }
 
-// rows: [{name, vehicles, magic}]. Returns {index, reason}; index is -1
-// when no row or more than one customer could be meant.
-function chooseSearchRow(rows, name, reg) {
+// rows: [{name, vehicles, magic, campaign}]. Returns {index, reason};
+// index is -1 when no row or more than one customer could be meant. The
+// Vehicles column lists SALES references, so the activity ID and the
+// campaign also help to pick between customers with the same name.
+function chooseSearchRow(rows, name, reg, extra) {
 const target = normalise(stripNameTitle(name));
 const regKey = compactReg(reg);
 const indexes = rows.map((_, i) => i);
@@ -101,9 +103,15 @@ const exact = indexes.filter((i) => normalise(stripNameTitle(rows[i].name)) === 
 const sameCustomer = (list) => list.length > 1 && list.every((i) => rows[i].magic && rows[i].magic === rows[list[0]].magic);
 if (exact.length === 1 || sameCustomer(exact)) return { index: exact[0], reason: 'name' };
 const pool = exact.length ? exact : indexes;
-if (regKey) {
-const withReg = pool.filter((i) => compactReg(rows[i].vehicles).includes(regKey));
-if (withReg.length === 1 || sameCustomer(withReg)) return { index: withReg[0], reason: exact.length ? 'name and reg' : 'reg' };
+const tiebreaks = [];
+if (regKey) tiebreaks.push(['reg', (i) => compactReg(rows[i].vehicles).includes(regKey)]);
+const activity = String((extra && extra.activityId) || '').replace(/\D/g, '');
+if (activity) tiebreaks.push(['activity ID', (i) => (String(rows[i].vehicles).match(/\d+/g) || []).includes(activity)]);
+const campaign = normalise(extra && extra.campaign);
+if (campaign && exact.length) tiebreaks.push(['campaign', (i) => normalise(rows[i].campaign) === campaign]);
+for (const [label, test] of tiebreaks) {
+const hits = pool.filter(test);
+if (hits.length === 1 || sameCustomer(hits)) return { index: hits[0], reason: exact.length ? `name and ${label}` : label };
 }
 return { index: -1, reason: exact.length > 1 ? 'several' : 'none' };
 }
@@ -164,6 +172,12 @@ check('two exact names and no reg is ambiguous', chooseSearchRow(rows, 'Sam Buye
 check('one exact name wins over a longer name', chooseSearchRow(rows.slice(0, 2), 'Sam Buyer', ''), { index: 1, reason: 'name' });
 check('one customer on two rows is still one customer', chooseSearchRow([{ name: 'Jo Example', vehicles: 'A', magic: '7' }, { name: 'Jo Example', vehicles: 'B', magic: '7' }], 'Jo Example', ''), { index: 0, reason: 'name' });
 check('reg alone finds the customer', chooseSearchRow([{ name: 'J Example', vehicles: 'AB12CDE', magic: '1' }], 'Jo Example', 'AB12CDE'), { index: 0, reason: 'reg' });
+const salesRows = [
+{ name: 'Sam Buyer', vehicles: '70000009SALES, 70000010SALES', magic: '1', campaign: 'Peugeot - Enquiry' },
+{ name: 'Sam Buyer', vehicles: '70000002SALES, -', magic: '2', campaign: 'Vauxhall - Offer Request - Used' }
+];
+check('activity ID in the SALES references picks the customer', chooseSearchRow(salesRows, 'Sam Buyer', 'AB12CDE', { activityId: '70000002' }), { index: 1, reason: 'name and activity ID' });
+check('campaign picks the customer when nothing else does', chooseSearchRow(salesRows, 'Sam Buyer', '', { campaign: 'Peugeot - Enquiry' }), { index: 0, reason: 'name and campaign' });
 check('nothing matching', chooseSearchRow([{ name: 'Other Person', vehicles: '', magic: '1' }], 'Jo Example', 'AB12CDE'), { index: -1, reason: 'none' });
 const options = ['(Select a Campaign)', 'Vauxhall - Offer Request - New', 'Vauxhall - Offer Request - Used', 'Peugeot - Enquiry'];
 check('campaign exact match', chooseOptionIndex(options, 'vauxhall - offer request - new'), 1);
@@ -380,12 +394,14 @@ const rows = Array.from(table.querySelectorAll('tbody tr')).filter((tr) => tr.ch
 const cells = Array.from(tr.children);
 const text = (i) => (i >= 0 && cells[i] ? cells[i].textContent.replace(/\s+/g, ' ').trim() : '');
 const confirmCell = cells[col('confirm')] || cells[cells.length - 1];
+const select = tr.querySelector('button[ng-click^="eventHandler"]');
 return {
 tr,
 name: text(col('name')),
 vehicles: text(col('vehicles')),
 magic: text(col('magic num')),
-confirm: confirmCell ? (confirmCell.querySelector('button, a, input[type="button"], [ng-click]') || null) : null
+campaign: text(col('campaign')),
+confirm: select || (confirmCell ? confirmCell.querySelector('button, a, input[type="button"], [ng-click]') : null)
 };
 });
 return { headers, rows };
@@ -423,19 +439,19 @@ const terms = [stripNameTitle(lead.name), compactReg(lead.reg)].filter(Boolean);
 let ambiguous = false;
 for (const term of terms) {
 const rows = await runSearch(term);
-const choice = chooseSearchRow(rows, lead.name, lead.reg);
+const choice = chooseSearchRow(rows, lead.name, lead.reg, { activityId: lead.activityId, campaign: lead.campaign });
 if (choice.index >= 0) {
 const row = rows[choice.index];
 ctx.log(`Found the customer by ${choice.reason}`);
 (row.confirm || row.tr).click();
-if (!await waitFor(onCallPage, 20000)) throw new NeedsYou('The customer did not open. Press Confirm on the right customer yourself.');
+if (!await waitFor(onCallPage, 20000)) throw new NeedsYou('The customer did not open. Press Select on the right customer yourself.');
 return 'Customer opened';
 }
 if (choice.reason === 'several') ambiguous = true;
 }
 throw new NeedsYou(ambiguous
-? `More than one customer is called ${lead.name}. Press Confirm on the right one yourself.`
-: `No customer found for ${lead.name}${lead.reg ? ' or ' + lead.reg : ''}. Search and press Confirm yourself.`);
+? `More than one customer is called ${lead.name}. Press Select on the right one yourself.`
+: `No customer found for ${lead.name}${lead.reg ? ' or ' + lead.reg : ''}. Search and press Select yourself.`);
 }
 
 async function checkNotAlreadyReset(ctx, lead) {
@@ -508,28 +524,40 @@ if (link && panel && !panel.classList.contains('panel-open')) link.click();
 });
 }
 
+// The notes go into the call's own notes box (Internal Notes), not a box on
+// the lead. Manage Appointments carries them onto the new lead, and the box
+// is cleared afterwards.
+function findCallNotesBox() {
+const inSection = document.querySelector('#section-call-notes textarea, [id*="call-notes"] textarea');
+if (inSection) return inSection;
+return visibleFirst(Array.from(document.querySelectorAll('textarea')).filter((t) =>
+/note/i.test(t.getAttribute('ng-model') || '') && !t.closest('[ng-repeat^="theActivity in liveActivities"]')));
+}
+
 async function fillNotes(ctx, lead) {
-const container = ctx.newLead ? ctx.newLead.el : document;
-openAccordions(container);
-await sleep(400);
-const candidates = [
-...Array.from(container.querySelectorAll('textarea')).filter((t) => /initialnote/i.test(t.getAttribute('ng-model') || '')),
-...Array.from(container.querySelectorAll('textarea')).filter((t) => /note/i.test(t.getAttribute('ng-model') || '')),
-...Array.from(document.querySelectorAll('#section-call-notes textarea, [id*="call-notes"] textarea'))
-];
-const box = candidates[0];
+const box = findCallNotesBox();
 if (!box) {
 try { await navigator.clipboard.writeText(lead.notes); } catch (error) { /* shown below */ }
-throw new NeedsYou('Could not find the notes box. The initial notes are on your clipboard: paste them into the new lead.');
+throw new NeedsYou('Could not find the call notes box. The initial notes are on your clipboard: paste them into Internal Notes.');
 }
+ctx.notesBox = box;
 setFieldValue(box, lead.notes);
 await sleep(200);
 if (box.value !== lead.notes) {
 try { await navigator.clipboard.writeText(lead.notes); } catch (error) { /* shown below */ }
-throw new NeedsYou('The notes did not copy exactly. They are on your clipboard: paste them over what is there.');
+throw new NeedsYou('The notes did not copy exactly. They are on your clipboard: paste them over what is in the call notes.');
 }
-const where = /initialnote/i.test(box.getAttribute('ng-model') || '') ? 'new lead\'s Initial notes' : 'notes box';
-return `Initial notes copied exactly into the ${where}`;
+return 'Initial notes copied exactly into the call notes';
+}
+
+async function clearCallNotes(ctx) {
+const box = (ctx.notesBox && document.body.contains(ctx.notesBox)) ? ctx.notesBox : findCallNotesBox();
+if (!box) throw new NeedsYou('Delete the notes from the call notes box yourself.');
+if (box.value === '') return 'Call notes already empty';
+setFieldValue(box, '');
+await sleep(200);
+if (box.value !== '') throw new NeedsYou('The call notes did not clear. Delete them yourself.');
+return 'Call notes cleared';
 }
 
 const FIELD_LABELS = {
@@ -623,9 +651,10 @@ const STEPS = [
 { label: 'Choose Update Outcomes', run: chooseUpdateOutcomes },
 { label: 'Add the new lead', run: addNewLead },
 { label: 'Find the new lead', run: findNewLead },
-{ label: 'Copy the initial notes', run: fillNotes },
 { label: 'Match the dropdowns', run: fillLeadFields },
+{ label: 'Copy the notes into the call notes', run: fillNotes },
 { label: 'Manage Appointments', run: manageAppointments },
+{ label: 'Clear the call notes', run: clearCallNotes },
 { label: 'Check before parking', run: reviewBeforePark },
 { label: 'Clear the outcome and park', run: parkCall }
 ];
