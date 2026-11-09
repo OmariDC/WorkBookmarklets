@@ -1870,6 +1870,27 @@
     closePalette();
   }
 
+  /* Empties the whole Call Notes box as a normal edit, so Ctrl+Z in the
+     box brings the text back. */
+  function clearCallNotes() {
+    scanPage();
+    const target = state.target;
+    if (!(target instanceof HTMLTextAreaElement) || !target.value) return;
+    target.focus({ preventScroll: true });
+    target.setSelectionRange(0, target.value.length);
+    let done = false;
+    try {
+      done = document.execCommand('delete', false);
+    } catch (error) {
+      done = false;
+    }
+    if (!done || target.value !== '') {
+      setNativeValue(target, '');
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    state.lastSelection = { target, start: 0, end: 0 };
+  }
+
   /* ---------- writing the booking's car details back to the lead ---------- */
 
   function showToast(text) {
@@ -2664,14 +2685,16 @@
         renderPalette();
       });
     }));
-    actions.appendChild(button('Clear', 'kn-danger', () => {
-      if (!window.confirm('Clear this booking and start again?')) return;
-      state.booking = { ...draft, data: blankBooking(), fromLead: {}, notices: [], inserted: draft.inserted, leadSeen: {}, openSection: 'type' };
+    const clear = button('Clear', 'kn-danger', () => {
+      clearCallNotes();
+      state.booking = { ...draft, data: blankBooking(), fromLead: {}, notices: [], inserted: null, leadSeen: {}, openSection: 'type' };
       syncLead(state.booking);
       saveDraftNow();
-      state.bookingStatus = null;
+      state.bookingStatus = { kind: 'ok', text: 'Cleared. Press Ctrl+Z in Call Notes to undo.' };
       renderPalette();
-    }));
+    });
+    clear.title = 'Empties the whole Call Notes box and resets this booking (Ctrl+Z in Call Notes undoes it)';
+    actions.appendChild(clear);
     footer.appendChild(actions);
     palette.appendChild(footer);
 
