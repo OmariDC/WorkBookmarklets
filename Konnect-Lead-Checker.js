@@ -3840,6 +3840,16 @@ if (candidates.length === 0) return finalizeResult(result, { status: 'EXCEPTION'
 return classifyCandidates(row, session, result, candidates);
 }
 
+// Pure. What kind of check a pasted batch is, shown above the status.
+const CHECK_SCENARIOS = {
+standard: { label: 'Normal check', detail: 'SLA and Pending leads, matched by created time', color: '#2563eb' },
+national: { label: 'National check', detail: 'National leads, checked for a reschedule or a dealer send', color: '#7c3aed' },
+postClosureList: { label: 'Post Closure check', detail: 'Newest Post Closure lead on each customer', color: '#b45309' }
+};
+function checkScenarioOf(mode) {
+return CHECK_SCENARIOS[mode || 'standard'] || CHECK_SCENARIOS.standard;
+}
+
 runSelfTest('postClosureSearchBatchSelfTest', function postClosureSearchBatchSelfTest() {
 const failures = [];
 const check = (label, actual, expected) => { if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`); };
@@ -3855,6 +3865,7 @@ const sam = parsed.rows[1];
 check('columns read by name', [sam.name, sam.phone, sam.email, sam.campaign, sam.source, sam.created], ['Mr. Sam Buyer', '07700900456', 'sam@example.com', 'PX Valuation - Used', 'Post Closure Processing', '']);
 check('rows are queued without a created time', parsed.rows.map((r) => r.status), ['QUEUED', 'QUEUED', 'QUEUED']);
 check('a row with only a name is grouped by name', parsed.rows[2].groupKey, 'name:' + normalizeCustomerName('Jo Example'));
+check('scenario labels', ['standard', 'national', 'postClosureList', undefined].map((m) => checkScenarioOf(m).label), ['Normal check', 'National check', 'Post Closure check', 'Normal check']);
 check('the usual batch header still works', parseBatchInput('Name\tPhone\tEmail\tSource\tCampaign\tCreated\nA\t07700900123\t\tX\tY\tSat, 26 Sep 2026 18:05').headerOk, true);
 if (failures.length) console.error('KonnectLeadChecker post-closure-search self-test FAILED:\n' + failures.join('\n'));
 else console.info('KonnectLeadChecker post-closure-search self-test passed');
@@ -4735,9 +4746,14 @@ const nationalBatch = [NATIONAL_BATCH_HEADER.join('\t'), ['national', 'Alex Samp
 const nationalFirst = newSession(nationalBatch);
 nationalFirst.results[0] = finalizeResult(makeResultBase(nationalFirst.rows[0]), { status: 'CLASSIFIED', verdict: 'Reset' });
 check('National verdicts are never carried into a new paste', !!newSession(nationalBatch, nationalFirst).results[0], false);
-const storedBefore = localStorage.getItem(SESSION_STORAGE_KEY);
+// Skipped where the browser blocks storage; saving is then impossible anyway.
+let storedBefore;
+let storageReadable = true;
+try { storedBefore = localStorage.getItem(SESSION_STORAGE_KEY); } catch (error) { storageReadable = false; }
+if (storageReadable) {
 saveSession({ ...nationalFirst, discarded: true });
 check('A cleared session is never saved again', localStorage.getItem(SESSION_STORAGE_KEY), storedBefore);
+}
 first.results[0] = Object.assign({}, first.results[0], { classifierVersion: 'older' });
 check('Results from an older classifier are re-checked, not carried', newSession(batch, first).results[0], undefined);
 const now = Date.now();
@@ -5295,6 +5311,9 @@ button.primary { background: #C2CB42; color: #1c1c1e; }
 button.primary:hover { background: #aab238; }
 .status { background: var(--wb-surface); border: none; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); padding: 10px 12px; margin-bottom: 8px; }
 .status div { margin-bottom: 2px; }
+.mode-banner { display: flex; align-items: center; gap: 8px; padding: 7px 10px; margin-bottom: 8px; border-radius: 10px; border: 1px solid; font-size: 11.5px; }
+.mode-banner strong { font-size: 12px; }
+.mode-banner .mode-detail { color: var(--wb-text-2); }
 .recent-log { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
 .recent-log-row { display: flex; align-items: center; gap: 5px; font-size: 10.5px; overflow: hidden; }
 .recent-log-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--wb-text-2); }
@@ -5383,7 +5402,7 @@ textarea, .search-input, .review-reason, .review-subcategory { background: var(-
 <details class="topSection" id="topSection" open>
 <summary>${detailsChevronIcon()}Batch input</summary>
 <div class="topSection-content">
-<textarea id="pasteBox" aria-label="Batch to check, pasted from SLA Manager" placeholder="Paste TSV: Name  Phone  Email  Source  Campaign  Created"></textarea>
+<textarea id="pasteBox" aria-label="Batch to check, pasted from SLA Manager" placeholder="Paste a batch from SLA Manager, a National batch, or the customer search table for Post Closure leads"></textarea>
 <button class="action" id="btnPasteClipboard" style="margin-bottom: 6px;">${svgIcon('copy', 11)}Paste from clipboard</button>
 <div class="row-count" id="rowCount">0 rows parsed</div>
 <label class="auto-start-label">
@@ -5407,6 +5426,7 @@ Auto-start on paste
 <button class="action" id="btnCopyRawForExtract">${svgIcon('copy', 11)}Copy results for SLA Manager</button>
 <button class="action hidden" id="btnCopyNationalResults">${svgIcon('copy', 11)}Copy National results for SLA Manager</button>
 </div>
+<div class="mode-banner hidden" id="modeBanner" role="status" aria-live="polite"></div>
 <div class="status">
 <div>Customer: <span id="curCustomer">-</span></div>
 <div>Lead created: <span id="curTarget">-</span></div>
@@ -5486,6 +5506,7 @@ const rowCountEl = root.getElementById('rowCount');
 const curCustomerEl = root.getElementById('curCustomer');
 const curTargetEl = root.getElementById('curTarget');
 const curStateEl = root.getElementById('curState');
+const modeBannerEl = root.getElementById('modeBanner');
 const completedCountEl = root.getElementById('completedCount');
 const exceptionCountEl = root.getElementById('exceptionCount');
 const totalCountEl = root.getElementById('totalCount');
@@ -5689,6 +5710,7 @@ render();
 function render() {
 ensureBadgeAttached();
 renderNotices();
+renderModeBanner();
 if (!session) {
 rowCountEl.textContent = '0 rows parsed';
 resultsBody.innerHTML = renderZeroState('clipboard', 'No Batch Loaded', 'Paste a batch above to begin.');
@@ -5909,6 +5931,15 @@ const nationalMode = !!(session && session.mode === 'national');
 btnCopyRawForExtractEl.classList.toggle('hidden', !v.copyRawForExtract || nationalMode);
 btnCopyNationalResultsEl.classList.toggle('hidden', !v.copyRawForExtract || !nationalMode);
 handoffControlsEl.classList.toggle('hidden', !v.handoffControls);
+}
+
+function renderModeBanner() {
+const scenario = session && session.headerOk ? checkScenarioOf(session.mode) : null;
+modeBannerEl.classList.toggle('hidden', !scenario);
+if (!scenario) { modeBannerEl.innerHTML = ''; return; }
+modeBannerEl.style.background = `${scenario.color}14`;
+modeBannerEl.style.borderColor = `${scenario.color}55`;
+modeBannerEl.innerHTML = `<strong style="color: ${readableTextColor(scenario.color)};">${escapeHtmlForUi(scenario.label)}</strong><span class="mode-detail">${escapeHtmlForUi(scenario.detail)}</span>`;
 }
 
 function renderRecentLog() {
