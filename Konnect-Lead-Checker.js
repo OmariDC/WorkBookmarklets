@@ -1047,7 +1047,7 @@ el.dispatchEvent(new Event('change', { bubbles: true }));
 
 const KONNECT_LIVE_SEARCH_HASH = '#/search?redirectRoute=%2Fsearch';
 
-const SEARCH_TYPE_VALUES = { email: '4', phone: '3' };
+const SEARCH_TYPE_VALUES = { email: '4', phone: '3', name: '1', reg: '5' };
 
 function findSearchTypeRadio(type) {
 return document.querySelector(`input[name="bookingSearchBy"][value="${SEARCH_TYPE_VALUES[type]}"]`);
@@ -2173,6 +2173,7 @@ const lines = String(rawText || '').split(/\r\n|\r|\n/).filter((line) => line.tr
 if (lines.length === 0) return { rows: [], headerOk: false, error: 'No input.' };
 
 const header = lines[0].split('\t').map((h) => h.trim());
+if (isNationalHeader(header)) return parseNationalBatch(lines);
 const headerOk = header.length === EXPECTED_BATCH_HEADER.length && header.every((h, i) => h === EXPECTED_BATCH_HEADER[i]);
 if (!headerOk) {
 return { rows: [], headerOk: false, error: `Header does not match expected columns: ${EXPECTED_BATCH_HEADER.join('\t')}` };
@@ -2208,6 +2209,426 @@ status, exception
 
 return { rows, headerOk: true, error: null };
 }
+
+// ===================================================================
+// NATIONAL CHECK MODE
+//
+// A second batch shape, produced by SLA Manager's Customer Hub morning
+// check: national leads from the last few days, one row per lead. Each
+// customer is found by name, their timeline is read once, and every lead
+// gets a verdict (OK, Reset, Check or Not found) from the timeline data:
+// Enquiry Max sends, call outcomes, appointments and newer leads.
+// ===================================================================
+
+const NATIONAL_BATCH_HEADER = ['NationalCheck', 'Customer', 'Reg', 'ActivityID', 'LeadCreated', 'Campaign', 'Dealer', 'LastContact', 'State', 'ExportOutcome', 'Attempts', 'ManualReschedules', 'AutoReschedules', 'ExportHint'];
+const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx'];
+const NATIONAL_VERDICT_ORDER = ['Reset', 'Check', 'Not found', 'OK'];
+const NATIONAL_ADMIN_OUTCOMES = /test lead|duplicate record|invalid contact details|s&y invalid lead drop|multiple lead enq|gdpr restricted/i;
+// Closing outcomes that leave a national lead with nowhere to go unless it
+// was also sent to a dealership through Enquiry Max.
+// Outcomes where the agent meant to pass the enquiry on. Only these can be
+// covered by a newer lead: an Email Only or no-answer closure still needs a
+// reset even when the customer has a newer lead elsewhere.
+const NATIONAL_HANDOVER_OUTCOMES = /sent direct to enquiry max|sent to dealer|closed - other activity/i;
+const NATIONAL_DEAD_END_OUTCOMES = /email only|in market|not interested|just browsing|face to face|test drive|phone call|appointment|wont commit|won't commit|no answer|catch all|defer to site|video|sent direct to enquiry max|sent to dealer|closed - other activity|in progress with dealer|hub reservation|no appointment|no opportunity/i;
+
+function isNationalDealer(name) {
+return /national/i.test(String(name || ''));
+}
+
+function isNationalHeader(header) {
+return header.length === NATIONAL_BATCH_HEADER.length && header.every((h, i) => h === NATIONAL_BATCH_HEADER[i]);
+}
+
+// "dd/mm/yyyy HH:MM" from the Customer Hub export.
+function parseNationalCreated(text) {
+const m = String(text || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+if (!m) return null;
+return { year: Number(m[3]), month: Number(m[2]) - 1, day: Number(m[1]), hour: Number(m[4]), minute: Number(m[5]) };
+}
+
+// Konnect's EventTime is its own wall clock, e.g. "2026-11-04T15:32:20.707+00:00"
+// for a lead shown as "4 Nov 15:32". The digits are used as written.
+function parseTimelineEventTime(text) {
+const m = String(text || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+if (!m) return null;
+return { year: Number(m[1]), month: Number(m[2]) - 1, day: Number(m[3]), hour: Number(m[4]), minute: Number(m[5]) };
+}
+
+function eventTimeMs(text) {
+const p = parseTimelineEventTime(text);
+return p ? new Date(p.year, p.month, p.day, p.hour, p.minute).getTime() : null;
+}
+
+function normalizeCustomerName(value) {
+return String(value || '').toLowerCase()
+.replace(/\b(mr|mrs|miss|ms|mx|dr)\b\.?/g, ' ')
+.replace(/[^a-z' -]/g, ' ')
+.replace(/\s+/g, ' ')
+.trim();
+}
+
+function normalizeReg(value) {
+return String(value || '').toUpperCase().replace(/\s+/g, '');
+}
+
+function parseNationalBatch(lines) {
+const rows = lines.slice(1).map((line, index) => {
+const c = line.split('\t').map((cell) => (cell || '').trim());
+const row = {
+inputIndex: index, mode: 'national',
+name: c[1] || '', reg: c[2] || '', activityId: c[3] || '', created: c[4] || '',
+campaign: c[5] || '', dealer: c[6] || '', lastContact: c[7] || '', state: c[8] || '',
+exportOutcome: c[9] || '', attempts: c[10] || '', manualReschedules: c[11] || '',
+autoReschedules: c[12] || '', exportHint: c[13] || '',
+source: 'National', phone: '', email: '',
+normalizedEmail: '', normalizedPhone: '',
+parsedCreated: parseNationalCreated(c[4]),
+groupKey: 'national:' + normalizeCustomerName(c[1]),
+status: 'QUEUED', exception: null
+};
+if (c[0] !== 'national' || !row.name) { row.status = 'INVALID_INPUT'; row.exception = 'NO_SEARCH_IDENTIFIER'; }
+else if (!row.parsedCreated) { row.status = 'INVALID_INPUT'; row.exception = 'INVALID_CREATED_DATETIME'; }
+return row;
+});
+return { rows, headerOk: true, error: null, mode: 'national' };
+}
+
+// Pure. Prefers an exact name match, then the batch reg, before giving up.
+function chooseNationalCustomerResult(rows, expectedName, expectedReg) {
+if (rows.length === 0) return { status: 'SEARCH_NO_RESULTS' };
+const withLinks = rows.filter((r) => r.link && r.customerId);
+if (withLinks.length === 0) return { status: 'CUSTOMER_NOT_LINKED' };
+const name = normalizeCustomerName(expectedName);
+const named = withLinks.filter((r) => {
+const candidate = normalizeCustomerName(r.customerName);
+return candidate && (candidate === name || candidate.includes(name) || name.includes(candidate));
+});
+const pool = named.length > 0 ? named : withLinks;
+const ids = new Set(pool.map((r) => r.customerId));
+if (ids.size === 1 && named.length > 0) return { status: 'OK', result: pool[0] };
+const reg = normalizeReg(expectedReg);
+if (reg) {
+const byReg = pool.filter((r) => normalizeReg(r.registrationNumber) === reg);
+if (new Set(byReg.map((r) => r.customerId)).size === 1) return { status: 'OK', result: byReg[0] };
+}
+if (named.length === 0 && ids.size === 1) return { status: 'OK', result: pool[0] };
+return { status: 'CUSTOMER_AMBIGUOUS' };
+}
+
+async function runNationalSearch(type, value, session) {
+const opened = await openSearchPage();
+if (isCancelled(session)) return { status: 'CANCELLED' };
+if (!opened) return { status: 'SEARCH_TIMEOUT' };
+if (!(await selectSearchType(type))) return { status: 'SEARCH_TIMEOUT' };
+if (!(await enterSearchIdentifier(value))) return { status: 'SEARCH_TIMEOUT' };
+const count = await submitSearchAndWaitForResults();
+if (isCancelled(session)) return { status: 'CANCELLED' };
+if (count === null) return { status: 'SEARCH_TIMEOUT' };
+if (count === 0) return { status: 'SEARCH_NO_RESULTS' };
+return { status: 'OK', rows: readSearchResultRows() };
+}
+
+async function searchAndOpenNationalCustomer(group, session) {
+const sample = group.rows[0];
+const regs = group.rows.map((r) => r.reg).filter(Boolean);
+let choice = { status: 'SEARCH_NO_RESULTS' };
+const byName = await runNationalSearch('name', sample.name, session);
+if (byName.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
+if (byName.status === 'OK') {
+for (const reg of regs.length ? regs : ['']) {
+choice = chooseNationalCustomerResult(byName.rows, sample.name, reg);
+if (choice.status === 'OK') break;
+}
+} else {
+choice = { status: byName.status };
+}
+// A second search by reg settles two customers with the same name.
+if (choice.status !== 'OK' && regs.length > 0 && choice.status !== 'SEARCH_TIMEOUT') {
+for (const reg of regs) {
+const byReg = await runNationalSearch('reg', reg, session);
+if (byReg.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
+if (byReg.status !== 'OK') continue;
+const regChoice = chooseNationalCustomerResult(byReg.rows, sample.name, reg);
+if (regChoice.status === 'OK') { choice = regChoice; break; }
+}
+}
+if (choice.status !== 'OK') return { status: 'FAILED', exception: choice.status };
+const timelineState = await openCustomerAndWaitForTimeline(choice.result);
+if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
+if (timelineState.state === 'FAILED') return { status: 'FAILED', exception: 'TIMELINE_TIMEOUT' };
+return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
+}
+
+function readAllTimelineItems(readScope) {
+const resolveScope = readScope || readTimelineItemScope;
+return getAllTimelineRows().map((row) => {
+const item = resolveScope(row);
+return item ? Object.assign({}, item, { __row: row }) : null;
+}).filter(Boolean);
+}
+
+// Pure: every lead-created (type 1) item whose time matches the batch's
+// LeadCreated to the minute.
+function findNationalLeadIds(items, parsedCreated) {
+const ids = new Set();
+items.forEach((item) => {
+if (Number(item.TimelineItemType) !== 1 || item.LeadID == null) return;
+if (datetimesMatchAtMinute(parseTimelineEventTime(item.EventTime), parsedCreated)) ids.add(String(item.LeadID));
+});
+return Array.from(ids);
+}
+
+function emDealerOf(item) {
+const m = String(item.Description || '').match(/received at\s+(.+?)\s*\.?\s*$/i);
+return m ? m[1].trim() : '';
+}
+
+function outcomeFromCallDescription(description) {
+const text = String(description || '').trim();
+if (!/^sales\s*->/i.test(text)) return null;
+const last = text.split('->').pop().trim();
+return last.replace(/\s+at\s+[^>]+$/i, '').trim();
+}
+
+function isAttemptItem(item) {
+return Number(item.TimelineItemType) === 3 && item.IsContactCentreAgent !== false
+&& /called the customer with an outcome of/i.test(String(item.BelowLineTitle || ''));
+}
+
+function formatShortTime(ms) {
+if (ms == null) return '';
+const d = new Date(ms);
+const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+return `${d.getDate()} ${months[d.getMonth()]} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+// Pure. lead = { leadId, createdMs }. itemsForLead are this lead's own
+// timeline items; allItems are the whole customer timeline; context.openLeadIds
+// lists this customer's other leads that the export shows as still open.
+function evaluateNationalLead(lead, itemsForLead, allItems, batchRow, context) {
+const ctx = context || {};
+const byTime = (a, b) => (eventTimeMs(a.EventTime) || 0) - (eventTimeMs(b.EventTime) || 0);
+const own = [...itemsForLead].sort(byTime);
+const attempts = own.filter(isAttemptItem).length;
+const sends = own.filter((i) => Number(i.TimelineItemType) === 2).map(emDealerOf).filter(Boolean);
+const dealerSend = sends.find((d) => !isNationalDealer(d));
+const nationalSend = sends.find((d) => isNationalDealer(d));
+const latestOutcome = own.filter((i) => Number(i.TimelineItemType) === 3).map((i) => outcomeFromCallDescription(i.Description)).filter(Boolean).pop();
+const finalOutcome = latestOutcome || String(batchRow.exportOutcome || '').trim();
+const base = { attempts, finalOutcome, enquiryMaxDealer: dealerSend || nationalSend || '' };
+const verdict = (v, reason) => Object.assign({}, base, { verdict: v, reason });
+
+// 1. Sent to a dealership.
+if (dealerSend) return verdict('OK', `Sent to ${dealerSend} via Enquiry Max`);
+const open = /in progress/i.test(String(batchRow.state || ''));
+// 3 and 4. Acceptable closing outcomes.
+if (!open && /max attempts/i.test(finalOutcome)) return verdict('OK', `Closed as ${finalOutcome} after ${attempts || batchRow.attempts || '?'} attempts`);
+if (!open && NATIONAL_ADMIN_OUTCOMES.test(finalOutcome)) return verdict('OK', `Closed as ${finalOutcome}`);
+// 5. Still being worked.
+if (open) {
+if (String(batchRow.exportHint || '') === 'open-auto') return verdict('Check', 'Automatic reschedule, should be manual');
+return verdict('OK', 'Still being worked');
+}
+// 6. A hand-over closure whose enquiry a newer lead already carries.
+const createdMs = lead.createdMs;
+const newer = (allItems || []).filter((i) => String(i.LeadID) !== String(lead.leadId) && (eventTimeMs(i.EventTime) || 0) > (createdMs || 0));
+const cover = newer.find((i) => {
+const type = Number(i.TimelineItemType);
+if (type === 2 && !isNationalDealer(emDealerOf(i))) return true;
+if (type === 8) return true;
+const walkIn = String(i.Description || '').match(/created in Enquiry Max at\s+(.+?)\s*$/i);
+if (walkIn && !isNationalDealer(walkIn[1])) return true;
+return type === 1 && (ctx.openLeadIds || []).map(String).includes(String(i.LeadID));
+});
+if (cover && NATIONAL_HANDOVER_OUTCOMES.test(finalOutcome)) return verdict('OK', `Covered by newer lead ${formatShortTime(eventTimeMs(cover.EventTime))}`);
+// 2. Sent, but only to National.
+if (nationalSend) return verdict('Reset', 'Sent to Enquiry Max at National, went nowhere');
+// 7. Closed with nowhere to go.
+if (finalOutcome && NATIONAL_DEAD_END_OUTCOMES.test(finalOutcome)) return verdict('Reset', `Closed as ${finalOutcome} without being sent to a dealership`);
+// 8. Unknown.
+return verdict('Check', `Outcome not seen before: ${finalOutcome || 'none recorded'}`);
+}
+
+function waitForRepeat(container, expr, timeout) {
+return new Promise((resolve) => {
+const find = () => container.querySelectorAll(`[ng-repeat^="${expr}"]`);
+if (find().length) { resolve(true); return; }
+const timer = setTimeout(() => { observer.disconnect(); resolve(find().length > 0); }, timeout);
+const observer = new MutationObserver(() => { if (find().length) { clearTimeout(timer); observer.disconnect(); resolve(true); } });
+observer.observe(container, { childList: true, subtree: true });
+});
+}
+
+function scopeItemsFor(container, expr) {
+return Array.from(container.querySelectorAll(`[ng-repeat^="${expr}"]`)).map((el) => {
+try { return angular.element(el).scope().item || null; } catch (error) { return null; }
+}).filter(Boolean);
+}
+
+async function clickModalTab(modal, label) {
+const tab = Array.from(modal.querySelectorAll('a.nav-link')).find((a) => a.textContent.replace(/\s+/g, ' ').trim() === label);
+if (!tab) return false;
+tab.click();
+await sleep(250);
+return true;
+}
+
+function formatFollowUpNotes(comments) {
+const text = comments.map((c) => `${c.CreatedDate || ''} ${c.CreatedBy || ''}: ${String(c.Comment || '').replace(/\s+/g, ' ').trim()}`.trim()).join(' | ');
+return text.length > 500 ? text.slice(0, 497) + '...' : text;
+}
+
+// Opens one lead's window and reads what a reset needs. Returns null when
+// the window could not be read; the verdict stands either way.
+async function readNationalLeadDetails(leadId, items) {
+const leadItem = items.find((i) => Number(i.TimelineItemType) === 1 && String(i.LeadID) === String(leadId));
+if (!leadItem || !leadItem.__row) return null;
+const state = await openLeadModal(leadItem.__row);
+if (!state) return null;
+try {
+const { modal, panel } = state;
+const details = { campaign: '', initialNotes: '', voi: '', px: '', followUp: [], callHistory: [] };
+const campaign = extractCampaignField(panel);
+details.campaign = campaign.primary || '';
+details.initialNotes = extractInitialNotes(panel) || '';
+let results = null;
+const modelInput = modal.querySelector('input[ng-model^="results."]');
+try { results = modelInput ? angular.element(modelInput).scope().results : null; } catch (error) { results = null; }
+const leadDetails = (results && results.LeadDetails) || {};
+const value = (key) => {
+const input = modal.querySelector(`input[ng-model="results.LeadDetails.${key}"]`);
+return String(leadDetails[key] || (input && input.value) || '').trim();
+};
+details.voi = ['VehicleOfInterestMake', 'VehicleOfInterestModel', 'VehicleOfInterestFuelType', 'VehicleOfInterestReg'].map(value).filter(Boolean).join(' ');
+const pxRadio = Array.from(modal.querySelectorAll('input[type="radio"]')).find((r) => r.checked && /partexchange/i.test(r.getAttribute('ng-model') || ''));
+const pxValue = leadDetails.HasPartExchange;
+details.px = pxValue === true ? 'Has Part Exchange' : pxValue === false ? 'No Part Exchange'
+: (pxRadio ? (pxRadio.closest('label') || pxRadio.parentElement).textContent.replace(/\s+/g, ' ').trim() : '');
+if (await clickModalTab(modal, 'Follow Up')) await waitForRepeat(modal, 'item in surveyDetailData', 1500);
+details.followUp = scopeItemsFor(modal, 'item in surveyDetailData');
+if (await clickModalTab(modal, 'Call History')) await waitForRepeat(modal, 'item in surveyAttemptData', 1500);
+details.callHistory = scopeItemsFor(modal, 'item in surveyAttemptData').map((c) => ({ date: c.ContactDate, outcome: c.OutcomeDisplayText, type: c.ContactType }));
+return details;
+} catch (error) {
+return null;
+} finally {
+await closeLeadModal();
+}
+}
+
+async function processNationalRow(row, session, group) {
+const result = Object.assign(makeResultBase(row), {
+mode: 'national', activityId: row.activityId, leadId: null, verdict: null, verdictReason: null,
+attempts: null, finalOutcome: null, enquiryMaxDealer: null, followUpNotes: '', callHistory: [],
+resetCampaign: '', resetInitialNotes: '', resetVoi: '', resetPx: ''
+});
+let items = readAllTimelineItems();
+let ids = findNationalLeadIds(items, row.parsedCreated);
+for (let attempt = 0; ids.length === 0 && attempt < 5; attempt++) {
+if (isCancelled(session)) return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
+const scroll = await loadOlderTimelineEntries();
+items = readAllTimelineItems();
+ids = findNationalLeadIds(items, row.parsedCreated);
+if (scroll.status !== 'OK' || !scroll.loadedNewEntries) break;
+}
+if (ids.length === 0) {
+return finalizeResult(result, { status: 'CLASSIFIED', verdict: 'Not found', verdictReason: `No lead created at ${row.created} on the timeline` });
+}
+if (ids.length > 1) {
+return finalizeResult(result, { status: 'CLASSIFIED', verdict: 'Check', verdictReason: 'More than one lead created at that time' });
+}
+const leadId = ids[0];
+const openLeadIds = group.rows
+.filter((other) => other !== row && /in progress/i.test(other.state || ''))
+.map((other) => findNationalLeadIds(items, other.parsedCreated)[0])
+.filter(Boolean);
+const leadCreated = items.find((i) => Number(i.TimelineItemType) === 1 && String(i.LeadID) === leadId);
+const evaluation = evaluateNationalLead(
+{ leadId, createdMs: leadCreated ? eventTimeMs(leadCreated.EventTime) : null },
+items.filter((i) => String(i.LeadID) === leadId),
+items, row, { openLeadIds }
+);
+const patch = {
+status: 'CLASSIFIED', leadId, verdict: evaluation.verdict, verdictReason: evaluation.reason,
+attempts: evaluation.attempts, finalOutcome: evaluation.finalOutcome, enquiryMaxDealer: evaluation.enquiryMaxDealer
+};
+if (evaluation.verdict === 'Reset' || evaluation.verdict === 'Check') {
+if (isCancelled(session)) return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
+const details = await readNationalLeadDetails(leadId, items);
+if (!details) {
+patch.verdictReason = `${evaluation.reason}. Notes not read`;
+} else {
+patch.followUpNotes = formatFollowUpNotes(details.followUp);
+patch.callHistory = details.callHistory;
+patch.initialNotes = details.initialNotes;
+if (evaluation.verdict === 'Reset') {
+patch.resetCampaign = details.campaign || row.campaign;
+patch.resetInitialNotes = details.initialNotes;
+patch.resetVoi = details.voi;
+patch.resetPx = details.px;
+}
+}
+}
+return finalizeResult(result, patch);
+}
+
+function buildNationalResultsExport(session) {
+const rows = orderedResults(session).map((r) => {
+const exception = r.status === 'EXCEPTION';
+const verdict = exception ? 'Check' : (r.verdict || 'Check');
+const reason = exception ? `Could not check: ${exceptionLabel(r.exception)}` : (r.verdictReason || '');
+const isReset = verdict === 'Reset';
+return ['national', r.name, r.activityId, r.leadId, verdict, reason,
+r.attempts != null ? String(r.attempts) : '', r.finalOutcome, r.enquiryMaxDealer, r.followUpNotes,
+isReset ? r.resetCampaign : '', isReset ? r.resetInitialNotes : '', isReset ? r.resetVoi : '', isReset ? r.resetPx : ''
+].map(tsvCell).join('\t');
+});
+return [NATIONAL_RESULT_HEADER.join('\t'), ...rows].join('\n');
+}
+
+const NATIONAL_VERDICT_COLORS = { Reset: '#d70015', Check: '#b45309', 'Not found': '#475569', OK: '#047857' };
+
+function nationalVerdictOf(r) {
+return r.status === 'EXCEPTION' ? 'Check' : (r.verdict || 'Check');
+}
+
+// ui gives the panel's open/closed state and avatar renderer, which live
+// inside the panel code.
+function renderNationalResultsHtml(results, nameFilter, ui) {
+const filtered = results.filter((r) => !nameFilter || String(r.name || '').toLowerCase().includes(nameFilter));
+if (filtered.length === 0) return '<div class="empty-state">No results yet. Press Start or Process next.</div>';
+return NATIONAL_VERDICT_ORDER.map((verdict, index) => {
+const rows = filtered.filter((r) => nationalVerdictOf(r) === verdict);
+if (rows.length === 0) return '';
+const color = NATIONAL_VERDICT_COLORS[verdict];
+const key = 100 + index;
+const customers = rows.map((r) => {
+const reason = r.status === 'EXCEPTION' ? `Could not check: ${exceptionLabel(r.exception)}` : (r.verdictReason || '');
+const lines = [
+['Reason', reason], ['Lead', `${r.activityId || '-'} (Konnect ${r.leadId || '-'})`], ['Created', r.created],
+['Final outcome', r.finalOutcome], ['Attempts', r.attempts != null ? String(r.attempts) : ''],
+['Enquiry Max', r.enquiryMaxDealer], ['Follow-up notes', r.followUpNotes]
+];
+if (verdict === 'Reset') lines.push(['Reset campaign', r.resetCampaign], ['Vehicle of interest', r.resetVoi], ['Part exchange', r.resetPx]);
+const body = lines.filter(([, v]) => v).map(([k, v]) => `<div><strong>${escapeHtmlForUi(k)}:</strong> ${escapeHtmlForUi(v)}</div>`).join('');
+const open = ui.isCustomerOpen(r.inputIndex);
+return `
+<div class="customer${open ? ' open' : ''}" data-key="${r.inputIndex}">
+<div class="customer-summary" role="button" tabindex="0" aria-expanded="${open}"><span style="display: flex; align-items: center; gap: 8px; overflow: hidden;">${detailsChevronIcon()}${ui.avatar(r.name, color)}<span class="customer-name" title="${escapeHtmlForUi(reason)}">${escapeHtmlForUi(r.name)}</span></span><span class="category-badge" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(verdict)}</span></div>
+<div class="customer-body" style="display: ${open ? 'block' : 'none'};">${body}</div>
+</div>`;
+}).join('');
+return `
+<details class="tier" data-key="${key}" ${ui.isTierOpen(key, verdict !== 'OK') ? 'open' : ''}>
+<summary><span class="tier-left">${detailsChevronIcon()}<span style="color: ${readableTextColor(color)};">${escapeHtmlForUi(verdict)}</span></span><span class="tier-count">${rows.length}</span></summary>
+${customers}
+</details>`;
+}).join('');
+}
+
+window.KonnectLeadChecker.evaluateNationalLead = evaluateNationalLead;
+window.KonnectLeadChecker.buildNationalResultsExport = buildNationalResultsExport;
 
 window.KonnectLeadChecker.timelineEntryKey = timelineEntryKey;
 window.KonnectLeadChecker.closeLeadModal = closeLeadModal;
@@ -2743,7 +3164,7 @@ return Object.assign({}, result, patch, { processingTimestamp: new Date().toISOS
 // draws from a specific SLA row - two rows sharing all of these really
 // are the same lead, not a coincidence.
 function rowIdentityKey(row) {
-return [row.groupKey, row.campaign, row.source, row.created].join('||');
+return [row.groupKey, row.campaign, row.source, row.created, row.activityId || ''].join('||');
 }
 
 // This is a pure starting-state computation - it does not change
@@ -2782,7 +3203,7 @@ const groups = buildProcessingGroups(rows);
 const groupIndex = firstUnresolvedGroupIndex(groups, results, 0);
 
 return {
-rawInput, headerOk: parsed.headerOk, headerError: parsed.error,
+rawInput, headerOk: parsed.headerOk, headerError: parsed.error, mode: parsed.mode || 'standard',
 rows, groups, groupIndex, rowInGroupIndex: 0,
 results, paused: false, cancelled: false,
 done: !parsed.headerOk || groupIndex >= groups.length
@@ -2806,6 +3227,7 @@ return !!(session && session.cancelled);
 
 async function searchAndOpenCustomer(group, session) {
 const sample = group.rows[0];
+if (sample.mode === 'national') return searchAndOpenNationalCustomer(group, session);
 const attempts = [];
 if (sample.normalizedEmail) attempts.push({ type: 'email', value: sample.email });
 if (sample.normalizedPhone) attempts.push({ type: 'phone', value: sample.phone });
@@ -3166,7 +3588,7 @@ group.customerMatchMethod = openResult.matchMethod;
 
 const row = group.rows[session.rowInGroupIndex];
 uiHandle.setState(`Reading lead at ${row.created}...`, group.rows[0].name, row.created);
-const result = await processLeadRow(row, session);
+const result = row.mode === 'national' ? await processNationalRow(row, session, group) : await processLeadRow(row, session);
 result.customerMatchMethod = group.customerMatchMethod;
 recordResult(session, row.inputIndex, result);
 
@@ -4137,6 +4559,157 @@ return `<svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none"
 // above still run cleanly under a plain Node harness.
 // ===================================================================
 
+// ===================================================================
+// National check self-tests: batch parsing, lead mapping, customer
+// choice, every verdict rule and the results export. Fictional data.
+// ===================================================================
+runSelfTest('nationalBatchSelfTest', function nationalBatchSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+const header = NATIONAL_BATCH_HEADER.join('\t');
+const batch = [
+header,
+['national', 'Mr. Alex Sample', '91000001SALESLEAD', '70000001', '04/11/2026 15:32', 'Enquiry - Used', 'Stellantis &You National Used Cars', '2026-11-06 09:40', 'Completed', 'Max Attempts Reached -  No Answer', '3', '2', '0', ''].join('\t'),
+['national', 'Alex Sample', 'AB12CDE', '70000002', '06/11/2026 09:40', 'Enquiry - Used', 'National', '2026-11-06 09:40', 'In Progress', '', '1', '1', '0', 'open-manual'].join('\t'),
+['wrong', 'Sam Buyer', '', '70000003', '06/11/2026 09:40', '', '', '', '', '', '', '', '', ''].join('\t'),
+['national', 'Jo Example', '', '70000004', 'not a date', '', '', '', '', '', '', '', '', ''].join('\t')
+].join('\n');
+const parsed = parseBatchInput(batch);
+check('national header is recognised', [parsed.headerOk, parsed.mode], [true, 'national']);
+check('rows parsed', parsed.rows.length, 4);
+check('first row fields', [parsed.rows[0].name, parsed.rows[0].activityId, parsed.rows[0].state, parsed.rows[0].exportOutcome], ['Mr. Alex Sample', '70000001', 'Completed', 'Max Attempts Reached -  No Answer']);
+check('LeadCreated parsed', parsed.rows[0].parsedCreated, { year: 2026, month: 10, day: 4, hour: 15, minute: 32 });
+check('titles ignored when grouping a customer', parsed.rows[0].groupKey === parsed.rows[1].groupKey, true);
+check('row without the national marker is invalid', [parsed.rows[2].status, parsed.rows[2].exception], ['INVALID_INPUT', 'NO_SEARCH_IDENTIFIER']);
+check('unreadable LeadCreated is invalid', parsed.rows[3].exception, 'INVALID_CREATED_DATETIME');
+check('standard header still parses as standard', parseBatchInput('Name\tPhone\tEmail\tSource\tCampaign\tCreated\nA\t07700900123\t\tX\tY\tSat, 26 Sep 2026 18:05').mode, undefined);
+const s = newSession(batch, null);
+check('session mode', s.mode, 'national');
+check('both Alex Sample leads are one customer group', s.groups[0].rows.length, 2);
+
+const items = [
+{ TimelineItemType: 1, LeadID: 1400001, EventTime: '2026-11-04T15:32:20.707+00:00' },
+{ TimelineItemType: 1, LeadID: 1400002, EventTime: '2026-11-04T15:33:01+00:00' },
+{ TimelineItemType: 3, LeadID: 1400001, EventTime: '2026-11-04T15:32:40+00:00' }
+];
+check('lead mapped by created minute', findNationalLeadIds(items, { year: 2026, month: 10, day: 4, hour: 15, minute: 32 }), ['1400001']);
+check('no lead at that minute', findNationalLeadIds(items, { year: 2026, month: 10, day: 4, hour: 16, minute: 0 }), []);
+
+const link = {};
+const row = (id, name, reg) => ({ link, customerId: id, customerName: name, registrationNumber: reg });
+check('single exact name match', chooseNationalCustomerResult([row('1', 'Alex Sample', 'AB12CDE'), row('2', 'Sam Buyer', '')], 'Mr. Alex Sample', '').result.customerId, '1');
+check('same name, reg decides', chooseNationalCustomerResult([row('1', 'Alex Sample', 'AB12CDE'), row('2', 'Alex Sample', '91000001SALESLEAD')], 'Alex Sample', '91000001 SALESLEAD').result.customerId, '2');
+check('same name, no reg is ambiguous', chooseNationalCustomerResult([row('1', 'Alex Sample', 'AB12CDE'), row('2', 'Alex Sample', 'CD34EFG')], 'Alex Sample', '').status, 'CUSTOMER_AMBIGUOUS');
+check('no rows', chooseNationalCustomerResult([], 'Alex Sample', '').status, 'SEARCH_NO_RESULTS');
+
+const exportSession = {
+rows: [{ inputIndex: 0 }, { inputIndex: 1 }, { inputIndex: 2 }],
+results: {
+0: { inputIndex: 0, status: 'CLASSIFIED', name: 'Alex Sample', activityId: '70000001', leadId: '1400001', verdict: 'Reset', verdictReason: 'Closed as Email Only Lead without being sent to a dealership', attempts: 2, finalOutcome: 'Email Only Lead', enquiryMaxDealer: '', followUpNotes: 'Fri 6th Nov 2026 09:43 Agent A: no reply\tyet', resetCampaign: 'Enquiry - Used', resetInitialNotes: 'Line one\nLine two', resetVoi: 'Peugeot 208 Petrol AB12CDE', resetPx: 'No Part Exchange' },
+1: { inputIndex: 1, status: 'CLASSIFIED', name: 'Sam Buyer', activityId: '70000002', leadId: '1400002', verdict: 'OK', verdictReason: 'Sent to Preston via Enquiry Max', attempts: 1, finalOutcome: 'Face to Face - National UCS', enquiryMaxDealer: 'Preston', followUpNotes: '', resetCampaign: 'should not export', resetInitialNotes: '', resetVoi: '', resetPx: '' },
+2: { inputIndex: 2, status: 'EXCEPTION', exception: 'SEARCH_TIMEOUT', name: 'Jo Example', activityId: '70000003' }
+}
+};
+const lines = buildNationalResultsExport(exportSession).split('\n');
+check('results header', lines[0], NATIONAL_RESULT_HEADER.join('\t'));
+check('every row has every column', lines.every((l) => l.split('\t').length === NATIONAL_RESULT_HEADER.length), true);
+check('reset row carries reset details, tabs and newlines cleaned', lines[1].split('\t').slice(9), ['Fri 6th Nov 2026 09:43 Agent A: no reply yet', 'Enquiry - Used', 'Line one | Line two', 'Peugeot 208 Petrol AB12CDE', 'No Part Exchange']);
+check('OK row leaves reset columns blank', lines[2].split('\t').slice(10), ['', '', '', '']);
+check('exception row exported as Check with a reason', lines[3].split('\t').slice(4, 6), ['Check', 'Could not check: Search timed out']);
+
+const ui = { isCustomerOpen: () => false, isTierOpen: (k, d) => d, avatar: () => '' };
+const html = renderNationalResultsHtml([
+{ inputIndex: 0, status: 'CLASSIFIED', name: 'OK <b>Person</b>', verdict: 'OK', verdictReason: 'fine' },
+{ inputIndex: 1, status: 'CLASSIFIED', name: 'Reset Person', verdict: 'Reset', verdictReason: 'nowhere' }
+], '', ui);
+check('names are escaped', html.includes('<b>Person</b>'), false);
+check('Reset group comes before OK', html.indexOf('Reset Person') < html.indexOf('Person</span>') || html.indexOf('Reset Person') < html.indexOf('OK &lt;b&gt;'), true);
+
+if (failures.length > 0) console.error('KonnectLeadChecker national-batch self-test FAILED:\n' + failures.join('\n'));
+else console.info('KonnectLeadChecker national-batch self-test passed');
+});
+
+runSelfTest('evaluateNationalLeadSelfTest', function evaluateNationalLeadSelfTest() {
+const failures = [];
+function check(label, actual, expected) {
+const a = JSON.stringify(actual);
+const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+}
+const NAT = 'Stellantis &You National Used Cars';
+const it = (type, leadId, time, below, desc, agent) => ({ TimelineItemType: type, LeadID: leadId, EventTime: `2026-11-${time}:00+00:00`, BelowLineTitle: below || '', Description: desc || '', IsContactCentreAgent: agent !== false });
+const call = (leadId, time, outcome, desc) => it(3, leadId, time, `Agent A called the customer with an outcome of ${outcome}`, desc);
+const created = (leadId, time, desc) => it(1, leadId, time, 'Manually Created Sales Lead from Robins & Day Website', desc || `New Sales Lead, 'Enquiry - Used Request' for ${NAT} Lead routed`, false);
+const sent = (leadId, time, dealer) => it(2, leadId, time, 'Lead sent to Enquiry Max', `Lead sent by Agent A and successfuly received at ${dealer}`, false);
+function run(leadId, items, batch, ctx) {
+const lead = { leadId: String(leadId), createdMs: eventTimeMs(items.find((i) => i.TimelineItemType === 1 && i.LeadID === leadId).EventTime) };
+return evaluateNationalLead(lead, items.filter((i) => i.LeadID === leadId), items, Object.assign({ state: 'Completed', exportOutcome: '', exportHint: '' }, batch), ctx);
+}
+
+// System closed at attempt 3 with Max Attempts: fine.
+const sys = [created(1400001, '04T15:32'), call(1400001, '04T15:36', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400001, '05T10:34', 'Manual Reschedule', `No Activity Outcome at ${NAT}`),
+call(1400001, '05T15:37', 'Update Outcomes (No Call Made)', `Sales -> National Used Stock -> No Opportunity -> Max Attempts Reached -  No Answer at ${NAT}`)];
+const r1 = run(1400001, sys, {});
+check('system close at 3 with Max Attempts is OK', [r1.verdict, r1.attempts], ['OK', 3]);
+
+// In Market, but sent to Liverpool.
+const inMarket = [created(1400002, '06T09:40'), call(1400002, '06T09:40', 'Update Outcomes (No Call Made)', 'New Enquiry at Liverpool'), sent(1400002, '06T09:43', 'Liverpool')];
+const r2 = run(1400002, inMarket, { exportOutcome: 'In Market - wont commit to appointment yet' });
+check('In Market sent to Liverpool is OK', [r2.verdict, r2.enquiryMaxDealer], ['OK', 'Liverpool']);
+
+// Email Only, last attempt no answer, nothing sent: reset.
+const emailOnly = [created(1400003, '02T07:10'), call(1400003, '02T09:52', 'Update Outcomes (No Call Made)', `Sales -> Customer Hub Team -> Ongoing -> Email Only Lead at ${NAT}`), call(1400003, '07T13:07', 'No Answer - No Message Left', `No Activity Outcome at ${NAT}`)];
+const r3 = run(1400003, emailOnly, {});
+check('Email Only with no send is Reset', [r3.verdict, r3.finalOutcome], ['Reset', 'Email Only Lead']);
+// Even with a newer lead booked in at a dealership.
+const emailOnlyWithNewer = emailOnly.concat([created(1400010, '07T07:52'), it(1, 1400011, '07T09:16', 'New Sales Lead from Phone Call', 'Walk-in lead created in Enquiry Max at Walton', false), it(8, 1400010, '07T09:21', 'Appointment Created', 'Appointment Created by Agent A of type Face To Face', false)]);
+check('Email Only is still Reset when a newer lead exists', run(1400003, emailOnlyWithNewer, {}).verdict, 'Reset');
+
+// Face to Face National UCS, sent to Preston.
+const f2f = [created(1400004, '07T17:47'), call(1400004, '08T10:04', 'Spoke to Customer', `Sales -> National Used Stock -> Reserve Appointment -> Face to Face - National UCS at ${NAT}`), it(8, 1400004, '08T10:05', 'Appointment Created', 'Appointment Created by Agent A of type Face To Face', false), sent(1400004, '08T10:05', 'Preston')];
+check('Face to Face sent to Preston is OK', run(1400004, f2f, {}).verdict, 'OK');
+
+// Inbound phone-call lead sent to Coventry.
+const inbound = [created(1400005, '08T14:14'), it(3, 1400005, '08T14:14', 'Agent A took an inbound call with outcome of Inbound Booking Opportunity', 'Sales -> ART -> Appointment -> Phone Call at Coventry'), sent(1400005, '08T14:19', 'Coventry')];
+const r5 = run(1400005, inbound, {});
+check('inbound lead sent to Coventry is OK, inbound call not counted as an attempt', [r5.verdict, r5.attempts], ['OK', 0]);
+
+// Older Max Attempts "Sent to Dealer" at National, newer lead walked in at Walton.
+const oldMax = [created(1400006, '03T18:30'), call(1400006, '07T13:07', 'No Answer - No Message Left', `Sales -> Max Attempts Reached - Sent to Dealer at ${NAT}`), it(1, 1400012, '07T09:16', 'New Sales Lead from Phone Call', 'Walk-in lead created in Enquiry Max at Walton', false)];
+check('older Max Attempts lead with a Walton walk-in is OK', run(1400006, oldMax, {}).verdict, 'OK');
+
+// Old "Sent Direct to Enquiry Max" with no send, newer open lead.
+const direct = [created(1400007, '03T11:49'), call(1400007, '08T12:05', 'Manual Reschedule', `Sales -> Sent Direct to Enquiry Max at ${NAT}`), created(1400008, '08T12:05')];
+const r7 = run(1400007, direct, {}, { openLeadIds: ['1400008'] });
+check('Sent Direct to Enquiry Max covered by a newer open lead is OK', [r7.verdict, r7.reason.startsWith('Covered by newer lead')], ['OK', true]);
+check('the same without a newer open lead is Reset', run(1400007, direct, {}, { openLeadIds: [] }).verdict, 'Reset');
+
+// Open leads.
+const open = [created(1400009, '08T12:05'), call(1400009, '08T12:05', 'Manual Reschedule', `No Activity Outcome at ${NAT}`)];
+check('open with manual reschedules is OK', run(1400009, open, { state: 'In Progress', exportHint: 'open-manual' }).reason, 'Still being worked');
+check('open with an automatic reschedule is Check', run(1400009, open, { state: 'In Progress', exportHint: 'open-auto' }).verdict, 'Check');
+
+// Sent only to National.
+const toNational = [created(1400013, '05T10:00'), call(1400013, '05T10:05', 'Spoke to Customer', `Sales -> ART -> Appointment -> Face To Face at ${NAT}`), sent(1400013, '05T10:06', NAT)];
+check('sent to Enquiry Max at National is Reset', run(1400013, toNational, {}).reason, 'Sent to Enquiry Max at National, went nowhere');
+
+// Admin closure, export-only outcome and unknown outcome.
+const admin = [created(1400014, '05T10:00'), call(1400014, '05T10:01', 'Update Outcomes (No Call Made)', `Sales -> Customer Hub Team -> No Opportunity -> Test Lead at ${NAT}`)];
+check('Test Lead is OK', run(1400014, admin, {}).verdict, 'OK');
+const bare = [created(1400015, '05T10:00')];
+check('export outcome used when the timeline has none', run(1400015, bare, { exportOutcome: 'Duplicate Record' }).verdict, 'OK');
+const unknown = [created(1400016, '05T10:00'), call(1400016, '05T10:01', 'Spoke to Customer', `Sales -> Something Brand New at ${NAT}`)];
+const r16 = run(1400016, unknown, {});
+check('unknown outcome is Check', [r16.verdict, r16.reason], ['Check', 'Outcome not seen before: Something Brand New']);
+
+if (failures.length > 0) console.error('KonnectLeadChecker evaluate-national self-test FAILED:\n' + failures.join('\n'));
+else console.info('KonnectLeadChecker evaluate-national self-test passed');
+});
+
 const KLC_NAV_ITEM_ID = '_klcNavItem';
 const KLC_BADGE_ID = '_klcBadge';
 
@@ -4409,6 +4982,7 @@ Auto-start on paste
 </div>
 <div class="buttons handoff-controls" id="handoffControls">
 <button class="action" id="btnCopyRawForExtract">${svgIcon('copy', 11)}Copy results for SLA Manager</button>
+<button class="action hidden" id="btnCopyNationalResults">${svgIcon('copy', 11)}Copy National results for SLA Manager</button>
 </div>
 <div class="status">
 <div>Customer: <span id="curCustomer">-</span></div>
@@ -4548,6 +5122,7 @@ const btnCancelEl = root.getElementById('btnCancel');
 const btnRetryExceptionsEl = root.getElementById('btnRetryExceptions');
 const btnClearEl = root.getElementById('btnClear');
 const btnCopyRawForExtractEl = root.getElementById('btnCopyRawForExtract');
+const btnCopyNationalResultsEl = root.getElementById('btnCopyNationalResults');
 const pauseResumeBtn = root.getElementById('btnPauseResume');
 const topSectionEl = root.getElementById('topSection');
 const btnClearPasteStartEl = root.getElementById('btnClearPasteStart');
@@ -4714,6 +5289,20 @@ return;
 }
 rowCountEl.textContent = `${session.rows.length} rows parsed` + (session.headerOk ? '' : `: ${session.headerError}`);
 const orderedAll = orderedResults(session);
+if (session.mode === 'national') {
+needsReviewSectionEl.innerHTML = '';
+statsBarEl.classList.add('hidden');
+filterBarEl.classList.toggle('hidden', orderedAll.length === 0);
+const nationalPercent = session.rows.length > 0 ? Math.round((100 * orderedAll.length) / session.rows.length) : 0;
+progressFillEl.style.width = `${nationalPercent}%`;
+progressFillEl.classList.toggle('active', isRunning && !session.done);
+updateBadgeProgress(badge, orderedAll, session);
+resultsBody.innerHTML = renderNationalResultsHtml(orderedAll, nameFilterText, {
+isCustomerOpen: (key) => detailsState.customers.has(key),
+isTierOpen: (key, openByDefault) => detailsState.tiers.has(key) || openByDefault,
+avatar: (name, color) => renderAvatarCircle(name, color, 28)
+});
+} else {
 // Re-run on every render (idempotent: setDuplicate only adds the flag
 // once) rather than once at the end, so duplicates already show
 // correctly while a batch is still mid-run.
@@ -4820,6 +5409,8 @@ ${customersHtml}
 }
 }
 
+}
+
 resultsBody.querySelectorAll('details.tier').forEach((el) => {
 const key = Number(el.dataset.key);
 el.addEventListener('toggle', () => { if (el.open) detailsState.tiers.add(key); else detailsState.tiers.delete(key); });
@@ -4896,7 +5487,9 @@ runControlsEl.classList.toggle('hidden', !v.runControls);
 btnRetryExceptionsEl.classList.toggle('hidden', !v.retryExceptions);
 btnClearEl.classList.toggle('hidden', !v.clear);
 maintenanceControlsEl.classList.toggle('hidden', !v.maintenanceControls);
-btnCopyRawForExtractEl.classList.toggle('hidden', !v.copyRawForExtract);
+const nationalMode = !!(session && session.mode === 'national');
+btnCopyRawForExtractEl.classList.toggle('hidden', !v.copyRawForExtract || nationalMode);
+btnCopyNationalResultsEl.classList.toggle('hidden', !v.copyRawForExtract || !nationalMode);
 handoffControlsEl.classList.toggle('hidden', !v.handoffControls);
 }
 
@@ -4904,7 +5497,7 @@ function renderRecentLog() {
 if (recentCompletions.length === 0) { recentLogEl.innerHTML = ''; return; }
 recentLogEl.innerHTML = recentCompletions.map((r) => {
 const color = categoryColor(r);
-const label = escapeHtmlForUi(r.exception ? exceptionLabel(r.exception) : (r.tierName || 'Pending'));
+const label = escapeHtmlForUi(r.exception ? exceptionLabel(r.exception) : (r.verdict || r.tierName || 'Pending'));
 return `<div class="recent-log-row"><span class="recent-log-name">${escapeHtmlForUi(r.name || '-')}</span><span class="recent-log-tier" style="background: ${color}1a; color: ${readableTextColor(color)};">${label}</span></div>`;
 }).join('');
 }
@@ -5164,6 +5757,15 @@ const btn = event.currentTarget; // read before any await: it is null afterwards
 const s = ensureSessionFromPasteBox();
 const count = orderedResults(s).length;
 copyTextToClipboard(buildRawNotesTsvForExtract(s))
+.then(() => showButtonFeedback(btn, `✓ Copied ${count}`, false))
+.catch(() => showButtonFeedback(btn, '✗ Copy failed', true));
+});
+
+root.getElementById('btnCopyNationalResults').addEventListener('click', (event) => {
+const btn = event.currentTarget; // read before any await: it is null afterwards
+const s = ensureSessionFromPasteBox();
+const count = orderedResults(s).length;
+copyTextToClipboard(buildNationalResultsExport(s))
 .then(() => showButtonFeedback(btn, `✓ Copied ${count}`, false))
 .catch(() => showButtonFeedback(btn, '✗ Copy failed', true));
 });
