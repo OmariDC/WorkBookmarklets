@@ -2254,15 +2254,15 @@ return row;
 return { rows, headerOk: true, error: null, mode: 'national' };
 }
 
-// "Mr. Ahsan Sheikh" -> "Ahsan Sheikh": Konnect stores the title apart from
+// "Mr. Alex Sample" -> "Alex Sample": Konnect stores the title apart from
 // the name, so searching with it finds nothing.
 function stripNameTitle(name) {
 return String(name || '').replace(/^\s*(mr|mrs|miss|ms|mx|dr)\b\.?\s+/i, '').replace(/\s+/g, ' ').trim();
 }
 
 // Pure. The distinct customer IDs a search could mean, best first. An
-// exact name (titles ignored) wins outright: "Ben Barr" must not pull in
-// "Ben Barrett". A looser "contains" match is only used when nothing is
+// exact name (titles ignored) wins outright: "Sam Buyer" must not pull in
+// "Sam Buyerson". A looser "contains" match is only used when nothing is
 // exact, and every linked row only when no name matches at all. Rows
 // carrying one of the batch regs go first.
 function nationalCandidateIds(rows, expectedName, regs) {
@@ -2521,14 +2521,21 @@ return ids;
 
 function emDealerOf(item) {
 const m = String(item.Description || '').match(/received at\s+(.+?)\s*\.?\s*$/i);
-return m ? m[1].trim() : '';
+return m ? m[1].replace(/\s+with\s+EMax confirmation$/i, '').trim() : '';
 }
 
+// One call can cover several of a customer's leads; its timeline entry
+// then lists an outcome per lead but sits under only one of them, so an
+// outcome is only read when the entry has exactly one.
 function outcomeFromCallDescription(description) {
-const text = String(description || '').trim();
-if (!/^sales\s*->/i.test(text)) return null;
-const last = text.split('->').pop().trim();
+const lines = String(description || '').split(/\r?\n/).map((l) => l.trim()).filter((l) => /^sales\s*->/i.test(l));
+if (lines.length !== 1) return null;
+const last = lines[0].split('->').pop().trim();
 return last.replace(/\s+at\s+[^>]+$/i, '').trim();
+}
+
+function parsedToMs(parsed) {
+return parsed ? new Date(parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute).getTime() : null;
 }
 
 function isAttemptItem(item) {
@@ -2550,11 +2557,16 @@ function evaluateNationalLead(lead, itemsForLead, allItems, batchRow, context) {
 const ctx = context || {};
 const byTime = (a, b) => (eventTimeMs(a.EventTime) || 0) - (eventTimeMs(b.EventTime) || 0);
 const own = [...itemsForLead].sort(byTime);
-const attempts = own.filter(isAttemptItem).length;
-// Only a send after the last call attempt is what ended the lead. An
-// earlier send (the lead was sent once, came back and was worked again)
-// does not cover how it was closed later.
-const lastAttemptMs = own.filter(isAttemptItem).reduce((max, i) => Math.max(max, eventTimeMs(i.EventTime) || 0), 0);
+// The export records attempts, outcome and last call per lead. The
+// timeline does not always: a call covering several leads is filed under
+// one of them. So the export wins wherever it has a value.
+const exportAttempts = parseInt(batchRow.attempts, 10);
+const attempts = Number.isFinite(exportAttempts) && exportAttempts > 0 ? exportAttempts : own.filter(isAttemptItem).length;
+// Only a send after the last call is what ended the lead. An earlier send
+// (sent once, came back and was worked again) does not cover a later
+// closure.
+const exportLastCallMs = parsedToMs(parseNationalCreated(batchRow.lastContact));
+const lastAttemptMs = exportLastCallMs || own.filter(isAttemptItem).reduce((max, i) => Math.max(max, eventTimeMs(i.EventTime) || 0), 0);
 const sendItems = own.filter((i) => Number(i.TimelineItemType) === 2 && emDealerOf(i));
 const currentSends = sendItems.filter((i) => (eventTimeMs(i.EventTime) || 0) >= lastAttemptMs - 2 * 60 * 1000).map(emDealerOf);
 const earlierDealerSend = sendItems.filter((i) => (eventTimeMs(i.EventTime) || 0) < lastAttemptMs - 2 * 60 * 1000)
@@ -2562,7 +2574,7 @@ const earlierDealerSend = sendItems.filter((i) => (eventTimeMs(i.EventTime) || 0
 const dealerSend = currentSends.find((d) => !isNationalDealer(d));
 const nationalSend = currentSends.find((d) => isNationalDealer(d));
 const latestOutcome = own.filter((i) => Number(i.TimelineItemType) === 3).map((i) => outcomeFromCallDescription(i.Description)).filter(Boolean).pop();
-const finalOutcome = latestOutcome || String(batchRow.exportOutcome || '').trim();
+const finalOutcome = String(batchRow.exportOutcome || '').trim() || latestOutcome || '';
 const base = { attempts, finalOutcome, enquiryMaxDealer: dealerSend || nationalSend || '' };
 const verdict = (v, reason) => Object.assign({}, base, { verdict: v, reason });
 
@@ -4863,6 +4875,26 @@ const sentThenClosed = [created(1400012, '02T07:10'), call(1400012, '02T09:52', 
 call(1400012, '07T09:00', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400012, '07T13:07', 'No Answer - No Message Left', `Sales -> Customer Hub Team -> Ongoing -> Email Only Lead at ${NAT}`)];
 const r12 = run(1400012, sentThenClosed, {});
 check('an earlier send does not cover a later dead-end closure', [r12.verdict, /Walton earlier/.test(r12.reason)], ['Reset', true]);
+
+// A call covering two leads is filed under one of them and lists both
+// outcomes. The export's own outcome for this lead must win.
+const shared = [created(1400020, '04T15:32'), call(1400020, '05T15:37', 'Update Outcomes (No Call Made)', `Sales -> National Used Stock -> No Opportunity -> Max Attempts Reached -  No Answer at ${NAT}`),
+call(1400020, '06T09:40', 'Update Outcomes (No Call Made)', `Sales -> National Used Stock -> No Opportunity -> Max Attempts Reached -  No Answer at ${NAT}\r\nSales -> Customer Hub Team -> No Appointment -> In Market - wont commit to appointment yet at ${NAT}`)];
+const r20 = run(1400020, shared, { exportOutcome: 'Max Attempts Reached -  No Answer', attempts: '3', lastContact: '06/11/2026 09:40' });
+check('export outcome wins over a shared call entry', [r20.verdict, r20.finalOutcome, r20.attempts], ['OK', 'Max Attempts Reached -  No Answer', 3]);
+check('a shared call entry gives no outcome of its own', outcomeFromCallDescription(`Sales -> A -> B at X\r\nSales -> C -> D at Y`), null);
+
+// Live case: sent to Walton in October, back to National, closed Email Only
+// in November with no new send.
+const bouncedBack = [created(1400021, '02T07:10'), sent(1400021, '02T09:53', 'Walton with EMax confirmation')];
+const r21 = run(1400021, bouncedBack, { exportOutcome: 'Email Only Lead', attempts: '1', lastContact: '07/11/2026 13:07' });
+check('an old send does not cover a later Email Only closure (export times)', [r21.verdict, /Walton earlier/.test(r21.reason)], ['Reset', true]);
+
+// Live case: appointment and send minutes after the last call; later
+// notification emails are not calls.
+const booked = [created(1400022, '07T17:47'), sent(1400022, '08T10:05', 'Preston with EMax confirmation')];
+const r22 = run(1400022, booked, { exportOutcome: 'Face to Face - National UCS', attempts: '1', lastContact: '08/11/2026 09:59' });
+check('send after the last call is OK, dealer name without the confirmation note', [r22.verdict, r22.enquiryMaxDealer], ['OK', 'Preston']);
 
 // Face to Face National UCS, sent to Preston.
 const f2f = [created(1400004, '07T17:47'), call(1400004, '08T10:04', 'Spoke to Customer', `Sales -> National Used Stock -> Reserve Appointment -> Face to Face - National UCS at ${NAT}`), it(8, 1400004, '08T10:05', 'Appointment Created', 'Appointment Created by Agent A of type Face To Face', false), sent(1400004, '08T10:05', 'Preston')];

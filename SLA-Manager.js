@@ -1780,6 +1780,12 @@ const p = (n) => String(n).padStart(2, '0');
 return `${p(date.getDate())}/${p(date.getMonth() + 1)}/${date.getFullYear()} ${p(date.getHours())}:${p(date.getMinutes())}`;
 }
 
+function lastCallDate(list) {
+const calls = list.filter((r) => /call/i.test(r['Communication Type'] || ''));
+const last = calls[calls.length - 1];
+return last ? parseHubIsoDate(last['Intervention Created Date']) : null;
+}
+
 // One entry per national lead whose latest contact falls in the window.
 function prescreenNationalLeads(rows, now) {
 const nowMs = (now || new Date()).getTime();
@@ -1810,7 +1816,9 @@ activityId,
 leadCreated: hubUkDateToMinute(last['Activity Created Date']),
 campaign: last['Campaign'],
 dealer: last['Dealer'],
-lastContact: formatHubDate(lastDate),
+// The last call, not a notification email sent after it: the Lead
+// Checker compares Enquiry Max sends with this time.
+lastContact: formatHubDate(lastCallDate(list) || lastDate),
 state,
 outcome: open ? '' : (last['ActivityOutcome'] || ''),
 attempts,
@@ -2164,6 +2172,10 @@ const earlyRows = parseCustomerHubTsv([header,
 row('6', '2026-11-06 08:00:00', 'National', 'Early Example', 'New', '70000005', 'Manual Rescheduled', 'In Progress', '1', ''),
 row('7', '2026-11-05 23:59:00', 'National', 'Too Early', 'New', '70000006', 'Manual Rescheduled', 'In Progress', '1', '')].join('\n'));
 check('window is whole days: a Monday afternoon run keeps Friday morning but not Thursday', prescreenNationalLeads(earlyRows, new Date(2026, 10, 9, 14, 30)).map((l) => l.activityId), ['70000005']);
+const emailAfter = parseCustomerHubTsv([header,
+row('8', '2026-11-08 09:59:00', 'Stellantis &You National Used Cars', 'Alex Sample', 'New', '70000007', 'Spoke to Customer', 'Completed', '1', 'Face to Face - National UCS'),
+row('9', '2026-11-08 10:15:00', 'Stellantis &You National Used Cars', 'Alex Sample', 'Completed', '70000007', 'Notification Sent', 'Completed', '1', 'Face to Face - National UCS').replace('Outbound Call', 'Outbound Email')].join('\n'));
+check('last contact is the last call, not a later notification email', prescreenNationalLeads(emailAfter, new Date(2026, 10, 9, 9, 0))[0].lastContact, '08/11/2026 09:59');
 const alex = leads.find((l) => l.activityId === '70000001');
 check('latest row wins for state', alex.state, 'Completed');
 check('latest row wins for outcome', alex.outcome, 'Max Attempts Reached -  No Answer');
