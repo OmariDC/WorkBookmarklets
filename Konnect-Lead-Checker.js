@@ -2327,11 +2327,33 @@ return { status: 'OK', rows: readSearchResultRows() };
 return { status: 'SEARCH_TIMEOUT' };
 }
 
-async function openNationalCustomerById(customerId) {
-// Leave the current timeline first so the old one is never read as the new one.
-await openSearchPage();
-window.location.hash = `#/connectedCustomer/${customerId}?redirectRoute=%2Fsearch`;
-return waitForTimelineReady(15000);
+// Opens one search result the way a person does: by clicking its row.
+// The ID in a row's link is not always the one in the timeline address
+// (Konnect resolves it on click), so the address is never built by hand.
+// The search is run again first, so the rows clicked are always fresh.
+async function openSearchResultById(searchFn, spec, customerId, session) {
+const again = await searchFn(spec.type, spec.value, session);
+if (again.status !== 'OK') return { state: 'FAILED' };
+const row = again.rows.find((r) => r.customerId === customerId && r.link);
+if (!row) return { state: 'FAILED' };
+const state = await openCustomerAndWaitForTimeline(row, 15000);
+if (state.state !== 'FAILED') await waitForTimelineItemsSettled();
+return state;
+}
+
+// The timeline can still be filling in after it reports ready. Waits until
+// the number of entries has stopped changing.
+async function waitForTimelineItemsSettled(maxMs = 6000) {
+const startedAt = Date.now();
+let last = -1;
+let stableSince = Date.now();
+while (Date.now() - startedAt < maxMs) {
+const n = getAllTimelineRows().length;
+if (n !== last) { last = n; stableSince = Date.now(); }
+else if (n > 0 && Date.now() - stableSince > 800) return n;
+await sleep(200);
+}
+return last;
 }
 
 // How many of this customer's batch leads are on the open timeline,
@@ -2353,19 +2375,21 @@ return found;
 // holds the most of this group's leads. Stops at the first that holds
 // them all, which is the usual case: one person's search rows all open
 // the same timeline. Returns null when none hold any of them.
-async function openRecordHoldingLeads(ids, group, session, holdsLead) {
+async function openRecordHoldingLeads(ids, group, session, holdsLead, openById) {
 let best = { id: null, found: 0 };
+let openId = null;
 for (const id of ids) {
 if (isCancelled(session)) return null;
-const state = await openNationalCustomerById(id);
+const state = await openById(id);
 if (state.state === 'FAILED') continue;
+openId = id;
 const found = await countGroupLeadsOnTimeline(group, session, holdsLead);
 if (found > best.found) best = { id, found };
 if (found === group.rows.length) break;
 }
 if (!best.id) return null;
-if (!window.location.hash.includes(`/connectedCustomer/${best.id}`)) {
-const state = await openNationalCustomerById(best.id);
+if (openId !== best.id) {
+const state = await openById(best.id);
 if (state.state === 'FAILED') return null;
 }
 return best.id;
@@ -2385,7 +2409,7 @@ if (search.status !== 'OK') {
 for (const reg of group.rows.map((r) => r.reg).filter(Boolean)) {
 const byReg = await runNationalSearch('reg', reg, session);
 if (byReg.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
-if (byReg.status === 'OK') { search = byReg; break; }
+if (byReg.status === 'OK') { search = Object.assign(byReg, { spec: { type: 'reg', value: reg } }); break; }
 }
 }
 if (search.status !== 'OK') return { status: 'FAILED', exception: search.status };
@@ -2398,11 +2422,13 @@ const row = search.rows.find((r) => r.customerId === ids[0]);
 const timelineState = await openCustomerAndWaitForTimeline(row);
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 if (timelineState.state === 'FAILED') return { status: 'FAILED', exception: 'TIMELINE_TIMEOUT' };
+await waitForTimelineItemsSettled();
 return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
 }
 
 // More than one record: keep the one whose timeline holds these leads.
-let chosen = await openRecordHoldingLeads(ids, group, session);
+const byName = (id) => openSearchResultById(runNationalSearch, search.spec || { type: 'name', value: name }, id, session);
+let chosen = await openRecordHoldingLeads(ids, group, session, undefined, byName);
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 // None of the name matches holds them: the reg points straight at the record.
 for (const reg of chosen ? [] : regs) {
@@ -2411,7 +2437,7 @@ if (byReg.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELL
 if (byReg.status !== 'OK') continue;
 const regIds = nationalCandidateIds(byReg.rows, sample.name, [reg]).filter((id) => !ids.includes(id));
 if (regIds.length === 0) continue;
-chosen = await openRecordHoldingLeads(regIds, group, session);
+chosen = await openRecordHoldingLeads(regIds, group, session, undefined, (id) => openSearchResultById(runNationalSearch, { type: 'reg', value: reg }, id, session));
 if (chosen) break;
 }
 if (!chosen) return { status: 'FAILED', exception: 'LEAD_NOT_ON_MATCHING_CUSTOMERS' };
@@ -3482,7 +3508,8 @@ return { status: 'OK', matchMethod: attempt.type, noEligibleEvents: false };
 }
 
 // Several records (or a name search): keep the one holding the lead.
-const chosen = await openRecordHoldingLeads(candidateIds, group, session, timelineHoldsSlaLead);
+const chosen = await openRecordHoldingLeads(candidateIds, group, session, timelineHoldsSlaLead,
+(id) => openSearchResultById(runCustomerSearch, { type: attempt.type, value: attempt.value }, id, session));
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 if (chosen) return { status: 'OK', matchMethod: attempt.type, noEligibleEvents: false };
 lastException = attempt.needsLeadProof ? 'LEAD_NOT_ON_MATCHING_CUSTOMERS' : 'CUSTOMER_AMBIGUOUS';
