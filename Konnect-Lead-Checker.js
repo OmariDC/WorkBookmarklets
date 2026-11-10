@@ -3352,7 +3352,7 @@ const SESSION_STORAGE_KEY = 'konnectLeadChecker:session:v1';
 // Bump CLASSIFIER_VERSION whenever classifyLead's rules change: results
 // from an older version are re-checked rather than carried into a new
 // paste. SESSION_SCHEMA changes when the stored session shape changes.
-const CLASSIFIER_VERSION = '2026-11-10';
+const CLASSIFIER_VERSION = '2026-11-10b';
 const SESSION_SCHEMA = 2;
 // The stored batch holds customer details, so it is dropped after a shift.
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
@@ -3454,7 +3454,31 @@ processingTimestamp: null
 }
 
 function finalizeResult(result, patch) {
-return Object.assign({}, result, patch, { processingTimestamp: new Date().toISOString(), classifierVersion: CLASSIFIER_VERSION });
+return postClosureOnly(Object.assign({}, result, patch, { processingTimestamp: new Date().toISOString(), classifierVersion: CLASSIFIER_VERSION }));
+}
+
+// Pure. A Post Closure lead is only ever "send back through" or "check:
+// needs contact?", everywhere: its notes are not given a tier, and a low
+// confidence tier guess is not a reason to review it. Real exceptions (lead
+// not found, cancelled) stay as they are.
+function postClosureOnly(r) {
+const isPostClosure = !!r.postClosureAction || /^post closure processing$/i.test(String(r.source || '').trim());
+if (!isPostClosure) return r;
+if (r.status === 'EXCEPTION' && r.exception !== 'CLASSIFICATION_REVIEW_REQUIRED') return r;
+if (r.status !== 'CLASSIFIED' && r.status !== 'EXCEPTION') return r;
+const action = r.postClosureAction || 'check: needs contact?';
+const sendBack = action === 'send back through';
+return Object.assign({}, r, {
+status: 'CLASSIFIED', exception: null,
+tier: null, tierName: '', subCategory: '', subRank: null,
+postClosureAction: action,
+postClosureReason: sendBack ? (r.postClosureReason || '') : '',
+postClosureEvidence: sendBack ? (r.postClosureEvidence || '') : '',
+reason: sendBack
+? `Send back through${r.postClosureReason ? ': ' + r.postClosureReason : ''}.`
+: 'No dealership action or hub contact found, so the customer needs contacting.',
+confidence: r.confidence === 'low' || !r.confidence ? 'medium' : r.confidence
+});
 }
 
 // Identifies the same lead (not just customer) across two pastes, so a
@@ -4401,9 +4425,7 @@ const icon = svgIcon('warning', 10, ' margin-right: 3px;');
 return `<span class="category-badge" title="${escapeHtmlForUi(r.exception)}" style="background: ${color}1a; color: ${readableTextColor(color)};">${icon}${escapeHtmlForUi(exceptionLabel(r.exception))}</span>`;
 }
 if (r.postClosureAction) {
-const pcPill = `<span class="category-badge" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(postClosureLabel(r))}</span>`;
-const tierLabel = r.tierName ? `<span class="subcat-label" title="${escapeHtmlForUi(r.tierName)}">${escapeHtmlForUi(r.tierName)}</span>` : '';
-return pcPill + tierLabel;
+return `<span class="category-badge" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(postClosureLabel(r))}</span>`;
 }
 const tierPill = `<span class="category-badge" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(r.tierName || 'Pending')}</span>`;
 const subcat = r.subCategory ? `<span class="subcat-label" title="${escapeHtmlForUi(r.subCategory)}">${escapeHtmlForUi(r.subCategory)}</span>` : '';
@@ -4687,14 +4709,22 @@ check('categoryKey groups a confident send-back separately from its underlying t
 check('categoryKey groups the uncertain check bucket separately too', categoryKey(checkLead), 'POST CLOSURE: CHECK');
 check('categoryKey falls back to tierName when there is no postClosureAction', categoryKey(normalLead), 'WARM ENQUIRY');
 
-check('categoryBadge leads with the Post Closure decision, not the tier pill', categoryBadge(sendBackLead).indexOf('send back through') < categoryBadge(sendBackLead).indexOf('WARM ENQUIRY'), true);
-check('categoryBadge still surfaces the underlying tier as secondary info', categoryBadge(sendBackLead).includes('WARM ENQUIRY'), true);
+check('categoryBadge shows only the Post Closure decision', categoryBadge(sendBackLead).includes('send back through') && !categoryBadge(sendBackLead).includes('WARM ENQUIRY'), true);
+const pcLow = postClosureOnly({ status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', source: 'Post Closure Processing', tier: 5, tierName: 'NURTURE', subCategory: 'Enquiry: Blank', confidence: 'low', postClosureAction: 'check: needs contact?' });
+check('a low confidence Post Closure lead is not sent for review', [pcLow.status, pcLow.exception === null].join('|'), 'CLASSIFIED|true');
+check('a Post Closure lead carries no tier', [pcLow.tier, pcLow.tierName, pcLow.subCategory].join('|'), '||');
+const pcNoAction = postClosureOnly({ status: 'CLASSIFIED', source: 'Post Closure Processing', tier: 5, tierName: 'NURTURE' });
+check('a Post Closure lead with no action is a check', pcNoAction.postClosureAction, 'check: needs contact?');
+const pcSendBack = postClosureOnly({ status: 'CLASSIFIED', source: 'Post Closure Processing', tier: 5, tierName: 'NURTURE', postClosureAction: 'send back through', postClosureReason: 'Email only' });
+check('the send back reason is kept', [pcSendBack.postClosureAction, pcSendBack.postClosureReason, pcSendBack.tierName].join('|'), 'send back through|Email only|');
+check('a lead not found stays an exception', postClosureOnly({ status: 'EXCEPTION', exception: 'POST_CLOSURE_LEAD_NOT_FOUND', source: 'Post Closure Processing' }).status, 'EXCEPTION');
+check('other leads keep their tier', postClosureOnly(normalLead).tierName, 'WARM ENQUIRY');
 check('categoryBadge for a normal lead still leads with the tier pill as before', categoryBadge(normalLead).indexOf('WARM ENQUIRY') < categoryBadge(normalLead).indexOf('Quote'), true);
 
 if (failures.length > 0) {
 console.error('KonnectLeadChecker postClosureDisplay self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectLeadChecker postClosureDisplay self-test passed (9/9)');
+console.info('KonnectLeadChecker postClosureDisplay self-test passed');
 }
 });
 

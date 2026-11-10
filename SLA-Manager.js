@@ -2202,6 +2202,11 @@ const POST_CLOSURE_SHORTHAND = { 'Actioned by dealership': 'CAD', 'Email only': 
 
 function pickLeadCheckerBadge(leadChecker) {
 if (!leadChecker) return null;
+// Post Closure leads only ever show the send back or check label, never a
+// tier, including results from an older Lead Checker that set no action.
+if (!leadChecker.postClosureAction && /^post closure processing$/i.test(String(leadChecker.source || '').trim())) {
+return { label: 'check: needs contact?', color: postClosureActionColor('check: needs contact?'), source: 'leadChecker' };
+}
 if (leadChecker.postClosureAction) {
 const shorthand = POST_CLOSURE_SHORTHAND[leadChecker.postClosureReason];
 const label = leadChecker.postClosureReason ? `${leadChecker.postClosureAction}: ${leadChecker.postClosureReason}${shorthand ? ` (${shorthand})` : ''}` : leadChecker.postClosureAction;
@@ -3808,6 +3813,7 @@ LEAD_CHECKER_IMPORT_HEADER.join('\t'),
 if (!(withReason.rows[0] && withReason.rows[0].postClosureReason === 'Email only')) failures.push('Expected the PostClosureReason column to be read');
 if (!(withReason.rows[0] && withReason.rows[0].postClosureEvidence === 'Sent through: Email only lead')) failures.push('Expected the PostClosureEvidence column to be read');
 if (pickLeadCheckerBadge(withReason.rows[0]).label !== 'send back through: Email only (CAH)') failures.push('Expected the badge to show the send back reason');
+if (pickLeadCheckerBadge({ source: 'Post Closure Processing', tier: 5, tierName: 'NURTURE', postClosureAction: '' }).label !== 'check: needs contact?') failures.push('Expected a Post Closure result with no action to show as a check, never a tier');
 const eoAssigned = emailOnlyAssignmentsFrom([
 { ok: true, lead: { key: 'k1', name: 'Dan Davis', campaign: 'X' }, agent: { name: 'Agent A' } },
 { ok: true, lead: { key: 'k2', name: 'Gus Green', campaign: 'X' }, agent: { name: 'Agent A' } },

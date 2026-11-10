@@ -251,6 +251,48 @@ const EMAIL_ONLY_OUTCOME_PATH = ['Customer Hub Team', 'Ongoing', 'Email Only Lea
 // What each shorthand writes once Konnect Notes expands it.
 const SHORTHAND_MARKERS = { cad: /actioned by dealer/i, cah: /customer hub will not contact/i, eo: /email only lead:/i };
 const STATUS_AVAILABLE = 'Available';
+// The desk can send its own Parked Calls to the Lead Checker, over the same
+// link SLA Manager uses (this site is the one the Lead Checker answers).
+const DESK_RESULTS_KEY = '_leadResetPostClosureResults';
+const LIVE_ORIGIN = 'https://carbot.ai';
+const LIVE_URL_KEY = '_slaKonnectLiveUrl';
+const LIVE_URL_DEFAULT = 'https://carbot.ai/konnectlive/(v1.2.168)/home.html';
+const LIVE_WINDOW_NAME = 'workToolsKonnectLiveDesk';
+// The Lead Checker reads a customer search table with this header.
+const PARKED_BATCH_HEADER = ['Name', 'Details', 'Vehicles', 'Magic Num', 'Dealer', 'Brand', 'Campaign', 'Best Number', 'Email', 'Address', 'Confirm'];
+
+// Pure. Parked Calls rows as the Lead Checker's customer search batch.
+function parkedBatchTsv(rows) {
+const clean = (v) => String(v || '').replace(/[\t\r\n]+/g, ' ').trim();
+return [PARKED_BATCH_HEADER.join('\t')].concat(rows.map((r) => PARKED_BATCH_HEADER.map((h) => (h === 'Confirm' || h === 'Details' ? '' : clean((r.cells || {})[h.toLowerCase()]))).join('\t'))).join('\n');
+}
+
+// Pure. The Lead Checker's results export, read by column name.
+function parseLeadCheckerResults(tsv) {
+const lines = String(tsv || '').split(/\r\n|\r|\n/).filter((l) => l.trim());
+if (!lines.length) return [];
+const header = lines[0].split('\t').map((h) => h.trim());
+const at = (cells, name) => (header.indexOf(name) >= 0 ? String(cells[header.indexOf(name)] || '').trim() : '');
+if (header.indexOf('Name') < 0 || header.indexOf('PostClosureAction') < 0) return [];
+return lines.slice(1).map((line) => {
+const cells = line.split('\t');
+return { name: at(cells, 'Name'), phone: at(cells, 'Phone'), email: at(cells, 'Email'), source: at(cells, 'Source'), postClosureAction: at(cells, 'PostClosureAction'), postClosureReason: at(cells, 'PostClosureReason'), postClosureEvidence: at(cells, 'PostClosureEvidence') };
+});
+}
+
+// Pure. One Post Closure result per customer, the newest source first.
+function latestPostClosureResults(sources) {
+const seen = new Set();
+const out = [];
+sources.forEach((source) => (source.results || []).forEach((r) => {
+if (!r || !r.postClosureAction) return;
+const key = personKey(r);
+if (!key || seen.has(key)) return;
+seen.add(key);
+out.push(r);
+}));
+return out;
+}
 
 function digitsOf(value) {
 return String(value || '').replace(/\D/g, '').slice(-10);
@@ -392,6 +434,12 @@ check('presented lead matched by email', matchEmailOnly(assigned, { name: 'Someo
 check('a lead whose email is not assigned is not worked', matchEmailOnly(assigned, { name: 'Dan Davis', emails: ['dan.other@example.com'] }), null);
 check('name only when no email was read', matchEmailOnly(assigned, { name: 'Mr Dan Davis', emails: [] }), assigned[0]);
 check('shorthand starts a new line after text', [shorthandInsertion('', 'cad'), shorthandInsertion('Notes', 'cad'), shorthandInsertion('Notes\n', 'eo')], ['cad', '\ncad', 'eo']);
+const batch = parkedBatchTsv([{ cells: { name: 'Jo Example', vehicles: 'AB12CDE', 'magic num': '9', dealer: 'Preston', brand: 'Peugeot', campaign: 'Enquiry - Used', 'best number': '07700900123', email: 'jo@example.com', address: 'AB1 2CD', confirm: 'Open', details: 'ViewHide' } }]).split('\n');
+check('parked calls batch header', batch[0].split('\t')[0] === 'Name' && batch[0].includes('Magic Num') && batch[0].includes('Best Number'), true);
+check('parked calls batch row', batch[1].split('\t'), ['Jo Example', '', 'AB12CDE', '9', 'Preston', 'Peugeot', 'Enquiry - Used', '07700900123', 'jo@example.com', 'AB1 2CD', '']);
+const back = parseLeadCheckerResults(['Name\tPhone\tEmail\tSource\tTier\tPostClosureAction\tPostClosureReason\tPostClosureEvidence', 'Jo Example\t\tjo@example.com\tPost Closure Processing\t\tsend back through\tEmail only\tSent through'].join('\n'));
+check('Lead Checker results read by column', [back[0].email, back[0].postClosureAction, back[0].postClosureReason], ['jo@example.com', 'send back through', 'Email only']);
+check('newest Post Closure result per customer wins', latestPostClosureResults([{ results: [{ email: 'jo@example.com', postClosureAction: 'check: needs contact?' }] }, { results: [{ email: 'JO@example.com', postClosureAction: 'send back through', postClosureReason: 'Email only' }, { email: 'sam@example.com', postClosureAction: '' }] }]).map((r) => r.postClosureAction), ['check: needs contact?']);
 check('Available until the last Email Only lead', [statusAfterEmailOnly(2), statusAfterEmailOnly(0)], ['Available', 'Shift Start']);
 } catch (error) {
 failures.push('threw: ' + (error && error.message));
@@ -621,6 +669,7 @@ magic: text(col('magic num')),
 campaign: text(col('campaign')),
 email: text(col('email')),
 phone: text(col('best number')),
+cells: headers.reduce((all, h, i) => { if (h) all[h] = text(i); return all; }, {}),
 confirm: select || (confirmCell ? confirmCell.querySelector('button, a, input[type="button"], [ng-click]') : null)
 };
 });
@@ -1426,9 +1475,79 @@ render();
 // POST CLOSURE SEND BACK AND EMAIL ONLY (runs)
 // ===================================================================
 
+// Results the desk fetched itself and those SLA Manager imported, the
+// newest per customer.
+function postClosureResults() {
+const sources = [readJson(DESK_RESULTS_KEY), readJson(LEAD_CHECKER_RESULTS_KEY)]
+.filter((s) => s && isFresh(s.savedAt) && Array.isArray(s.results))
+.sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
+return latestPostClosureResults(sources);
+}
+
 function sendBackLeads() {
-const saved = readJson(LEAD_CHECKER_RESULTS_KEY);
-return saved && isFresh(saved.savedAt) ? sendBackLeadsFrom(saved.results) : [];
+return sendBackLeadsFrom(postClosureResults());
+}
+
+// The Lead Checker link from this desk: the Konnect Live tab it opened and
+// any batch waiting for that tab's Lead Checker to start.
+const liveLink = window.__leadResetLiveLink || (window.__leadResetLiveLink = { win: null, ready: false, pending: null, status: '' });
+
+function liveUrl() {
+let saved = '';
+try { saved = localStorage.getItem(LIVE_URL_KEY) || ''; } catch (error) { saved = ''; }
+const base = /^https:\/\/carbot\.ai\/konnectlive\//i.test(saved) ? saved : LIVE_URL_DEFAULT;
+return `${base}#/search?redirectRoute=%2Fsearch`;
+}
+
+// Opens Konnect Live straight from the click (a pop up opened later is
+// blocked), then sends the Parked Calls once its Lead Checker is ready.
+function checkParkedOnLive() {
+let win = liveLink.win && !liveLink.win.closed ? liveLink.win : null;
+if (win) { try { win.focus(); } catch (error) { /* still usable */ } }
+else {
+win = window.open(liveUrl(), LIVE_WINDOW_NAME);
+if (!win) { addLog('Allow pop ups for this site, then try again'); return; }
+liveLink.win = win;
+liveLink.ready = false;
+}
+(async () => {
+if (!onParkedPage()) {
+try { await goToParked(); } catch (error) { addLog(error.message); return; }
+}
+const rows = readSearchRows().rows;
+if (!rows.length) { addLog('No parked calls to check'); return; }
+liveLink.pending = { type: 'workTools:batch', kind: 'leads', tsv: parkedBatchTsv(rows) };
+liveLink.status = `${rows.length} parked call${rows.length === 1 ? '' : 's'} waiting for the Lead Checker`;
+if (liveLink.ready) win.postMessage(liveLink.pending, LIVE_ORIGIN);
+addLog(liveLink.ready ? 'Parked Calls sent to the Lead Checker' : 'Konnect Live is opening. Click Work Tools there to start the Lead Checker; the results come back here.');
+render();
+})();
+}
+
+function onLiveMessage(event) {
+if (event.origin !== LIVE_ORIGIN || (liveLink.win && event.source !== liveLink.win)) return;
+const data = event.data;
+if (!data || typeof data.type !== 'string' || !data.type.startsWith('workTools:')) return;
+if (data.type === 'workTools:ready') {
+liveLink.ready = true;
+liveLink.win = event.source;
+if (typeof data.url === 'string' && /^https:\/\/carbot\.ai\/konnectlive\/[^#?]*$/i.test(data.url)) {
+try { localStorage.setItem(LIVE_URL_KEY, data.url); } catch (error) { /* the default still works */ }
+}
+if (liveLink.pending) event.source.postMessage(liveLink.pending, LIVE_ORIGIN);
+} else if (data.type === 'workTools:received') {
+liveLink.pending = null;
+liveLink.status = `The Lead Checker is checking ${data.rows || 0} parked call${data.rows === 1 ? '' : 's'}`;
+addLog(liveLink.status);
+} else if (data.type === 'workTools:busy') {
+addLog('The Lead Checker is still running a batch. Try again when it has finished.');
+} else if (data.type === 'workTools:results' && data.kind === 'leads' && typeof data.tsv === 'string') {
+const results = parseLeadCheckerResults(data.tsv);
+writeJson(DESK_RESULTS_KEY, { savedAt: new Date().toISOString(), results });
+liveLink.status = data.partial ? `Lead Checker: ${data.done} of ${data.total} checked` : `Lead Checker done: ${results.length} checked`;
+if (!data.partial) addLog(liveLink.status);
+if (!state.running) render();
+}
 }
 
 function emailOnlyAgents() {
@@ -1812,13 +1931,18 @@ function renderSendBackView(settings) {
 const leads = sendBackLeads();
 const done = loadDeskProgress().pc;
 const left = leads.filter((l) => !done[l.key]).length;
+const checks = postClosureResults().filter((r) => normalise(r.postClosureAction) !== 'send back through').length;
+const linkLine = liveLink.status ? `<div class="muted small" role="status">${escapeHtml(liveLink.status)}</div>` : '';
+const checkButton = btn('checkParked', 'Check my Parked Calls on the Lead Checker', leads.length ? 'secondary' : 'primary', 'wide');
 if (!leads.length) {
-return [`<div class="card empty"><strong>No send backs yet</strong><div class="muted small">Run the Lead Checker on your Post Closure leads and send the results to SLA Manager. The ones marked "send back through" show here.</div></div>`];
+return [`<div class="card empty"><strong>No send backs yet</strong><div class="muted small" style="margin-bottom:10px;">Check your Parked Calls on the Lead Checker from here (Konnect Live opens; click Work Tools there), or send them from SLA Manager. The ones marked "send back through" show here by themselves.${checks ? ` ${checks} checked so far need contact.` : ''}</div>${checkButton}${linkLine}</div>`];
 }
-return [`<div class="card">
+return [`<div class="card">${linkLine}
 <div class="big-count"><strong>${left}</strong><span>to send back through</span></div>
 <div class="muted small" style="margin:4px 0 12px;">Each one is opened from your Parked Calls: CAD or CAH in Post Closure Notes, call outcome Update Outcomes, lead outcome Customer Hub Team &gt; No Opportunity &gt; the Catch All reason, next status Shift Start, then Finished. Ones not in your Parked Calls are left alone.</div>
 ${left ? btn('startPc', `Start (${left})`, 'primary', 'wide') : '<div class="muted small">All done.</div>'}
+${checks ? `<div class="muted small" style="margin-top:6px;">${checks} need contact (check), so they are left for you to call.</div>` : ''}
+<div style="margin-top:8px;">${checkButton}</div>
 <div class="row" style="margin-top:8px;">${Object.keys(done).length ? btn('clearDesk', 'Clear progress') : ''}</div>
 </div>`, finishToggle(settings),
 `<details data-section="list"${ui.listOpen ? ' open' : ''}><summary>Send backs <span class="count">${leads.length - left}/${leads.length}</span></summary>${deskList(leads, done, (l) => `${l.shorthand.toUpperCase()} · ${l.reason}`)}</details>`];
@@ -1997,7 +2121,7 @@ addLog(`Pasted ${resetLeadsFrom(parsed.results).length} Re setup leads`);
 function clearAndStop() {
 state.stopRequested = true;
 if (resolvePause) answerPause('stop');
-try { [PROGRESS_KEY, PASTED_RESULTS_KEY, DESK_PROGRESS_KEY].forEach((key) => localStorage.removeItem(key)); } catch (error) { /* ignore */ }
+try { [PROGRESS_KEY, PASTED_RESULTS_KEY, DESK_PROGRESS_KEY, DESK_RESULTS_KEY].forEach((key) => localStorage.removeItem(key)); } catch (error) { /* ignore */ }
 if (versionState && versionState.timer) clearInterval(versionState.timer);
 if (ui) {
 clearInterval(ui.pageTimer);
@@ -2050,6 +2174,7 @@ return;
 if (action === 'start') { runAll(); return; }
 if (action === 'view') { ui.view = target.getAttribute('data-view'); ui.listOpen = false; render(); return; }
 if (action === 'startPc') { runSendBack(); return; }
+if (action === 'checkParked') { if (!state.running) checkParkedOnLive(); return; }
 if (action === 'startEo') { runEmailOnly(); return; }
 if (action === 'reviewFinish') {
 writeJson(SETTINGS_KEY, { ...(readJson(SETTINGS_KEY) || {}), reviewBeforeFinish: target.checked });
@@ -2129,8 +2254,13 @@ if (section === 'steps') ui.stepsOpen = event.target.open;
 // or Email Only assignments, so the lists update without a refresh.
 // One listener per page; it calls whichever copy of the tool loaded last.
 window.__leadResetOnStorage = (key) => {
-if (ui && !state.running && [LEAD_CHECKER_RESULTS_KEY, EMAIL_ONLY_ASSIGNED_KEY, NATIONAL_RESULTS_KEY].includes(key)) render();
+if (ui && !state.running && [LEAD_CHECKER_RESULTS_KEY, EMAIL_ONLY_ASSIGNED_KEY, NATIONAL_RESULTS_KEY, DESK_RESULTS_KEY].includes(key)) render();
 };
+window.__leadResetOnLive = onLiveMessage;
+if (typeof window.addEventListener === 'function' && !window.__leadResetLiveWatch) {
+window.__leadResetLiveWatch = true;
+window.addEventListener('message', (event) => { if (window.__leadResetOnLive) window.__leadResetOnLive(event); });
+}
 if (typeof window.addEventListener === 'function' && !window.__leadResetStorageWatch) {
 window.__leadResetStorageWatch = true;
 window.addEventListener('storage', (event) => { if (window.__leadResetOnStorage) window.__leadResetOnStorage(event.key); });

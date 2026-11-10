@@ -262,11 +262,57 @@ async function emailOnly() {
   await context.close();
 }
 
+// The desk sends its Parked Calls to the Lead Checker itself. Konnect Live
+// is stood in for by this window: window.open returns it and messages to
+// carbot.ai are recorded, then the Lead Checker's replies are played in.
+async function parkedCallsLink() {
+  console.log('\nPost Closure, Parked Calls checked from the desk');
+  const { context, page, errors } = await openDesk({
+    status: 'Shift Start',
+    customers: [
+      postClosureCustomer('jo', 'Jo Example', 'jo.example@example.com', '07700 900101', ''),
+      postClosureCustomer('al', 'Al Sample', 'al.sample@example.com', '07700 900103', '')
+    ]
+  }, {});
+  await page.evaluate(() => {
+    window.__toLive = [];
+    window.open = () => window;
+    const post = window.postMessage.bind(window);
+    window.postMessage = (message, origin) => { if (origin === 'https://carbot.ai') window.__toLive.push(message); else post(message, origin); };
+    window.__fromLive = (data) => window.dispatchEvent(new MessageEvent('message', { origin: 'https://carbot.ai', source: window, data }));
+  });
+  await page.click('#_leadResetPanel [data-action=view][data-view=pc]');
+  check('no results yet offers the Parked Calls check', !!(await shadowText(page, '[data-action=checkParked]')), await shadowText(page, '.card'));
+  await page.click('#_leadResetPanel [data-action=checkParked]');
+  await page.waitForFunction(() => /search\/parked/.test(location.hash), null, { timeout: 10000 }).catch(() => {});
+  await page.waitForFunction(() => window._leadResetState.log.some((l) => /Konnect Live is opening/.test(l)), null, { timeout: 10000 }).catch(() => {});
+  check('nothing sent before the Lead Checker is ready', (await page.evaluate(() => window.__toLive.length)) === 0);
+  await page.evaluate(() => window.__fromLive({ type: 'workTools:ready', url: 'https://carbot.ai/konnectlive/(v1.2.200)/home.html' }));
+  const sent = await page.evaluate(() => window.__toLive.slice());
+  const lines = sent[0] && sent[0].tsv ? sent[0].tsv.split('\n') : [];
+  check('the Parked Calls batch is sent once ready', sent.length === 1 && sent[0].type === 'workTools:batch' && sent[0].kind === 'leads', sent);
+  check('batch is the customer search table the Lead Checker reads', /^Name\tDetails\tVehicles\tMagic Num/.test(lines[0] || '') && lines.length === 3 && lines.some((l) => l.includes('jo.example@example.com')), lines);
+  check('the Live address is remembered', await page.evaluate(() => localStorage.getItem('_slaKonnectLiveUrl')) === 'https://carbot.ai/konnectlive/(v1.2.200)/home.html');
+  const header = 'Name\tPhone\tEmail\tSource\tCampaign\tCreated\tInitialNotes\tTier\tTierName\tSubCategory\tSubRank\tFlags\tConfidence\tReason\tDedupeKey\tPostClosureAction\tPriorityRank\tPostClosureReason\tPostClosureEvidence';
+  const tsv = [header,
+    'Jo Example\t07700900101\tjo.example@example.com\tPost Closure Processing\t\t\t\t\t\t\t\t\tmedium\t\t\tsend back through\t-2\tActioned by dealership\tDealer scheduled a call',
+    'Al Sample\t07700900103\tal.sample@example.com\tPost Closure Processing\t\t\t\t\t\t\t\t\tmedium\t\t\tcheck: needs contact?\t-1\t\t'].join('\n');
+  await page.evaluate((t) => { window.__fromLive({ type: 'workTools:received', rows: 2 }); window.__fromLive({ type: 'workTools:results', kind: 'leads', tsv: t }); }, tsv);
+  await page.waitForTimeout(300);
+  check('the send back shows without a refresh', /^1\s*to send back through/.test(await shadowText(page, '.big-count') || ''), await shadowText(page, '.big-count'));
+  check('the one that needs contact is counted, not sent back', /1 need contact/.test(await shadowText(page, '.card') || ''), await shadowText(page, '.card'));
+  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('_leadResetPostClosureResults') || 'null'));
+  check('results kept on the desk', saved && saved.results.length === 2 && saved.results[0].postClosureReason === 'Actioned by dealership', saved);
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
 const started = Date.now();
 try {
   await postClosureNoReview();
   await postClosureWithReview();
   await emailOnly();
+  await parkedCallsLink();
 } catch (e) {
   failures++;
   console.log(`FAIL  test crashed: ${e && e.stack || e}`);
