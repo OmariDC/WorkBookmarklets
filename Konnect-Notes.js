@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.9.3'
+    version: '1.9.5'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2017,7 +2017,9 @@
       const text = normaliseText(cell.innerText);
       const titles = [cell, ...Array.from(cell.querySelectorAll('[title]')).filter(isVisible)].map((node) => node.getAttribute('title') || '').join(' ');
       if (text || /past|soon|blocked/i.test(titles)) continue;
-      return { cell, person: normaliseText(cells[0] && cells[0] !== cell ? cells[0].innerText : '') };
+      // The name cell also lists the person's brand letters on a second line.
+      const nameText = cells[0] && cells[0] !== cell ? String(cells[0].innerText || '').split('\n')[0] : '';
+      return { cell, person: normaliseText(nameText).replace(/(\s+[A-Z],)+\s*[A-Z]$/, '').replace(/\s+[A-Z](,\s*[A-Z])+$/, '') };
     }
     return { error: `no one is free at ${plan.time} on that day` };
   }
@@ -2069,27 +2071,35 @@
     return shown.length === 1 ? shown[0] : null;
   }
 
-  /* Sets the open lead's outcome to match the appointment: the call outcome
-     "Spoke to Customer" brings up the lead's outcome lists, which are then
-     picked in order. A call outcome already chosen is left alone, and on a
-     voicemail, engaged or email-only booking it is left for the agent. */
+  /* Sets the open lead's outcome to match the appointment. The call outcome
+     follows the contact header and brings up the lead's outcome lists, which
+     are then picked in order. A call outcome already chosen is left alone. */
+  const CALL_OUTCOME_FOR_CONTACT = {
+    none: 'Spoke to Customer',
+    vm: 'No Answer - Message Left',
+    engaged: 'No Answer - No Message Left',
+    email: 'Update Outcomes (No Call Made)'
+  };
   async function setLeadOutcome(draft, plan) {
     const callOutcome = Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible);
     if (!callOutcome) return 'the call outcome box was not found';
     const current = normaliseText(callOutcome.options[callOutcome.selectedIndex]?.textContent);
     if (!current || /^\(select/i.test(current)) {
-      if (draft.data.contact && draft.data.contact !== 'none') return 'choose the call outcome yourself, then the lead outcome';
-      if (!setLeadControl(callOutcome, 'Spoke to Customer')) return 'could not choose Spoke to Customer';
+      const wantedCall = CALL_OUTCOME_FOR_CONTACT[draft.data.contact || 'none'];
+      if (!wantedCall) return 'choose the call outcome yourself, then the lead outcome';
+      if (!setLeadControl(callOutcome, wantedCall)) return `could not choose the call outcome "${wantedCall}"`;
     }
     const pane = callNotesBox()?.closest('.tab-pane') || document.querySelector('.tab-pane.active') || document;
     const path = ['Customer Hub Team', 'Appointment', plan.type];
     for (let level = 0; level < path.length; level += 1) {
       const wanted = path[level];
       const select = await waitFor(() => {
-        const shown = Array.from(pane.querySelectorAll('select[ng-model^="theActivity.SelectedOutcomeLevel"]')).filter(isVisible);
+        const selector = 'select[ng-model^="theActivity.SelectedOutcomeLevel"]';
+        let shown = Array.from(pane.querySelectorAll(selector)).filter(isVisible);
+        if (!shown.length) shown = Array.from(document.querySelectorAll(selector)).filter(isVisible);
         const box = shown[level];
         return box && Array.from(box.options).some((o) => normaliseText(o.textContent).toLowerCase() === wanted.toLowerCase()) ? box : null;
-      }, 4000);
+      }, 8000);
       if (!select) return `the "${wanted}" outcome was not offered`;
       setLeadControl(select, wanted);
       if (normaliseText(select.options[select.selectedIndex]?.textContent).toLowerCase() !== wanted.toLowerCase()) return `could not choose the "${wanted}" outcome`;
@@ -2146,8 +2156,14 @@
       confirm.click();
       const done = await waitFor(() => !isVisible(confirm) || !confirm.isConnected, 10000);
       if (!done) return fail('Konnect did not confirm the appointment');
+      // The diary stays open after Confirm, so close it before the outcome.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const close = Array.from(modal.querySelectorAll('button[ng-click="cancel()"]')).filter(isVisible)
+        .sort((a, b) => (/close/i.test(b.textContent) ? 1 : 0) - (/close/i.test(a.textContent) ? 1 : 0))[0];
+      close?.click();
+      const closed = await waitFor(() => !diaryModal(), 6000);
       const who = free.person ? ` with ${free.person}` : '';
-      const outcomeProblem = await setLeadOutcome(draft, plan);
+      const outcomeProblem = closed ? await setLeadOutcome(draft, plan) : 'the diary did not close';
       if (outcomeProblem) {
         say('warn', `Diary booked: ${plan.label}, ${plan.type}${who}. Outcome not set: ${outcomeProblem}.`);
         showToast(`Diary booked. Set the outcome by hand: ${outcomeProblem}`);
