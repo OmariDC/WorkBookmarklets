@@ -4019,6 +4019,7 @@ if (!advanced) break;
 isRunning = false;
 hidePageFlashOverlay();
 uiHandle.setState(session.cancelled ? 'Cancelled' : (session.done ? 'Done' : 'Paused'));
+if (session.done && !session.cancelled && typeof window.__workToolsOnDone === 'function') window.__workToolsOnDone(session);
 }
 }
 
@@ -5865,6 +5866,47 @@ function setPauseResumeLabel(text) {
 pauseResumeBtn.innerHTML = svgIcon(text === 'Pause' ? 'pause' : 'play', 11) + text;
 }
 
+// Linked to SLA Manager when SLA Manager opened this tab: it sends the
+// batch here and gets the results back without the clipboard. A tab opened
+// by hand has no link, and copy and paste works as before.
+const MANAGER_ORIGIN = 'https://konnectonlineservices.co.uk';
+function managerWindow() {
+try { return window.opener && !window.opener.closed ? window.opener : null; } catch (error) { return null; }
+}
+function startManagerLink() {
+const manager = managerWindow();
+if (!manager) return;
+window.addEventListener('message', (event) => {
+if (event.origin !== MANAGER_ORIGIN || event.source !== manager) return;
+const data = event.data;
+if (!data || data.type !== 'workTools:batch' || typeof data.tsv !== 'string') return;
+if (isRunning) { manager.postMessage({ type: 'workTools:busy' }, MANAGER_ORIGIN); return; }
+if (session) { session.cancelled = true; session.discarded = true; }
+clearStoredSession();
+session = null;
+recentCompletions = [];
+pasteBox.value = data.tsv;
+const s = ensureSessionFromPasteBox();
+s.fromManager = true;
+manager.postMessage({ type: 'workTools:received', rows: s.rows.length }, MANAGER_ORIGIN);
+host.style.display = 'block';
+badge.hide();
+if (s.headerOk && s.rows.length > 0 && !s.done) startProcessing();
+else render();
+});
+window.__workToolsOnDone = (finished) => {
+if (!finished.fromManager || !managerWindow()) return;
+const national = finished.mode === 'national';
+managerWindow().postMessage({
+type: 'workTools:results',
+kind: national ? 'national' : 'leads',
+tsv: national ? buildNationalResultsExport(finished) : buildRawNotesTsvForExtract(finished)
+}, MANAGER_ORIGIN);
+uiHandle.setState('Done: results sent to SLA Manager');
+};
+manager.postMessage({ type: 'workTools:ready' }, MANAGER_ORIGIN);
+}
+
 function startProcessing() {
 const s = ensureSessionFromPasteBox();
 if (!s.headerOk) { uiHandle.setState(`Header error: ${s.headerError}`); return; }
@@ -6108,6 +6150,7 @@ host.style.right = `${Math.max(0, dragState.startRight - dx)}px`;
 window.addEventListener('mouseup', () => { dragState = null; });
 
 render();
+startManagerLink();
 // Keeps the button in Konnect's menu bar when the page redraws it.
 setInterval(ensureBadgeAttached, 3000);
 

@@ -21,6 +21,8 @@ node tests/booking-engine.test.js
 node --check Konnect-Notes.js && node --check Konnect-Booking-Engine.js
 ```
 
+Where Playwright with Chromium is available, also run `node tests/lead-reset.e2e.mjs`: it drives Lead Re setup through mock agent desktop pages in `tests/agent-desktop-mock/`.
+
 The runner loads both tools with a minimal DOM stub, runs every built-in self-test and checks that the values shared between the files still match. Any failure exits non-zero.
 
 ## Rules

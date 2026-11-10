@@ -1793,15 +1793,24 @@ if (row.status !== 'done') return '';
 const results = loadNationalResults();
 const buttons = `
 <div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;">
-${row.nationalBatchTsv ? `<button type="button" onclick="window._copyNationalBatch(this)" style="${nationalButtonStyle(true)}">Copy for Lead Checker (National)</button>` : ''}
+${row.nationalBatchTsv ? `<button type="button" onclick="window._sendToLeadChecker(this, 'national')" style="${nationalButtonStyle(true)}" title="Opens Konnect Live and sends the batch to the Lead Checker; the results come back here">Send to Lead Checker</button><button type="button" onclick="window._copyNationalBatch(this)" style="${nationalButtonStyle(false)}">Copy instead</button>` : ''}
 <button type="button" onclick="window._pasteNationalResults(this)" style="${nationalButtonStyle(false)}">Paste National results</button>
 </div>`;
 if (!results) return buttons;
 const counts = countNationalVerdicts(results);
 const countLine = NATIONAL_VERDICTS.map((v) => `${escapeHtml(v)}: ${counts[v] || 0}`).join(' &middot; ');
-const flagged = results.filter((r) => r.Verdict === RE_SETUP || r.Verdict === 'Check');
+const flagged = results.filter((r) => r.Verdict === RE_SETUP || r.Verdict === 'Check' || r.Decision);
+const resetProgress = loadLeadResetProgress();
 const list = flagged.map((r) => {
 const index = results.indexOf(r);
+const resetStatus = resetProgress[r.ActivityID];
+const decided = r.Decision ? `<div style="color: var(--wb-muted, #5b6577);">Checked by hand: ${escapeHtml(r.Decision)}${r.DecisionNote ? ` (${escapeHtml(r.DecisionNote)})` : ''} <button type="button" onclick="window._undoNationalDecision(${index})" style="${nationalButtonStyle(false)} padding: 1px 8px;">Undo</button></div>` : '';
+const decide = r.Verdict === 'Check' && !r.Decision ? `
+<div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px;">
+<input type="text" id="_slaNatNote${index}" placeholder="Why (optional, helps me add a rule)" aria-label="Why" style="flex: 1; min-width: 140px; padding: 4px 8px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; font-size: 11.5px;">
+<button type="button" onclick="window._decideNational(${index}, 'Valid')" style="${nationalButtonStyle(false)}">Valid</button>
+<button type="button" onclick="window._decideNational(${index}, '${RE_SETUP}')" style="${nationalButtonStyle(true)}">Needs re setup</button>
+</div>` : '';
 const notes = r.FollowUpNotes ? `<div style="color: var(--wb-muted, #5b6577);">Notes: ${escapeHtml(r.FollowUpNotes.slice(0, 160))}${r.FollowUpNotes.length > 160 ? '…' : ''}</div>` : '';
 return `
 <div style="border: 1px solid var(--wb-border, #e2e8f0); border-left: 3px solid ${r.Verdict === RE_SETUP ? '#dc2626' : '#d97706'}; border-radius: 6px; padding: 6px 8px; margin-top: 6px;">
@@ -1809,12 +1818,45 @@ return `
 <div>${escapeHtml(r.Reason)}</div>
 ${r.FinalOutcome ? `<div style="color: var(--wb-muted, #5b6577);">Final outcome: ${escapeHtml(r.FinalOutcome)}</div>` : ''}
 ${notes}
-${r.Verdict === RE_SETUP ? `<div style="color: var(--wb-muted, #5b6577);">Set up again with Lead Re setup on the agent desktop${r.ResetCampaign ? ` (${escapeHtml(r.ResetCampaign)})` : ''}.</div>` : ''}
+${r.Verdict === RE_SETUP ? (resetStatus
+? `<div style="color: ${resetStatus === 'Done' ? '#047857' : 'var(--wb-muted, #5b6577)'}; font-weight: 600;">${resetStatus === 'Done' ? 'Set up again' : 'Skipped'} in Lead Re setup</div>`
+: `<div style="color: var(--wb-muted, #5b6577);">Not set up again yet: use Lead Re setup on the agent desktop${r.ResetCampaign ? ` (${escapeHtml(r.ResetCampaign)})` : ''}.</div>`) : ''}
+${decided}${decide}
 </div>`;
 }).join('');
+const decisions = results.filter((r) => r.Decision).length;
 return `${buttons}
 <div style="margin-top: 8px; font-size: 11px; color: var(--wb-text, #1c1c1e);">${countLine}</div>
-${list}`;
+${list}
+${decisions ? `<button type="button" onclick="window._copyNationalDecisions(this)" style="${nationalButtonStyle(false)} margin-top: 8px;">Copy my decisions (${decisions}) for new rules</button>` : ''}`;
+}
+
+// Lead Re setup is on the same site and records what it did per lead.
+function loadLeadResetProgress() {
+try {
+const p = JSON.parse(localStorage.getItem('_leadResetProgress') || 'null');
+return p && p.byActivity && isStoredTimeFresh(p.savedAt) ? p.byActivity : {};
+} catch (error) { return {}; }
+}
+
+// Pure. A hand decision on a Check lead. Re setup sends it to Lead Re setup;
+// Valid closes it. The original verdict is kept so it can be undone.
+function applyNationalDecision(result, decision, note) {
+const next = { ...result, Decision: decision, DecisionNote: String(note || '').trim(), OriginalVerdict: result.OriginalVerdict || result.Verdict };
+next.Verdict = decision === RE_SETUP ? RE_SETUP : 'OK';
+return next;
+}
+function undoNationalDecision(result) {
+const next = { ...result, Verdict: result.OriginalVerdict || result.Verdict };
+delete next.Decision; delete next.DecisionNote; delete next.OriginalVerdict;
+return next;
+}
+
+// No names: what the check saw and what was decided, for writing rules.
+function buildNationalDecisionsTsv(results) {
+const header = ['ActivityID', 'CheckerReason', 'FinalOutcome', 'Attempts', 'EnquiryMaxDealer', 'Decision', 'Why'];
+const rows = results.filter((r) => r.Decision).map((r) => [r.ActivityID, r.Reason, r.FinalOutcome, r.Attempts, r.EnquiryMaxDealer, r.Decision, r.DecisionNote].map(tsvClean).join('\t'));
+return [header.join('\t'), ...rows].join('\n');
 }
 
 function flashNationalButton(btn, text) {
@@ -1823,6 +1865,30 @@ const original = btn.textContent;
 btn.textContent = text;
 setTimeout(() => { btn.textContent = original; }, 1800);
 }
+
+window._decideNational = function(index, decision) {
+const results = loadNationalResults() || [];
+if (!results[index]) return;
+const noteEl = document.getElementById(`_slaNatNote${index}`);
+results[index] = applyNationalDecision(results[index], decision, noteEl ? noteEl.value : '');
+saveNationalResults(results);
+displayMorningChecks();
+};
+
+window._undoNationalDecision = function(index) {
+const results = loadNationalResults() || [];
+if (!results[index]) return;
+results[index] = undoNationalDecision(results[index]);
+saveNationalResults(results);
+displayMorningChecks();
+};
+
+window._copyNationalDecisions = function(btn) {
+navigator.clipboard.writeText(buildNationalDecisionsTsv(loadNationalResults() || [])).then(
+() => flashNationalButton(btn, 'Copied'),
+() => flashNationalButton(btn, 'Clipboard blocked')
+);
+};
 
 window._copyNationalBatch = function(btn) {
 const row = morningChecksResults.find((r) => r.key === 'national');
@@ -1914,6 +1980,12 @@ const olderExport = [olderHeader.join('\t'), ['national', 'Sam Buyer', '70000002
 check('an older export still imports and Reset reads as Re setup', [parseNationalResultsTsv(olderExport).ok, parseNationalResultsTsv(olderExport).results[0].Verdict, parseNationalResultsTsv(olderExport).results[0].Reg], [true, 'Re setup', '']);
 check('older notes columns are not kept', 'ResetInitialNotes' in parseNationalResultsTsv(olderExport).results[0], false);
 check('a stray line or byte order mark before the header is ignored', parseNationalResultsTsv('\uFEFFcopied from Lead Checker\n' + resultTsv).results.length, 3);
+const checkRow = { ActivityID: '70000004', Verdict: 'Check', Reason: 'Misdirected', FinalOutcome: 'Misdirected', Attempts: '1', EnquiryMaxDealer: '' };
+const decided = applyNationalDecision(checkRow, RE_SETUP, ' dealer never got it ');
+check('a hand decision of re setup joins the Lead Re setup list', [decided.Verdict, decided.Decision, decided.DecisionNote, decided.OriginalVerdict], [RE_SETUP, RE_SETUP, 'dealer never got it', 'Check']);
+check('a valid decision closes it', applyNationalDecision(checkRow, 'Valid', '').Verdict, 'OK');
+check('undo restores the checker verdict', [undoNationalDecision(decided).Verdict, 'Decision' in undoNationalDecision(decided)], ['Check', false]);
+check('decisions export carries no names', buildNationalDecisionsTsv([{ ...decided, Customer: 'Alex Sample' }]).includes('Alex Sample'), false);
 check('an export missing a needed column is refused', parseNationalResultsTsv('NationalResult\tCustomer\nnational\tAlex').ok, false);
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager national-check self-test FAILED:\n' + failures.join('\n'));
@@ -3346,7 +3418,7 @@ return `
 <div style="font-size: 10.5px; color: var(--wb-muted, #5b6577); margin-bottom: 10px;">New (never-actioned) leads are excluded. Check the SLA queue for those.</div>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span id="bookingExportRowCount" style="font-size: 11px; color: var(--wb-muted, #5b6577);">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}</span>
-<button onclick="window._copyLeadCheckerExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
+<span style="display: flex; gap: 6px;"><button onclick="window._sendToLeadChecker(this, 'leads')" title="Opens Konnect Live and sends these leads to the Lead Checker; the results come back here" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Send</button><button onclick="window._copyLeadCheckerExport(this)" style="padding: 6px 12px; background: transparent; color: var(--wb-text, #1c1c1e); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button></span>
 </div>`;
 }
 const settings = loadLeadCheckerExportSettings();
@@ -3365,7 +3437,7 @@ Customer First only
 </label>
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span id="bookingExportRowCount" style="font-size: 11px; color: var(--wb-muted, #5b6577);">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}</span>
-<button onclick="window._copyLeadCheckerExport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button>
+<span style="display: flex; gap: 6px;"><button onclick="window._sendToLeadChecker(this, 'leads')" title="Opens Konnect Live and sends these leads to the Lead Checker; the results come back here" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Send</button><button onclick="window._copyLeadCheckerExport(this)" style="padding: 6px 12px; background: transparent; color: var(--wb-text, #1c1c1e); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button></span>
 </div>`;
 })();
 
@@ -3428,6 +3500,109 @@ const { count, excludedCount } = buildLeadCheckerTsv(tiers, customerFirstOnly);
 const countEl = document.getElementById('bookingExportRowCount');
 if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}`;
 };
+
+// ===================================================================
+// LINK TO THE LEAD CHECKER
+// SLA Manager opens Konnect Live itself, which lets the two tabs message
+// each other: the batch goes over and the results come back without the
+// clipboard. A Live tab opened by hand has no link; Copy still works.
+// ===================================================================
+const LIVE_ORIGIN = 'https://carbot.ai';
+const LIVE_URL = 'https://carbot.ai/konnectlive/';
+const LIVE_WINDOW_NAME = 'workToolsKonnectLive';
+const liveLink = { win: null, ready: false, pending: null };
+
+function currentLeadCheckerExport() {
+return currentPageType === PAGE_PENDING
+? buildPendingLeadCheckerTsv(loadPendingLeadCheckerExportSettings().callbackTypes)
+: (() => { const s = loadLeadCheckerExportSettings(); return buildLeadCheckerTsv(s.tiers, s.customerFirstOnly); })();
+}
+
+// Reuses the Live tab this opened before; a new tab is sent to Konnect Live.
+function openLiveTab() {
+const win = window.open('', LIVE_WINDOW_NAME);
+if (!win) return null;
+let blank = false;
+try { blank = win.location.href === 'about:blank'; } catch (error) { blank = false; }
+if (blank) { win.location.href = LIVE_URL; liveLink.ready = false; }
+liveLink.win = win;
+return win;
+}
+
+function showLinkToast(text) {
+const toast = document.createElement('div');
+toast.setAttribute('role', 'status');
+toast.textContent = text;
+toast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#1c1c1e;color:#fff;padding:10px 16px;border-radius:10px;font:600 13px -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.25);max-width:90vw;';
+document.body.appendChild(toast);
+setTimeout(() => toast.remove(), 5000);
+}
+
+window._sendToLeadChecker = function(btn, kind) {
+const original = btn.textContent;
+const flash = (text) => { btn.textContent = text; setTimeout(() => { btn.textContent = original; }, 2200); };
+let tsv = '';
+if (kind === 'national') {
+const row = morningChecksResults.find((r) => r.key === 'national');
+tsv = row && row.nationalBatchTsv;
+} else {
+const exported = currentLeadCheckerExport();
+tsv = exported.count ? exported.tsv : '';
+}
+if (!tsv) { flash('No leads'); return; }
+const sent = sendBatchToLeadChecker(kind, tsv);
+flash(sent ? 'Sent' : 'Allow pop-ups for this site');
+};
+
+function sendBatchToLeadChecker(kind, tsv) {
+liveLink.pending = { type: 'workTools:batch', kind, tsv };
+const win = openLiveTab();
+if (!win) return false;
+if (liveLink.ready) win.postMessage(liveLink.pending, LIVE_ORIGIN);
+showLinkToast(liveLink.ready ? 'Sent to the Lead Checker.' : 'Konnect Live is opening. Click Work Tools there to start the Lead Checker; the batch is passed over and the results come back here.');
+return true;
+}
+window._sendBatchToLeadChecker = sendBatchToLeadChecker;
+
+function importLinkedResults(kind, tsv) {
+if (kind === 'national') {
+const parsed = parseNationalResultsTsv(tsv);
+if (!parsed.ok) { showLinkToast(`Lead Checker results could not be read: ${parsed.error}`); return; }
+saveNationalResults(parsed.results);
+showLinkToast(`National results back from the Lead Checker (${parsed.results.length}).`);
+if (currentPanelMode === 'morningChecks') displayMorningChecks();
+return;
+}
+const parsed = parseLeadCheckerImportTsv(tsv);
+if (!parsed.headerOk || parsed.rows.length === 0) { showLinkToast('Lead Checker results could not be read.'); return; }
+saveLeadCheckerImportState({ rawInput: '', results: classifyLeadCheckerImportRows(parsed.rows) });
+showLinkToast(`Lead Checker results back (${parsed.rows.length}) and shown on the lead cards.`);
+if (currentPanelMode === 'normal') {
+if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, lastPendingDiffCounts.newCount, lastPendingDiffCounts.removedCount, false);
+else if (currentPageType === PAGE_SLA) displayPanel(currentCustomers, lastSlaDiffCounts.newCount, lastSlaDiffCounts.removedCount, false);
+}
+}
+
+if (!window.__workToolsLinkListening && typeof window.addEventListener === 'function') {
+window.__workToolsLinkListening = true;
+window.addEventListener('message', (event) => {
+if (event.origin !== LIVE_ORIGIN) return;
+const data = event.data;
+if (!data || typeof data.type !== 'string' || !data.type.startsWith('workTools:')) return;
+if (data.type === 'workTools:ready') {
+liveLink.ready = true;
+liveLink.win = event.source;
+if (liveLink.pending) event.source.postMessage(liveLink.pending, LIVE_ORIGIN);
+} else if (data.type === 'workTools:received') {
+liveLink.pending = null;
+showLinkToast(`The Lead Checker has the batch (${data.rows || 0} lead${data.rows === 1 ? "" : "s"}) and is checking it.`);
+} else if (data.type === 'workTools:busy') {
+showLinkToast('The Lead Checker is still running a batch. Send again when it has finished.');
+} else if (data.type === 'workTools:results' && typeof data.tsv === 'string') {
+importLinkedResults(data.kind, data.tsv);
+}
+});
+}
 
 window._copyLeadCheckerExport = function(buttonEl) {
 const original = buttonEl.textContent;

@@ -1,0 +1,78 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Mock agent desktop</title></head><body>
+<div id="idle">
+ <button class="btn dropdown-toggle" data-toggle="dropdown" id="statusBtn">Available</button>
+ <ul><li><a ng-click="setMakeBusy(mbc.Id)">Available</a></li><li><a ng-click="setMakeBusy(mbc.Id)">Shift Start</a></li></ul>
+ <button ng-click="navToManualOutbound()" id="newOut">New Manual Outbound Call</button>
+</div>
+<div id="search" style="display:none">
+ <input ng-model="searchText" type="text"><button id="btnSearchCustomers" ng-click="searchCustomers(searchText)">Search</button>
+ <table><thead><tr><th></th><th>Name</th><th>Details</th><th>Vehicles</th><th>Magic Num</th><th>Dealer</th><th>Brand</th><th>Campaign</th><th>Best Number</th><th>Email</th><th>Address</th><th>Confirm</th></tr></thead><tbody id="rows"></tbody></table>
+</div>
+<div id="call" style="display:none">
+ <select ng-model="selected.CallOutcome"><option>(Select a Call Outcome)</option><option>Spoke to Customer</option><option>Update Outcomes (No Call Made)</option></select>
+ <button ng-click="createNewSalesLead();" id="addLead" style="display:none">Add New Lead</button>
+ <div id="acts"><div ng-repeat="theActivity in liveActivities" id="existing">Existing lead</div></div>
+ <div id="tabcontent"></div>
+ <div id="section-call-notes"><textarea ng-model="Call.Notes"></textarea></div>
+ <select ng-model="selected.NextAgentStatus"><option>Available</option><option>Shift Start</option></select>
+ <button ng-click="completeCall(false, false)" id="finished">Finished</button>
+ <button ng-click="completeCall(true, false)" id="park">Park It</button>
+</div>
+<div id="createModal" class="modal" style="display:none">
+ Create Activity <label><input type="radio" name="salesOptions" value="true">Regular Sales Lead</label><label><input type="radio" name="salesOptions" value="false">The Sales Event</label>
+ <select ng-model="selected.campaignID" id="camp"></select>
+ <button ng-click="ok()" id="save">Save</button><button ng-click="cancel()">Cancel</button>
+</div>
+<div id="diary" class="modal" style="display:none">Manage Appointments diary <ul style="display:none"><li><button ng-click="close(false)" id="dpClose">Close</button></li></ul><button class="close" ng-click="cancel()">&times;</button> <button ng-click="cancel()" id="diaryClose">Close</button></div>
+<script>
+window.events = [];
+const $ = (id) => document.getElementById(id);
+const show = (id, on) => { $(id).style.display = on ? 'block' : 'none'; if ($(id).classList.contains('modal')) $(id).classList.toggle('in', on); };
+// tiny fake of angular.element().scope() and $parse
+window.angular = {
+ element(el) { return {
+  scope() { let n = el; while (n && !n.__scope) n = n.parentElement; return n ? n.__scope : { $root: {} }; },
+  injector() { return { get() { return (model) => {
+   const path = model.split('.');
+   const get = (scope) => path.reduce((o, k) => (o == null ? o : o[k]), scope);
+   get.assign = (scope, v) => { let o = scope; path.slice(0, -1).forEach((k) => { o = o[k]; }); o[path[path.length - 1]] = v;
+     document.querySelectorAll(`select[ng-model="${model}"]`).forEach((s) => { s.value = String(v); }); };
+   return get; }; } }; }
+ }; }
+};
+$('existing').__scope = { theActivity: { ID: 70000002, CampaignName: 'Vauxhall - Offer Request - Used', ManuallyCreated: false, CreatedDate: '2026-11-07T09:00:00Z', SalesLead: { ID: 1, LeadDetails: { LeadTypeID: 2, LeadRequestID: 5, InitialNotes: 'From the page\nline two' } } } };
+document.querySelectorAll('[ng-click^="setMakeBusy"]').forEach((a) => a.addEventListener('click', () => { $('statusBtn').textContent = a.textContent; events.push('status:' + a.textContent); }));
+$('newOut').onclick = () => { show('idle', 0); show('search', 1); location.hash = '#!/select-call-type/manual/true'; };
+$('btnSearchCustomers').onclick = () => {
+ const term = document.querySelector('[ng-model=searchText]').value; events.push('search:' + term);
+ setTimeout(() => {
+  const data = [['Sam Buyerson', '70000009SALES', '9001'], ['Sam Buyer', '70000011SALES, 70000002SALES', ''], ['Sam Buyer', '70000003SALES, -', '']];
+  $('rows').innerHTML = data.map((d) => `<tr><td></td><td>${d[0]}</td><td></td><td>${d[1]}</td><td>${d[2]}</td><td></td><td></td><td></td><td></td><td></td><td></td><td><button class="confirm" ng-click="eventHandler({customer: customer})" data-m="${d[1]}">Select</button></td></tr>`).join('');
+  document.querySelectorAll('.confirm').forEach((b) => b.onclick = () => { events.push('confirm:' + b.dataset.m); show('search', 0); show('call', 1); location.hash = '#!/call/outbound/customer/1/customerIntervention/1/queue/1'; });
+ }, 400);
+};
+document.querySelector('[ng-model="selected.CallOutcome"]').addEventListener('change', (e) => { events.push('outcome:' + e.target.selectedOptions[0].textContent); $('addLead').style.display = /Update/.test(e.target.value) ? 'inline' : 'none'; });
+document.querySelector('[ng-model="selected.NextAgentStatus"]').addEventListener('change', (e) => events.push('next:' + e.target.value));
+$('addLead').onclick = () => { show('createModal', 1); $('camp').innerHTML = ''; };
+document.querySelector('input[value=true]').addEventListener('click', () => setTimeout(() => { $('camp').innerHTML = '<option>(Select a Campaign)</option><option>Vauxhall - Offer Request - New</option><option>Vauxhall - Offer Request - Used</option>'; }, 300));
+$('camp').addEventListener('change', (e) => events.push('campaign:' + e.target.value));
+$('save').onclick = () => { show('createModal', 0); setTimeout(() => {
+ const div = document.createElement('div'); div.setAttribute('ng-repeat', 'theActivity in liveActivities');
+ div.__scope = { theActivity: { CampaignName: $('camp').value, SalesLead: { ID: 0, LeadDetails: {} } }, $root: {} };
+ const content = document.createElement('div'); content.__scope = div.__scope; $('tabcontent').appendChild(content); div.textContent = 'tab';
+ content.innerHTML = `<div class="panel"><a ng-click="toggleOpen()">Lead</a><div>
+  <select ng-model="theActivity.SalesLead.LeadDetails.LeadTypeID"><option value="">(Select a Lead Type)</option><option value="1">New</option><option value="2">Used</option></select>
+  <select ng-model="theActivity.SalesLead.LeadDetails.LeadRequestID"><option value="">(Select a Lead Request)</option><option value="5">Enquiry - Used</option></select>
+  <select ng-model="theActivity.SalesLead.LeadDetails.SourceOfEnquiryID"><option value="">(Select a Source)</option><option value="3">Web</option></select>
+  <input ng-model="theActivity.SalesLead.LeadDetails.VehicleOfInterestModel">
+  <div class="toggle btn off" ng-click="onSwitch($event)">Has Part ExchangeNo Part Exchange</div>
+  <textarea ng-model="theActivity.SalesLead.LeadDetails.Notes" class="leadCallNotes"></textarea>
+  <button ng-click="manageSalesEventBookings(theActivity)">Manage Appointments</button></div></div>`;
+ content.querySelector('.toggle').addEventListener('click', (e) => { e.currentTarget.classList.toggle('off'); events.push('px'); });
+ content.querySelector('[ng-click^=manage]').onclick = () => { events.push('diary with notes:' + JSON.stringify(content.querySelector('.leadCallNotes').value) + ' internal:' + JSON.stringify(document.querySelector('#section-call-notes textarea').value)); show('diary', 1); };
+ $('acts').appendChild(div); events.push('newLead');
+}, 300); };
+document.getElementById('diaryClose').onclick = () => { events.push('diaryClosed'); window.afterClose = () => (document.querySelector('.leadCallNotes') || {}).value; show('diary', 0); };
+$('finished').onclick = () => events.push('FINISHED-PRESSED');
+$('park').onclick = () => { events.push('park'); show('call', 0); show('idle', 1); location.hash = '#!/idle'; };
+</script></body></html>
