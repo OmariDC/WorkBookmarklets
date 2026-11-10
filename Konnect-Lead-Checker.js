@@ -4092,6 +4092,14 @@ check('an offer sent by the dealership after the checked lead was sent', postClo
 check('an offer from another dealership does not count', postClosureDecision(edit(offered, 13, { Description: 'Offer Sent by Dealer C for Crawley' }), 1400201, false).reason, '');
 const noSale = offered.filter((i) => i.TimelineItemType !== 13).concat(t(9, 1400201, '07T14:24', 'No Sale', "Final Outcome 'No Sale' set by Dealer D at Preston", false));
 check('a final outcome the dealership set on the lead', postClosureDecision(noSale, 1400201, false).reason, 'Actioned by dealership');
+const earlierLeadCall = [
+t(1, 1400300, '07T06:02', '', "New Sales Lead, 'Offer - New Request' for Preston Lead routed", false),
+t(2, 1400300, '07T16:04', 'Lead sent to Enquiry Max', 'Lead sent by Agent A and successfuly received at Preston', false),
+t(3, 1400300, '08T10:00', 'Dealer E Scheduled a call', 'New Enquiry at Preston', false),
+t(1, 1400301, '09T09:04', 'Manually Created Sales Lead from Post Closure Processing', "New Sales Lead, 'Offer - New Request' for Preston Lead routed", false)
+];
+check('a call the dealership scheduled on the earlier lead itself', postClosureDecision(earlierLeadCall, 1400301, false).reason, 'Actioned by dealership');
+check('an older lead with another request is not the matching lead', postClosureSourceLead(earlierLeadCall.concat(t(1, 1400299, '01T09:00', '', "New Sales Lead, 'Enquiry - New Request' for Preston Lead routed", false)), 1400301).source.LeadID, 1400300);
 check('the deciding entry is given as evidence', postClosureDecision(offered, 1400201, false).evidence, 'Offer Sent: Offer Sent by Dealer C for Preston (2026-11-06 10:20)');
 const sentOnly = walkIn.filter((i) => i.TimelineItemType !== 3);
 check('notes sent through saying email only', postClosureDecision(sentOnly, 1400102, false, { sent: 'Lead sent to Enquiry Max | Email only lead, no number given' }).reason, 'Email only');
