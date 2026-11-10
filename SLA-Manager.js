@@ -2837,6 +2837,36 @@ localStorage.setItem(ASSIGN_LOG_KEY, JSON.stringify(updated));
 } catch (error) {
 console.warn('Failed to persist assignment log', error);
 }
+recordEmailOnlyAssignments(results);
+}
+
+// Email Only leads assigned today, for Lead Re setup's Email Only run on
+// the agent desktop (same site). It only works leads on this list, so a
+// lead that presents without being on it is left to the agent.
+const EMAIL_ONLY_ASSIGNED_KEY = '_workToolsEmailOnlyAssigned';
+
+function emailOnlyAssignmentsFrom(results, cachedByKey) {
+return results.filter((r) => r.ok).map((r) => {
+const cached = cachedByKey.get(r.lead.key) || r.lead;
+const email = String(cached.email || r.lead.email || '').trim();
+const phone = String(cached.phone || r.lead.mobile || r.lead.landline || '').trim();
+return { name: r.lead.name, email, phone, campaign: r.lead.campaign || '', agent: r.agent.name };
+}).filter((e) => e.email && !e.phone).map(({ phone, ...e }) => e);
+}
+
+function recordEmailOnlyAssignments(results) {
+try {
+const fresh = emailOnlyAssignmentsFrom(results, new Map(currentCustomers.map((c) => [c.key, c])));
+if (!fresh.length) return;
+const today = new Date().toDateString();
+const stored = JSON.parse(localStorage.getItem(EMAIL_ONLY_ASSIGNED_KEY) || 'null');
+const kept = stored && new Date(stored.savedAt).toDateString() === today && Array.isArray(stored.leads) ? stored.leads : [];
+const byEmail = new Map(kept.map((e) => [e.email.toLowerCase(), e]));
+fresh.forEach((e) => byEmail.set(e.email.toLowerCase(), { ...e, assignedAt: new Date().toISOString() }));
+localStorage.setItem(EMAIL_ONLY_ASSIGNED_KEY, JSON.stringify({ savedAt: new Date().toISOString(), leads: Array.from(byEmail.values()) }));
+} catch (error) {
+console.warn('[SLA Manager] Could not save the Email Only assignments.');
+}
 }
 
 // Filters to today again in case the day rolled over mid-session.
@@ -3778,6 +3808,13 @@ LEAD_CHECKER_IMPORT_HEADER.join('\t'),
 if (!(withReason.rows[0] && withReason.rows[0].postClosureReason === 'Email only')) failures.push('Expected the PostClosureReason column to be read');
 if (!(withReason.rows[0] && withReason.rows[0].postClosureEvidence === 'Sent through: Email only lead')) failures.push('Expected the PostClosureEvidence column to be read');
 if (pickLeadCheckerBadge(withReason.rows[0]).label !== 'send back through: Email only (CAH)') failures.push('Expected the badge to show the send back reason');
+const eoAssigned = emailOnlyAssignmentsFrom([
+{ ok: true, lead: { key: 'k1', name: 'Dan Davis', campaign: 'X' }, agent: { name: 'Agent A' } },
+{ ok: true, lead: { key: 'k2', name: 'Gus Green', campaign: 'X' }, agent: { name: 'Agent A' } },
+{ ok: false, lead: { key: 'k3', name: 'Fay Fields', campaign: 'X' }, agent: { name: 'Agent A' } },
+{ ok: true, lead: { key: 'k4', name: 'Eve Evans', campaign: 'Y', email: 'eve@example.com', mobile: '' }, agent: { name: 'Agent B' } }
+], new Map([['k1', { email: 'dan@example.com', phone: '' }], ['k2', { email: 'gus@example.com', phone: '07700900001' }], ['k3', { email: 'fay@example.com', phone: '' }]]));
+if (JSON.stringify(eoAssigned.map((e) => e.email)) !== JSON.stringify(['dan@example.com', 'eve@example.com'])) failures.push(`Expected only assigned Email Only leads to be recorded, got ${JSON.stringify(eoAssigned)}`);
 const olderExport = parseLeadCheckerImportTsv(sampleTsv.split('\n').map((l) => l.split('\t').slice(0, 17).join('\t')).join('\n'));
 if (!olderExport.headerOk) failures.push('Expected an export without the reason column to still be accepted');
 

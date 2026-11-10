@@ -1,0 +1,248 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Mock agent desktop: Post Closure and Email Only</title>
+<style>.hide { display: none; } .tab-pane { display: none; } .tab-pane.active { display: block; } textarea { display: block; width: 300px; }</style>
+</head><body>
+<!-- Mock of the agent desktop for the Post Closure send back and Email Only
+     runs in Lead-Reset.js. The test calls window.mock.setup() with the
+     customers, then drives the tool and reads window.events and
+     window.snapshots (the page as it stood when Finished was pressed). -->
+<div id="top">
+ <button class="btn dropdown-toggle" data-toggle="dropdown" id="statusBtn">Shift Start</button>
+ <ul class="dropdown-menu"><li><a ng-click="setMakeBusy(mbc.Id)">Available</a></li><li><a ng-click="setMakeBusy(mbc.Id)">Shift Start</a></li><li><a ng-click="setMakeBusy(mbc.Id)">Toilet Break</a></li></ul>
+ <a ng-click="goTo('parked')" id="navParked">Parked Calls</a>
+</div>
+<div id="idle">
+ <button ng-click="navToManualOutbound()" id="newOut">New Manual Outbound Call</button>
+</div>
+<div id="parked" class="hide">
+ <table><thead><tr><th></th><th>Name</th><th>Details</th><th>Vehicles</th><th>Magic Num</th><th>Dealer</th><th>Brand</th><th>Campaign</th><th>Best Number</th><th>Email</th><th>Address</th><th>Confirm</th></tr></thead><tbody id="parkedRows"></tbody></table>
+</div>
+<div id="present" class="hide">
+ <div id="presentOuter"><h3 id="presentName"></h3>
+  <div id="presentInner"><button ng-click="rejectCall(true)" id="reject">Reject</button> <button ng-click="acceptOutboundCall()" id="accept">Accept</button></div>
+ </div>
+</div>
+<div id="call" class="hide">
+ <select ng-model="selected.CallOutcome" id="callOutcome"><option>(Select a Call Outcome)</option><option>Spoke to Customer</option><option>Update Outcomes (No Call Made)</option><option>Manual Reschedule</option><option>Reject</option></select>
+ <ul class="nav nav-tabs" id="tabs"></ul>
+ <div id="acts"></div>
+ <div class="tab-content" id="panes"></div>
+ <select ng-model="selected.NextAgentStatus" id="nextStatus"><option>Available</option><option>Shift Start</option><option>Toilet Break</option></select>
+ <button class="btn btn-success btn-md" ng-click="completeCall(false, false)" id="finished">Finished</button>
+ <button class="btn btn-warning btn-md" ng-click="completeCall(true, false)" id="park">Park It</button>
+ <div id="finishError" class="hide">Please complete the outcomes</div>
+</div>
+<script>
+window.events = [];
+window.snapshots = [];
+const $ = (id) => document.getElementById(id);
+const show = (id, on) => $(id).classList.toggle('hide', !on);
+const rootScope = { $root: {} };
+// Tiny fake of angular.element().scope(): the nearest element carrying a scope.
+window.angular = {
+ element(el) { return {
+  scope() { let n = el; while (n && !n.__scope) n = n.parentElement; return n ? n.__scope : rootScope; }
+ }; }
+};
+
+const LEVEL1 = ['', 'Sales Event', 'Customer Hub Team', 'Bot', 'Dealer'];
+const LEVEL2 = { 'Customer Hub Team': ['', 'Appointment', 'No Appointment', 'No Opportunity', 'Customer Deferred', 'Ongoing'] };
+const LEVEL3 = {
+ 'No Opportunity': ['', 'Catch All - Customer Bought Elsewhere', 'Catch All - Ongoing / Actioned by Dealer', 'Catch All - Email Only Lead', 'Catch All - In Market Would Not Commit to appoint', 'Email Only Lead - Max Attempts - Do Not go to E m'],
+ Ongoing: ['', 'In Progress with Dealer', 'Defer to Site', 'Hub Reservation', 'Email Only Lead']
+};
+const LOAD_DELAY = 400;
+
+let customers = [];
+let queue = [];
+let current = null;
+
+const fill = (select, list) => { select.innerHTML = list.map((t) => `<option>${t}</option>`).join(''); };
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+window.mock = {
+ // customers: [{ id, name, email, phone, parked, call, leads: [{ ID, CampaignName, OutcomeFullHierarchy, SourceName, notes, pcNotes }] }]
+ // queue: customer ids presented in turn while the agent is Available.
+ setup(data) {
+  customers = data.customers.map((c) => ({ ...c, leads: c.leads.map((l) => ({ ...l, activity: {
+   ID: l.ID, CampaignName: l.CampaignName, OutcomeFullHierarchy: l.OutcomeFullHierarchy || 'None',
+   SalesLead: { SourceName: l.SourceName, EmailAddress: c.email, CustomerName: c.name, LeadDetails: { Notes: l.notes || '' }, PostClosureNotes: l.pcNotes || '' }
+  } })) }));
+  queue = (data.queue || []).slice();
+  setStatus(data.status || 'Shift Start');
+ },
+ // The agent deals with whatever presented, by hand.
+ agentHandlesPresented() {
+  events.push('agent-handled:' + (current && current.id));
+  current = null;
+  location.hash = '#!/idle';
+  schedulePresent();
+ },
+ customer: (id) => customers.find((c) => c.id === id)
+};
+
+function setStatus(text) { $('statusBtn').textContent = text; }
+document.querySelectorAll('[ng-click^="setMakeBusy"]').forEach((a) => a.addEventListener('click', () => {
+ setStatus(a.textContent); events.push('status:' + a.textContent);
+ if (a.textContent === 'Available') schedulePresent();
+}));
+$('navParked').addEventListener('click', () => { location.hash = '#!/search/parked'; });
+
+function schedulePresent() {
+ setTimeout(() => {
+  if (current || $('statusBtn').textContent !== 'Available' || !queue.length) return;
+  current = mock.customer(queue.shift());
+  events.push('presented:' + current.id);
+  $('presentName').textContent = current.name;
+  $('presentOuter').__scope = { Call: current.call, $parent: rootScope };
+  $('presentInner').__scope = { $parent: $('presentOuter').__scope };
+  location.hash = '#!/present-outbound-call/1/queue/2';
+ }, 500);
+}
+
+$('reject').addEventListener('click', () => {
+ events.push('reject:' + current.id);
+ buildCall(current, 'Reject');
+ location.hash = '#!/call/outbound/customer/1/customerIntervention/2/queue/3';
+});
+$('accept').addEventListener('click', () => events.push('ACCEPT:' + current.id));
+
+function renderParked() {
+ const rows = customers.filter((c) => c.parked);
+ $('parkedRows').innerHTML = rows.map((c) => `<tr><td></td><td>${esc(c.name)}</td><td></td><td>${esc(c.vehicles || '')}</td><td>${esc(c.magic || '')}</td><td>Preston</td><td>Vauxhall</td><td>${esc(c.leads[0].CampaignName)}</td><td>${esc(c.phone || '')}</td><td>${esc(c.email || '')}</td><td>1 Example Street</td><td><button class="btn btn-success" ng-click="eventHandler({customer: customer})" data-id="${esc(c.id)}">Open</button></td></tr>`).join('');
+ $('parkedRows').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
+  current = mock.customer(b.dataset.id);
+  events.push('open:' + current.id);
+  buildCall(current, null);
+  location.hash = '#!/call/outbound/customer/1/customerIntervention/2/queue/3';
+ }));
+}
+
+function buildCall(c, outcome) {
+ const callScope = { selected: {}, $parent: rootScope, $root: {} };
+ $('callOutcome').selectedIndex = outcome ? Array.from($('callOutcome').options).findIndex((o) => o.textContent === outcome) : 0;
+ $('nextStatus').value = $('statusBtn').textContent;
+ $('finishError').classList.add('hide');
+ $('tabs').innerHTML = ''; $('acts').innerHTML = ''; $('panes').innerHTML = '';
+ c.leads.forEach((l, i) => {
+  const scope = { theActivity: l.activity, $parent: callScope };
+  const li = document.createElement('li'); li.setAttribute('ng-repeat', 'tab in tabs');
+  li.innerHTML = `<a ng-click="select()">${esc(l.CampaignName)}</a>`;
+  li.querySelector('a').addEventListener('click', () => activate(i));
+  $('tabs').appendChild(li);
+  const marker = document.createElement('div'); marker.setAttribute('ng-repeat', 'theActivity in liveActivities'); marker.__scope = scope;
+  $('acts').appendChild(marker);
+  const pane = document.createElement('div'); pane.className = 'tab-pane'; pane.__scope = scope; pane.dataset.lead = l.ID;
+  pane.innerHTML = `<div class="form-group"><label>Call Notes</label><div><textarea ng-model="theActivity.SalesLead.LeadDetails.Notes" class="callNotes"></textarea></div></div>`
+   + (l.SourceName === 'Post Closure Processing' ? `<div class="form-group"><label>Post Closure Notes</label><textarea ng-model="theActivity.SalesLead.PostClosureNotes" class="pcNotes"></textarea></div>` : '')
+   + `<div class="outcomes"><select ng-model="theActivity.SelectedOutcomeLevel1"></select><select ng-model="theActivity.SelectedOutcomeLevel2"></select><select ng-model="theActivity.SelectedOutcomeLevel3"></select></div>`;
+  pane.querySelector('.callNotes').value = l.activity.SalesLead.LeadDetails.Notes;
+  if (pane.querySelector('.pcNotes')) pane.querySelector('.pcNotes').value = l.activity.SalesLead.PostClosureNotes;
+  pane.querySelectorAll('textarea').forEach((t) => t.addEventListener('input', () => {
+   if (t.classList.contains('pcNotes')) l.activity.SalesLead.PostClosureNotes = t.value; else l.activity.SalesLead.LeadDetails.Notes = t.value;
+  }));
+  const levels = Array.from(pane.querySelectorAll('.outcomes select'));
+  fill(levels[0], LEVEL1);
+  levels.forEach((s, n) => s.addEventListener('change', () => {
+   const text = s.selectedOptions[0] ? s.selectedOptions[0].textContent : '';
+   events.push(`level${n + 1}:${l.ID}:${text}`);
+   l.activity['SelectedOutcomeLevel' + (n + 1)] = text;
+   // Lower levels empty, then load after a moment as Konnect's do.
+   levels.slice(n + 1).forEach((lower, k) => { lower.innerHTML = ''; delete l.activity['SelectedOutcomeLevel' + (n + 2 + k)]; });
+   const next = n === 0 ? LEVEL2[text] : n === 1 ? LEVEL3[text] : null;
+   if (next) setTimeout(() => fill(levels[n + 1], next), LOAD_DELAY);
+  }));
+  $('panes').appendChild(pane);
+ });
+ activate(0);
+ showOutcomes();
+}
+
+function activate(i) {
+ Array.from($('panes').children).forEach((p, k) => p.classList.toggle('active', k === i));
+ Array.from($('tabs').children).forEach((t, k) => t.classList.toggle('active', k === i));
+}
+
+// The lead outcome dropdowns appear once a call outcome is chosen.
+function showOutcomes() {
+ const none = $('callOutcome').selectedIndex <= 0;
+ document.querySelectorAll('.outcomes').forEach((o) => o.classList.toggle('hide', none));
+}
+$('callOutcome').addEventListener('change', (e) => { events.push('outcome:' + e.target.selectedOptions[0].textContent); showOutcomes(); });
+$('nextStatus').addEventListener('change', (e) => events.push('next:' + e.target.value));
+
+function snapshot() {
+ return {
+  customer: current.id,
+  callOutcome: $('callOutcome').selectedOptions[0].textContent,
+  next: $('nextStatus').value,
+  leads: current.leads.map((l) => {
+   const pane = $('panes').querySelector(`[data-lead="${l.ID}"]`);
+   return {
+    ID: l.ID,
+    callNotes: pane.querySelector('.callNotes').value,
+    pcNotes: pane.querySelector('.pcNotes') ? pane.querySelector('.pcNotes').value : null,
+    levels: [1, 2, 3].map((n) => l.activity['SelectedOutcomeLevel' + n] || '')
+   };
+  })
+ };
+}
+
+// Finished is refused without a call outcome and a full outcome on every open lead.
+$('finished').addEventListener('click', () => {
+ const openLeads = current.leads.filter((l) => l.activity.OutcomeFullHierarchy === 'None');
+ if ($('callOutcome').selectedIndex <= 0 || openLeads.some((l) => !l.activity.SelectedOutcomeLevel3)) {
+  events.push('FINISH-REFUSED:' + current.id);
+  $('finishError').classList.remove('hide');
+  return;
+ }
+ events.push('FINISHED:' + current.id);
+ snapshots.push(snapshot());
+ const next = $('nextStatus').value;
+ const done = current;
+ setTimeout(() => {
+  done.parked = false;
+  done.leads.forEach((l) => { if (l.activity.OutcomeFullHierarchy === 'None') l.activity.OutcomeFullHierarchy = 'Sales -> ' + l.activity.SelectedOutcomeLevel3; });
+  setStatus(next);
+  current = null;
+  location.hash = '#!/idle';
+  if (next === 'Available') schedulePresent();
+ }, 300);
+});
+$('park').addEventListener('click', () => { events.push('PARK:' + current.id); current = null; location.hash = '#!/idle'; });
+
+function route() {
+ const h = location.hash;
+ const onCall = /#!\/call\//.test(h);
+ show('idle', !h || /#!\/idle/.test(h));
+ show('parked', /search\/parked/.test(h));
+ show('present', /present-outbound-call/.test(h));
+ show('call', onCall);
+ if (/search\/parked/.test(h)) renderParked();
+ // Angular drops the call's leads when the route changes.
+ if (!onCall) { $('tabs').innerHTML = ''; $('acts').innerHTML = ''; $('panes').innerHTML = ''; }
+}
+window.addEventListener('hashchange', route);
+route();
+
+// Stand-in for Konnect Notes: a space after cad, cah or eo writes the
+// phrase, as Konnect-Notes-Phrases.json does.
+window.KonnectNotes = { version: 'mock' };
+document.addEventListener('keydown', (e) => {
+ const t = e.target;
+ if (e.key !== ' ' || !t || t.tagName !== 'TEXTAREA') return;
+ const m = t.value.slice(0, t.selectionStart).match(/(^|\s)(cad|cah|eo)$/);
+ if (!m) return;
+ const scope = window.angular.element(t).scope();
+ const email = scope && scope.theActivity ? scope.theActivity.SalesLead.EmailAddress : '';
+ const phrase = {
+  cad: '**** Catch All Return Lead **** Lead has been **actioned by dealer**',
+  cah: '**** Catch All Return Lead **** **Customer Hub will not contact this lead type** - please contact and update Emax',
+  eo: 'EMAIL ONLY LEAD: ' + email
+ }[m[2]];
+ const end = t.selectionStart;
+ t.value = t.value.slice(0, end - m[2].length) + phrase + t.value.slice(end);
+ t.dispatchEvent(new Event('input', { bubbles: true }));
+ events.push('konnect-notes:' + m[2]);
+ e.preventDefault();
+}, true);
+</script></body></html>

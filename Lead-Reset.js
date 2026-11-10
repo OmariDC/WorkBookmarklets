@@ -1,11 +1,14 @@
 (function() {
 'use strict';
 
-// Lead Reset runs on the Konnect agent desktop. It takes the leads the
-// National check marked Reset and, one at a time, adds a new lead with the
-// same campaign, notes and dropdowns as the closed one, then parks the call.
-// It never presses Finished. When a step cannot be done safely it stops and
-// says what to do by hand.
+// Lead Re setup runs on the Konnect agent desktop. Re setup takes the
+// leads the National check marked Re setup and, one at a time, adds a new
+// lead with the same campaign, notes and dropdowns as the closed one, then
+// parks the call; it never presses Finished. Post Closure sends the Lead
+// Checker's "send back through" leads back from Parked Calls, and Email
+// Only works the Email Only leads assigned in SLA Manager as they present;
+// both press Finished. When a step cannot be done safely it stops and says
+// what to do by hand.
 
 const PANEL_ID = '_leadResetPanel';
 const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'Reg'];
@@ -228,6 +231,84 @@ return null;
 }
 
 // ===================================================================
+// POST CLOSURE SEND BACK AND EMAIL ONLY (pure parts)
+// ===================================================================
+
+// Both runs read what SLA Manager saved on this site: the Lead Checker
+// results it imported, and the Email Only leads it assigned today.
+const LEAD_CHECKER_RESULTS_KEY = '_slaLeadCheckerImportState';
+const EMAIL_ONLY_ASSIGNED_KEY = '_workToolsEmailOnlyAssigned';
+const DESK_PROGRESS_KEY = '_leadResetDeskProgress';
+// Per send back reason: the Konnect Notes shorthand typed in Post Closure
+// Notes and the lead outcome under Customer Hub Team > No Opportunity.
+const SEND_BACK_STEPS = {
+'Actioned by dealership': { shorthand: 'cad', outcome: 'Catch All - Ongoing / Actioned by Dealer' },
+'Email only': { shorthand: 'cah', outcome: 'Catch All - Email Only Lead' },
+"In market won't commit": { shorthand: 'cah', outcome: 'Catch All - In Market Would Not Commit to appoint' }
+};
+const SEND_BACK_OUTCOME_PATH = ['Customer Hub Team', 'No Opportunity'];
+const EMAIL_ONLY_OUTCOME_PATH = ['Customer Hub Team', 'Ongoing', 'Email Only Lead'];
+// What each shorthand writes once Konnect Notes expands it.
+const SHORTHAND_MARKERS = { cad: /actioned by dealer/i, cah: /customer hub will not contact/i, eo: /email only lead:/i };
+const STATUS_AVAILABLE = 'Available';
+
+function digitsOf(value) {
+return String(value || '').replace(/\D/g, '').slice(-10);
+}
+
+function personKey(person) {
+return normalise(person.email) || digitsOf(person.phone) || normalise(stripNameTitle(person.name));
+}
+
+// Pure. The Lead Checker results that go back through, with what to do.
+function sendBackLeadsFrom(results) {
+return (results || [])
+.filter((r) => r && normalise(r.postClosureAction) === 'send back through' && SEND_BACK_STEPS[r.postClosureReason])
+.map((r) => ({ key: personKey(r), name: r.name || '', email: r.email || '', phone: r.phone || '', reason: r.postClosureReason, ...SEND_BACK_STEPS[r.postClosureReason] }));
+}
+
+// Pure. The entry for a person: by email, then phone, then a name only
+// one entry has.
+function matchPerson(list, person) {
+const email = normalise(person.email);
+if (email) {
+const byEmail = list.find((x) => normalise(x.email) === email);
+if (byEmail) return byEmail;
+}
+const phone = digitsOf(person.phone);
+if (phone.length >= 10) {
+const byPhone = list.find((x) => digitsOf(x.phone) === phone);
+if (byPhone) return byPhone;
+}
+const name = normalise(stripNameTitle(person.name));
+const named = name ? list.filter((x) => normalise(stripNameTitle(x.name)) === name) : [];
+return named.length === 1 ? named[0] : null;
+}
+
+// Pure. The assigned Email Only lead a presented lead is, or null. Any
+// email read from the lead must match; a name is only used when no email
+// could be read at all.
+function matchEmailOnly(list, presented) {
+const emails = (presented.emails || []).map(normalise).filter(Boolean);
+if (emails.length) return list.find((x) => emails.includes(normalise(x.email))) || null;
+const name = normalise(stripNameTitle(presented.name));
+const named = name ? list.filter((x) => normalise(stripNameTitle(x.name)) === name) : [];
+return named.length === 1 ? named[0] : null;
+}
+
+// Pure. Text to add after a box's contents so a shorthand starts its own
+// word (Konnect Notes only expands a word after a space or line break).
+function shorthandInsertion(value, word) {
+return (String(value || '') && !/\s$/.test(String(value)) ? '\n' : '') + word;
+}
+
+// Pure. Stay Available while more assigned Email Only leads are to come;
+// Shift Start after the last, so nothing else presents.
+function statusAfterEmailOnly(leftAfterThis) {
+return leftAfterThis > 0 ? STATUS_AVAILABLE : STATUS_WHILE_RESETTING;
+}
+
+// ===================================================================
 // SELF-TESTS
 // ===================================================================
 
@@ -295,6 +376,23 @@ check('no notes anywhere is reported', adoptClosedLead({ campaign: 'X', notes: '
 const resetDone = { ID: 77000009, CampaignName: 'Peugeot - PX Valuation - New', ManuallyCreated: true, CreatedDate: '2026-11-09T16:00:00+00:00' };
 check('a hand-made lead on the campaign after the closed one is', findEarlierReset(history.concat(resetDone), pxLead), resetDone);
 check('a hand-made lead from before the closed one is not', findEarlierReset(history.concat({ ...resetDone, CreatedDate: '2026-09-01T09:00:00+01:00' }), pxLead), null);
+const results = [
+{ name: 'Jo Example', email: 'jo@example.com', phone: '', postClosureAction: 'send back through', postClosureReason: 'Actioned by dealership' },
+{ name: 'Sam Buyer', email: '', phone: '07700 900123', postClosureAction: 'send back through', postClosureReason: 'Email only' },
+{ name: 'Alex Sample', email: 'alex@example.com', phone: '', postClosureAction: 'check: needs contact?', postClosureReason: '' }
+];
+const sendBack = sendBackLeadsFrom(results);
+check('send back leads and their shorthand', sendBack.map((l) => [l.name, l.shorthand, l.outcome]), [['Jo Example', 'cad', 'Catch All - Ongoing / Actioned by Dealer'], ['Sam Buyer', 'cah', 'Catch All - Email Only Lead']]);
+check('in market is CAH too', SEND_BACK_STEPS["In market won't commit"].shorthand, 'cah');
+check('parked row found by email', matchPerson([{ name: 'J Example', email: 'JO@example.com' }, { name: 'Jo Example', email: 'other@example.com' }], sendBack[0]).name, 'J Example');
+check('parked row found by phone', matchPerson([{ name: 'S B', phone: '07700900123' }], sendBack[1]).name, 'S B');
+check('two rows with the name and nothing else is no match', matchPerson([{ name: 'Sam Buyer' }, { name: 'Sam Buyer' }], { name: 'Sam Buyer' }), null);
+const assigned = [{ name: 'Dan Davis', email: 'dan@example.com' }, { name: 'Eve Evans', email: 'eve@example.com' }];
+check('presented lead matched by email', matchEmailOnly(assigned, { name: 'Someone', emails: ['EVE@example.com'] }), assigned[1]);
+check('a lead whose email is not assigned is not worked', matchEmailOnly(assigned, { name: 'Dan Davis', emails: ['dan.other@example.com'] }), null);
+check('name only when no email was read', matchEmailOnly(assigned, { name: 'Mr Dan Davis', emails: [] }), assigned[0]);
+check('shorthand starts a new line after text', [shorthandInsertion('', 'cad'), shorthandInsertion('Notes', 'cad'), shorthandInsertion('Notes\n', 'eo')], ['cad', '\ncad', 'eo']);
+check('Available until the last Email Only lead', [statusAfterEmailOnly(2), statusAfterEmailOnly(0)], ['Available', 'Shift Start']);
 } catch (error) {
 failures.push('threw: ' + (error && error.message));
 }
@@ -337,7 +435,7 @@ writeJson(PROGRESS_KEY, progress);
 
 function loadSettings() {
 const s = readJson(SETTINGS_KEY) || {};
-return { reviewBeforePark: s.reviewBeforePark !== false };
+return { reviewBeforePark: s.reviewBeforePark !== false, reviewBeforeFinish: s.reviewBeforeFinish !== false, emailOnlyAgent: s.emailOnlyAgent || '' };
 }
 
 // ===================================================================
@@ -521,6 +619,8 @@ name: text(col('name')),
 vehicles: text(col('vehicles')),
 magic: text(col('magic num')),
 campaign: text(col('campaign')),
+email: text(col('email')),
+phone: text(col('best number')),
 confirm: select || (confirmCell ? confirmCell.querySelector('button, a, input[type="button"], [ng-click]') : null)
 };
 });
@@ -904,6 +1004,286 @@ const HERE_STEPS = [
 ];
 
 // ===================================================================
+// POST CLOSURE SEND BACK AND EMAIL ONLY (page steps)
+// ===================================================================
+
+// The text a node holds itself, not its children's.
+function ownText(el) {
+return normalise(Array.from(el.childNodes).filter((n) => n.nodeType === 3).map((n) => n.textContent).join(' '));
+}
+
+// The visible box nearest below a visible label, as Konnect Notes finds
+// Call Notes and Post Closure Notes.
+function findLabelledBox(labelText) {
+const want = normalise(labelText);
+const labels = Array.from(document.querySelectorAll('label,legend,dt,th,span,strong,b,p,div')).filter((el) => isVisible(el) && ownText(el) === want);
+for (const label of labels) {
+const top = label.getBoundingClientRect().top;
+let container = label.parentElement;
+for (let depth = 0; container && depth < 7; depth++, container = container.parentElement) {
+const below = Array.from(container.querySelectorAll('textarea')).filter((t) => isVisible(t) && t.getBoundingClientRect().top >= top - 4);
+if (below.length) return below.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
+}
+}
+return null;
+}
+
+function needKonnectNotes() {
+if (!(window.KonnectNotes && window.KonnectNotes.version)) {
+throw new NeedsYou('Konnect Notes is not on this page, and it writes the notes. Click Work Tools once to load it, then press Try again.');
+}
+}
+
+// Types a Konnect Notes shorthand at the end of a box and presses space,
+// so Konnect Notes writes the full note exactly as when typed by hand.
+// Puts the box back and returns false when Konnect Notes did not write
+// the note (it takes the word but writes nothing when it cannot read the
+// Initial Notes).
+async function typeShorthand(box, word) {
+const before = box.value;
+const text = shorthandInsertion(before, word);
+box.focus({ preventScroll: true });
+box.setSelectionRange(before.length, before.length);
+try { document.execCommand('insertText', false, text); } catch (error) { /* set below */ }
+if (box.value !== before + text) setFieldValue(box, before + text);
+box.setSelectionRange(box.value.length, box.value.length);
+await sleep(200);
+const space = new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true });
+box.dispatchEvent(space);
+await sleep(500);
+if (!space.defaultPrevented || !SHORTHAND_MARKERS[word].test(box.value)) {
+if (box.value !== before) setFieldValue(box, before);
+return false;
+}
+return true;
+}
+
+async function chooseCallOutcome(text) {
+const select = visibleFirst(document.querySelectorAll('select[ng-model="selected.CallOutcome"]'));
+if (!select || !chooseByText(select, text)) throw new NeedsYou(`Set the call outcome to "${text}" yourself.`);
+await sleep(600);
+return `Call outcome: ${text}`;
+}
+
+function outcomeLevelSelects(activity) {
+const level = (el) => Number((el.getAttribute('ng-model').match(/(\d+)$/) || [])[1]) || 0;
+return controlsOf(activity, 'select[ng-model^="theActivity.SelectedOutcomeLevel"]').filter(isVisible).sort((a, b) => level(a) - level(b));
+}
+
+// Chooses the lead outcome one level at a time; each level's options load
+// after the one above is chosen.
+async function setLeadOutcome(activity, path) {
+const first = controlsOf(activity, 'select[ng-model^="theActivity.SelectedOutcomeLevel"]')[0];
+if (first) revealSection(first);
+for (let level = 0; level < path.length; level++) {
+const select = await waitFor(() => {
+const s = outcomeLevelSelects(activity)[level];
+return s && chooseOptionIndex(optionTexts(s), path[level]) >= 0 ? s : null;
+}, 8000);
+if (!select) throw new NeedsYou(`Could not choose "${path[level]}". Set the lead outcome to ${path.join(' > ')} yourself.`);
+if (normalise(selectedText(select)) !== normalise(path[level])) {
+if (!chooseByText(select, path[level])) throw new NeedsYou(`Could not choose "${path[level]}". Set the lead outcome to ${path.join(' > ')} yourself.`);
+await sleep(600);
+}
+}
+const chosen = outcomeLevelSelects(activity).slice(0, path.length).map(selectedText);
+if (chosen.map(normalise).join('|') !== path.map(normalise).join('|')) throw new NeedsYou(`The lead outcome did not stay as ${path.join(' > ')}. Set it yourself.`);
+return `Lead outcome: ${path.join(' > ')}`;
+}
+
+function setNextStatus(status) {
+const next = visibleFirst(document.querySelectorAll('select[ng-model="selected.NextAgentStatus"]'));
+if (!next || !chooseByText(next, status)) throw new NeedsYou(`Set the next status (by Finished) to ${status} yourself.`);
+return `Next status: ${status}`;
+}
+
+async function reviewBeforeFinish(ctx) {
+if (!ctx.settings.reviewBeforeFinish) return 'Check skipped (setting off)';
+if (ctx.reviewed) return 'Checked';
+ctx.reviewed = true;
+throw new NeedsYou(`Check the notes and the lead outcome. Carry on to press Finished.`, { carryOnLabel: 'Looks right, press Finished' });
+}
+
+async function pressFinished() {
+if (!onCallPage()) return 'Already finished';
+const button = byText(document, 'button[ng-click^="completeCall(false"]', /^finished$/i)[0];
+if (!button) throw new NeedsYou('Press Finished yourself.');
+button.click();
+if (!await waitFor(() => !onCallPage(), 30000)) throw new NeedsYou('The call did not finish. Check the page for a message, then press Finished yourself.');
+return 'Finished';
+}
+
+// The lead's tab to the front, so its notes boxes are the visible ones.
+async function bringLeadIntoView(activity) {
+if (leadInView() === activity) return true;
+const links = Array.from(document.querySelectorAll('[ng-repeat^="tab in tabs"] a'));
+for (const link of links) {
+link.click();
+await sleep(600);
+if (leadInView() === activity) return true;
+}
+return false;
+}
+
+function onParkedPage() {
+return /\/search\/parked/i.test(location.hash) && readSearchRows().headers.includes('best number');
+}
+
+async function goToParked() {
+if (onParkedPage()) return 'On Parked Calls';
+if (onCallPage()) throw new NeedsYou('A call is open. Finish or park it yourself, then carry on.', { carryOnLabel: 'Done, carry on' });
+const nav = byText(document, '[ng-click]', /^parked( calls)?$/i).find(isVisible);
+if (nav) nav.click(); else location.hash = '#!/search/parked';
+if (!await waitFor(onParkedPage, 15000)) throw new NeedsYou('Parked Calls did not open. Open it yourself.', { carryOnLabel: 'Done, carry on' });
+await sleep(800);
+return 'Opened Parked Calls';
+}
+
+async function openParkedCustomer(ctx, lead) {
+const rows = readSearchRows().rows;
+const row = matchPerson(rows, lead);
+if (!row) throw new NeedsYou(`${lead.name} is not in your Parked Calls. Skip them, or open them yourself and carry on.`, { carryOnLabel: 'Opened, carry on' });
+(row.confirm || row.tr).click();
+if (!await waitFor(onCallPage, 20000)) throw new NeedsYou(`${lead.name} did not open. Press Open on them yourself.`, { carryOnLabel: 'Opened, carry on' });
+await sleep(1000);
+return `Opened ${lead.name}`;
+}
+
+function isOpenLead(activity) {
+return outcomeLabel(activity) === 'Open';
+}
+
+async function findPostClosureLead(ctx, lead) {
+const found = await waitFor(() => {
+const list = liveActivities().map(({ activity }) => activity)
+.filter((a) => /post closure processing/i.test(String((a.SalesLead && a.SalesLead.SourceName) || '')) && isOpenLead(a));
+return list.length ? list : null;
+}, 8000);
+if (!found) throw new NeedsYou('No open Post Closure lead on this customer. Skip them, or do this one yourself.');
+if (found.length > 1) throw new NeedsYou('This customer has more than one open Post Closure lead. Do this one yourself, or skip them.');
+const activity = found[0];
+const email = normalise(activity.SalesLead && activity.SalesLead.EmailAddress);
+if (lead.email && email && email !== normalise(lead.email) && !ctx.allowOtherEmail) {
+ctx.allowOtherEmail = true;
+throw new NeedsYou(`This customer's email is not the one the Lead Checker checked, so this may be the wrong ${lead.name}. Skip them, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on' });
+}
+ctx.activity = activity;
+if (!await bringLeadIntoView(activity)) throw new NeedsYou('Open the Post Closure lead\'s tab yourself, then carry on.', { carryOnLabel: 'Done, carry on' });
+return 'Post Closure lead found';
+}
+
+async function writePostClosureNote(ctx, lead) {
+needKonnectNotes();
+const box = findLabelledBox('post closure notes');
+if (!box) throw new NeedsYou(`Could not find Post Closure Notes. Type ${lead.shorthand} there and press space yourself.`);
+if (SHORTHAND_MARKERS[lead.shorthand].test(box.value)) return `${lead.shorthand.toUpperCase()} note already in Post Closure Notes`;
+if (!await typeShorthand(box, lead.shorthand) || !SHORTHAND_MARKERS[lead.shorthand].test(box.value)) {
+throw new NeedsYou(`Konnect Notes did not write the note. Type ${lead.shorthand} in Post Closure Notes and press space yourself.`);
+}
+return `${lead.shorthand.toUpperCase()} written in Post Closure Notes`;
+}
+
+const SEND_BACK_RUN = [
+{ label: 'Go to Parked Calls', run: goToParked },
+{ label: 'Open the customer', run: openParkedCustomer },
+{ label: 'Find the Post Closure lead', run: findPostClosureLead },
+{ label: 'Write CAD or CAH in Post Closure Notes', run: writePostClosureNote },
+{ label: 'Call outcome: Update Outcomes', run: () => chooseCallOutcome(OUTCOME_UPDATE_ONLY) },
+{ label: 'Lead outcome: Customer Hub Team > No Opportunity > Catch All', run: (ctx, lead) => setLeadOutcome(ctx.activity, SEND_BACK_OUTCOME_PATH.concat(lead.outcome)) },
+{ label: 'Next status: Shift Start', run: () => setNextStatus(STATUS_WHILE_RESETTING) },
+{ label: 'Check before Finished', run: reviewBeforeFinish },
+{ label: 'Press Finished', run: pressFinished }
+];
+
+function onPresentPage() {
+return /present-outbound-call/i.test(location.hash) && !!byClick(document, 'rejectCall');
+}
+
+// Who the presented lead is, from the page's own data: every email on the
+// call and the customer's name.
+function presentedPerson() {
+let scope = scopeOf(byClick(document, 'rejectCall'));
+let call = null;
+for (let depth = 0; scope && depth < 12; depth++, scope = scope.$parent) {
+if (scope.Call) { call = scope.Call; break; }
+}
+const emails = new Set();
+let name = '';
+const walk = (value, depth) => {
+if (!value || depth > 5) return;
+if (typeof value === 'string') { if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())) emails.add(value.trim()); return; }
+if (typeof value !== 'object') return;
+if (Array.isArray(value)) { value.slice(0, 20).forEach((v) => walk(v, depth + 1)); return; }
+if (!name && typeof value.CustomerName === 'string') name = value.CustomerName;
+if (!name && typeof value.Forename === 'string') name = `${value.Forename} ${value.Surname || ''}`;
+Object.keys(value).filter((k) => !/^\$/.test(k)).slice(0, 80).forEach((k) => walk(value[k], depth + 1));
+};
+walk(call, 0);
+// The page's own text as well, in case the data sits elsewhere. Only an
+// assigned lead's email can match, so other emails on the page do no harm.
+const main = document.querySelector('[ng-view], .main-content, main') || document.body;
+(String(main.innerText || '').match(/[^\s@<>"'(),;:]+@[^\s@<>"'(),;:]+\.[a-z]{2,}/gi) || []).forEach((e) => emails.add(e));
+return { name: name.trim(), emails: Array.from(emails) };
+}
+
+async function ensureAvailable() {
+if (onPresentPage() || onCallPage()) return 'A lead is already open';
+const statusButton = Array.from(document.querySelectorAll('button.dropdown-toggle')).find((b) => /\S/.test(b.textContent) && !/toggle dropdown/i.test(b.textContent));
+if (statusButton && normalise(statusButton.textContent) === normalise(STATUS_AVAILABLE)) return 'Status already Available';
+const item = byText(document, '[ng-click^="setMakeBusy"], [ng-click^="setAvailable"], .dropdown-menu [ng-click]', /^available$/i)[0];
+if (!item) throw new NeedsYou('Set your status to Available yourself so your Email Only leads present.', { carryOnLabel: 'Done, wait for leads' });
+item.click();
+await sleep(1000);
+return 'Status set to Available';
+}
+
+async function rejectPresented() {
+if (onCallPage()) return 'Lead already open';
+const button = byClick(document, 'rejectCall');
+if (!button) throw new NeedsYou('Press Reject yourself so the lead opens without dialling.', { carryOnLabel: 'Done, carry on' });
+button.click();
+if (!await waitFor(onCallPage, 20000)) throw new NeedsYou('The lead did not open after Reject. Open it yourself.', { carryOnLabel: 'Done, carry on' });
+await sleep(1000);
+return 'Rejected, so the lead opened without dialling';
+}
+
+async function findEmailOnlyLead(ctx, lead) {
+const open = liveActivities().map(({ activity }) => activity).filter(isOpenLead);
+const byEmail = open.filter((a) => normalise(a.SalesLead && a.SalesLead.EmailAddress) === normalise(lead.email));
+const activity = byEmail.length === 1 ? byEmail[0] : open.length === 1 ? open[0] : null;
+if (!activity) throw new NeedsYou('Could not tell which lead is the Email Only one. Do this one yourself, or skip it.');
+ctx.activity = activity;
+if (!await bringLeadIntoView(activity)) throw new NeedsYou('Open the Email Only lead\'s tab yourself, then carry on.', { carryOnLabel: 'Done, carry on' });
+return 'Email Only lead found';
+}
+
+async function writeEmailOnlyNote(ctx) {
+needKonnectNotes();
+const box = visibleFirst(controlsOf(ctx.activity, CALL_NOTES_SELECTOR).filter(isVisible)) || findLabelledBox('call notes');
+if (!box) throw new NeedsYou('Could not find Call Notes. Type eo there and press space yourself.');
+if (SHORTHAND_MARKERS.eo.test(box.value)) return 'EO note already in Call Notes';
+if (!await typeShorthand(box, 'eo') || !SHORTHAND_MARKERS.eo.test(box.value)) {
+throw new NeedsYou('Konnect Notes did not write the note. Type eo in Call Notes and press space yourself.');
+}
+if (!/@/.test(box.value.split(/\n/).filter((l) => SHORTHAND_MARKERS.eo.test(l)).pop() || '')) {
+throw new NeedsYou('The EO note has no email address in it. Add the email after "EMAIL ONLY LEAD:" yourself.');
+}
+return 'EO written in Call Notes';
+}
+
+const EMAIL_ONLY_RUN = [
+{ label: 'Press Reject (opens it without dialling)', run: rejectPresented },
+{ label: 'Call outcome back to (Select a Call Outcome)', run: () => chooseCallOutcome(OUTCOME_NONE) },
+{ label: 'Find the Email Only lead', run: findEmailOnlyLead },
+{ label: 'Call outcome: Update Outcomes', run: () => chooseCallOutcome(OUTCOME_UPDATE_ONLY) },
+{ label: 'Write EO in Call Notes', run: writeEmailOnlyNote },
+{ label: 'Lead outcome: Customer Hub Team > Ongoing > Email Only Lead', run: (ctx) => setLeadOutcome(ctx.activity, EMAIL_ONLY_OUTCOME_PATH) },
+{ label: 'Next status', run: (ctx) => setNextStatus(statusAfterEmailOnly(ctx.leftAfterThis)) },
+{ label: 'Check before Finished', run: reviewBeforeFinish },
+{ label: 'Press Finished', run: pressFinished }
+];
+
+// ===================================================================
 // RUNNER AND PANEL
 // ===================================================================
 
@@ -1042,6 +1422,162 @@ render();
 }
 }
 
+// ===================================================================
+// POST CLOSURE SEND BACK AND EMAIL ONLY (runs)
+// ===================================================================
+
+function sendBackLeads() {
+const saved = readJson(LEAD_CHECKER_RESULTS_KEY);
+return saved && isFresh(saved.savedAt) ? sendBackLeadsFrom(saved.results) : [];
+}
+
+function emailOnlyAgents() {
+const saved = readJson(EMAIL_ONLY_ASSIGNED_KEY);
+const leads = saved && isFresh(saved.savedAt) && Array.isArray(saved.leads) ? saved.leads : [];
+return Array.from(new Set(leads.map((l) => l.agent).filter(Boolean)));
+}
+
+// Only the chosen agent's leads, as those are the ones that present here.
+function emailOnlyLeads() {
+const saved = readJson(EMAIL_ONLY_ASSIGNED_KEY);
+const leads = saved && isFresh(saved.savedAt) && Array.isArray(saved.leads) ? saved.leads : [];
+const agents = emailOnlyAgents();
+const agent = agents.includes(loadSettings().emailOnlyAgent) ? loadSettings().emailOnlyAgent : agents[0];
+return leads.filter((l) => !agent || l.agent === agent).map((l) => ({ ...l, key: normalise(l.email) }));
+}
+
+function loadDeskProgress() {
+const p = readJson(DESK_PROGRESS_KEY);
+return p && isFresh(p.savedAt) ? { savedAt: p.savedAt, pc: p.pc || {}, eo: p.eo || {} } : { savedAt: new Date().toISOString(), pc: {}, eo: {} };
+}
+function saveDeskProgress(progress) {
+progress.savedAt = new Date().toISOString();
+writeJson(DESK_PROGRESS_KEY, progress);
+}
+
+function startDeskRun(mode) {
+state.running = true;
+state.mode = mode;
+state.stopRequested = false;
+state.deskLead = null;
+state.deskCount = { done: 0, total: 0 };
+render();
+}
+
+function endDeskRun() {
+state.running = false;
+state.mode = null;
+state.deskLead = null;
+state.paused = null;
+resolvePause = null;
+render();
+}
+
+// Asks the agent and returns true to carry on, false to stop.
+async function askToCarryOn(message, carryOnLabel) {
+const answer = await waitForUser(new NeedsYou(message, { carryOnLabel }));
+if (answer === 'stop') { state.stopRequested = true; return false; }
+return true;
+}
+
+async function runSendBack() {
+if (state.running) return;
+startDeskRun('pc');
+try {
+const settings = loadSettings();
+const progress = loadDeskProgress();
+for (;;) {
+try { addLog(await goToParked()); break; } catch (error) {
+if (!(error instanceof NeedsYou) || !await askToCarryOn(error.message, error.carryOnLabel)) return;
+}
+}
+const parked = readSearchRows().rows;
+const all = sendBackLeads().filter((l) => !progress.pc[l.key]);
+const todo = all.filter((l) => matchPerson(parked, l));
+if (all.length > todo.length) addLog(`${all.length - todo.length} not in your Parked Calls, left alone`);
+state.deskCount = { done: 0, total: todo.length };
+for (const lead of todo) {
+if (state.stopRequested) break;
+state.deskLead = lead;
+state.ctx = { log: addLog, settings };
+addLog(`Started ${lead.name} (${lead.shorthand.toUpperCase()})`);
+const outcome = await runLeadSteps(lead, SEND_BACK_RUN);
+if (!outcome) break;
+progress.pc[lead.key] = outcome;
+saveDeskProgress(progress);
+state.deskCount.done++;
+addLog(`${outcome}: ${lead.name}`);
+if (outcome === 'Skipped' && onCallPage() && !await askToCarryOn('Skipped. Park or finish the open call yourself so the next one can start.', 'Done, next one')) break;
+}
+if (!state.stopRequested) addLog('All Post Closure send backs are done');
+} catch (error) {
+addLog(`Stopped: ${error && error.message}`);
+} finally {
+endDeskRun();
+}
+}
+
+// Waits for the next lead to present, as long as the agent likes.
+async function waitForPresentedLead() {
+for (;;) {
+const presented = await waitFor(() => state.stopRequested || onPresentPage() || onCallPage(), 180000, 500);
+if (state.stopRequested) return false;
+if (presented) return true;
+if (!await askToCarryOn('No lead has presented for 3 minutes. Check your status is Available.', 'Keep waiting')) return false;
+}
+}
+
+async function runEmailOnly() {
+if (state.running) return;
+startDeskRun('eo');
+try {
+const settings = loadSettings();
+const progress = loadDeskProgress();
+const left = () => emailOnlyLeads().filter((l) => !progress.eo[l.key]);
+state.deskCount = { done: 0, total: left().length };
+if (!left().length) { addLog('No Email Only leads left to do'); return; }
+if (!onPresentPage() && !onCallPage()) {
+for (;;) {
+try { addLog(await ensureAvailable()); break; } catch (error) {
+if (!(error instanceof NeedsYou) || !await askToCarryOn(error.message, error.carryOnLabel)) return;
+break;
+}
+}
+}
+while (left().length && !state.stopRequested) {
+state.deskLead = null;
+render();
+if (!onPresentPage() && !onCallPage() && !await waitForPresentedLead()) break;
+if (onCallPage() && !onPresentPage()) {
+if (!await askToCarryOn('A call is already open. Finish it yourself; your next Email Only lead will be picked up after.', 'Done, wait for the next')) break;
+continue;
+}
+const presented = presentedPerson();
+const lead = matchEmailOnly(left(), presented);
+if (!lead) {
+addLog('A lead that is not one of your Email Only leads presented; left alone');
+if (!await askToCarryOn('This lead is not one of the Email Only leads you assigned, so it is left alone (Accept or Reject it yourself before it dials). Deal with it, then carry on to wait for the next.', 'Done, wait for the next')) break;
+continue;
+}
+state.deskLead = lead;
+state.ctx = { log: addLog, settings, leftAfterThis: left().length - 1 };
+addLog(`Started ${lead.name}`);
+const outcome = await runLeadSteps(lead, EMAIL_ONLY_RUN);
+if (!outcome) break;
+progress.eo[lead.key] = outcome;
+saveDeskProgress(progress);
+state.deskCount.done++;
+addLog(`${outcome}: ${lead.name}`);
+if (outcome === 'Skipped' && onCallPage() && !await askToCarryOn('Skipped. Finish the open lead yourself so the next one can present.', 'Done, wait for the next')) break;
+}
+if (!state.stopRequested && !left().length) addLog('All your Email Only leads are done; status is Shift Start');
+} catch (error) {
+addLog(`Stopped: ${error && error.message}`);
+} finally {
+endDeskRun();
+}
+}
+
 const STYLE = `
 :host { all: initial; }
 * { box-sizing: border-box; }
@@ -1085,6 +1621,10 @@ const STYLE = `
 .btn.wide { width: 100%; padding: 10px 14px; font-size: 13.5px; }
 .btn:focus-visible, .icon-btn:focus-visible, summary:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .row { display: flex; gap: 6px; flex-wrap: wrap; }
+.tabs { display: flex; gap: 4px; background: #e5e5ea; border-radius: 10px; padding: 3px; }
+.tab { flex: 1; font: inherit; font-size: 12px; font-weight: 600; color: var(--text-2); background: transparent; border: 0; border-radius: 8px; padding: 6px 4px; cursor: pointer; }
+.tab.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
 .toggle input { width: 16px; height: 16px; accent-color: #1c1c1e; margin: 0; }
 .progress-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--muted); }
@@ -1238,6 +1778,81 @@ ${rows}
 </div>`;
 }
 
+function renderTabs() {
+const view = ui.view || 're';
+const tab = (key, label) => `<button type="button" class="tab${view === key ? ' on' : ''}" data-action="view" data-view="${key}" aria-pressed="${view === key}">${label}</button>`;
+return `<div class="tabs" role="group" aria-label="Choose a run">${tab('re', 'Re setup')}${tab('pc', 'Post Closure')}${tab('eo', 'Email Only')}</div>`;
+}
+
+function deskList(leads, done, describe) {
+return `<div class="list">${leads.map((l) => {
+const status = done[l.key] || 'Waiting';
+const color = CHIP_COLORS[status] || '#64748b';
+return `<div class="list-row"><span class="avatar" style="background:${color}1a;color:${color};">${escapeHtml(initials(l.name))}</span><div class="who"><div><strong>${escapeHtml(l.name)}</strong></div><div class="muted small">${escapeHtml(describe(l))}</div></div>${chip(status)}</div>`;
+}).join('')}</div>`;
+}
+
+function finishToggle(settings) {
+return `<label class="toggle"><input type="checkbox" data-action="reviewFinish" ${settings.reviewBeforeFinish ? 'checked' : ''}> Stop before Finished so I can check each one</label>`;
+}
+
+function renderSendBackView(settings) {
+const leads = sendBackLeads();
+const done = loadDeskProgress().pc;
+const left = leads.filter((l) => !done[l.key]).length;
+if (!leads.length) {
+return [`<div class="card empty"><strong>No send backs yet</strong><div class="muted small">Run the Lead Checker on your Post Closure leads and send the results to SLA Manager. The ones marked "send back through" show here.</div></div>`];
+}
+return [`<div class="card">
+<div class="big-count"><strong>${left}</strong><span>to send back through</span></div>
+<div class="muted small" style="margin:4px 0 12px;">Each one is opened from your Parked Calls: CAD or CAH in Post Closure Notes, call outcome Update Outcomes, lead outcome Customer Hub Team &gt; No Opportunity &gt; the Catch All reason, next status Shift Start, then Finished. Ones not in your Parked Calls are left alone.</div>
+${left ? btn('startPc', `Start (${left})`, 'primary', 'wide') : '<div class="muted small">All done.</div>'}
+<div class="row" style="margin-top:8px;">${Object.keys(done).length ? btn('clearDesk', 'Clear progress') : ''}</div>
+</div>`, finishToggle(settings),
+`<details data-section="list"${ui.listOpen ? ' open' : ''}><summary>Send backs <span class="count">${leads.length - left}/${leads.length}</span></summary>${deskList(leads, done, (l) => `${l.shorthand.toUpperCase()} · ${l.reason}`)}</details>`];
+}
+
+function renderEmailOnlyView(settings) {
+const agents = emailOnlyAgents();
+const leads = emailOnlyLeads();
+const done = loadDeskProgress().eo;
+const left = leads.filter((l) => !done[l.key]).length;
+if (!leads.length) {
+return [`<div class="card empty"><strong>No Email Only leads assigned today</strong><div class="muted small">Assign your Email Only leads in SLA Manager first; they show here. Only those leads are worked, so anything else that presents is left to you.</div></div>`];
+}
+const chosen = agents.includes(settings.emailOnlyAgent) ? settings.emailOnlyAgent : agents[0];
+const picker = agents.length > 1 ? `<label class="small muted" style="display:block;margin-bottom:8px;">Assigned to <select data-action="eoAgent">${agents.map((a) => `<option${a === chosen ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('')}</select></label>` : '';
+return [`<div class="card">
+${picker}
+<div class="big-count"><strong>${left}</strong><span>Email Only lead${left === 1 ? '' : 's'} to do</span></div>
+<div class="muted small" style="margin:4px 0 12px;">Sets you Available. Each of these that presents is rejected (so it does not dial), set to Update Outcomes, given EO in Call Notes and Customer Hub Team &gt; Ongoing &gt; Email Only Lead, then Finished. You stay Available until the last one, then Shift Start. Any other lead that presents is left to you.</div>
+${left ? btn('startEo', `Start (${left})`, 'primary', 'wide') : '<div class="muted small">All done.</div>'}
+<div class="row" style="margin-top:8px;">${Object.keys(done).length ? btn('clearDesk', 'Clear progress') : ''}</div>
+</div>`, finishToggle(settings),
+`<details data-section="list"${ui.listOpen ? ' open' : ''}><summary>Email Only leads <span class="count">${leads.length - left}/${leads.length}</span></summary>${deskList(leads, done, (l) => l.campaign || 'Email Only')}</details>`];
+}
+
+function renderDeskRun() {
+const lead = state.deskLead;
+const count = state.deskCount || { done: 0, total: 0 };
+const percent = count.total ? Math.round((100 * count.done) / count.total) : 0;
+const title = state.mode === 'pc' ? 'Post Closure send back' : 'Email Only';
+const parts = [`<div class="card">
+<div class="progress-top"><span>${title}</span><span>${count.done} of ${count.total} done</span></div>
+<div class="track"><div class="fill" style="width:${percent}%"></div></div>
+${lead ? `<div class="lead-name">${escapeHtml(lead.name)}</div><div class="lead-meta">${escapeHtml(state.mode === 'pc' ? `${lead.shorthand.toUpperCase()} · ${lead.reason}` : (lead.email || ''))}</div>${renderSteps()}` : `<div class="lead-name">${state.mode === 'eo' ? 'Waiting for your next Email Only lead' : 'Getting ready'}</div>`}
+</div>`];
+if (state.paused) {
+parts.push(`<div class="card needs-card" role="alert">
+<h3>Needs you</h3><p>${escapeHtml(state.paused.message)}</p>
+<div class="row">${btn('carry', state.paused.carryOnLabel, 'primary')}${lead ? btn('retry', 'Try again') + btn('skip', 'Skip') : ''}${btn('stop', 'Stop', 'danger')}</div>
+</div>`);
+} else {
+parts.push(`<div class="row">${btn('stop', 'Stop after this step', 'ghost')}</div>`);
+}
+return parts;
+}
+
 function render() {
 if (!ui) return;
 const source = loadResults();
@@ -1256,6 +1871,12 @@ if (versionText) parts.push(`<div class="version${versionState.newer ? ' newer' 
 if (selfTestFailures.length) parts.push(`<div class="alert red" role="alert"><strong>Self-test failed.</strong> Please send this on: ${escapeHtml(selfTestFailures[0])}</div>`);
 if (!onDesktop) parts.push(`<div class="alert amber">Open this on the agent desktop to set leads up again.</div>`);
 
+const deskRun = state.running && (state.mode === 'pc' || state.mode === 'eo');
+if (!state.running) parts.push(renderTabs());
+if (deskRun) parts.push(...renderDeskRun());
+else if (!state.running && ui.view === 'pc') parts.push(...renderSendBackView(settings));
+else if (!state.running && ui.view === 'eo') parts.push(...renderEmailOnlyView(settings));
+else {
 if (state.running && state.mode === 'here') {
 const lead = state.hereLead;
 parts.push(`<div class="card">
@@ -1333,6 +1954,7 @@ const color = CHIP_COLORS[status] || '#64748b';
 return `<div class="list-row"><span class="avatar" style="background:${color}1a;color:${color};">${escapeHtml(initials(l.name))}</span><div class="who"><div><strong>${escapeHtml(l.name)}</strong></div><div class="muted small">${escapeHtml(l.campaign || 'Campaign read from the closed lead')}</div></div>${chip(status)}</div>`;
 }).join('')}</div></details>`);
 }
+}
 if (state.log.length) {
 const open = ui.logOpen ? ' open' : '';
 parts.push(`<details data-section="log"${open}><summary>Activity <span class="count">${state.log.length}</span></summary><div class="log">${state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div></details>`);
@@ -1340,7 +1962,7 @@ parts.push(`<details data-section="log"${open}><summary>Activity <span class="co
 
 ui.root.querySelector('.body').innerHTML = parts.join('');
 const status = state.running
-? (state.paused ? 'Needs you' : state.mode === 'here' ? 'This customer' : `${doneCount}/${leads.length} done`)
+? (state.paused ? 'Needs you' : state.mode === 'here' ? 'This customer' : state.deskCount && (state.mode === 'pc' || state.mode === 'eo') ? `${state.deskCount.done}/${state.deskCount.total} done` : `${doneCount}/${leads.length} done`)
 : (leads.length ? `${remaining} to do` : '');
 ui.root.querySelector('.mini-status').textContent = ui.minimised && status ? status : '';
 }
@@ -1363,7 +1985,7 @@ addLog(`Pasted ${resetLeadsFrom(parsed.results).length} Re setup leads`);
 function clearAndStop() {
 state.stopRequested = true;
 if (resolvePause) answerPause('stop');
-try { localStorage.removeItem(PROGRESS_KEY); localStorage.removeItem(PASTED_RESULTS_KEY); } catch (error) { /* ignore */ }
+try { [PROGRESS_KEY, PASTED_RESULTS_KEY, DESK_PROGRESS_KEY].forEach((key) => localStorage.removeItem(key)); } catch (error) { /* ignore */ }
 if (versionState && versionState.timer) clearInterval(versionState.timer);
 if (ui) {
 clearInterval(ui.pageTimer);
@@ -1381,7 +2003,7 @@ const action = target.getAttribute('data-action');
 if (action === 'clearStop') { clearAndStop(); return; }
 if (action === 'report') {
 // Names never leave the page: every known customer name is replaced.
-const names = leadsToDo().map((l) => l.name).concat(state.hereLead ? [state.hereLead.name] : []).filter(Boolean);
+const names = leadsToDo().map((l) => l.name).concat(state.hereLead ? [state.hereLead.name] : [], sendBackLeads().map((l) => l.name), emailOnlyLeads().map((l) => l.name)).filter(Boolean);
 const redact = (line) => names.reduce((text, name) => text.split(name).join('<customer>'), String(line));
 const where = state.running ? `running ${state.mode || ''} step ${state.stepIndex + 1}${state.paused ? ', needs you: ' + state.paused.message : ''}` : 'idle';
 reportProblem('Lead Re setup', redact(where), state.log.map(redact));
@@ -1409,11 +2031,25 @@ render();
 return;
 }
 if (action === 'review') {
-writeJson(SETTINGS_KEY, { reviewBeforePark: target.checked });
+writeJson(SETTINGS_KEY, { ...(readJson(SETTINGS_KEY) || {}), reviewBeforePark: target.checked });
 if (state.ctx) state.ctx.settings = loadSettings();
 return;
 }
 if (action === 'start') { runAll(); return; }
+if (action === 'view') { ui.view = target.getAttribute('data-view'); ui.listOpen = false; render(); return; }
+if (action === 'startPc') { runSendBack(); return; }
+if (action === 'startEo') { runEmailOnly(); return; }
+if (action === 'reviewFinish') {
+writeJson(SETTINGS_KEY, { ...(readJson(SETTINGS_KEY) || {}), reviewBeforeFinish: target.checked });
+if (state.ctx) state.ctx.settings = loadSettings();
+return;
+}
+if (action === 'eoAgent') return;
+if (action === 'clearDesk') {
+try { localStorage.removeItem(DESK_PROGRESS_KEY); } catch (error) { /* ignore */ }
+render();
+return;
+}
 if (action === 'pickHere') { ui.herePicked = target.value; render(); return; }
 if (action === 'here') {
 const chosen = hereChoice();
@@ -1465,12 +2101,28 @@ const head = root.querySelector('.head');
 if (!panel || !head) return;
 ui = { host, root, panel, launcher: root.querySelector('.launcher'), minimised: false, listOpen: false, logOpen: false, stepsOpen: false };
 root.addEventListener('click', onPanelClick);
+root.addEventListener('change', (event) => {
+if (event.target.getAttribute && event.target.getAttribute('data-action') === 'eoAgent') {
+writeJson(SETTINGS_KEY, { ...(readJson(SETTINGS_KEY) || {}), emailOnlyAgent: event.target.value });
+render();
+}
+});
 root.addEventListener('toggle', (event) => {
 const section = event.target.getAttribute && event.target.getAttribute('data-section');
 if (section === 'list') ui.listOpen = event.target.open;
 if (section === 'log') ui.logOpen = event.target.open;
 if (section === 'steps') ui.stepsOpen = event.target.open;
 }, true);
+// Redraw when SLA Manager, in another tab on this site, saves new results
+// or Email Only assignments, so the lists update without a refresh.
+// One listener per page; it calls whichever copy of the tool loaded last.
+window.__leadResetOnStorage = (key) => {
+if (ui && !state.running && [LEAD_CHECKER_RESULTS_KEY, EMAIL_ONLY_ASSIGNED_KEY, NATIONAL_RESULTS_KEY].includes(key)) render();
+};
+if (typeof window.addEventListener === 'function' && !window.__leadResetStorageWatch) {
+window.__leadResetStorageWatch = true;
+window.addEventListener('storage', (event) => { if (window.__leadResetOnStorage) window.__leadResetOnStorage(event.key); });
+}
 // Redraw when the agent moves to another page or customer.
 ui.pageTimer = setInterval(() => {
 if (!ui || state.running) return;

@@ -9,7 +9,9 @@ function toolsForPage(host, path) {
 const h = String(host || '').toLowerCase();
 const p = String(path || '').toLowerCase();
 const regCheck = { file: 'Reg-Check.js', name: 'Reg Check', loaded: () => !!window._regCheckHotkeyInstalled };
-if (/(^|\.)carbot\.ai$/.test(h)) return [{ file: 'Konnect-Lead-Checker.js', name: 'Lead Checker' }, regCheck];
+// Reg Check's pop up blocks the automatic runs, so it only loads by itself
+// on the agent desktop; elsewhere it is pressed by hand.
+if (/(^|\.)carbot\.ai$/.test(h)) return [{ file: 'Konnect-Lead-Checker.js', name: 'Lead Checker' }];
 if (/(^|\.)konnectonlineservices\.co\.uk$/.test(h)) {
 if (p.includes('agent-desktop')) {
 return [
@@ -20,7 +22,7 @@ regCheck,
 { file: 'Lead-Reset.js', name: 'Lead Re setup' }
 ];
 }
-return [{ file: 'SLA-Manager.js', name: 'SLA Manager' }, regCheck];
+return [{ file: 'SLA-Manager.js', name: 'SLA Manager' }];
 }
 return [];
 }
