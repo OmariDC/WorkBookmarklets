@@ -30,6 +30,27 @@
 // testing, not a confirmed selector like everything else here.
 // ===================================================================
 
+function konnectNavReady() {
+const nav = document.querySelector('nav.navbar.navbar-inverse.navbar-fixed-top');
+return !!(nav && nav.querySelector('ul.nav.navbar-right.top-nav'));
+}
+
+function onLoginPage() {
+const password = document.querySelector('input[type="password"]');
+return !!password && !konnectNavReady();
+}
+
+function showLoginWaitNote() {
+if (!document.body || typeof document.body.appendChild !== 'function') return null;
+const note = document.createElement('div');
+note.setAttribute('role', 'status');
+note.textContent = 'Lead Checker will open once you have logged in. If it does not appear, click the bookmarklet again.';
+note.style.cssText = 'position:fixed;top:16px;right:16px;max-width:300px;z-index:2147483000;background:#222;color:#fff;border:2px solid #C2CB42;border-radius:10px;padding:10px 12px;font:13px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;';
+document.body.appendChild(note);
+setTimeout(() => { note.style.display = 'none'; }, 8000);
+return note;
+}
+
 (function () {
 // Re-running the bookmarklet should focus the existing panel, not
 // inject a second copy of everything - same pattern as Halo-Tool.js's
@@ -5746,7 +5767,12 @@ wireBadgeClick();
 // Angular has no knowledge of a manually-injected element, so its own
 // re-renders of the <nav> it owns don't preserve it.
 function ensureBadgeAttached() {
-if (document.getElementById(KLC_NAV_ITEM_ID) || document.getElementById(KLC_BADGE_ID)) return;
+if (document.getElementById(KLC_NAV_ITEM_ID)) return;
+// A floating button made before Konnect's menu bar existed moves into the
+// bar once it appears.
+const fallback = document.getElementById(KLC_BADGE_ID);
+if (fallback && !konnectNavReady()) return;
+if (fallback) fallback.remove();
 const panelCurrentlyOpen = host.style.display === 'block';
 badge = buildBadge();
 wireBadgeClick();
@@ -6419,6 +6445,8 @@ host.style.right = `${Math.max(0, dragState.startRight - dx)}px`;
 window.addEventListener('mouseup', () => { dragState = null; });
 
 render();
+// Keeps the button in Konnect's menu bar when the page redraws it.
+setInterval(ensureBadgeAttached, 3000);
 
 window.__konnectLeadChecker = {
 focus() {
@@ -6430,10 +6458,29 @@ getSession: () => session
 };
 }
 
+function startUi() {
 try {
 initKonnectLeadCheckerUI();
 } catch (error) {
 console.warn('KonnectLeadChecker UI did not initialize (expected outside a real browser):', error && error.message);
+}
+}
+
+// Opened on the login page: wait for the logged-in page, then set up.
+// A full page load after login ends this script, so the note says to
+// click again if nothing appears.
+if (onLoginPage()) {
+const note = showLoginWaitNote();
+window.__konnectLeadChecker = { focus() { if (note) note.style.display = 'block'; } };
+const wait = setInterval(() => {
+if (onLoginPage()) return;
+clearInterval(wait);
+if (note) note.remove();
+window.__konnectLeadChecker = null;
+startUi();
+}, 1000);
+} else {
+startUi();
 }
 
 })();
