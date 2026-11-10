@@ -3953,18 +3953,32 @@ if (!result.tier) return 7;
 return result.tier;
 }
 
-// Category first (Send back, Check, then the Lead Checker tiers, then
-// unchecked), and within a category the most urgent due time first, so
-// each category stays together and Date Only sits above Warm or Nurture.
-function sortByLeadCheckerPriority(customers, leadCheckerResults, getDueDate) {
+// Bucket 0 is due before the next clock hour, including overdue, matching
+// "This hour" everywhere else. No due date sorts last.
+function hourBucketIndex(dueMs) {
+if (!Number.isFinite(dueMs)) return Infinity;
+const thisHourCutoff = defaultHourCutoff().getTime();
+if (dueMs < thisHourCutoff) return 0;
+return 1 + Math.floor((dueMs - thisHourCutoff) / (60 * 60000));
+}
+
+// SLA: category first (Send back, Check, the Lead Checker tiers, then
+// unchecked), most urgent first within each, so Date Only sits above Warm
+// and Nurture. Pending (options.byHour): the due hour comes first and the
+// category orders leads within it.
+function sortByLeadCheckerPriority(customers, leadCheckerResults, getDueDate, options) {
+const byHour = !!(options && options.byHour);
 const leadCheckerResultIndex = buildLeadCheckerResultIndex(leadCheckerResults);
 const dueMs = (c) => {
 const due = getDueDate ? getDueDate(c) : null;
 return due && typeof due.getTime === 'function' ? due.getTime() : Infinity;
 };
 return customers
-.map((c, index) => ({ c, index, due: dueMs(c), rank: leadCheckerPriorityRank(c, leadCheckerResultIndex) }))
-.sort((a, b) => a.rank - b.rank || (a.due === b.due ? 0 : a.due < b.due ? -1 : 1) || a.index - b.index)
+.map((c, index) => {
+const due = dueMs(c);
+return { c, index, due, hour: byHour ? hourBucketIndex(due) : 0, rank: leadCheckerPriorityRank(c, leadCheckerResultIndex) };
+})
+.sort((a, b) => (a.hour === b.hour ? 0 : a.hour < b.hour ? -1 : 1) || a.rank - b.rank || (a.due === b.due ? 0 : a.due < b.due ? -1 : 1) || a.index - b.index)
 .map((entry) => entry.c);
 }
 
@@ -4108,10 +4122,22 @@ const results = [
 const sorted = sortByLeadCheckerPriority(customers, results, (c) => c.slaDate).map((c) => c.name);
 check('Date Only comes first even when due later than others', sorted[0], 'Dee (date only, due in 10m)');
 check('each category stays together, most urgent first', sorted.join(' | '), 'Dee (date only, due in 10m) | Ben (date only, due in 90m) | Fay (warm, missed) | Cat (warm, due in 5m) | Amy (nurture, missed) | Eve (no result, missed)');
+const cutoff = defaultHourCutoff().getTime();
+const pending = [
+{ name: 'Gus (date only, next hour)', email: 'gus@example.com', phone: '', createdText: 'T', due: new Date(cutoff + 10 * 60000) },
+{ name: 'Hal (nurture, this hour)', email: 'hal@example.com', phone: '', createdText: 'T', due: new Date(cutoff - 5 * 60000) },
+{ name: 'Ivy (date only, this hour)', email: 'ivy@example.com', phone: '', createdText: 'T', due: new Date(cutoff - 2 * 60000) }
+];
+const pendingResults = [
+{ email: 'gus@example.com', phone: '', created: 'T', tier: 2, tierName: 'DATE ONLY' },
+{ email: 'hal@example.com', phone: '', created: 'T', tier: 5, tierName: 'NURTURE' },
+{ email: 'ivy@example.com', phone: '', created: 'T', tier: 2, tierName: 'DATE ONLY' }
+];
+check('Pending keeps the due hour first, category within it', sortByLeadCheckerPriority(pending, pendingResults, (c) => c.due, { byHour: true }).map((c) => c.name).join(' | '), 'Ivy (date only, this hour) | Hal (nurture, this hour) | Gus (date only, next hour)');
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager sortByLeadCheckerPriority-category self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Manager sortByLeadCheckerPriority-category self-test passed (2/2)');
+console.info('SLA Manager sortByLeadCheckerPriority-category self-test passed (3/3)');
 }
 });
 
@@ -4520,7 +4546,7 @@ const agentQueueSnapshot = loadAgentQueueSnapshot();
 // No hour-bucketing for Post Closure; every other callback type keeps the
 // due hour as the dominant key.
 const orderedCustomers = isLeadCheckerPrioritySortEnabled()
-? sortByLeadCheckerPriority(customers, leadCheckerResults, typeName === 'Post Closure' ? null : (c) => c.nextActionDate)
+? sortByLeadCheckerPriority(customers, leadCheckerResults, typeName === 'Post Closure' ? null : (c) => c.nextActionDate, { byHour: true })
 : customers;
 return renderCustomerCardListSection({
 label: typeName,
