@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.8.4'
+    version: '1.8.5'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -3046,7 +3046,28 @@
     const dealerSelect = modal.querySelector('select[ng-model="selected.dealer"]');
     const dealer = dealerSelect && !selectedText(dealerSelect) ? inbound.dealer : '';
     filled.push(...await setDealerAndBrand(modal, dealer, inbound.brand));
-    showToast(filled.length ? `Filled ${filled.join(', ')}. Press Save.` : 'Mobile is already there');
+    const saved = await saveCustomerModal(modal);
+    if (saved) {
+      showToast(`Mobile added back and saved${filled.length ? ` (${filled.join(', ')})` : ''}`);
+      forgetInboundCustomer();
+      if (state.open && state.view === 'booking') renderPalette();
+    } else {
+      showToast('Filled the form but it did not save. Check it and press Save.');
+    }
+  }
+
+  /* Presses Save on the customer form once Konnect allows it, and reports
+     whether the form closed. */
+  async function saveCustomerModal(modal) {
+    const save = Array.from(modal.querySelectorAll('button[ng-click="ok()"]')).find(isVisible) ||
+      Array.from(modal.querySelectorAll('button')).find((node) => isVisible(node) && normaliseText(node.textContent).toLowerCase() === 'save');
+    if (!save) return false;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const ready = await waitFor(() => !save.disabled && !save.classList.contains('disabled'), 2500);
+    if (!ready) return false;
+    save.click();
+    const closed = await waitFor(() => !modal.isConnected || !isVisible(modal), 4000);
+    return Boolean(closed);
   }
 
   function forgetInboundCustomer() {
