@@ -1599,6 +1599,14 @@ return postClosureDecision(readAllTimelineItems(), targetLeadId, engagedOnLead, 
 }
 
 const SEND_BACK_REASONS = { dealer: 'Actioned by dealership', emailOnly: 'Email only', inMarket: "In market won't commit" };
+// The Konnect Notes shorthand typed in the Post Closure box for each reason:
+// CAD when the dealership acted, CAH when the hub spoke to the customer or
+// sent it as email only and the dealership did nothing.
+const SEND_BACK_SHORTHAND = { 'Actioned by dealership': 'CAD', 'Email only': 'CAH', "In market won't commit": 'CAH' };
+// Notes that only record failed contact (voicemails, max attempts) are not
+// a conversation, so they never mean in market.
+const NO_CONTACT_NOTES = /no answer|voicemail|\bvm\b|max(imum)? attempts|unable to (reach|contact|get hold)|not answering|no response/i;
+const SPOKE_NOTES = /spoke|spoken|in market|won'?t commit|wont commit/i;
 
 function describeTimelineEntry(item) {
 const when = item.AboveLineTitleDate || String(item.EventTime || '').slice(0, 16).replace('T', ' ');
@@ -1634,7 +1642,7 @@ if (engagedOnLead) return decide(SEND_BACK_REASONS.dealer, 'Scheduled call, Spok
 const sent = String((notes && notes.sent) || '').trim();
 if (sent) {
 if (/email only/i.test(sent)) return decide(SEND_BACK_REASONS.emailOnly, `Sent through: ${notesSnippet(sent)}`);
-return decide(SEND_BACK_REASONS.inMarket, `Sent through: ${notesSnippet(sent)}`);
+if (SPOKE_NOTES.test(sent) || !NO_CONTACT_NOTES.test(sent)) return decide(SEND_BACK_REASONS.inMarket, `Sent through: ${notesSnippet(sent)}`);
 }
 if (allSends.length === 0) return decide('');
 const team = String((notes && notes.team) || '');
@@ -3654,7 +3662,7 @@ return classifyCandidates(row, session, result, workingCandidates);
 
 // Opens each candidate lead, keeps the one that validates and classifies
 // its Initial Notes.
-async function classifyCandidates(row, session, result, workingCandidates) {
+async function classifyCandidates(row, session, result, workingCandidates, retried) {
 const validated = [];
 const candidateFailures = [];
 const candidateFailureDetails = [];
@@ -3705,6 +3713,20 @@ candidateFailures.push('LEAD_VALIDATION_FAILED');
 candidateFailureDetails.push(`${validation.reason} (modal Date="${panelFields.date || ''}", candidate timeline entry="${candidate.rawTimestamp || ''}", modal Source="${panelFields.source || ''}", SLA/input Created="${row.created}", SLA Source="${row.source}")`);
 }
 await closeLeadModal();
+}
+
+// A call fallback can land on the earlier lead when the dealership's call
+// was logged there. A Post Closure row then retries with the one Post
+// Closure lead on the page, found by its heading.
+if (validated.length === 0 && !retried && candidateFailures.every((f) => f === 'LEAD_VALIDATION_FAILED')
+&& String(row.source || '').toLowerCase() === 'post closure processing') {
+const leadId = findUnambiguousPostClosureLeadId();
+const entry = leadId ? findLeadEntryByLeadId(leadId) : null;
+if (entry && !workingCandidates.some((c) => c.row === entry)) {
+const rawTimestamp = extractTimelineTimestamp(entry);
+const parsed = rawTimestamp ? parseTimelineTimestamp(rawTimestamp, new Date()) : null;
+return classifyCandidates(row, session, result, [{ row: entry, rawTimestamp, parsed, leadId }], true);
+}
 }
 
 if (validated.length === 0) {
@@ -3863,6 +3885,8 @@ check('the deciding entry is given as evidence', postClosureDecision(offered, 14
 const sentOnly = walkIn.filter((i) => i.TimelineItemType !== 3);
 check('notes sent through saying email only', postClosureDecision(sentOnly, 1400102, false, { sent: 'Lead sent to Enquiry Max | Email only lead, no number given' }).reason, 'Email only');
 check('other notes sent through mean in market', postClosureDecision(sentOnly, 1400102, false, { sent: 'Lead sent to Enquiry Max | Booked test drive Saturday' }), { reason: "In market won't commit", evidence: 'Sent through: Lead sent to Enquiry Max | Booked test drive Saturday' });
+check('voicemail notes sent through are not in market', postClosureDecision(sentOnly, 1400102, false, { sent: 'Lead sent to Enquiry Max | No answer, voicemail left x3, max attempts' }).reason, '');
+check('spoke notes that mention a voicemail are in market', postClosureDecision(sentOnly, 1400102, false, { sent: 'Lead sent to Enquiry Max | Spoke to customer, left voicemail after' }).reason, "In market won't commit");
 check('team notes saying email only when nothing was sent with notes', postClosureDecision(sentOnly, 1400102, false, { sent: '', team: 'Customer Comments: -\nEmail only lead' }).reason, 'Email only');
 check('a dealer action outranks the notes', postClosureDecision(walkIn, 1400102, false, { sent: 'Email only lead' }).reason, 'Actioned by dealership');
 const followUp = [
@@ -3885,7 +3909,8 @@ const pcResult = { inputIndex: 0, status: 'CLASSIFIED', tier: 5, postClosureActi
 const decidedPc = applyPostClosureDecision(pcResult, 'send back through', 'Email only', 'email only in follow up');
 check('a hand Post Closure decision', [decidedPc.postClosureAction, decidedPc.postClosureReason, decidedPc.manualOverride, decidedPc.tentative.postClosureAction], ['send back through', 'Email only', true, 'check: needs contact?']);
 check('undo restores the checker decision', undoManualReviewDecision(decidedPc).postClosureAction, 'check: needs contact?');
-check('reason shown with the action', postClosureLabel({ postClosureAction: 'send back through', postClosureReason: 'Email only' }), 'send back through: Email only');
+check('reason shown with the action', postClosureLabel({ postClosureAction: 'send back through', postClosureReason: 'Email only' }), 'send back through: Email only (CAH)');
+check('dealer reason shows CAD', postClosureLabel({ postClosureAction: 'send back through', postClosureReason: 'Actioned by dealership' }), 'send back through: Actioned by dealership (CAD)');
 check('SLA and Pending batches told apart', [
 checkScenarioOf('standard', [{ source: 'Customer First' }, { source: 'Autotrader' }]).label,
 checkScenarioOf('standard', [{ source: '' }, { source: 'Post Closure Processing' }]).label,
@@ -4520,7 +4545,9 @@ return [header, ...lines].join('\n');
 
 // For the handoff back into SLA-Manager.js, e.g. "send back through: Email only".
 function postClosureLabel(r) {
-return r.postClosureReason ? `${r.postClosureAction}: ${r.postClosureReason}` : r.postClosureAction;
+if (!r.postClosureReason) return r.postClosureAction;
+const shorthand = SEND_BACK_SHORTHAND[r.postClosureReason];
+return `${r.postClosureAction}: ${r.postClosureReason}${shorthand ? ` (${shorthand})` : ''}`;
 }
 
 function buildRawNotesTsvForExtract(session) {

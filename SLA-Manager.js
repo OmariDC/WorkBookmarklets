@@ -2196,10 +2196,15 @@ return `<div class="avatar-circle" style="cursor: pointer; width: ${size}px; hei
 
 // Order matters: Post-Closure "send back through" and a queue mismatch (both
 // "do not just assign this") outrank an SLA timer, which outranks a note.
+// The Konnect Notes shorthand for each send back reason (CAD dealer acted,
+// CAH hub contact or email only), kept in step with the Lead Checker.
+const POST_CLOSURE_SHORTHAND = { 'Actioned by dealership': 'CAD', 'Email only': 'CAH', "In market won't commit": 'CAH' };
+
 function pickLeadCheckerBadge(leadChecker) {
 if (!leadChecker) return null;
 if (leadChecker.postClosureAction) {
-const label = leadChecker.postClosureReason ? `${leadChecker.postClosureAction}: ${leadChecker.postClosureReason}` : leadChecker.postClosureAction;
+const shorthand = POST_CLOSURE_SHORTHAND[leadChecker.postClosureReason];
+const label = leadChecker.postClosureReason ? `${leadChecker.postClosureAction}: ${leadChecker.postClosureReason}${shorthand ? ` (${shorthand})` : ''}` : leadChecker.postClosureAction;
 return { label, color: postClosureActionColor(leadChecker.postClosureAction), source: 'leadChecker' };
 }
 if (leadChecker.tierName) {
@@ -3772,7 +3777,7 @@ LEAD_CHECKER_IMPORT_HEADER.join('\t'),
 ].join('\n'));
 if (!(withReason.rows[0] && withReason.rows[0].postClosureReason === 'Email only')) failures.push('Expected the PostClosureReason column to be read');
 if (!(withReason.rows[0] && withReason.rows[0].postClosureEvidence === 'Sent through: Email only lead')) failures.push('Expected the PostClosureEvidence column to be read');
-if (pickLeadCheckerBadge(withReason.rows[0]).label !== 'send back through: Email only') failures.push('Expected the badge to show the send back reason');
+if (pickLeadCheckerBadge(withReason.rows[0]).label !== 'send back through: Email only (CAH)') failures.push('Expected the badge to show the send back reason');
 const olderExport = parseLeadCheckerImportTsv(sampleTsv.split('\n').map((l) => l.split('\t').slice(0, 17).join('\t')).join('\n'));
 if (!olderExport.headerOk) failures.push('Expected an export without the reason column to still be accepted');
 
