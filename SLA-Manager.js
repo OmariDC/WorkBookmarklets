@@ -3508,7 +3508,16 @@ if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excl
 // clipboard. A Live tab opened by hand has no link; Copy still works.
 // ===================================================================
 const LIVE_ORIGIN = 'https://carbot.ai';
-const LIVE_URL = 'https://carbot.ai/konnectlive/';
+// The Live address carries its version, so the last one the Lead Checker
+// reported is kept and used next time.
+const LIVE_URL_KEY = '_slaKonnectLiveUrl';
+const LIVE_URL_DEFAULT = 'https://carbot.ai/konnectlive/(v1.2.168)/home.html';
+function liveUrl() {
+let saved = '';
+try { saved = localStorage.getItem(LIVE_URL_KEY) || ''; } catch (error) { saved = ''; }
+const base = /^https:\/\/carbot\.ai\/konnectlive\//i.test(saved) ? saved : LIVE_URL_DEFAULT;
+return `${base}#/search?redirectRoute=%2Fsearch`;
+}
 const LIVE_WINDOW_NAME = 'workToolsKonnectLive';
 const liveLink = { win: null, ready: false, pending: null };
 
@@ -3526,7 +3535,7 @@ if (liveLink.win && !liveLink.win.closed) {
 try { liveLink.win.focus(); } catch (error) { /* still usable */ }
 return liveLink.win;
 }
-const win = window.open(LIVE_URL, LIVE_WINDOW_NAME);
+const win = window.open(liveUrl(), LIVE_WINDOW_NAME);
 if (!win) return null;
 liveLink.win = win;
 liveLink.ready = false;
@@ -3601,6 +3610,9 @@ const data = event.data;
 if (!data || typeof data.type !== 'string' || !data.type.startsWith('workTools:')) return;
 if (data.type === 'workTools:ready') {
 liveLink.ready = true;
+if (typeof data.url === 'string' && /^https:\/\/carbot\.ai\/konnectlive\/[^#?]*$/i.test(data.url)) {
+try { localStorage.setItem(LIVE_URL_KEY, data.url); } catch (error) { /* the default still works */ }
+}
 liveLink.win = event.source;
 if (liveLink.pending) event.source.postMessage(liveLink.pending, LIVE_ORIGIN);
 } else if (data.type === 'workTools:received') {

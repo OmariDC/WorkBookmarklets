@@ -2953,6 +2953,7 @@ window.KonnectLeadChecker.evaluateNationalLead = evaluateNationalLead;
 window.KonnectLeadChecker.buildNationalResultsExport = buildNationalResultsExport;
 
 window.KonnectLeadChecker.timelineEntryKey = timelineEntryKey;
+window.KonnectLeadChecker.reLogin = reLogin;
 window.KonnectLeadChecker.closeLeadModal = closeLeadModal;
 window.KonnectLeadChecker.loadOlderTimelineEntries = loadOlderTimelineEntries;
 window.KonnectLeadChecker.normalizeEmail = normalizeEmail;
@@ -4002,6 +4003,36 @@ return true;
 
 let isRunning = false;
 
+// Konnect Live logs out after 15 idle minutes but keeps the details in the
+// login box, so pressing Login carries the run on. False when that is not
+// possible (no saved password), and the run then pauses for the agent.
+async function reLogin(uiHandle) {
+const password = document.querySelector('input[type="password"]');
+const button = Array.from(document.querySelectorAll('button[ng-click="login()"], button.btn-login')).find((b) => b.offsetWidth || b.offsetHeight);
+if (!password || !password.value || !button) return false;
+uiHandle.setState('Konnect Live logged out: logging back in');
+button.click();
+for (let waited = 0; waited < 30000; waited += 500) {
+await sleep(500);
+if (!onLoginPage()) { await sleep(1500); return true; }
+}
+return false;
+}
+
+// A lead that failed because the page logged out mid-check is checked
+// again: its group's failures are cleared and the run steps back to it.
+function redoGroupAfterLogout(session, groupIndex) {
+const group = session.groups[groupIndex];
+if (!group) return;
+group.rows.forEach((row) => {
+const result = session.results[row.inputIndex];
+if (result && result.status === 'EXCEPTION' && result.exception !== 'CLASSIFICATION_REVIEW_REQUIRED') delete session.results[row.inputIndex];
+});
+session.groupIndex = Math.min(session.groupIndex, groupIndex);
+session.rowInGroupIndex = 0;
+session.done = false;
+}
+
 async function runLoop(session, uiHandle) {
 if (isRunning) return;
 isRunning = true;
@@ -4013,9 +4044,23 @@ if (lcNotices.stopped) { lcNotices.stopped = null; notifyNoticesChanged(); }
 // Waits are timer/observer based, so a throttled background tab could time
 // out and misread a lead as failed.
 if (document.hidden) { uiHandle.setState('Paused: tab is in the background'); await sleep(200); continue; }
+if (onLoginPage()) {
+if (!await reLogin(uiHandle)) {
+session.paused = true;
+lcNotices.stopped = 'Konnect Live logged you out and could not log back in. Press Login, then Start to carry on.';
+notifyNoticesChanged();
+continue;
+}
+}
 const remaining = session.rows.length - Object.keys(session.results).length;
 showPageFlashOverlay(`Checking leads… (${remaining} left)`);
+const groupBefore = session.groupIndex;
 const advanced = await stepOnce(session, uiHandle);
+if (onLoginPage()) {
+redoGroupAfterLogout(session, groupBefore);
+saveSession(session);
+continue;
+}
 uiHandle.render();
 if (!advanced) break;
 }
@@ -5961,7 +6006,8 @@ tsv: national ? buildNationalResultsExport(finished) : buildRawNotesTsvForExtrac
 }, MANAGER_ORIGIN);
 uiHandle.setState('Done: results sent to SLA Manager');
 };
-manager.postMessage({ type: 'workTools:ready' }, MANAGER_ORIGIN);
+// The address lets SLA Manager follow Konnect Live to a new version.
+manager.postMessage({ type: 'workTools:ready', url: location.origin + location.pathname }, MANAGER_ORIGIN);
 }
 
 function startProcessing() {
