@@ -8,7 +8,7 @@
 // says what to do by hand.
 
 const PANEL_ID = '_leadResetPanel';
-const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx', 'Reg', 'ResetFields'];
+const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'Reg'];
 const NATIONAL_RESULTS_KEY = '_slaNationalCheckResults';
 const PASTED_RESULTS_KEY = '_leadResetPastedResults';
 const PROGRESS_KEY = '_leadResetProgress';
@@ -18,6 +18,41 @@ const STORED_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const OUTCOME_UPDATE_ONLY = 'Update Outcomes (No Call Made)';
 const OUTCOME_NONE = '(Select a Call Outcome)';
 const STATUS_WHILE_RESETTING = 'Shift Start';
+
+// Shows when the running copy was published and notices a newer one going
+// live. The date comes from GitHub once per open; later checks compare the
+// published file's text, which has no rate limit to share between staff.
+function startVersionWatch(fileName, onChange) {
+const state = { publishedAt: null, newer: false };
+if (typeof fetch !== 'function') return state;
+const repo = 'OmariDC/WorkBookmarklets';
+const fileText = () => fetch(`https://raw.githubusercontent.com/${repo}/main/${fileName}?_=${Date.now()}`).then((r) => (r.ok ? r.text() : null));
+const fingerprint = (text) => { let h = 0; for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0; return `${text.length}:${h}`; };
+let baseline = null;
+fetch(`https://api.github.com/repos/${repo}/commits?path=${encodeURIComponent(fileName)}&sha=main&per_page=1`)
+.then((r) => (r.ok ? r.json() : null))
+.then((list) => {
+const date = list && list[0] && list[0].commit && list[0].commit.committer && list[0].commit.committer.date;
+if (date) { state.publishedAt = new Date(date); onChange(state); }
+}).catch(() => {});
+fileText().then((text) => { if (text) baseline = fingerprint(text); }).catch(() => {});
+setInterval(() => {
+if (state.newer || baseline == null) return;
+fileText().then((text) => {
+if (text && fingerprint(text) !== baseline) { state.newer = true; onChange(state); }
+}).catch(() => {});
+}, 20 * 60 * 1000);
+return state;
+}
+
+function versionLineText(state) {
+if (state.newer) return 'A newer version is out. Close this panel and click the bookmarklet again.';
+if (!state.publishedAt) return '';
+const d = state.publishedAt;
+const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const pad = (n) => String(n).padStart(2, '0');
+return `Version of ${d.getDate()} ${months[d.getMonth()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 // ===================================================================
 // PURE HELPERS
@@ -63,7 +98,8 @@ return typeof fields.InitialNotes === 'string' ? fields.InitialNotes : String((r
 }
 
 function resetLeadsFrom(results) {
-return (results || []).filter((r) => r && r.Verdict === 'Reset' && r.Customer).map((r) => ({
+// "Reset" is how older exports named Re setup.
+return (results || []).filter((r) => r && (r.Verdict === 'Re setup' || r.Verdict === 'Reset') && r.Customer).map((r) => ({
 activityId: r.ActivityID || '',
 name: r.Customer,
 reg: r.Reg || '',
@@ -183,18 +219,17 @@ if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${label}
 };
 try {
 const tsv = [NATIONAL_RESULT_HEADER.join('\t'),
-['national', 'Mr. Sam Buyer', '70000002', '1400002', 'Reset', 'Closed with no dealership', '2', 'Email Only Lead', '', '', 'Vauxhall - Offer Request - New', 'Line one | Line two', 'Vauxhall Corsa', 'No Part Exchange', 'AB12 CDE', JSON.stringify({ LeadTypeID: 2, InitialNotes: 'Line one\nLine two' })].join('\t'),
-['national', 'Alex Sample', '70000001', '1400001', 'OK', 'Sent to Preston', '1', '', 'Preston', '', '', '', '', '', 'AB12CDF', ''].join('\t')
+['national', 'Mr. Sam Buyer', '70000002', '1400002', 'Re setup', 'Closed with no dealership', '2', 'Email Only Lead', '', '', 'Vauxhall - Offer Request - New', 'AB12 CDE'].join('\t'),
+['national', 'Alex Sample', '70000001', '1400001', 'OK', 'Sent to Preston', '1', '', 'Preston', '', '', 'AB12CDF'].join('\t')
 ].join('\n');
 const parsed = parseResultsTsv(tsv);
 check('accepts the Lead Checker export', parsed.ok, true);
 check('rejects another header', parseResultsTsv('Name\tPhone\nx\ty').ok, false);
-check('reads an export without the newer columns', resetLeadsFrom(parseResultsTsv(tsv.split('\n').map((l) => l.split('\t').slice(0, 14).join('\t')).join('\n')).results).map((l) => [l.activityId, l.notes]), [['70000002', 'Line one | Line two']]);
 const leads = resetLeadsFrom(parsed.results);
-check('only Reset leads are kept', leads.map((l) => l.activityId), ['70000002']);
-check('exact notes come from the reset fields', leads[0].notes, 'Line one\nLine two');
-check('flattened notes are the fallback', resetNotesOf({ ResetInitialNotes: 'Flat', ResetFields: 'not json' }), 'Flat');
-check('reset fields parsed', leads[0].fields.LeadTypeID, 2);
+check('only Re setup leads are kept', leads.map((l) => [l.activityId, l.campaign, l.reg]), [['70000002', 'Vauxhall - Offer Request - New', 'AB12 CDE']]);
+check('an older export saying Reset still counts', resetLeadsFrom([{ Verdict: 'Reset', Customer: 'Jo Example', ResetFields: JSON.stringify({ InitialNotes: 'A\nB' }) }]).map((l) => l.notes), ['A\nB']);
+check('no notes in the export means none until the page supplies them', leads[0].notes, '');
+check('summary counts', leadSummaryText([{ activityId: '1', name: 'A' }, { activityId: '2', name: 'B' }, { activityId: '3', name: 'C' }], { byActivity: { 1: 'Done', 2: 'Skipped' } }), '1 done, 1 skipped, 1 left');
 check('title stripped', stripNameTitle('Mrs Jo Example'), 'Jo Example');
 const rows = [
 { name: 'Sam Buyerson', vehicles: 'XY12ZZZ', magic: '9001' },
@@ -525,10 +560,10 @@ ctx.notesFrom = adopted.notesFrom;
 const earlier = findEarlierReset(activities, lead);
 if (earlier && !ctx.allowExisting) {
 ctx.allowExisting = true;
-throw new NeedsYou(`This customer already has a ${lead.campaign} lead added by hand after the closed one, so it may already be reset. Press Skip lead to leave it, or carry on to add another.`, { carryOnLabel: 'Add another lead' });
+throw new NeedsYou(`This customer already has a ${lead.campaign} lead added by hand after the closed one, so it may already be set up again. Press Skip lead to leave it, or carry on to add another.`, { carryOnLabel: 'Add another lead' });
 }
 if (earlier) return 'Adding another lead as asked';
-return closed ? `Closed ${lead.campaign} lead found on this customer, not reset yet` : 'Closed lead not checked on this customer';
+return closed ? `Closed ${lead.campaign} lead found on this customer, not set up again yet` : 'Closed lead not checked on this customer';
 }
 
 async function chooseUpdateOutcomes() {
@@ -730,7 +765,7 @@ return 'Call parked';
 const STEPS = [
 { label: 'Open New Manual Outbound Call', run: openManualOutbound },
 { label: 'Find the customer', run: searchAndOpenCustomer },
-{ label: 'Check it is not already reset', run: checkNotAlreadyReset },
+{ label: 'Check it is not already set up again', run: checkNotAlreadyReset },
 { label: 'Choose Update Outcomes', run: chooseUpdateOutcomes },
 { label: 'Add the new lead', run: addNewLead },
 { label: 'Find the new lead', run: findNewLead },
@@ -750,6 +785,7 @@ const state = window._leadResetState || (window._leadResetState = {
 running: false, paused: null, stopRequested: false, currentIndex: -1, stepIndex: 0, ctx: null, log: []
 });
 let resolvePause = null;
+let versionState = null;
 
 function leadsToDo() {
 const source = loadResults();
@@ -830,7 +866,7 @@ if (answer === 'stop') state.stopRequested = true;
 }
 }
 }
-if (!state.stopRequested) addLog('All Reset leads are done');
+if (!state.stopRequested) addLog('All Re setup leads are done');
 } catch (error) {
 addLog(`Stopped: ${error && error.message}`);
 } finally {
@@ -842,61 +878,220 @@ render();
 }
 }
 
-const COLORS = { navy: '#22365D', red: '#d70015', green: '#047857', amber: '#b45309', grey: '#475569', line: '#e2e8f0' };
+const STYLE = `
+:host { all: initial; }
+* { box-sizing: border-box; }
+.panel { position: fixed; top: 70px; right: 16px; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 90px); display: flex; flex-direction: column; z-index: 2147483000;
+  --bg: #f2f2f7; --surface: #ffffff; --text: #1c1c1e; --text-2: #334155; --muted: #64748b; --border: #e2e8f0; --accent: #C2CB42; --head: #1c1c1e;
+  --green: #047857; --amber: #b45309; --red: #d70015;
+  background: var(--bg); color: var(--text); border-radius: 16px; box-shadow: 0 18px 40px rgba(15, 23, 42, .22), 0 2px 6px rgba(15, 23, 42, .08); overflow: hidden;
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+.head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--head); color: #fff; cursor: move; user-select: none; }
+.head .title { font-weight: 700; font-size: 13.5px; flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.head .mini-status { font-weight: 500; color: #cbd5e1; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.icon-btn { background: transparent; border: 0; color: #cbd5e1; width: 28px; height: 28px; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font: inherit; font-size: 16px; }
+.icon-btn:hover { background: rgba(255,255,255,.12); color: #fff; }
+.body { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.panel.minimised .body { display: none; }
+.card { background: var(--surface); border-radius: 12px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05), 0 1px 1px rgba(0,0,0,.03); }
+.muted { color: var(--muted); }
+.small { font-size: 11.5px; }
+.version { font-size: 11px; color: var(--muted); }
+.version.newer { color: var(--red); font-weight: 700; font-size: 12px; }
+.alert { border-radius: 10px; padding: 9px 11px; font-size: 12.5px; }
+.alert.red { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+.alert.amber { background: #fffbeb; color: #78350f; border: 1px solid #fde68a; }
+.big-count { display: flex; align-items: baseline; gap: 8px; }
+.big-count strong { font-size: 30px; line-height: 1; letter-spacing: -.5px; }
+.btn { font: inherit; font-weight: 600; font-size: 12.5px; border-radius: 999px; padding: 8px 14px; cursor: pointer; border: 1px solid transparent; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.btn.primary { background: var(--accent); color: #1c1c1e; }
+.btn.primary:hover { filter: brightness(.95); }
+.btn.secondary { background: #e5e5ea; color: var(--text); }
+.btn.secondary:hover { background: #d9d9de; }
+.btn.ghost { background: transparent; color: var(--muted); border-color: var(--border); }
+.btn.danger { background: transparent; color: var(--red); border-color: #fecaca; }
+.btn.wide { width: 100%; padding: 10px 14px; font-size: 13.5px; }
+.btn:focus-visible, .icon-btn:focus-visible, summary:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: flex; gap: 6px; flex-wrap: wrap; }
+.toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
+.toggle input { width: 16px; height: 16px; accent-color: #1c1c1e; margin: 0; }
+.progress-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--muted); }
+.track { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
+.fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }
+.lead-name { font-size: 16px; font-weight: 700; margin-top: 8px; }
+.lead-meta { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.steps { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.step { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); padding: 2px 0; }
+.step .dot { width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; border: 1.5px solid var(--border); background: var(--surface); }
+.step.done { color: var(--text-2); }
+.step.done .dot { background: var(--green); border-color: var(--green); color: #fff; }
+.step.current { color: var(--text); font-weight: 600; }
+.step.current .dot { border-color: var(--accent); background: #f7f9dd; }
+.step.current .dot::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #8a9100; animation: pulse 1s ease-in-out infinite; }
+.step.needs .dot { background: var(--amber); border-color: var(--amber); color: #fff; }
+.step.needs { color: var(--amber); font-weight: 700; }
+@keyframes pulse { 50% { opacity: .3; } }
+.done-steps { background: none; box-shadow: none; border-radius: 0; }
+.done-steps > summary { padding: 2px 0; font-weight: 500; font-size: 12.5px; justify-content: flex-start; cursor: pointer; }
+.steps.inner { margin: 2px 0 4px 26px; }
+.needs-card { border: 1.5px solid #fbbf24; background: #fffbeb; }
+.needs-card h3 { margin: 0 0 4px; font-size: 13px; color: #92400e; }
+.needs-card p { margin: 0 0 10px; color: #78350f; font-size: 12.5px; }
+details { background: var(--surface); border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+summary { cursor: pointer; padding: 10px 12px; font-weight: 600; font-size: 12.5px; display: flex; justify-content: space-between; align-items: center; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary .count { background: var(--bg); color: var(--muted); border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; }
+.list { padding: 0 12px 8px; max-height: 220px; overflow-y: auto; }
+.list-row { display: flex; align-items: center; gap: 9px; padding: 7px 0; border-top: 1px solid var(--border); }
+.avatar { width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
+.list-row .who { flex: 1; min-width: 0; }
+.list-row .who div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0 10px; }
+.tile { background: var(--bg); border-radius: 10px; padding: 8px; text-align: center; }
+.tile strong { display: block; font-size: 20px; }
+.tile span { font-size: 11px; color: var(--muted); }
+.log { padding: 0 12px 10px; font-size: 11px; color: var(--muted); max-height: 150px; overflow-y: auto; }
+.log div { padding: 2px 0; }
+.empty { text-align: center; padding: 8px 4px; }
+.empty strong { display: block; font-size: 14px; margin-bottom: 4px; }
+`;
 
-function statusChip(text, color) {
-return `<span style="font-size:11px;padding:2px 8px;border-radius:999px;background:${color}1a;color:${color};white-space:nowrap;">${escapeHtml(text)}</span>`;
+const CHIP_COLORS = { Done: '#047857', Skipped: '#64748b', Waiting: '#64748b', Working: '#5b6300', 'Needs you': '#b45309' };
+
+function chip(text) {
+const color = CHIP_COLORS[text] || '#64748b';
+return `<span class="chip" style="background:${color}1a;color:${color};">${escapeHtml(text)}</span>`;
 }
 
-function button(action, label, primary) {
-const style = primary
-? `background:${COLORS.navy};color:#fff;border:1px solid ${COLORS.navy};`
-: `background:#fff;color:${COLORS.navy};border:1px solid ${COLORS.line};`;
-return `<button type="button" data-action="${action}" style="${style}border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;margin:0 6px 6px 0;">${escapeHtml(label)}</button>`;
+function initials(name) {
+return stripNameTitle(name).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+}
+
+function btn(action, label, kind, extraClass) {
+return `<button type="button" class="btn ${kind || 'secondary'}${extraClass ? ' ' + extraClass : ''}" data-action="${action}">${escapeHtml(label)}</button>`;
+}
+
+let ui = null; // { host, root, panel, minimised }
+
+// "3 done, 1 skipped, 2 left" plus the names under each heading.
+function leadSummaryText(leads, progress) {
+const groups = { Done: [], Skipped: [], Left: [] };
+leads.forEach((l) => { (groups[progress.byActivity[l.activityId]] || groups.Left).push(l.name); });
+return `${groups.Done.length} done, ${groups.Skipped.length} skipped, ${groups.Left.length} left`;
+}
+
+function summaryForClipboard(leads, progress) {
+const lines = [leadSummaryText(leads, progress)];
+['Done', 'Skipped'].forEach((outcome) => {
+const names = leads.filter((l) => progress.byActivity[l.activityId] === outcome).map((l) => `${l.name} (${l.campaign || 'campaign not read'})`);
+if (names.length) lines.push(`${outcome}:`, ...names.map((n) => `- ${n}`));
+});
+const left = leads.filter((l) => !progress.byActivity[l.activityId]).map((l) => `- ${l.name}`);
+if (left.length) lines.push('Left:', ...left);
+return lines.join('\n');
+}
+
+function leadStatus(lead, index, progress) {
+const done = progress.byActivity[lead.activityId];
+if (done) return done;
+if (state.running && index === state.currentIndex) return state.paused ? 'Needs you' : 'Working';
+return 'Waiting';
+}
+
+// Finished steps fold into one line (expandable) so the current step and
+// what comes next stay in view.
+function renderSteps() {
+const row = (step, i) => {
+const cls = i < state.stepIndex ? 'done' : i === state.stepIndex ? (state.paused ? 'needs' : 'current') : '';
+const mark = cls === 'done' ? '&#10003;' : cls === 'needs' ? '!' : '';
+return `<li class="step ${cls}"><span class="dot" aria-hidden="true">${mark}</span>${escapeHtml(step.label)}</li>`;
+};
+const done = STEPS.slice(0, state.stepIndex);
+const rest = STEPS.slice(state.stepIndex).map((step, i) => row(step, i + state.stepIndex)).join('');
+const folded = done.length
+? `<li><details class="done-steps"${ui.stepsOpen ? ' open' : ''} data-section="steps"><summary class="step done"><span class="dot" aria-hidden="true">&#10003;</span>${done.length} step${done.length === 1 ? '' : 's'} done</summary><ol class="steps inner">${done.map(row).join('')}</ol></details></li>`
+: '';
+return `<ol class="steps">${folded}${rest}</ol>`;
 }
 
 function render() {
-const panel = document.getElementById(PANEL_ID);
-if (!panel) return;
+if (!ui) return;
 const source = loadResults();
 const leads = source ? resetLeadsFrom(source.results) : [];
 const progress = loadProgress();
 const settings = loadSettings();
 const savedAt = source ? new Date(source.savedAt).toTimeString().slice(0, 5) : '';
 const onDesktop = /agent-desktop/i.test(location.pathname || '');
-const remaining = leads.filter((l) => !progress.byActivity[l.activityId]).length;
+const doneCount = leads.filter((l) => progress.byActivity[l.activityId]).length;
+const remaining = leads.length - doneCount;
+if (!versionState) versionState = startVersionWatch('Lead-Reset.js', () => render());
 
-const banner = selfTestFailures.length
-? `<div role="alert" style="margin-bottom:8px;padding:8px;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:12px;"><strong>Self-test failed:</strong> please send this on. ${escapeHtml(selfTestFailures[0])}</div>` : '';
-const where = onDesktop ? '' : `<div style="margin-bottom:8px;color:${COLORS.amber};">Open this on the agent desktop to reset leads.</div>`;
-const sourceLine = source
-? `<div style="margin-bottom:8px;">${leads.length} lead${leads.length === 1 ? '' : 's'} to reset from the National check at ${escapeHtml(savedAt)}. ${remaining} left.</div>`
-: `<div style="margin-bottom:8px;">No National results found. Import them in SLA Manager, or copy them from the Lead Checker and press Paste results.</div>`;
+const parts = [];
+const versionText = versionLineText(versionState);
+if (versionText) parts.push(`<div class="version${versionState.newer ? ' newer' : ''}" role="status">${escapeHtml(versionText)}</div>`);
+if (selfTestFailures.length) parts.push(`<div class="alert red" role="alert"><strong>Self-test failed.</strong> Please send this on: ${escapeHtml(selfTestFailures[0])}</div>`);
+if (!onDesktop) parts.push(`<div class="alert amber">Open this on the agent desktop to set leads up again.</div>`);
 
-const list = leads.map((l, i) => {
-const done = progress.byActivity[l.activityId];
-const current = state.running && i === state.currentIndex;
-const chip = done ? statusChip(done, done === 'Done' ? COLORS.green : COLORS.grey)
-: current ? statusChip(state.paused ? 'Needs you' : STEPS[state.stepIndex] ? STEPS[state.stepIndex].label : 'Working', state.paused ? COLORS.red : COLORS.navy)
-: statusChip('Waiting', COLORS.grey);
-return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid ${COLORS.line};">
-<span style="overflow:hidden;"><strong>${escapeHtml(l.name)}</strong><br><span style="color:${COLORS.grey};font-size:11px;">${escapeHtml(l.campaign || 'No campaign read')}</span></span>${chip}</div>`;
-}).join('');
+if (state.running) {
+const lead = leads[state.currentIndex];
+const position = leads.slice(0, state.currentIndex + 1).length;
+const percent = leads.length ? Math.round((100 * doneCount) / leads.length) : 0;
+parts.push(`<div class="card">
+<div class="progress-top"><span>Lead ${position} of ${leads.length}</span><span>${doneCount} done</span></div>
+<div class="track"><div class="fill" style="width:${percent}%"></div></div>
+${lead ? `<div class="lead-name">${escapeHtml(lead.name)}</div><div class="lead-meta">${escapeHtml([lead.campaign || 'Campaign read from the closed lead', lead.reg].filter(Boolean).join(' · '))}</div>` : '<div class="lead-name">Getting ready</div>'}
+${lead ? renderSteps() : ''}
+</div>`);
+if (state.paused) {
+parts.push(`<div class="card needs-card" role="alert">
+<h3>Needs you</h3><p>${escapeHtml(state.paused.message)}</p>
+<div class="row">${btn('carry', state.paused.carryOnLabel, 'primary')}${btn('retry', 'Try again')}${btn('skip', 'Skip lead')}${btn('stop', 'Stop', 'danger')}</div>
+</div>`);
+} else {
+parts.push(`<div class="row">${btn('stop', 'Stop after this step', 'ghost')}</div>`);
+}
+} else if (!source || leads.length === 0) {
+parts.push(`<div class="card empty">
+<strong>${source ? 'No leads need setting up again' : 'No National results yet'}</strong>
+<div class="muted small">${source ? 'The last National check found nothing to set up again.' : 'Import the National results in SLA Manager, or copy them from the Lead Checker and paste them here.'}</div>
+<div class="row" style="justify-content:center;margin-top:10px;">${btn('paste', 'Paste results', source ? 'secondary' : 'primary')}</div>
+</div>`);
+} else if (remaining === 0) {
+parts.push(`<div class="card">
+<strong>All done</strong>
+<div class="tiles">${[['Done', 'Done'], ['Skipped', 'Skipped']].map(([key, label]) => `<div class="tile"><strong>${leads.filter((l) => progress.byActivity[l.activityId] === key).length}</strong><span>${label}</span></div>`).join('')}<div class="tile"><strong>0</strong><span>Left</span></div></div>
+<div class="row">${btn('copySummary', 'Copy summary', 'primary')}${btn('clear', 'Clear')}</div>
+</div>`);
+} else {
+parts.push(`<div class="card">
+<div class="big-count"><strong>${remaining}</strong><span>lead${remaining === 1 ? '' : 's'} to set up again</span></div>
+<div class="muted small" style="margin:4px 0 12px;">From the National check at ${escapeHtml(savedAt)}${doneCount ? ` &middot; ${doneCount} already done` : ''}</div>
+${btn('start', doneCount ? `Continue (${remaining} left)` : 'Start', 'primary', 'wide')}
+<div class="row" style="margin-top:8px;">${btn('paste', 'Paste results')}${doneCount || readJson(PASTED_RESULTS_KEY) ? btn('clear', 'Clear') : ''}${doneCount ? btn('copySummary', 'Copy summary') : ''}</div>
+</div>`);
+}
 
-const pause = state.paused
-? `<div role="status" style="margin:8px 0;padding:8px;border-radius:6px;background:#fff7ed;border:1px solid #fed7aa;color:#7c2d12;">${escapeHtml(state.paused.message)}</div>
-${button('carry', state.paused.carryOnLabel, true)}${button('retry', 'Try again')}${button('skip', 'Skip lead')}${button('stop', 'Stop')}`
-: '';
-const controls = state.running
-? (state.paused ? '' : button('stop', 'Stop after this step'))
-: `${remaining ? button('start', 'Start resets', true) : ''}${button('paste', 'Paste results')}${Object.keys(progress.byActivity).length || readJson(PASTED_RESULTS_KEY) ? button('clear', 'Clear') : ''}`;
-const log = state.log.length ? `<details style="margin-top:6px;"><summary style="cursor:pointer;color:${COLORS.grey};">Activity</summary><div style="font-size:11px;color:${COLORS.grey};max-height:140px;overflow:auto;">${state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div></details>` : '';
+parts.push(`<label class="toggle"><input type="checkbox" data-action="review" ${settings.reviewBeforePark ? 'checked' : ''}> Stop before parking so I can check each lead</label>`);
 
-panel.querySelector('[data-body]').innerHTML = `${banner}${where}${sourceLine}
-<div style="max-height:220px;overflow:auto;margin-bottom:8px;">${list}</div>
-${pause}<div>${controls}</div>
-<label style="display:flex;gap:6px;align-items:center;margin-top:4px;font-size:12px;"><input type="checkbox" data-action="review" ${settings.reviewBeforePark ? 'checked' : ''}> Stop before parking so I can check each lead</label>
-${log}`;
+if (leads.length) {
+const open = ui.listOpen ? ' open' : '';
+parts.push(`<details data-section="list"${open}><summary>Leads <span class="count">${doneCount}/${leads.length}</span></summary><div class="list">${leads.map((l, i) => {
+const status = leadStatus(l, i, progress);
+const color = CHIP_COLORS[status] || '#64748b';
+return `<div class="list-row"><span class="avatar" style="background:${color}1a;color:${color};">${escapeHtml(initials(l.name))}</span><div class="who"><div><strong>${escapeHtml(l.name)}</strong></div><div class="muted small">${escapeHtml(l.campaign || 'Campaign read from the closed lead')}</div></div>${chip(status)}</div>`;
+}).join('')}</div></details>`);
+}
+if (state.log.length) {
+const open = ui.logOpen ? ' open' : '';
+parts.push(`<details data-section="log"${open}><summary>Activity <span class="count">${state.log.length}</span></summary><div class="log">${state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div></details>`);
+}
+
+ui.root.querySelector('.body').innerHTML = parts.join('');
+const status = state.running
+? (state.paused ? 'Needs you' : `${doneCount}/${leads.length} done`)
+: (leads.length ? `${remaining} to do` : '');
+ui.root.querySelector('.mini-status').textContent = ui.minimised && status ? status : '';
 }
 
 async function pasteResults() {
@@ -908,7 +1103,7 @@ return;
 const parsed = parseResultsTsv(text);
 if (!parsed.ok) { addLog(parsed.error); return; }
 writeJson(PASTED_RESULTS_KEY, { savedAt: new Date().toISOString(), results: parsed.results });
-addLog(`Pasted ${resetLeadsFrom(parsed.results).length} Reset leads`);
+addLog(`Pasted ${resetLeadsFrom(parsed.results).length} Re setup leads`);
 }
 
 function onPanelClick(event) {
@@ -916,8 +1111,17 @@ const target = event.target.closest('[data-action]');
 if (!target) return;
 const action = target.getAttribute('data-action');
 if (action === 'close') {
-if (state.running) { addLog('Stop the resets before closing'); return; }
-document.getElementById(PANEL_ID).remove();
+if (state.running) { addLog('Stop the run before closing'); return; }
+ui.host.remove();
+ui = null;
+return;
+}
+if (action === 'minimise') {
+ui.minimised = !ui.minimised;
+ui.panel.classList.toggle('minimised', ui.minimised);
+target.textContent = ui.minimised ? '+' : '–';
+target.setAttribute('aria-label', ui.minimised ? 'Expand' : 'Minimise');
+render();
 return;
 }
 if (action === 'review') {
@@ -927,6 +1131,12 @@ return;
 }
 if (action === 'start') { runAll(); return; }
 if (action === 'paste') { pasteResults(); return; }
+if (action === 'copySummary') {
+const source = loadResults();
+const text = summaryForClipboard(source ? resetLeadsFrom(source.results) : [], loadProgress());
+navigator.clipboard.writeText(text).then(() => addLog('Summary copied'), () => addLog('Could not copy the summary'));
+return;
+}
 if (action === 'clear') {
 // Wipes everything this tool keeps, so the next start is from scratch.
 try { localStorage.removeItem(PROGRESS_KEY); localStorage.removeItem(PASTED_RESULTS_KEY); } catch (error) { /* ignore */ }
@@ -938,20 +1148,52 @@ if (action === 'stop' && !state.paused) { state.stopRequested = true; addLog('St
 answerPause(action);
 }
 
+// The panel lives in its own shadow root: Konnect's styles cannot reach
+// it, and the steps' page searches cannot mistake its buttons for Konnect's.
 function buildPanel() {
 const existing = document.getElementById(PANEL_ID);
-if (existing) { render(); return; }
+if (existing && ui) { ui.panel.classList.remove('minimised'); ui.minimised = false; render(); return; }
+if (existing) existing.remove();
 if (!document.body || typeof document.body.appendChild !== 'function') return;
-const panel = document.createElement('div');
-panel.id = PANEL_ID;
-panel.setAttribute('role', 'dialog');
-panel.setAttribute('aria-label', 'Lead Reset');
-panel.style.cssText = 'position:fixed;top:70px;right:16px;width:340px;max-width:calc(100vw - 32px);z-index:2147483000;background:#fff;color:#0f172a;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 10px 30px rgba(15,23,42,.18);font:13px/1.4 -apple-system,Segoe UI,Roboto,Arial,sans-serif;';
-panel.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:${COLORS.navy};color:#fff;border-radius:10px 10px 0 0;">
-<strong>Lead Reset</strong><button type="button" data-action="close" aria-label="Close" style="background:none;border:0;color:#fff;font-size:18px;cursor:pointer;line-height:1;">&times;</button></div>
-<div data-body style="padding:10px 12px;"></div>`;
-panel.addEventListener('click', onPanelClick);
-document.body.appendChild(panel);
+const host = document.createElement('div');
+host.id = PANEL_ID;
+if (typeof host.attachShadow !== 'function') return;
+const root = host.attachShadow({ mode: 'open' });
+root.innerHTML = `<style>${STYLE}</style>
+<div class="panel" role="dialog" aria-label="Lead Re setup">
+<div class="head"><div class="title"><span aria-hidden="true">&#8635;</span><span>Lead Re setup</span><span class="mini-status"></span></div>
+<button type="button" class="icon-btn" data-action="minimise" aria-label="Minimise">&ndash;</button>
+<button type="button" class="icon-btn" data-action="close" aria-label="Close">&times;</button></div>
+<div class="body" aria-live="polite"></div>
+</div>`;
+document.body.appendChild(host);
+const panel = root.querySelector('.panel');
+const head = root.querySelector('.head');
+if (!panel || !head) return;
+ui = { host, root, panel, minimised: false, listOpen: false, logOpen: false, stepsOpen: false };
+root.addEventListener('click', onPanelClick);
+root.addEventListener('toggle', (event) => {
+const section = event.target.getAttribute && event.target.getAttribute('data-section');
+if (section === 'list') ui.listOpen = event.target.open;
+if (section === 'log') ui.logOpen = event.target.open;
+if (section === 'steps') ui.stepsOpen = event.target.open;
+}, true);
+// Drag by the header so the panel can be moved off Konnect's buttons.
+head.addEventListener('mousedown', (event) => {
+if (event.target.closest('button')) return;
+const rect = panel.getBoundingClientRect();
+const dx = event.clientX - rect.left;
+const dy = event.clientY - rect.top;
+const move = (e) => {
+panel.style.left = `${Math.max(0, Math.min(window.innerWidth - 80, e.clientX - dx))}px`;
+panel.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, e.clientY - dy))}px`;
+panel.style.right = 'auto';
+};
+const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+window.addEventListener('mousemove', move);
+window.addEventListener('mouseup', up);
+event.preventDefault();
+});
 render();
 }
 
