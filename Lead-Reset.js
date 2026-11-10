@@ -688,48 +688,76 @@ const toggle = panel.querySelector('.accordion-toggle, a[ng-click="toggleOpen()"
 if (toggle) toggle.click();
 }
 
-// The notes go into the call notes box (Internal Notes), never the lead's
-// Initial notes box. Manage Appointments carries them onto the new lead, and the box
-// is cleared afterwards.
-function findCallNotesBox() {
-const inSection = document.querySelector('#section-call-notes textarea, [id*="call-notes"] textarea');
-if (inSection) return inSection;
-return visibleFirst(Array.from(document.querySelectorAll('textarea')).filter((t) =>
-/note/i.test(t.getAttribute('ng-model') || '') && !/initial/i.test(t.getAttribute('ng-model') || '')
-&& !t.closest('[ng-repeat^="theActivity in liveActivities"]')));
+// The new lead's own Call Notes box (LeadDetails.Notes), the one Konnect
+// Notes writes to; Manage Appointments takes the notes from there. Found
+// by its model name so a folded Details section does not matter.
+const CALL_NOTES_SELECTOR = 'textarea[ng-model$="LeadDetails.Notes"]';
+function findCallNotesBox(ctx) {
+if (ctx && ctx.newLead) {
+const own = controlsOf(ctx.newLead.activity, CALL_NOTES_SELECTOR)[0];
+if (own) return own;
+}
+const pane = document.querySelector('.tab-pane.active');
+return (pane && pane.querySelector(CALL_NOTES_SELECTOR)) || null;
+}
+
+// Writes like typing, so Konnect's model and its undo both follow, then
+// sets the model directly in case the events were not enough.
+function writeBox(box, text) {
+try {
+box.focus({ preventScroll: true });
+box.setSelectionRange(0, box.value.length);
+if (text) document.execCommand('insertText', false, text);
+else document.execCommand('delete', false);
+} catch (error) { /* set below */ }
+if (box.value !== text) setFieldValue(box, text);
+box.dispatchEvent(new Event('input', { bubbles: true }));
+box.dispatchEvent(new Event('change', { bubbles: true }));
+try {
+const model = window.angular && typeof window.angular.element(box).controller === 'function' ? window.angular.element(box).controller('ngModel') : null;
+if (model && model.$viewValue !== text) { model.$setViewValue(text); model.$render(); }
+} catch (error) { /* the events above still reach Konnect */ }
+box.blur();
+}
+
+function modelValue(box) {
+try {
+const model = window.angular && typeof window.angular.element(box).controller === 'function' ? window.angular.element(box).controller('ngModel') : null;
+return model ? model.$viewValue : box.value;
+} catch (error) { return box.value; }
 }
 
 async function fillNotes(ctx, lead) {
 if (!String(lead.notes || '').trim()) {
-throw new NeedsYou('No initial notes were found for this lead. Copy them from the closed lead into the call notes yourself.');
+throw new NeedsYou('No initial notes were found for this lead. Copy them from the closed lead into the new lead\'s Call Notes yourself.');
 }
-const box = findCallNotesBox();
+const box = findCallNotesBox(ctx);
 if (!box) {
 try { await navigator.clipboard.writeText(lead.notes); } catch (error) { /* shown below */ }
-throw new NeedsYou('Could not find the call notes box. The initial notes are on your clipboard: paste them into Internal Notes.');
+throw new NeedsYou('Could not find the new lead\'s Call Notes box. The initial notes are on your clipboard: paste them into Call Notes.');
 }
 ctx.notesBox = box;
-setFieldValue(box, lead.notes);
-await sleep(200);
-if (box.value !== lead.notes) {
+writeBox(box, lead.notes);
+await sleep(300);
+if (box.value !== lead.notes || modelValue(box) !== lead.notes) {
 try { await navigator.clipboard.writeText(lead.notes); } catch (error) { /* shown below */ }
-throw new NeedsYou('The notes did not copy exactly. They are on your clipboard: paste them over what is in the call notes.');
+throw new NeedsYou('The notes did not copy exactly. They are on your clipboard: paste them over what is in Call Notes.');
 }
 if (ctx.notesFrom === DESCRIPTION_SOURCE && !ctx.notesChecked) {
 ctx.notesChecked = true;
-throw new NeedsYou('The Initial Notes box was not found, so the notes came from the lead\'s description. Check the call notes match the closed lead\'s initial notes before carrying on.', { carryOnLabel: 'They match, carry on' });
+throw new NeedsYou('The Initial Notes box was not found, so the notes came from the lead\'s description. Check Call Notes matches the closed lead\'s initial notes before carrying on.', { carryOnLabel: 'They match, carry on' });
 }
-return `Initial notes from ${ctx.notesFrom || 'the closed lead'} copied exactly into the call notes`;
+return `Initial notes from ${ctx.notesFrom || 'the closed lead'} copied exactly into Call Notes`;
 }
 
 async function clearCallNotes(ctx) {
-const box = (ctx.notesBox && document.body.contains(ctx.notesBox)) ? ctx.notesBox : findCallNotesBox();
-if (!box) throw new NeedsYou('Delete the notes from the call notes box yourself.');
-if (box.value === '') return 'Call notes already empty';
-setFieldValue(box, '');
-await sleep(200);
-if (box.value !== '') throw new NeedsYou('The call notes did not clear. Delete them yourself.');
-return 'Call notes cleared';
+const box = (ctx.notesBox && document.body.contains(ctx.notesBox)) ? ctx.notesBox : findCallNotesBox(ctx);
+if (!box) throw new NeedsYou('Delete the notes from the new lead\'s Call Notes yourself.');
+if (box.value === '' && !modelValue(box)) return 'Call Notes already empty';
+writeBox(box, '');
+await sleep(300);
+if (box.value !== '' || modelValue(box)) throw new NeedsYou('Call Notes did not clear. Delete the notes yourself.');
+return 'Call Notes cleared';
 }
 
 const FIELD_LABELS = {
@@ -780,17 +808,35 @@ ctx.missedFields = missed;
 return `Filled ${done.length ? done.join(', ') : 'nothing'}${missed.length ? '. Not filled: ' + missed.join(', ') : ''}`;
 }
 
+function openDiaries() {
+return Array.from(document.querySelectorAll('.modal')).filter((m) => (isVisible(m) || m.classList.contains('in')) && /manage appointments/i.test(m.textContent || ''));
+}
+
+// The diary's own Close (or the cross). Its date picker has a hidden Close
+// button of its own, so only visible cancel() buttons count.
+async function closeDiaries() {
+for (let attempt = 0; attempt < 3 && openDiaries().length; attempt++) {
+const diary = openDiaries().pop();
+const cancels = Array.from(diary.querySelectorAll('button[ng-click="cancel()"]')).filter(isVisible);
+const close = cancels.find((b) => /^close$/i.test(b.textContent.trim())) || cancels[0];
+if (close) close.click();
+await waitFor(() => !document.body.contains(diary) || !isVisible(diary), 5000);
+}
+return openDiaries().length === 0;
+}
+
 async function manageAppointments(ctx) {
+// Try again after a diary stayed open: close it rather than open another.
+if (openDiaries().length) {
+if (!await closeDiaries()) throw new NeedsYou('The diary did not close. Close it yourself.');
+return 'Diary closed';
+}
 const button = ctx.newLead ? visibleFirst(controlsOf(ctx.newLead.activity, '[ng-click^="manageSalesEventBookings"]')) : null;
 if (!button) throw new NeedsYou('Press Manage Appointments on the new lead, then close the diary yourself.');
 button.click();
-const diary = await waitFor(() => openModal((m) => /manage appointments/i.test(m.textContent || '')), 15000);
-if (!diary) throw new NeedsYou('The diary did not open. Press Manage Appointments, then close the diary yourself.');
+if (!await waitFor(() => openDiaries().length > 0, 15000)) throw new NeedsYou('The diary did not open. Press Manage Appointments, then close the diary yourself.');
 await sleep(800);
-const close = byText(diary, 'button', /^close$/i)[0] || byClick(diary, 'cancel()');
-if (!close) throw new NeedsYou('Close the diary yourself.');
-close.click();
-if (!await waitFor(() => !document.body.contains(diary) || !isVisible(diary), 10000)) throw new NeedsYou('The diary did not close. Close it yourself.');
+if (!await closeDiaries()) throw new NeedsYou('The diary did not close. Close it yourself.');
 return 'Manage Appointments opened and closed';
 }
 
@@ -824,9 +870,9 @@ const STEPS = [
 { label: 'Find the new lead', run: findNewLead },
 { label: 'Set the outcome back', run: resetOutcome },
 { label: 'Match the dropdowns', run: fillLeadFields },
-{ label: 'Copy the notes into the call notes', run: fillNotes },
+{ label: 'Copy the notes into Call Notes', run: fillNotes },
 { label: 'Manage Appointments', run: manageAppointments },
-{ label: 'Clear the call notes', run: clearCallNotes },
+{ label: 'Clear Call Notes', run: clearCallNotes },
 { label: 'Check before parking', run: reviewBeforePark },
 { label: 'Clear the outcome and park', run: parkCall }
 ];
@@ -839,7 +885,7 @@ const HERE_STEPS = [
 { label: 'Find the new lead', run: findNewLead },
 { label: 'Set the outcome back', run: resetOutcome },
 { label: 'Match the dropdowns', run: fillLeadFields },
-{ label: 'Copy the notes into the call notes', run: fillNotes },
+{ label: 'Copy the notes into Call Notes', run: fillNotes },
 { label: 'Manage Appointments', run: manageAppointments },
 { label: 'Clear the call notes', run: clearCallNotes }
 ];
@@ -986,7 +1032,7 @@ render();
 const STYLE = `
 :host { all: initial; }
 * { box-sizing: border-box; }
-.panel { position: fixed; top: 70px; right: 16px; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 90px); display: flex; flex-direction: column; z-index: 2147483000;
+.panel { position: fixed; bottom: 16px; left: 16px; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); display: flex; flex-direction: column; z-index: 2147483000;
   --bg: #f2f2f7; --surface: #ffffff; --text: #1c1c1e; --text-2: #334155; --muted: #64748b; --border: #e2e8f0; --accent: #C2CB42; --head: #1c1c1e;
   --green: #047857; --amber: #b45309; --red: #d70015;
   background: var(--bg); color: var(--text); border-radius: 16px; box-shadow: 0 18px 40px rgba(15, 23, 42, .22), 0 2px 6px rgba(15, 23, 42, .08); overflow: hidden;
@@ -1407,7 +1453,7 @@ const dy = event.clientY - rect.top;
 const move = (e) => {
 panel.style.left = `${Math.max(0, Math.min(window.innerWidth - 80, e.clientX - dx))}px`;
 panel.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, e.clientY - dy))}px`;
-panel.style.right = 'auto';
+panel.style.bottom = 'auto';
 };
 const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
 window.addEventListener('mousemove', move);
