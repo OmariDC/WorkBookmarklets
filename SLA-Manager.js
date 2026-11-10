@@ -3953,26 +3953,18 @@ if (!result.tier) return 7;
 return result.tier;
 }
 
-// Bucket 0 is due before the next clock hour, including overdue, matching
-// "This hour" everywhere else. No due date sorts last.
-function hourBucketIndex(dueDate) {
-if (!dueDate) return Infinity;
-const thisHourCutoff = defaultHourCutoff();
-if (dueDate.getTime() < thisHourCutoff.getTime()) return 0;
-return 1 + Math.floor((dueDate.getTime() - thisHourCutoff.getTime()) / (60 * 60000));
-}
-
-// getDueDate is optional. When given, priority only reorders within a due-hour
-// bucket; without it every customer shares one bucket.
+// Category first (Send back, Check, then the Lead Checker tiers, then
+// unchecked), and within a category the most urgent due time first, so
+// each category stays together and Date Only sits above Warm or Nurture.
 function sortByLeadCheckerPriority(customers, leadCheckerResults, getDueDate) {
 const leadCheckerResultIndex = buildLeadCheckerResultIndex(leadCheckerResults);
+const dueMs = (c) => {
+const due = getDueDate ? getDueDate(c) : null;
+return due && typeof due.getTime === 'function' ? due.getTime() : Infinity;
+};
 return customers
-.map((c, index) => ({
-c, index,
-hourBucket: getDueDate ? hourBucketIndex(getDueDate(c)) : 0,
-rank: leadCheckerPriorityRank(c, leadCheckerResultIndex)
-}))
-.sort((a, b) => a.hourBucket - b.hourBucket || a.rank - b.rank || a.index - b.index)
+.map((c, index) => ({ c, index, due: dueMs(c), rank: leadCheckerPriorityRank(c, leadCheckerResultIndex) }))
+.sort((a, b) => a.rank - b.rank || (a.due === b.due ? 0 : a.due < b.due ? -1 : 1) || a.index - b.index)
 .map((entry) => entry.c);
 }
 
@@ -4091,45 +4083,35 @@ console.info('SLA Manager postClosureBadgeReplacement self-test passed (2/2)');
 }
 });
 
-// ===================================================================
-// Priority only reorders within a due hour, never letting a lead due hours
-// away outrank one due in minutes. Uses relative times so it passes at any
-// time of day.
-// ===================================================================
-runSelfTest('sortByLeadCheckerPriorityHourBucketSelfTest', function sortByLeadCheckerPriorityHourBucketSelfTest() {
+runSelfTest('sortByLeadCheckerPriorityCategorySelfTest', function sortByLeadCheckerPriorityCategorySelfTest() {
 const failures = [];
 function check(label, actual, expected) {
 if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
 }
-
-const thisHourCutoff = defaultHourCutoff();
-const dueThisHourSoon = new Date(thisHourCutoff.getTime() - 5 * 60000);
-const dueThisHourLater = new Date(thisHourCutoff.getTime() - 2 * 60000);
-const dueNextHour = new Date(thisHourCutoff.getTime() + 10 * 60000);
-
+const now = Date.now();
+const at = (mins) => new Date(now + mins * 60000);
 const customers = [
-{ name: 'Amy (this hour, no result)', email: 'amy@example.com', phone: '', createdText: 'T', slaDate: dueThisHourSoon },
-{ name: 'Ben (next hour, tier 1 - highest likelihood)', email: 'ben@example.com', phone: '', createdText: 'T', slaDate: dueNextHour },
-{ name: 'Cat (this hour, tier 1)', email: 'cat@example.com', phone: '', createdText: 'T', slaDate: dueThisHourLater },
-{ name: 'Dee (this hour, no result)', email: 'dee@example.com', phone: '', createdText: 'T', slaDate: dueThisHourSoon }
+{ name: 'Amy (nurture, missed)', email: 'amy@example.com', phone: '', createdText: 'T', slaDate: at(-20) },
+{ name: 'Ben (date only, due in 90m)', email: 'ben@example.com', phone: '', createdText: 'T', slaDate: at(90) },
+{ name: 'Cat (warm, due in 5m)', email: 'cat@example.com', phone: '', createdText: 'T', slaDate: at(5) },
+{ name: 'Dee (date only, due in 10m)', email: 'dee@example.com', phone: '', createdText: 'T', slaDate: at(10) },
+{ name: 'Eve (no result, missed)', email: 'eve@example.com', phone: '', createdText: 'T', slaDate: at(-30) },
+{ name: 'Fay (warm, missed)', email: 'fay@example.com', phone: '', createdText: 'T', slaDate: at(-1) }
 ];
-const leadCheckerResults = [
-{ email: 'ben@example.com', phone: '', created: 'T', tier: 1, tierName: 'CONFIRMED DATE & TIME' },
-{ email: 'cat@example.com', phone: '', created: 'T', tier: 1, tierName: 'CONFIRMED DATE & TIME' }
+const results = [
+{ email: 'amy@example.com', phone: '', created: 'T', tier: 5, tierName: 'NURTURE' },
+{ email: 'ben@example.com', phone: '', created: 'T', tier: 2, tierName: 'DATE ONLY' },
+{ email: 'cat@example.com', phone: '', created: 'T', tier: 4, tierName: 'WARM ENQUIRY' },
+{ email: 'dee@example.com', phone: '', created: 'T', tier: 2, tierName: 'DATE ONLY' },
+{ email: 'fay@example.com', phone: '', created: 'T', tier: 4, tierName: 'WARM ENQUIRY' }
 ];
-
-const sorted = sortByLeadCheckerPriority(customers, leadCheckerResults, (c) => c.slaDate).map((c) => c.name);
-check('Ben (next hour) never outranks anyone due this hour, despite the highest likelihood result', sorted[3], 'Ben (next hour, tier 1 - highest likelihood)');
-check('Within this hour, Cat (tier 1) sorts first', sorted[0], 'Cat (this hour, tier 1)');
-check('Within this hour, no-result customers keep their original relative order (Amy before Dee)', sorted.slice(1, 3).join(', '), 'Amy (this hour, no result), Dee (this hour, no result)');
-
-const noGetter = sortByLeadCheckerPriority(customers, leadCheckerResults).map((c) => c.name);
-check('With no getDueDate passed, hour bucketing is skipped entirely (backward compatible) - Ben (tier 1) sorts to the very top', noGetter[0], 'Ben (next hour, tier 1 - highest likelihood)');
-
+const sorted = sortByLeadCheckerPriority(customers, results, (c) => c.slaDate).map((c) => c.name);
+check('Date Only comes first even when due later than others', sorted[0], 'Dee (date only, due in 10m)');
+check('each category stays together, most urgent first', sorted.join(' | '), 'Dee (date only, due in 10m) | Ben (date only, due in 90m) | Fay (warm, missed) | Cat (warm, due in 5m) | Amy (nurture, missed) | Eve (no result, missed)');
 if (failures.length > 0) {
-reportSelfTestFailure('SLA Manager sortByLeadCheckerPriority-hour-bucket self-test FAILED:\n' + failures.join('\n'));
+reportSelfTestFailure('SLA Manager sortByLeadCheckerPriority-category self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Manager sortByLeadCheckerPriority-hour-bucket self-test passed (4/4)');
+console.info('SLA Manager sortByLeadCheckerPriority-category self-test passed (2/2)');
 }
 });
 
@@ -4709,7 +4691,7 @@ title="${currentPanelMode === 'morningChecks' ? 'Back to queue view' : 'Switch t
 ${showLeadChecker ? `<button onclick="window._toggleLeadCheckerPrioritySort();"
 style="background: ${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#cbd5e1'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#cbd5e1'}';"
-title="${isLeadCheckerPrioritySortEnabled() ? 'Lead Checker priority sort is on. Click to turn it off' : 'Lead Checker priority sort is off. Click to bring Confirmed and Warm leads to the top of each section'}">${svgIcon('bolt', 14)}</button>` : ''}
+title="${isLeadCheckerPrioritySortEnabled() ? 'Lead Checker priority sort is on. Click to turn it off' : 'Lead Checker priority sort is off. Click to group each section by Lead Checker category (Confirmed, Date only, Warm, Nurture), most urgent first within each'}">${svgIcon('bolt', 14)}</button>` : ''}
 <button onclick="window._toggleZenMode();"
 style="background: ${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isZenModeOn() ? '#38bdf8' : '#cbd5e1'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isZenModeOn() ? '#38bdf8' : '#cbd5e1'}';"
