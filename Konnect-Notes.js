@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.8.0'
+    version: '1.8.1'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -691,6 +691,10 @@
       .kn-bk-blocked { opacity: 0.55; }
       .kn-inbound-launcher { position: fixed; left: 20px; bottom: 20px; z-index: 2147482999; padding: 10px 16px; border: none; border-radius: 999px; background: #1c1c1e; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,0.3); }
       .kn-inbound-launcher:hover { background: #2c2c2e; }
+      .kn-phone-launcher { display: block; background: #1c1c1e !important; color: #fff !important; border: none !important; font-size: 18px; font-weight: 900; line-height: 1; cursor: pointer; }
+      .kn-phone-launcher:hover { background: #f9772e !important; }
+      .kn-bk-search-row { align-items: flex-end; }
+      .kn-bk-search-button { flex: 0 0 auto; margin-bottom: 7px; padding: 7px 16px; }
       .kn-bk-version { margin-top: 6px; text-align: right; font-size: 10px; color: #aeaeb2; }
       @media (max-width: 720px) {
         #${PALETTE_ID} { width: 200px; }
@@ -725,8 +729,11 @@
   function positionPalette() {
     if (state.palette && state.view === 'booking' && inboundContext()) {
       /* No lead screen yet: dock on the right so the inbound screens stay usable. */
-      const width = Math.min(400, window.innerWidth - 24);
-      state.palette.style.left = `${Math.max(8, window.innerWidth - width - 16)}px`;
+      /* Sit just left of Konnect's Phone column so Hang Up and Hold stay reachable. */
+      const anchor = phoneColumnAnchor();
+      const rightEdge = anchor ? Math.round(anchor.getBoundingClientRect().left) - 12 : window.innerWidth - 16;
+      const width = Math.min(400, rightEdge - 8);
+      state.palette.style.left = `${Math.max(8, rightEdge - width)}px`;
       state.palette.style.top = '16px';
       state.palette.style.width = `${width}px`;
       state.palette.style.maxHeight = `${Math.max(320, window.innerHeight - 32)}px`;
@@ -2161,7 +2168,7 @@
     const label = (list, value) => (list.find((item) => item.value === value) || {}).label || '';
     if (id === 'customer') {
       const c = inbound.customer;
-      return [realText(c.name), c.dealer ? dealerLabel(c.dealer) : ''].filter(Boolean).join(' · ') || 'Name and dealer needed';
+      return [realText(c.name) || realText(c.mobile), c.dealer ? dealerLabel(c.dealer) : ''].filter(Boolean).join(' · ') || 'Search by number, or add a new customer';
     }
     if (id === 'contact') {
       const parts = [];
@@ -2216,7 +2223,6 @@
 
   function sectionMissing(draft, id) {
     const d = draft.data;
-    if (id === 'customer') return !realText(inbound.customer.name) || !inbound.customer.dealer;
     if (id === 'type') return !d.type;
     if (id === 'when') return d.type !== 'national' && (!d.day || !d.time);
     if (id === 'vehicle') return !d.vehicles.some((v) => realText(v.make) || realText(v.model) || realText(v.reg)) && !realText(d.category);
@@ -2545,7 +2551,7 @@
 
   /* Required sections first, in the order an agent usually fills them. */
   const BOOKING_SECTIONS = [
-    { id: 'customer', title: 'Customer', required: true, render: (draft, body) => renderCustomerSection(draft, body),
+    { id: 'customer', title: 'Customer', render: (draft, body) => renderCustomerSection(draft, body),
       hidden: () => state.booking?.key !== INBOUND_KEY },
     { id: 'type', title: 'Appointment', required: true, prompt: 'What is the appointment?', render: renderTypeSection },
     { id: 'when', title: 'When', required: (d) => d.type !== 'national', prompt: 'Tap a day, then a time', render: renderWhenSection },
@@ -2570,6 +2576,7 @@
   function sectionTouched(draft, id) {
     const d = draft.data;
     if (id === 'contact') return d.contact !== 'none' || Boolean(normaliseText(d.fao));
+    if (id === 'customer') return Boolean(realText(inbound.customer.name) || realText(inbound.customer.mobile));
     if (id === 'px') return d.px.status !== 'unmentioned';
     if (id === 'payment') return d.payment.kind !== 'unmentioned';
     if (id === 'notes') return Boolean(normaliseText(d.notesText) || d.reserved || normaliseText(d.onBehalfOf) || d.emailNote || d.td24);
@@ -2900,7 +2907,7 @@
 
   function searchKonnect() {
     const c = inbound.customer;
-    const query = realText(c.mobile).replace(/\s+/g, '') || realText(c.name);
+    const query = realText(c.mobile).replace(/[^\d+]/g, '').replace(/^\+44/, '0') || realText(c.name);
     const button = document.getElementById('btnSearchCustomers');
     if (!button || !query) {
       showToast(button ? 'Add a mobile or name first' : 'Open Customer Call first to search');
@@ -3017,10 +3024,20 @@
   function renderCustomerSection(draft, body) {
     const c = inbound.customer;
     const update = (key) => (value) => { c[key] = value; inbound.pending = true; changed(draft); };
-    const row = element('div', 'kn-bk-row');
-    row.appendChild(bkInput('Name', c.name, update('name')));
-    row.appendChild(bkInput('Mobile', c.mobile, update('mobile'), { inputMode: 'tel' }));
-    body.appendChild(row);
+    /* Search by number first; nothing else is needed for this. */
+    const searchRow = element('div', 'kn-bk-row kn-bk-search-row');
+    const mobileField = bkInput('Mobile', c.mobile, update('mobile'), { inputMode: 'tel', placeholder: '07700 900123' });
+    mobileField.querySelector('input').addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        searchKonnect();
+      }
+    });
+    searchRow.appendChild(mobileField);
+    searchRow.appendChild(button('Search', 'kn-primary kn-bk-search-button', searchKonnect));
+    body.appendChild(searchRow);
+    body.appendChild(element('div', 'kn-muted kn-bk-gap', 'New customer? Add their details below and fill the New Customer form.'));
+    body.appendChild(bkInput('Name', c.name, update('name')));
     body.appendChild(bkInput('Email', c.email, update('email')));
     const row2 = element('div', 'kn-bk-row');
     row2.appendChild(bkInput('Postcode', c.postcode, update('postcode')));
@@ -3045,10 +3062,7 @@
     body.appendChild(bkChips([{ value: '', label: 'Auto (vehicle make)' }, ...KONNECT_BRANDS.map((name) => ({ value: name, label: name }))],
       c.brand, (value) => { c.brand = value; inbound.pending = true; changed(draft, true); }, 'kn-bk-sub'));
 
-    const actions = element('div', 'kn-bk-row kn-bk-gap');
-    actions.appendChild(button('Search Konnect', '', searchKonnect));
-    actions.appendChild(button('Fill new customer form', 'kn-primary', fillCustomerForm));
-    body.appendChild(actions);
+    body.appendChild(button('Fill new customer form', 'kn-primary kn-bk-add', fillCustomerForm));
     body.appendChild(element('div', 'kn-muted', 'Customer details stay in this page only and are wiped when the booking moves onto the new lead.'));
   }
 
@@ -3063,23 +3077,49 @@
     body.appendChild(card);
   }
 
+  /* Konnect's Phone column (bottom right, on every screen) ends with the
+     red Hang Up button. The Booking button goes straight under it, styled
+     like its neighbours, and only shows while on the inbound screens. */
+  function phoneColumnAnchor() {
+    const hangUp = Array.from(document.querySelectorAll('button[ng-click="endCall()"]')).find(isVisible);
+    return hangUp || null;
+  }
+
   function updateInboundLauncher() {
     let launcher = document.getElementById(INBOUND_LAUNCHER_ID);
-    const show = inboundContext();
-    if (!show) {
+    if (!inboundContext()) {
       if (launcher) launcher.style.display = 'none';
       return;
     }
+    const anchor = phoneColumnAnchor();
     if (!launcher) {
-      launcher = element('button', 'kn-ui kn-inbound-launcher', '⚡ Booking');
+      launcher = element('button', 'kn-ui kn-inbound-launcher');
       launcher.id = INBOUND_LAUNCHER_ID;
       launcher.type = 'button';
       launcher.title = 'Booking (Alt+B)';
-      launcher.addEventListener('click', () => {
+      launcher.setAttribute('aria-label', 'Open booking');
+      launcher.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
         if (state.open && state.view === 'booking') closePalette();
         else openBooking();
       });
-      document.body.appendChild(launcher);
+    }
+    if (anchor) {
+      if (launcher.previousElementSibling !== anchor) anchor.insertAdjacentElement('afterend', launcher);
+      /* Same size and shape as the Phone buttons, without their colour or actions. */
+      const keep = Array.from(anchor.classList).filter((name) => !/^btn-(danger|success|info|warning|primary|default|switch)$/.test(name) && !/^ng-/.test(name));
+      launcher.className = `${keep.join(' ')} kn-ui kn-phone-launcher`;
+      launcher.textContent = '\u26A1';
+      const size = anchor.getBoundingClientRect();
+      launcher.style.width = `${Math.round(size.width)}px`;
+      launcher.style.height = `${Math.round(size.height)}px`;
+    } else {
+      if (launcher.parentElement !== document.body) document.body.appendChild(launcher);
+      launcher.className = 'kn-ui kn-inbound-launcher';
+      launcher.textContent = '\u26A1 Booking';
+      launcher.style.width = '';
+      launcher.style.height = '';
     }
     launcher.style.display = '';
   }
