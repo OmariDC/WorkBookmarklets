@@ -4077,7 +4077,7 @@ const LEAD_CHECKER_IMPORT_KEY = '_slaLeadCheckerImportState';
 // Matches Konnect-Lead-Checker.js's own buildRawNotesTsvForExtract
 // header exactly - kept in lockstep since the two files can't share a
 // module.
-const LEAD_CHECKER_IMPORT_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank', 'PostClosureReason'];
+const LEAD_CHECKER_IMPORT_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank', 'PostClosureReason', 'PostClosureEvidence'];
 
 function loadLeadCheckerImportState() {
 try {
@@ -4111,9 +4111,9 @@ const lines = String(rawText || '').split(/\r\n|\r|\n/).filter((line) => line.tr
 if (lines.length === 0) return { rows: [], headerOk: false, error: 'No input.' };
 
 const header = lines[0].split('\t').map((h) => h.trim());
-// An export from a Lead Checker opened before the reason column existed
-// is one column shorter and still accepted.
-const headerOk = header.length >= LEAD_CHECKER_IMPORT_HEADER.length - 1 && header.length <= LEAD_CHECKER_IMPORT_HEADER.length
+// Exports from an older Lead Checker panel, without the newer trailing
+// columns (from PriorityRank on), are still accepted.
+const headerOk = header.length >= 17 && header.length <= LEAD_CHECKER_IMPORT_HEADER.length
 && header.every((h, i) => h === LEAD_CHECKER_IMPORT_HEADER[i]);
 if (!headerOk) {
 return { rows: [], headerOk: false, error: `Header does not match expected columns: ${LEAD_CHECKER_IMPORT_HEADER.join('\t')}` };
@@ -4146,6 +4146,7 @@ reason: (cells[13] || '').trim(),
 dedupeKey: (cells[14] || '').trim(),
 postClosureAction: (cells[15] || '').trim(),
 postClosureReason: (cells[17] || '').trim(),
+postClosureEvidence: (cells[18] || '').trim(),
 priorityRank: Number.isFinite(parsedRank) ? parsedRank : 700
 };
 });
@@ -4186,9 +4187,10 @@ if (!(ordered[2] && ordered[2].name === 'Amy Adams')) failures.push(`Expected Am
 
 const withReason = parseLeadCheckerImportTsv([
 LEAD_CHECKER_IMPORT_HEADER.join('\t'),
-['Eve Evans', '07700900005', 'eve@example.com', 'Post Closure Processing', 'Citroen - Enquiry - New', '', '-', '5', 'NURTURE', '', '', '', 'medium', '', '', 'send back through', '-2', 'Email only'].join('\t')
+['Eve Evans', '07700900005', 'eve@example.com', 'Post Closure Processing', 'Citroen - Enquiry - New', '', '-', '5', 'NURTURE', '', '', '', 'medium', '', '', 'send back through', '-2', 'Email only', 'Sent through: Email only lead'].join('\t')
 ].join('\n'));
 if (!(withReason.rows[0] && withReason.rows[0].postClosureReason === 'Email only')) failures.push('Expected the PostClosureReason column to be read');
+if (!(withReason.rows[0] && withReason.rows[0].postClosureEvidence === 'Sent through: Email only lead')) failures.push('Expected the PostClosureEvidence column to be read');
 if (pickLeadCheckerBadge(withReason.rows[0]).label !== 'send back through: Email only') failures.push('Expected the badge to show the send back reason');
 const olderExport = parseLeadCheckerImportTsv(sampleTsv.split('\n').map((l) => l.split('\t').slice(0, 17).join('\t')).join('\n'));
 if (!olderExport.headerOk) failures.push('Expected an export without the reason column to still be accepted');
@@ -5319,7 +5321,7 @@ renderRow: (c) => {
 // entirely). The function now handles both fields itself.
 const queuePosition = findAgentQueuePositionInSnapshot({ email: c.email, phone: c.mobile }, agentQueueSnapshot);
 const leadChecker = findLeadCheckerResultForCustomerIndexed(c, leadCheckerResultIndex);
-const leadCheckerTitle = leadChecker ? [leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
+const leadCheckerTitle = leadChecker ? [leadChecker.postClosureEvidence ? `Why: ${leadChecker.postClosureEvidence}` : '', leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
 const leadCheckerBadge = pickLeadCheckerBadge(leadChecker);
 const urgencyBadge = pickUrgencyBadge(null, queuePosition, c.assigned);
 const secondaryLine = buildSecondaryLine(urgencyBadge, null, queuePosition, c.assigned);
@@ -5393,7 +5395,7 @@ toggleHandlerName: '_toggleTier',
 renderRow: (c) => {
 const urgency = slaUrgencyInfo(c);
 const leadChecker = findLeadCheckerResultForCustomerIndexed(c, leadCheckerResultIndex);
-const leadCheckerTitle = leadChecker ? [leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
+const leadCheckerTitle = leadChecker ? [leadChecker.postClosureEvidence ? `Why: ${leadChecker.postClosureEvidence}` : '', leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
 const queuePosition = findAgentQueuePositionInSnapshot(c, agentQueueSnapshot);
 const leadCheckerBadge = pickLeadCheckerBadge(leadChecker);
 const urgencyBadge = pickUrgencyBadge(urgency, queuePosition, c.assigned);
