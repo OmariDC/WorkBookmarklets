@@ -170,6 +170,7 @@ return activities.find((a) => String(a.ID) !== String(lead.activityId)
 // The closed lead is on the agent desktop page too, so its own campaign,
 // dropdowns and notes are used over what the Lead Checker read. Returns
 // the lead to reset and where its notes came from.
+const DESCRIPTION_SOURCE = 'the closed lead\'s description';
 const CLOSED_FIELD_KEYS = /^(LeadType|ChannelBadge|SourceOfEnquiry|LeadRequest|VehicleOfInterest|HasPartExchange)/;
 function adoptClosedLead(lead, closed, pageNotes) {
 if (!closed) return { lead, notesFrom: lead.notes ? 'the Lead Checker' : '' };
@@ -179,9 +180,15 @@ Object.keys(details).forEach((key) => {
 const value = details[key];
 if (CLOSED_FIELD_KEYS.test(key) && value != null && value !== '' && typeof value !== 'object') fields[key] = value;
 });
+// The box under the closed lead's "Initial Notes" label is what staff
+// copy by hand; the stored fields are fallbacks.
 const noteKey = Object.keys(details).find((k) => /initial.?notes?$/i.test(k) && typeof details[k] === 'string' && details[k].trim());
-const notes = noteKey ? details[noteKey] : (pageNotes && pageNotes.trim() ? pageNotes : lead.notes);
-const notesFrom = noteKey || (pageNotes && pageNotes.trim()) ? 'the closed lead' : (lead.notes ? 'the Lead Checker' : '');
+const description = closed.SalesLead && typeof closed.SalesLead.Description === 'string' ? closed.SalesLead.Description.trim() : '';
+let notes = lead.notes;
+let notesFrom = lead.notes ? 'the Lead Checker' : '';
+if (pageNotes && pageNotes.trim()) { notes = pageNotes.trim(); notesFrom = 'the closed lead\'s Initial Notes box'; }
+else if (noteKey) { notes = details[noteKey]; notesFrom = 'the closed lead'; }
+else if (description) { notes = description; notesFrom = DESCRIPTION_SOURCE; }
 return { lead: { ...lead, campaign: closed.CampaignName || lead.campaign, fields, notes }, notesFrom };
 }
 
@@ -268,6 +275,9 @@ const fromPage = adoptClosedLead({ activityId: '77000003', campaign: 'Peugeot - 
 check('the closed lead on the page sets the campaign', fromPage.lead.campaign, 'Enquiry - Used');
 check('and its dropdowns and notes', [fromPage.lead.fields.LeadTypeID, fromPage.lead.notes, fromPage.notesFrom, 'MonthlyPayment' in fromPage.lead.fields], [2, 'Wants a call\nafter 5', 'the closed lead', false]);
 check('notes fall back to the Lead Checker', adoptClosedLead({ campaign: 'X', notes: 'Read on Live', fields: {} }, { CampaignName: 'X', SalesLead: { LeadDetails: {} } }, '').notesFrom, 'the Lead Checker');
+check('the Initial Notes box wins', adoptClosedLead({ campaign: 'X', notes: '', fields: {} }, { CampaignName: 'X', SalesLead: { Description: 'Desc', LeadDetails: { InitialNotes: 'Key' } } }, ' Box notes ').lead.notes, 'Box notes');
+check('the description is the last page fallback', adoptClosedLead({ campaign: 'X', notes: '', fields: {} }, { CampaignName: 'X', SalesLead: { Description: 'Desc', LeadDetails: {} } }, '').notesFrom, DESCRIPTION_SOURCE);
+check('outcome to bring up Add New Lead', [chooseRevealOutcome(['(Select a Call Outcome)', 'Spoke to Customer', 'Update Outcomes (No Call Made)']), chooseRevealOutcome(['(Select a Call Outcome)', 'Booking Opportunity', 'Amend Booking', 'No Booking', 'Manual Reschedule', 'Do Not Contact'])], [2, 3]);
 check('no notes anywhere is reported', adoptClosedLead({ campaign: 'X', notes: '', fields: {} }, null, '').notesFrom, '');
 const resetDone = { ID: 77000009, CampaignName: 'Peugeot - PX Valuation - New', ManuallyCreated: true, CreatedDate: '2026-11-09T16:00:00+00:00' };
 check('a hand-made lead on the campaign after the closed one is', findEarlierReset(history.concat(resetDone), pxLead), resetDone);
@@ -440,6 +450,18 @@ return String((lead && (lead.ID || lead.ActivityGuid)) || activity.ID || '');
 // THE STEPS
 // ===================================================================
 
+// Pure. Index of the outcome that brings up Add New Lead: Update Outcomes
+// where offered (outbound), otherwise a harmless one (inbound offers
+// Booking Opportunity, Amend Booking, No Booking...). -1 when none fits.
+function chooseRevealOutcome(optionTexts) {
+const prefer = [/^update outcomes/i, /^no booking$/i, /^spoke to customer$/i];
+for (const re of prefer) {
+const i = optionTexts.findIndex((t) => re.test(String(t).trim()));
+if (i >= 0) return i;
+}
+return optionTexts.findIndex((t) => !isPlaceholderOption(t) && !/do not contact|reject|reschedule|amend/i.test(t));
+}
+
 class NeedsYou extends Error {
 constructor(message, options) {
 super(message);
@@ -539,10 +561,20 @@ throw new NeedsYou(ambiguous
 : `No customer found for ${lead.name}${lead.reg ? ' or ' + lead.reg : ''}. Search and press Select yourself.`);
 }
 
-function closedLeadPageNotes(el) {
-if (!el) return '';
-const box = Array.from(el.querySelectorAll('textarea')).find((t) => /initial/i.test(t.getAttribute('ng-model') || '') && t.value.trim());
-return box ? box.value : '';
+// The box directly under the closed lead's "Initial Notes" label.
+function closedLeadPageNotes(activity) {
+if (!activity) return '';
+const labels = Array.from(document.querySelectorAll('label, dt, th, strong, b, span, div, p, h4, h5, h6'))
+.filter((el) => el.children.length <= 1 && /^initial notes:?$/i.test((el.textContent || '').replace(/\s+/g, ' ').trim()) && belongsTo(el, activity));
+for (const label of labels) {
+const candidates = [label.nextElementSibling, label.parentElement && label.parentElement.nextElementSibling].filter(Boolean);
+for (const c of candidates) {
+const box = c.matches('textarea, input') ? c : c.querySelector('textarea, input[type="text"], input:not([type])');
+const value = String(box ? box.value : c.textContent || '').trim();
+if (value) return value;
+}
+}
+return '';
 }
 
 async function checkNotAlreadyReset(ctx, lead) {
@@ -554,7 +586,7 @@ if (lead.activityId && activities.length && !closed && !ctx.allowOtherCustomer) 
 ctx.allowOtherCustomer = true;
 throw new NeedsYou(`The closed lead is not on this customer, so this may be the wrong ${lead.name}. Go back and pick the right customer, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on' });
 }
-const adopted = adoptClosedLead(lead, closed && closed.activity, closedLeadPageNotes(closed && closed.el));
+const adopted = adoptClosedLead(lead, closed && closed.activity, closedLeadPageNotes(closed && closed.activity));
 Object.assign(lead, adopted.lead);
 ctx.notesFrom = adopted.notesFrom;
 const earlier = findEarlierReset(activities, lead);
@@ -568,11 +600,21 @@ return closed ? `Closed ${lead.campaign} lead found on this customer, not set up
 
 async function chooseUpdateOutcomes() {
 const select = visibleFirst(document.querySelectorAll('select[ng-model="selected.CallOutcome"]'));
-if (!select || !chooseByText(select, OUTCOME_UPDATE_ONLY)) throw new NeedsYou(`Choose "${OUTCOME_UPDATE_ONLY}" as the call outcome yourself.`);
+const index = select ? chooseRevealOutcome(optionTexts(select)) : -1;
+if (index < 0) throw new NeedsYou(`Choose "${OUTCOME_UPDATE_ONLY}" (or any outcome) so Add New Lead appears.`);
+chooseByIndex(select, index);
+const chosen = optionTexts(select)[index];
 if (!await waitFor(() => { const b = byClick(document, 'createNewSalesLead'); return b && isVisible(b) ? b : null; }, 5000)) {
 throw new NeedsYou('The Add New Lead button did not appear. Choose the outcome again yourself.');
 }
-return 'Outcome set to Update Outcomes (No Call Made)';
+return `Outcome set to ${chosen} to bring up Add New Lead`;
+}
+
+// Staff set the outcome back as soon as the new lead exists.
+async function resetOutcome() {
+const select = visibleFirst(document.querySelectorAll('select[ng-model="selected.CallOutcome"]'));
+if (!select || !chooseByText(select, OUTCOME_NONE)) throw new NeedsYou(`Set the call outcome back to "${OUTCOME_NONE}" yourself.`);
+return 'Call outcome set back to (Select a Call Outcome)';
 }
 
 async function addNewLead(ctx, lead) {
@@ -621,6 +663,13 @@ return 'New lead found';
 // Konnect draws each lead's sections in a shared tab area, away from the
 // lead's own block, so a lead's controls are found by the lead they belong
 // to rather than by where they sit on the page.
+function belongsTo(el, activity) {
+for (let scope = scopeOf(el), depth = 0; scope && depth < 8; scope = scope.$parent, depth++) {
+if (scope.theActivity === activity) return true;
+}
+return false;
+}
+
 function controlsOf(activity, selector) {
 return Array.from(document.querySelectorAll(selector)).filter((el) => {
 // Widgets with their own scope reach the lead through their parents.
@@ -665,6 +714,10 @@ await sleep(200);
 if (box.value !== lead.notes) {
 try { await navigator.clipboard.writeText(lead.notes); } catch (error) { /* shown below */ }
 throw new NeedsYou('The notes did not copy exactly. They are on your clipboard: paste them over what is in the call notes.');
+}
+if (ctx.notesFrom === DESCRIPTION_SOURCE && !ctx.notesChecked) {
+ctx.notesChecked = true;
+throw new NeedsYou('The Initial Notes box was not found, so the notes came from the lead\'s description. Check the call notes match the closed lead\'s initial notes before carrying on.', { carryOnLabel: 'They match, carry on' });
 }
 return `Initial notes from ${ctx.notesFrom || 'the closed lead'} copied exactly into the call notes`;
 }
@@ -769,12 +822,26 @@ const STEPS = [
 { label: 'Choose Update Outcomes', run: chooseUpdateOutcomes },
 { label: 'Add the new lead', run: addNewLead },
 { label: 'Find the new lead', run: findNewLead },
+{ label: 'Set the outcome back', run: resetOutcome },
 { label: 'Match the dropdowns', run: fillLeadFields },
 { label: 'Copy the notes into the call notes', run: fillNotes },
 { label: 'Manage Appointments', run: manageAppointments },
 { label: 'Clear the call notes', run: clearCallNotes },
 { label: 'Check before parking', run: reviewBeforePark },
 { label: 'Clear the outcome and park', run: parkCall }
+];
+
+// On the customer already open (an inbound, say): no search and no
+// parking; it stops in the new lead.
+const HERE_STEPS = [
+{ label: 'Bring up Add New Lead', run: chooseUpdateOutcomes },
+{ label: 'Add the new lead', run: addNewLead },
+{ label: 'Find the new lead', run: findNewLead },
+{ label: 'Set the outcome back', run: resetOutcome },
+{ label: 'Match the dropdowns', run: fillLeadFields },
+{ label: 'Copy the notes into the call notes', run: fillNotes },
+{ label: 'Manage Appointments', run: manageAppointments },
+{ label: 'Clear the call notes', run: clearCallNotes }
 ];
 
 // ===================================================================
@@ -813,10 +880,68 @@ state.paused = null;
 r(answer);
 }
 
+// Runs one lead through a list of steps. Returns 'Done', 'Skipped', or
+// null when stopped.
+async function runLeadSteps(lead, steps) {
+state.steps = steps;
+let outcome = 'Done';
+for (state.stepIndex = 0; state.stepIndex < steps.length;) {
+if (state.stopRequested) { outcome = null; break; }
+const step = steps[state.stepIndex];
+render();
+try {
+const message = await step.run(state.ctx, lead);
+if (message) addLog(message);
+state.stepIndex++;
+} catch (error) {
+const needsYou = error instanceof NeedsYou ? error : new NeedsYou(`${step.label} went wrong: ${error && error.message}. Do this step yourself.`);
+addLog(step.run === reviewBeforePark ? 'Waiting for your check' : `Stopped at "${step.label}"`);
+const answer = await waitForUser(needsYou);
+if (answer === 'retry') continue;
+if (answer === 'carry') { state.stepIndex++; continue; }
+if (answer === 'skip') { outcome = 'Skipped'; break; }
+outcome = null;
+state.stopRequested = true;
+break;
+}
+}
+return outcome;
+}
+
+// Sets one of the open customer's leads up again and stops in the new lead.
+async function runHere(activityId) {
+if (state.running) return;
+const entry = liveActivities().find(({ activity }) => String(activity.ID) === String(activityId));
+if (!entry) { addLog('That lead is no longer on the page'); return; }
+const salesLead = entry.activity.SalesLead || {};
+const base = { activityId: String(entry.activity.ID), name: salesLead.CustomerName || 'This customer', reg: '', campaign: '', notes: '', voi: '', px: '', fields: {} };
+const adopted = adoptClosedLead(base, entry.activity, closedLeadPageNotes(entry.activity));
+const lead = adopted.lead;
+state.running = true;
+state.mode = 'here';
+state.hereLead = lead;
+state.stopRequested = false;
+state.ctx = { log: addLog, settings: loadSettings(), notesFrom: adopted.notesFrom };
+addLog(`Setting up ${lead.campaign} again on this customer`);
+try {
+const outcome = await runLeadSteps(lead, HERE_STEPS);
+if (outcome === 'Done') addLog('Lead set up again. You are in the new lead.');
+} catch (error) {
+addLog(`Stopped: ${error && error.message}`);
+} finally {
+state.running = false;
+state.mode = null;
+state.paused = null;
+resolvePause = null;
+render();
+}
+}
+
 async function runAll() {
 if (state.running) return;
 const settings = loadSettings();
 state.running = true;
+state.mode = 'batch';
 state.stopRequested = false;
 render();
 try {
@@ -835,27 +960,7 @@ if (progress.byActivity[lead.activityId]) continue;
 state.currentIndex = i;
 state.ctx = { log: addLog, settings };
 addLog(`Started ${lead.name}`);
-let outcome = 'Done';
-for (state.stepIndex = 0; state.stepIndex < STEPS.length;) {
-if (state.stopRequested) { outcome = null; break; }
-const step = STEPS[state.stepIndex];
-render();
-try {
-const message = await step.run(state.ctx, lead);
-if (message) addLog(message);
-state.stepIndex++;
-} catch (error) {
-const needsYou = error instanceof NeedsYou ? error : new NeedsYou(`${step.label} went wrong: ${error && error.message}. Do this step yourself.`);
-addLog(step.run === reviewBeforePark ? 'Waiting for your check' : `Stopped at "${step.label}"`);
-const answer = await waitForUser(needsYou);
-if (answer === 'retry') continue;
-if (answer === 'carry') { state.stepIndex++; continue; }
-if (answer === 'skip') { outcome = 'Skipped'; break; }
-outcome = null;
-state.stopRequested = true;
-break;
-}
-}
+const outcome = await runLeadSteps(lead, STEPS);
 if (outcome) {
 progress.byActivity[lead.activityId] = outcome;
 saveProgress(progress);
@@ -954,6 +1059,8 @@ summary .count { background: var(--bg); color: var(--muted); border-radius: 999p
 .log { padding: 0 12px 10px; font-size: 11px; color: var(--muted); max-height: 150px; overflow-y: auto; }
 .log div { padding: 2px 0; }
 .empty { text-align: center; padding: 8px 4px; }
+.pick { display: flex; gap: 9px; align-items: flex-start; padding: 7px 0; border-top: 1px solid var(--border); cursor: pointer; font-size: 12.5px; }
+.pick input { margin: 3px 0 0; accent-color: #1c1c1e; }
 .empty strong { display: block; font-size: 14px; margin-bottom: 4px; }
 `;
 
@@ -1007,12 +1114,51 @@ const cls = i < state.stepIndex ? 'done' : i === state.stepIndex ? (state.paused
 const mark = cls === 'done' ? '&#10003;' : cls === 'needs' ? '!' : '';
 return `<li class="step ${cls}"><span class="dot" aria-hidden="true">${mark}</span>${escapeHtml(step.label)}</li>`;
 };
-const done = STEPS.slice(0, state.stepIndex);
-const rest = STEPS.slice(state.stepIndex).map((step, i) => row(step, i + state.stepIndex)).join('');
+const steps = state.steps || STEPS;
+const done = steps.slice(0, state.stepIndex);
+const rest = steps.slice(state.stepIndex).map((step, i) => row(step, i + state.stepIndex)).join('');
 const folded = done.length
 ? `<li><details class="done-steps"${ui.stepsOpen ? ' open' : ''} data-section="steps"><summary class="step done"><span class="dot" aria-hidden="true">&#10003;</span>${done.length} step${done.length === 1 ? '' : 's'} done</summary><ol class="steps inner">${done.map(row).join('')}</ol></details></li>`
 : '';
 return `<ol class="steps">${folded}${rest}</ol>`;
+}
+
+function outcomeLabel(activity) {
+const hierarchy = String(activity.OutcomeFullHierarchy || '').trim();
+if (!hierarchy || hierarchy === 'None') return 'Open';
+return hierarchy.split('->').pop().trim();
+}
+
+function shortDate(iso) {
+const d = new Date(iso);
+return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-GB');
+}
+
+// The newest closed lead, or the newest lead when none is closed.
+function defaultHereChoice(activities) {
+const closed = activities.filter((a) => outcomeLabel(a) !== 'Open');
+const pool = closed.length ? closed : activities;
+return pool.slice().sort((x, y) => new Date(y.CreatedDate) - new Date(x.CreatedDate))[0] || null;
+}
+
+function renderHereCard() {
+const activities = liveActivities().map(({ activity }) => activity);
+if (!activities.some((a) => String(a.ID) === String(ui.hereChoice))) {
+const pick = defaultHereChoice(activities);
+ui.hereChoice = pick ? String(pick.ID) : '';
+}
+const rows = activities.map((a) => {
+const outcome = outcomeLabel(a);
+const checked = String(a.ID) === String(ui.hereChoice) ? ' checked' : '';
+const meta = [shortDate(a.CreatedDate), a.SalesLead && a.SalesLead.DealerName, outcome === 'Open' ? 'Open' : `Closed: ${outcome}`].filter(Boolean).join(' · ');
+return `<label class="pick"><input type="radio" name="hereLead" value="${escapeHtml(String(a.ID))}" data-action="pickHere"${checked}><span><strong>${escapeHtml(a.CampaignName || 'Lead')}</strong><br><span class="muted small">${escapeHtml(meta)}</span></span></label>`;
+}).join('');
+return `<div class="card">
+<strong>This customer</strong>
+<div class="muted small" style="margin:2px 0 6px;">Pick the lead to set up again. It stops in the new lead; the call is left to you.</div>
+${rows}
+<div style="margin-top:10px;">${btn('here', 'Set up again', 'primary', 'wide')}</div>
+</div>`;
 }
 
 function render() {
@@ -1033,7 +1179,22 @@ if (versionText) parts.push(`<div class="version${versionState.newer ? ' newer' 
 if (selfTestFailures.length) parts.push(`<div class="alert red" role="alert"><strong>Self-test failed.</strong> Please send this on: ${escapeHtml(selfTestFailures[0])}</div>`);
 if (!onDesktop) parts.push(`<div class="alert amber">Open this on the agent desktop to set leads up again.</div>`);
 
-if (state.running) {
+if (state.running && state.mode === 'here') {
+const lead = state.hereLead;
+parts.push(`<div class="card">
+<div class="progress-top"><span>This customer</span><span>Stops in the new lead</span></div>
+<div class="lead-name">${escapeHtml(lead.name)}</div><div class="lead-meta">${escapeHtml(lead.campaign || '')}</div>
+${renderSteps()}
+</div>`);
+if (state.paused) {
+parts.push(`<div class="card needs-card" role="alert">
+<h3>Needs you</h3><p>${escapeHtml(state.paused.message)}</p>
+<div class="row">${btn('carry', state.paused.carryOnLabel, 'primary')}${btn('retry', 'Try again')}${btn('stop', 'Stop', 'danger')}</div>
+</div>`);
+} else {
+parts.push(`<div class="row">${btn('stop', 'Stop after this step', 'ghost')}</div>`);
+}
+} else if (state.running) {
 const lead = leads[state.currentIndex];
 const position = leads.slice(0, state.currentIndex + 1).length;
 const percent = leads.length ? Math.round((100 * doneCount) / leads.length) : 0;
@@ -1051,7 +1212,20 @@ parts.push(`<div class="card needs-card" role="alert">
 } else {
 parts.push(`<div class="row">${btn('stop', 'Stop after this step', 'ghost')}</div>`);
 }
-} else if (!source || leads.length === 0) {
+} else if (onCallPage() && liveActivities().length) {
+parts.push(renderHereCard());
+}
+if (!state.running && !source) {
+// Nothing from the National check: the This customer card (if any) is enough.
+if (!onCallPage()) parts.push(`<div class="card empty">
+<strong>No National results yet</strong>
+<div class="muted small">Import the National results in SLA Manager, or copy them from the Lead Checker and paste them here. On a customer, you can set one of their leads up again.</div>
+<div class="row" style="justify-content:center;margin-top:10px;">${btn('paste', 'Paste results', 'primary')}</div>
+</div>`);
+else parts.push(`<div class="row">${btn('paste', 'Paste National results')}</div>`);
+} else if (state.running) {
+// Running cards are above.
+} else if (leads.length === 0) {
 parts.push(`<div class="card empty">
 <strong>${source ? 'No leads need setting up again' : 'No National results yet'}</strong>
 <div class="muted small">${source ? 'The last National check found nothing to set up again.' : 'Import the National results in SLA Manager, or copy them from the Lead Checker and paste them here.'}</div>
@@ -1072,7 +1246,7 @@ ${btn('start', doneCount ? `Continue (${remaining} left)` : 'Start', 'primary', 
 </div>`);
 }
 
-parts.push(`<label class="toggle"><input type="checkbox" data-action="review" ${settings.reviewBeforePark ? 'checked' : ''}> Stop before parking so I can check each lead</label>`);
+if (leads.length && state.mode !== 'here') parts.push(`<label class="toggle"><input type="checkbox" data-action="review" ${settings.reviewBeforePark ? 'checked' : ''}> Stop before parking so I can check each lead</label>`);
 
 if (leads.length) {
 const open = ui.listOpen ? ' open' : '';
@@ -1089,7 +1263,7 @@ parts.push(`<details data-section="log"${open}><summary>Activity <span class="co
 
 ui.root.querySelector('.body').innerHTML = parts.join('');
 const status = state.running
-? (state.paused ? 'Needs you' : `${doneCount}/${leads.length} done`)
+? (state.paused ? 'Needs you' : state.mode === 'here' ? 'This customer' : `${doneCount}/${leads.length} done`)
 : (leads.length ? `${remaining} to do` : '');
 ui.root.querySelector('.mini-status').textContent = ui.minimised && status ? status : '';
 }
@@ -1130,6 +1304,8 @@ if (state.ctx) state.ctx.settings = loadSettings();
 return;
 }
 if (action === 'start') { runAll(); return; }
+if (action === 'pickHere') { ui.hereChoice = target.value; return; }
+if (action === 'here') { runHere(ui.hereChoice); return; }
 if (action === 'paste') { pasteResults(); return; }
 if (action === 'copySummary') {
 const source = loadResults();
@@ -1178,6 +1354,12 @@ if (section === 'list') ui.listOpen = event.target.open;
 if (section === 'log') ui.logOpen = event.target.open;
 if (section === 'steps') ui.stepsOpen = event.target.open;
 }, true);
+// Redraw when the agent moves to another page or customer.
+setInterval(() => {
+if (!ui || state.running) return;
+const signature = `${onCallPage()}|${liveActivities().map(({ activity }) => activity.ID).join(',')}`;
+if (signature !== ui.pageSignature) { ui.pageSignature = signature; render(); }
+}, 2000);
 // Drag by the header so the panel can be moved off Konnect's buttons.
 head.addEventListener('mousedown', (event) => {
 if (event.target.closest('button')) return;
