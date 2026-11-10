@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.8.5'
+    version: '1.8.6'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2923,6 +2923,48 @@
     return candidates.sort((a, b) => distance(a) - distance(b))[0] || null;
   }
 
+  /* What the customer search results currently show, to tell whether a
+     search actually ran. */
+  function searchResultsSnapshot() {
+    const table = Array.from(document.querySelectorAll('table'))
+      .find((node) => /best number/i.test(node.tHead?.textContent || node.textContent.slice(0, 400)));
+    if (!table) return 'no-table';
+    return `${table.tBodies[0]?.rows.length || 0}:${normaliseText(table.tBodies[0]?.textContent || '').length}:${normaliseText(table.tBodies[0]?.textContent || '').slice(0, 200)}`;
+  }
+
+  /* Puts the query in Konnect's search box and runs the search. */
+  async function runKonnectSearch(input, button, query) {
+    setLeadControl(input, query);
+    const ng = window.angular;
+    try {
+      /* Make Konnect's model take the number now, even if the box waits for a pause or blur. */
+      const model = ng ? ng.element(input).controller('ngModel') : null;
+      if (model) {
+        model.$setViewValue(query);
+        if (typeof model.$commitViewValue === 'function') model.$commitViewValue();
+        const scope = ng.element(input).scope();
+        if (scope && !scope.$$phase && !scope.$root?.$$phase) scope.$apply();
+      }
+    } catch (error) {
+      // The input/change events from setLeadControl still apply.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    try {
+      /* Run the same function the Search button runs, with the number. */
+      const scope = ng ? ng.element(button).scope() : null;
+      if (scope && typeof scope.searchCustomers === 'function') {
+        scope.$apply(() => scope.searchCustomers(query));
+        return;
+      }
+    } catch (error) {
+      // Fall back to the button below.
+    }
+    await waitFor(() => !button.disabled && !button.classList.contains('disabled'), 1500);
+    button.click();
+    ['keydown', 'keypress', 'keyup'].forEach((type) =>
+      input.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })));
+  }
+
   /* Presses Customer Call first when needed, then searches by mobile (or name). */
   async function searchKonnect() {
     const c = inbound.customer;
@@ -2944,6 +2986,8 @@
       }
       customerCall.click();
       button = await waitFor(visibleSearch, 3000);
+      /* Give the customer search a moment to finish appearing. */
+      if (button) await new Promise((resolve) => setTimeout(resolve, 150));
     }
     if (!button) {
       showToast('The customer search did not open');
@@ -2954,37 +2998,14 @@
       showToast('Could not find the search box');
       return;
     }
-    setLeadControl(input, query);
-    const ng = window.angular;
-    try {
-      /* Make Konnect's model take the number now, even if the box waits for a pause or blur. */
-      const model = ng ? ng.element(input).controller('ngModel') : null;
-      if (model) {
-        model.$setViewValue(query);
-        if (typeof model.$commitViewValue === 'function') model.$commitViewValue();
-        const scope = ng.element(input).scope();
-        if (scope && !scope.$$phase && !scope.$root?.$$phase) scope.$apply();
-      }
-    } catch (error) {
-      // The input/change events from setLeadControl still apply.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    let searched = false;
-    try {
-      /* Run the same function the Search button runs, with the number. */
-      const scope = ng ? ng.element(button).scope() : null;
-      if (scope && typeof scope.searchCustomers === 'function') {
-        scope.$apply(() => scope.searchCustomers(query));
-        searched = true;
-      }
-    } catch (error) {
-      searched = false;
-    }
-    if (!searched) {
-      await waitFor(() => !button.disabled && !button.classList.contains('disabled'), 1500);
-      button.click();
-      ['keydown', 'keypress', 'keyup'].forEach((type) =>
-        input.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })));
+    const before = searchResultsSnapshot();
+    await runKonnectSearch(input, button, query);
+    /* If the results did not change, the search was dropped: run it once more. */
+    const changed = await waitFor(() => searchResultsSnapshot() !== before, 1500);
+    if (!changed) {
+      const freshButton = document.getElementById('btnSearchCustomers') || button;
+      const freshInput = findSearchBox(freshButton) || input;
+      await runKonnectSearch(freshInput, freshButton, query);
     }
     showToast(`Searched Konnect for ${query}`);
   }
