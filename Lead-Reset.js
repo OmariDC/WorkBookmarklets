@@ -1134,30 +1134,40 @@ const d = new Date(iso);
 return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-GB');
 }
 
-// The newest closed lead, or the newest lead when none is closed.
-function defaultHereChoice(activities) {
-const closed = activities.filter((a) => outcomeLabel(a) !== 'Open');
-const pool = closed.length ? closed : activities;
-return pool.slice().sort((x, y) => new Date(y.CreatedDate) - new Date(x.CreatedDate))[0] || null;
+// The lead whose tab is open: Konnect hides the other leads' sections, so
+// it is the only lead with visible controls. null when that is unclear.
+function leadInView() {
+const entries = liveActivities();
+if (entries.length === 1) return entries[0].activity;
+const visible = entries.filter(({ activity }) => controlsOf(activity, 'select, textarea, button, input').some(isVisible));
+return visible.length === 1 ? visible[0].activity : null;
+}
+
+// Ticked: the agent's own pick for this customer, else the lead in view.
+function hereChoice() {
+const activities = liveActivities().map(({ activity }) => activity);
+const customerKey = activities.map((a) => a.ID).sort().join(',');
+if (ui.hereCustomer !== customerKey) { ui.hereCustomer = customerKey; ui.herePicked = ''; }
+if (ui.herePicked && activities.some((a) => String(a.ID) === ui.herePicked)) return ui.herePicked;
+const inView = leadInView();
+return inView ? String(inView.ID) : '';
 }
 
 function renderHereCard() {
 const activities = liveActivities().map(({ activity }) => activity);
-if (!activities.some((a) => String(a.ID) === String(ui.hereChoice))) {
-const pick = defaultHereChoice(activities);
-ui.hereChoice = pick ? String(pick.ID) : '';
-}
+const chosen = hereChoice();
+const inView = leadInView();
 const rows = activities.map((a) => {
 const outcome = outcomeLabel(a);
-const checked = String(a.ID) === String(ui.hereChoice) ? ' checked' : '';
 const meta = [shortDate(a.CreatedDate), a.SalesLead && a.SalesLead.DealerName, outcome === 'Open' ? 'Open' : `Closed: ${outcome}`].filter(Boolean).join(' · ');
-return `<label class="pick"><input type="radio" name="hereLead" value="${escapeHtml(String(a.ID))}" data-action="pickHere"${checked}><span><strong>${escapeHtml(a.CampaignName || 'Lead')}</strong><br><span class="muted small">${escapeHtml(meta)}</span></span></label>`;
+const viewTag = inView && inView === a ? ' <span class="chip" style="background:#C2CB4233;color:#5b6300;">In view</span>' : '';
+return `<label class="pick"><input type="radio" name="hereLead" value="${escapeHtml(String(a.ID))}" data-action="pickHere"${String(a.ID) === chosen ? ' checked' : ''}><span><strong>${escapeHtml(a.CampaignName || 'Lead')}</strong>${viewTag}<br><span class="muted small">${escapeHtml(meta)}</span></span></label>`;
 }).join('');
 return `<div class="card">
 <strong>This customer</strong>
-<div class="muted small" style="margin:2px 0 6px;">Pick the lead to set up again. It stops in the new lead; the call is left to you.</div>
+<div class="muted small" style="margin:2px 0 6px;">The lead in view is ticked; tick another to set that one up again instead. Only the ticked lead is copied, and it stops in the new lead.</div>
 ${rows}
-<div style="margin-top:10px;">${btn('here', 'Set up again', 'primary', 'wide')}</div>
+<div style="margin-top:10px;">${chosen ? btn('here', 'Set up the ticked lead again', 'primary', 'wide') : '<div class="muted small">Tick the lead to set up again.</div>'}</div>
 </div>`;
 }
 
@@ -1304,8 +1314,13 @@ if (state.ctx) state.ctx.settings = loadSettings();
 return;
 }
 if (action === 'start') { runAll(); return; }
-if (action === 'pickHere') { ui.hereChoice = target.value; return; }
-if (action === 'here') { runHere(ui.hereChoice); return; }
+if (action === 'pickHere') { ui.herePicked = target.value; render(); return; }
+if (action === 'here') {
+const chosen = hereChoice();
+if (!chosen) { addLog('Tick the lead to set up again first'); return; }
+runHere(chosen);
+return;
+}
 if (action === 'paste') { pasteResults(); return; }
 if (action === 'copySummary') {
 const source = loadResults();
@@ -1357,7 +1372,8 @@ if (section === 'steps') ui.stepsOpen = event.target.open;
 // Redraw when the agent moves to another page or customer.
 setInterval(() => {
 if (!ui || state.running) return;
-const signature = `${onCallPage()}|${liveActivities().map(({ activity }) => activity.ID).join(',')}`;
+const inView = onCallPage() ? leadInView() : null;
+const signature = `${onCallPage()}|${liveActivities().map(({ activity }) => activity.ID).join(',')}|${inView ? inView.ID : ''}`;
 if (signature !== ui.pageSignature) { ui.pageSignature = signature; render(); }
 }, 2000);
 // Drag by the header so the panel can be moved off Konnect's buttons.
