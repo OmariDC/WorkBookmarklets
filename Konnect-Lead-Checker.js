@@ -4011,19 +4011,27 @@ let isRunning = false;
 async function reLogin(uiHandle, waitMs) {
 await sleep(150);
 const button = Array.from(document.querySelectorAll('button[ng-click="login()"], button.btn-login')).find((b) => b.offsetWidth || b.offsetHeight);
+// Says what the page can see, so a failed press has a clear cause.
+const password = document.querySelector('input[type="password"]');
+const passwordSeen = !!(password && password.value);
 if (button) button.click();
 for (let waited = 0; waited < 3000; waited += 250) {
 await sleep(250);
 if (!onLoginPage()) { await sleep(1500); return true; }
 }
-uiHandle.setState('Konnect Live logged out: press Login and the check carries on');
+const why = !button ? 'the Login button was not found'
+: passwordSeen ? 'Login was pressed with the password, but Konnect did not log in'
+: 'Login was pressed, but the browser has not shown the saved password to the page yet';
+lcNotices.stopped = `Konnect Live logged out: ${why}. Press Login and the check carries on.`;
+notifyNoticesChanged();
+uiHandle.setState(`Konnect Live logged out: ${why}. Press Login and the check carries on.`);
 const title = document.title;
 let flash = false;
 const timer = setInterval(() => { flash = !flash; document.title = flash ? 'Press Login to carry on' : title; }, 1000);
 try {
 for (let waited = 0; waited < (waitMs || 30 * 60 * 1000); waited += 500) {
 await sleep(500);
-if (!onLoginPage()) { await sleep(1500); return true; }
+if (!onLoginPage()) { lcNotices.stopped = null; notifyNoticesChanged(); await sleep(1500); return true; }
 }
 return false;
 } finally {
@@ -6294,8 +6302,8 @@ console.warn('KonnectLeadChecker UI did not initialize (expected outside a real 
 if (onLoginPage()) {
 // The browser fills the login box itself, so pressing Login is usually
 // all that is needed; the wait below covers the rest.
-reLogin({ setState() {} });
 const note = showLoginWaitNote();
+reLogin({ setState(text) { if (note) { note.textContent = text; note.style.display = 'block'; } } });
 window.__konnectLeadChecker = { focus() { if (note) note.style.display = 'block'; } };
 const wait = setInterval(() => {
 if (onLoginPage()) return;
