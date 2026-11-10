@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.9.1'
+    version: '1.9.2'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2044,6 +2044,31 @@
     return true;
   }
 
+  /* Each lead on the customer has its own Manage Appointments button, and
+     the open lead is not always the first or newest. The right one is in the
+     same lead tab as the Call Notes box being written in. If that lead's
+     Outcomes section is folded shut, it is opened first. */
+  async function leadDiaryButton() {
+    const selector = 'button[ng-click^="manageSalesEventBookings"]';
+    const notes = callNotesBox();
+    const pane = notes?.closest('.tab-pane') || document.querySelector('.tab-pane.active');
+    if (pane) {
+      const inPane = pane.querySelector(selector);
+      if (inPane) {
+        if (!isVisible(inPane)) {
+          const toggle = Array.from(pane.querySelectorAll('a.accordion-toggle, .accordion-toggle'))
+            .find((node) => /^outcomes$/i.test(normaliseText(node.textContent)));
+          toggle?.click();
+          await waitFor(() => isVisible(inPane), 2000);
+        }
+        return isVisible(inPane) ? inPane : null;
+      }
+    }
+    // No lead tabs on this page: only use the button if there is exactly one shown.
+    const shown = Array.from(document.querySelectorAll(selector)).filter(isVisible);
+    return shown.length === 1 ? shown[0] : null;
+  }
+
   async function bookInDiary(draft) {
     const plan = diaryPlan(draft);
     const result = buildCurrentBooking(draft);
@@ -2067,8 +2092,8 @@
       say('ok', `Booking the diary for ${plan.label}...`);
       let modal = diaryModal();
       if (!modal) {
-        const open = document.querySelector('button[ng-click^="manageSalesEventBookings"]');
-        if (!open) return fail('the Manage Appointments button was not found on this lead');
+        const open = await leadDiaryButton();
+        if (!open) return fail('the Manage Appointments button for this lead was not found');
         open.click();
       }
       // The diary can load instantly or take a few seconds.
