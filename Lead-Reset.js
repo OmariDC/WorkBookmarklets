@@ -174,10 +174,19 @@ return { index: -1, reason: exact.length > 1 ? 'several' : 'none' };
 // The customer's lead list holds closed leads too, so a lead only counts
 // as an earlier reset when staff created it by hand on the same campaign
 // after the closed lead. Each lead's ID is the export's ActivityID.
+// Pure. Whether a lead on the page is the National check's lead. The
+// check's number (the "...SALESLEAD" reference) is held on the page as the
+// lead's RegistrationNumber, not its ID, so both are compared.
+function isLeadNumber(activity, activityId) {
+const id = String(activityId || '').replace(/\D/g, '');
+if (!activity || !id) return false;
+return String(activity.ID) === id || String(activity.RegistrationNumber || '').replace(/\D/g, '') === id;
+}
+
 function findEarlierReset(activities, lead) {
-const closed = activities.find((a) => String(a.ID) === String(lead.activityId));
+const closed = activities.find((a) => isLeadNumber(a, lead.activityId));
 const closedAt = closed ? new Date(closed.CreatedDate).getTime() : NaN;
-return activities.find((a) => String(a.ID) !== String(lead.activityId)
+return activities.find((a) => a !== closed
 && a.ManuallyCreated === true
 && normalise(a.CampaignName) === normalise(lead.campaign)
 && (!Number.isFinite(closedAt) || new Date(a.CreatedDate).getTime() > closedAt)) || null;
@@ -416,6 +425,7 @@ check('the description is the last page fallback', adoptClosedLead({ campaign: '
 check('outcome to bring up Add New Lead', [chooseRevealOutcome(['(Select a Call Outcome)', 'Spoke to Customer', 'Update Outcomes (No Call Made)']), chooseRevealOutcome(['(Select a Call Outcome)', 'Booking Opportunity', 'Amend Booking', 'No Booking', 'Manual Reschedule', 'Do Not Contact'])], [2, 3]);
 check('no notes anywhere is reported', adoptClosedLead({ campaign: 'X', notes: '', fields: {} }, null, '').notesFrom, '');
 const resetDone = { ID: 77000009, CampaignName: 'Peugeot - PX Valuation - New', ManuallyCreated: true, CreatedDate: '2026-11-09T16:00:00+00:00' };
+check('the National lead number matches the page lead\'s reference', [isLeadNumber({ ID: 77553567, RegistrationNumber: '91893259SALESLEAD' }, '91893259'), isLeadNumber({ ID: 77553567, RegistrationNumber: '91893259SALESLEAD' }, '91893259SALESLEAD'), isLeadNumber({ ID: 77553567 }, '77553567'), isLeadNumber({ ID: 77553567, RegistrationNumber: '91893260SALESLEAD' }, '91893259')], [true, true, true, false]);
 check('a hand-made lead on the campaign after the closed one is', findEarlierReset(history.concat(resetDone), pxLead), resetDone);
 check('a hand-made lead from before the closed one is not', findEarlierReset(history.concat({ ...resetDone, CreatedDate: '2026-09-01T09:00:00+01:00' }), pxLead), null);
 const results = [
@@ -743,7 +753,10 @@ async function checkNotAlreadyReset(ctx, lead) {
 await sleep(500);
 const entries = liveActivities();
 const activities = entries.map(({ activity }) => activity);
-const closed = entries.find(({ activity }) => String(activity.ID) === String(lead.activityId));
+const closed = entries.find(({ activity }) => isLeadNumber(activity, lead.activityId));
+// The customer opens on its open lead; the closed one's tab is brought
+// forward so its Initial Notes box can be read.
+if (closed) await bringLeadIntoView(closed.activity);
 if (lead.activityId && activities.length && !closed && !ctx.allowOtherCustomer) {
 ctx.allowOtherCustomer = true;
 throw new NeedsYou(`The closed lead is not on this customer, so this may be the wrong ${lead.name}. Go back and pick the right customer, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on' });

@@ -40,7 +40,7 @@ window.angular = {
    return get; }; } }; }
  }; }
 };
-$('existing').__scope = { theActivity: { ID: 70000002, CampaignName: 'Vauxhall - Offer Request - Used', ManuallyCreated: false, CreatedDate: '2026-11-07T09:00:00Z', SalesLead: { ID: 1, LeadDetails: { LeadTypeID: 2, LeadRequestID: 5, InitialNotes: 'From the page\nline two' } } } };
+$('existing').__scope = { theActivity: { ID: 77500002, RegistrationNumber: '70000002SALESLEAD', CampaignName: 'Vauxhall - Offer Request - Used', ManuallyCreated: false, CreatedDate: '2026-11-07T09:00:00Z', SalesLead: { ID: 1, LeadDetails: { LeadTypeID: 2, LeadRequestID: 5, InitialNotes: 'From the page\nline two' } } } };
 document.querySelectorAll('[ng-click^="setMakeBusy"]').forEach((a) => a.addEventListener('click', () => { $('statusBtn').textContent = a.textContent; events.push('status:' + a.textContent); }));
 $('newOut').onclick = () => { show('idle', 0); show('search', 1); location.hash = '#!/select-call-type/manual/true'; };
 $('btnSearchCustomers').onclick = () => {
