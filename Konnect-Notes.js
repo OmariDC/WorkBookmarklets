@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.9.2'
+    version: '1.9.3'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2069,6 +2069,34 @@
     return shown.length === 1 ? shown[0] : null;
   }
 
+  /* Sets the open lead's outcome to match the appointment: the call outcome
+     "Spoke to Customer" brings up the lead's outcome lists, which are then
+     picked in order. A call outcome already chosen is left alone, and on a
+     voicemail, engaged or email-only booking it is left for the agent. */
+  async function setLeadOutcome(draft, plan) {
+    const callOutcome = Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible);
+    if (!callOutcome) return 'the call outcome box was not found';
+    const current = normaliseText(callOutcome.options[callOutcome.selectedIndex]?.textContent);
+    if (!current || /^\(select/i.test(current)) {
+      if (draft.data.contact && draft.data.contact !== 'none') return 'choose the call outcome yourself, then the lead outcome';
+      if (!setLeadControl(callOutcome, 'Spoke to Customer')) return 'could not choose Spoke to Customer';
+    }
+    const pane = callNotesBox()?.closest('.tab-pane') || document.querySelector('.tab-pane.active') || document;
+    const path = ['Customer Hub Team', 'Appointment', plan.type];
+    for (let level = 0; level < path.length; level += 1) {
+      const wanted = path[level];
+      const select = await waitFor(() => {
+        const shown = Array.from(pane.querySelectorAll('select[ng-model^="theActivity.SelectedOutcomeLevel"]')).filter(isVisible);
+        const box = shown[level];
+        return box && Array.from(box.options).some((o) => normaliseText(o.textContent).toLowerCase() === wanted.toLowerCase()) ? box : null;
+      }, 4000);
+      if (!select) return `the "${wanted}" outcome was not offered`;
+      setLeadControl(select, wanted);
+      if (normaliseText(select.options[select.selectedIndex]?.textContent).toLowerCase() !== wanted.toLowerCase()) return `could not choose the "${wanted}" outcome`;
+    }
+    return '';
+  }
+
   async function bookInDiary(draft) {
     const plan = diaryPlan(draft);
     const result = buildCurrentBooking(draft);
@@ -2119,8 +2147,14 @@
       const done = await waitFor(() => !isVisible(confirm) || !confirm.isConnected, 10000);
       if (!done) return fail('Konnect did not confirm the appointment');
       const who = free.person ? ` with ${free.person}` : '';
-      say('ok', `Diary booked: ${plan.label}, ${plan.type}, ${plan.length}${who}.`);
-      showToast(`Diary booked: ${plan.label}, ${plan.type}${who}`);
+      const outcomeProblem = await setLeadOutcome(draft, plan);
+      if (outcomeProblem) {
+        say('warn', `Diary booked: ${plan.label}, ${plan.type}${who}. Outcome not set: ${outcomeProblem}.`);
+        showToast(`Diary booked. Set the outcome by hand: ${outcomeProblem}`);
+        return;
+      }
+      say('ok', `Diary booked: ${plan.label}, ${plan.type}, ${plan.length}${who}. Outcome set to Customer Hub Team, Appointment, ${plan.type}.`);
+      showToast(`Diary booked and outcome set: ${plan.type}${who}`);
     } finally {
       if (diaryRun === run) diaryRun = null;
     }
@@ -2969,7 +3003,7 @@
     actions.appendChild(insert);
     if (draft.key !== INBOUND_KEY && draft.data.type !== 'national') {
       const diary = button(diaryRun ? 'Booking diary...' : 'Book in diary', '', () => bookInDiary(draft));
-      diary.title = 'Opens Manage Appointments, picks the day and the first free person at the booking time, sets the time span and type, then confirms';
+      diary.title = 'Books the open lead in the diary (first free person at the booking time) and sets its outcome to Customer Hub Team, Appointment and the appointment type';
       bookingRefs.diary = diary;
       actions.appendChild(diary);
     }
