@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.8.6'
+    version: '1.8.7'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -3038,7 +3038,11 @@
     put('input[ng-model="customer.EmailAddress"]', c.email, 'Email');
     filled.push(...await setDealerAndBrand(modal, c.dealer, c.brand));
     inbound.pending = true;
-    showToast(filled.length ? `Filled ${filled.join(', ')}. Check it and press Save.` : 'Nothing new to fill');
+    /* Saved straight away: anything wrong can be changed later in Edit Customer Details. */
+    const saved = await saveCustomerModal(modal);
+    showToast(saved
+      ? `New customer saved (${filled.join(', ') || 'no changes'})`
+      : `Filled ${filled.join(', ') || 'nothing new'} but it did not save. Check the form and press Save.`);
   }
 
   /* After the lead is created Konnect can lose the mobile. This opens Edit
@@ -3143,7 +3147,7 @@
     searchRow.appendChild(mobileField);
     searchRow.appendChild(button('Search', 'kn-primary kn-bk-search-button', searchKonnect));
     body.appendChild(searchRow);
-    body.appendChild(element('div', 'kn-muted kn-bk-gap', 'New customer? Add their details below and fill the New Customer form.'));
+    body.appendChild(element('div', 'kn-muted kn-bk-gap', 'New customer? Add their details below and press Create new customer.'));
     body.appendChild(bkInput('Name', c.name, update('name')));
     body.appendChild(bkInput('Email', c.email, update('email')));
     const row2 = element('div', 'kn-bk-row');
@@ -3169,7 +3173,7 @@
     body.appendChild(bkChips([{ value: '', label: 'Auto (vehicle make)' }, ...KONNECT_BRANDS.map((name) => ({ value: name, label: name }))],
       c.brand, (value) => { c.brand = value; inbound.pending = true; changed(draft, true); }, 'kn-bk-sub'));
 
-    body.appendChild(button('Fill new customer form', 'kn-primary kn-bk-add', fillCustomerForm));
+    body.appendChild(button('Create new customer', 'kn-primary kn-bk-add', fillCustomerForm));
     body.appendChild(element('div', 'kn-muted', 'Customer details stay in this page only and are wiped when the booking moves onto the new lead.'));
   }
 
