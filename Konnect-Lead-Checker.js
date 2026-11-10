@@ -4013,11 +4013,16 @@ await sleep(150);
 const button = Array.from(document.querySelectorAll('button[ng-click="login()"], button.btn-login')).find((b) => b.offsetWidth || b.offsetHeight);
 // Says what the page can see, so a failed press has a clear cause.
 const password = document.querySelector('input[type="password"]');
-const passwordSeen = !!(password && password.value);
-if (button) button.click();
-for (let waited = 0; waited < 3000; waited += 250) {
-await sleep(250);
+let passwordSeen = !!(password && password.value);
+// Clicking the bookmark lets the browser release the saved password, but a
+// moment later, so Login is pressed again over a few seconds.
+for (let attempt = 0; attempt < 6 && button; attempt++) {
+passwordSeen = passwordSeen || !!(password && password.value);
+button.click();
+for (let waited = 0; waited < 800; waited += 200) {
+await sleep(200);
 if (!onLoginPage()) { await sleep(1500); return true; }
+}
 }
 const why = !button ? 'the Login button was not found'
 : passwordSeen ? 'Login was pressed with the password, but Konnect did not log in'
@@ -4083,6 +4088,7 @@ saveSession(session);
 continue;
 }
 uiHandle.render();
+if (typeof window.__workToolsOnProgress === 'function') window.__workToolsOnProgress(session);
 if (!advanced) break;
 }
 } finally {
@@ -6017,6 +6023,21 @@ badge.hide();
 if (s.headerOk && s.rows.length > 0 && !s.done) startProcessing();
 else render();
 });
+// Results go back in step as the batch runs (every 5 leads), so the lead
+// cards fill in as it goes; the full set follows when it finishes.
+let sentAtCount = 0;
+window.__workToolsOnProgress = (running) => {
+if (!running.fromManager || !managerWindow()) return;
+const count = Object.keys(running.results).length;
+if (count - sentAtCount < 5 || running.done) return;
+sentAtCount = count;
+const national = running.mode === 'national';
+managerWindow().postMessage({
+type: 'workTools:results', partial: true, done: count, total: running.rows.length,
+kind: national ? 'national' : 'leads',
+tsv: national ? buildNationalResultsExport(running) : buildRawNotesTsvForExtract(running)
+}, MANAGER_ORIGIN);
+};
 window.__workToolsOnDone = (finished) => {
 if (!finished.fromManager || !managerWindow()) return;
 const national = finished.mode === 'national';

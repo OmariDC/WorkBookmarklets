@@ -3543,7 +3543,10 @@ return win;
 }
 
 function showLinkToast(text) {
+const previous = document.getElementById('_slaLinkToast');
+if (previous) previous.remove();
 const toast = document.createElement('div');
+toast.id = '_slaLinkToast';
 toast.setAttribute('role', 'status');
 toast.textContent = text;
 toast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#1c1c1e;color:#fff;padding:10px 16px;border-radius:10px;font:600 13px -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.25);max-width:90vw;';
@@ -3583,19 +3586,19 @@ return true;
 }
 window._sendBatchToLeadChecker = sendBatchToLeadChecker;
 
-function importLinkedResults(kind, tsv) {
+function importLinkedResults(kind, tsv, progress) {
 if (kind === 'national') {
 const parsed = parseNationalResultsTsv(tsv);
 if (!parsed.ok) { showLinkToast(`Lead Checker results could not be read: ${parsed.error}`); return; }
 saveNationalResults(parsed.results);
-showLinkToast(`National results back from the Lead Checker (${parsed.results.length}).`);
+showLinkToast(progress ? `Lead Checker: ${progress.done} of ${progress.total} checked so far.` : `National results back from the Lead Checker (${parsed.results.length}).`);
 if (currentPanelMode === 'morningChecks') displayMorningChecks();
 return;
 }
 const parsed = parseLeadCheckerImportTsv(tsv);
 if (!parsed.headerOk || parsed.rows.length === 0) { showLinkToast('Lead Checker results could not be read.'); return; }
 saveLeadCheckerImportState({ rawInput: '', results: classifyLeadCheckerImportRows(parsed.rows) });
-showLinkToast(`Lead Checker results back (${parsed.rows.length}) and shown on the lead cards.`);
+showLinkToast(progress ? `Lead Checker: ${progress.done} of ${progress.total} checked so far, shown on the lead cards.` : `Lead Checker results back (${parsed.rows.length}) and shown on the lead cards.`);
 if (currentPanelMode === 'normal') {
 if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, lastPendingDiffCounts.newCount, lastPendingDiffCounts.removedCount, false);
 else if (currentPageType === PAGE_SLA) displayPanel(currentCustomers, lastSlaDiffCounts.newCount, lastSlaDiffCounts.removedCount, false);
@@ -3621,7 +3624,7 @@ showLinkToast(`The Lead Checker has the batch (${data.rows || 0} lead${data.rows
 } else if (data.type === 'workTools:busy') {
 showLinkToast('The Lead Checker is still running a batch. Send again when it has finished.');
 } else if (data.type === 'workTools:results' && typeof data.tsv === 'string') {
-importLinkedResults(data.kind, data.tsv);
+importLinkedResults(data.kind, data.tsv, data.partial ? { done: data.done, total: data.total } : null);
 }
 });
 }
