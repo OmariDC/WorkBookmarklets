@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Konnect Manager (mock)</title></head>
+<body>
+<h1>Konnect Manager stand-in</h1>
+<!-- Stands in for the Konnect Live tab SLA Manager opened. Messages SLA
+     Manager posts to it are recorded; the test plays the Lead Checker's
+     replies back to SLA Manager from it. -->
+<iframe id="live" src="about:blank" style="display:none"></iframe>
+<script>
+window.toLive = [];
+const live = document.getElementById('live').contentWindow;
+live.postMessage = (message, origin) => { if (origin === 'https://carbot.ai') window.toLive.push(message); };
+window.open = () => live;
+window.fromLive = (data) => window.dispatchEvent(new MessageEvent('message', { origin: 'https://carbot.ai', source: live, data }));
+</script>
+</body></html>

@@ -6129,8 +6129,15 @@ tsv: national ? buildNationalResultsExport(finished) : buildRawNotesTsvForExtrac
 }, MANAGER_ORIGIN);
 uiHandle.setState('Done: results sent to SLA Manager');
 };
-// The address lets SLA Manager follow Konnect Live to a new version.
-manager.postMessage({ type: 'workTools:ready', url: location.origin + location.pathname }, MANAGER_ORIGIN);
+// The address lets SLA Manager follow Konnect Live to a new version. Said
+// again every few seconds, so an SLA Manager tab that was refreshed (or
+// whose bookmark was clicked again) links back up with this tab.
+const sayReady = () => {
+const opener = managerWindow();
+if (opener) opener.postMessage({ type: 'workTools:ready', url: location.origin + location.pathname }, MANAGER_ORIGIN);
+};
+sayReady();
+setInterval(sayReady, 10000);
 }
 
 function startProcessing() {

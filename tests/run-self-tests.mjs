@@ -95,6 +95,11 @@ function sharedContractChecks() {
     ['National results storage key',
       grab(sla, /const NATIONAL_RESULTS_KEY = ('[^']*')/, 'NATIONAL_RESULTS_KEY (SLA Manager)'),
       [grab(reset, /const NATIONAL_RESULTS_KEY = ('[^']*')/, 'NATIONAL_RESULTS_KEY (Lead Reset)')]],
+    ...[['LIVE_REQUEST_KEY', 'LIVE_REQUEST_KEY'], ['LIVE_STATUS_KEY', 'LIVE_STATUS_KEY'], ['DESK_RESULTS_KEY', 'DESK_RESULTS_KEY'],
+      ['EMAIL_ONLY_ASSIGNED_KEY', 'EMAIL_ONLY_ASSIGNED_KEY'], ['LEAD_CHECKER_IMPORT_KEY', 'LEAD_CHECKER_RESULTS_KEY']].map(([inSla, inReset]) => [
+      `Storage shared by SLA Manager and Lead Re setup (${inSla})`,
+      grab(sla, new RegExp(`const ${inSla} = ('[^']*')`), `${inSla} (SLA Manager)`),
+      [grab(reset, new RegExp(`const ${inReset} = ('[^']*')`), `${inReset} (Lead Re setup)`)]]),
     ['Tier colours',
       grab(lc, /const TIER_COLORS = (\{[^}]*\})/, 'TIER_COLORS'),
       [grab(sla, /const LEAD_CHECKER_TIER_COLORS = (\{[^}]*\})/, 'LEAD_CHECKER_TIER_COLORS')]],

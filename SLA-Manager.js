@@ -3545,26 +3545,95 @@ if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excl
 // LINK TO THE LEAD CHECKER
 // SLA Manager opens Konnect Live itself, which lets the two tabs message
 // each other: the batch goes over and the results come back without the
-// clipboard. A Live tab opened by hand has no link; Copy still works.
+// clipboard. Konnect Live only answers the tab that opened it, so the
+// agent desktop (same site, its own tab) asks through shared storage and
+// SLA Manager passes its batch on and its results back. A Live tab opened
+// by hand has no link; Copy still works.
 // ===================================================================
 const LIVE_ORIGIN = 'https://carbot.ai';
 // The Live address carries its version, so the last one the Lead Checker
 // reported is kept and used next time.
 const LIVE_URL_KEY = '_slaKonnectLiveUrl';
 const LIVE_URL_DEFAULT = 'https://carbot.ai/konnectlive/(v1.2.168)/home.html';
+const LIVE_WINDOW_NAME = 'workToolsKonnectLive';
+// Shared with Lead Re setup on the agent desktop.
+const LIVE_REQUEST_KEY = '_workToolsLiveRequest';
+const LIVE_STATUS_KEY = '_workToolsLiveStatus';
+const DESK_RESULTS_KEY = '_workToolsDeskResults';
+// A batch that has gone quiet this long (cancelled, or the tab closed) no
+// longer holds up the next one.
+const LIVE_BATCH_STALE_MS = 5 * 60 * 1000;
+// A batch not acknowledged in this time is sent again.
+const LIVE_RESEND_MS = 15000;
+
 function liveUrl() {
 let saved = '';
 try { saved = localStorage.getItem(LIVE_URL_KEY) || ''; } catch (error) { saved = ''; }
 const base = /^https:\/\/carbot\.ai\/konnectlive\//i.test(saved) ? saved : LIVE_URL_DEFAULT;
 return `${base}#/search?redirectRoute=%2Fsearch`;
 }
-const LIVE_WINDOW_NAME = 'workToolsKonnectLive';
-const liveLink = { win: null, ready: false, pending: null };
+
+// One link per page, kept on window so clicking the bookmark again carries
+// on with the same Live tab and queue. queue: batches waiting to go;
+// current: the batch the Lead Checker is running.
+const liveLink = window.__workToolsLiveLink || (window.__workToolsLiveLink = { win: null, ready: false, queue: [], current: null, sentId: null, sentAt: 0, handledRequest: null });
 
 function currentLeadCheckerExport() {
 return currentPageType === PAGE_PENDING
 ? buildPendingLeadCheckerTsv(loadPendingLeadCheckerExportSettings().callbackTypes)
 : (() => { const s = loadLeadCheckerExportSettings(); return buildLeadCheckerTsv(s.tiers, s.customerFirstOnly); })();
+}
+
+function showLinkToast(text) {
+const previous = document.getElementById('_slaLinkToast');
+if (previous) previous.remove();
+const toast = document.createElement('div');
+toast.id = '_slaLinkToast';
+toast.setAttribute('role', 'status');
+toast.textContent = text;
+toast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#1c1c1e;color:#fff;padding:10px 16px;border-radius:10px;font:600 13px -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.25);max-width:90vw;';
+document.body.appendChild(toast);
+setTimeout(() => toast.remove(), 5000);
+}
+
+// Pure. What to send next, if anything: nothing while a batch runs (unless
+// it has gone quiet), and a batch already sent is only sent again once it
+// has had time to be acknowledged.
+function nextLiveBatch(link, now) {
+if (!link.queue.length) return null;
+if (link.current && now - link.current.lastHeard < LIVE_BATCH_STALE_MS) return null;
+const next = link.queue[0];
+if (link.sentId === next.id && now - link.sentAt < LIVE_RESEND_MS) return null;
+return next;
+}
+
+function isLiveLinked() {
+return !!(liveLink.win && !liveLink.win.closed && liveLink.ready);
+}
+
+function sendNextLiveBatch() {
+if (!isLiveLinked()) return;
+const batch = nextLiveBatch(liveLink, Date.now());
+if (!batch) return;
+if (liveLink.current) liveLink.current = null;
+liveLink.sentId = batch.id;
+liveLink.sentAt = Date.now();
+liveLink.win.postMessage({ type: 'workTools:batch', kind: batch.kind, tsv: batch.tsv }, LIVE_ORIGIN);
+if (batch.from === 'desk') writeDeskStatus(batch.id, 'sent', 'Sent to the Lead Checker in Konnect Live.');
+}
+
+// A newer batch from the same page replaces one still waiting.
+function queueLiveBatch(batch) {
+liveLink.queue = liveLink.queue.filter((b) => b.from !== batch.from).concat(batch);
+sendNextLiveBatch();
+}
+
+function writeDeskStatus(id, state, text) {
+try { localStorage.setItem(LIVE_STATUS_KEY, JSON.stringify({ id, state, text, at: new Date().toISOString() })); } catch (error) { /* the desk says it was not picked up */ }
+}
+
+function readStoredJson(key) {
+try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (error) { return null; }
 }
 
 // Opens Konnect Live straight away (a blank tab steered afterwards was
@@ -3580,18 +3649,6 @@ if (!win) return null;
 liveLink.win = win;
 liveLink.ready = false;
 return win;
-}
-
-function showLinkToast(text) {
-const previous = document.getElementById('_slaLinkToast');
-if (previous) previous.remove();
-const toast = document.createElement('div');
-toast.id = '_slaLinkToast';
-toast.setAttribute('role', 'status');
-toast.textContent = text;
-toast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#1c1c1e;color:#fff;padding:10px 16px;border-radius:10px;font:600 13px -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.25);max-width:90vw;';
-document.body.appendChild(toast);
-setTimeout(() => toast.remove(), 5000);
 }
 
 window._sendToLeadChecker = function(btn, kind) {
@@ -3611,20 +3668,42 @@ flash(sent ? 'Sent' : 'Allow pop-ups for this site');
 };
 
 function sendBatchToLeadChecker(kind, tsv) {
-liveLink.pending = { type: 'workTools:batch', kind, tsv };
+const batch = { from: 'manager', id: `manager-${Date.now()}`, kind, tsv };
 const win = openLiveTab();
 if (!win) return false;
-if (liveLink.ready) win.postMessage(liveLink.pending, LIVE_ORIGIN);
-showLinkToast(liveLink.ready ? 'Sent to the Lead Checker.' : 'Konnect Live is opening. Click Work Tools there to start the Lead Checker; the batch is passed over and the results come back here.');
+queueLiveBatch(batch);
+const linked = isLiveLinked();
+showLinkToast(linked
+? (liveLink.current ? 'The Lead Checker is finishing another batch; this one goes next.' : 'Sent to the Lead Checker.')
+: 'Konnect Live is opening. Click Work Tools there to start the Lead Checker; the batch is passed over and the results come back here.');
 // If the tabs never link up (a page that blocks it), say so instead of
 // leaving the batch waiting.
-const waiting = liveLink.pending;
 setTimeout(() => {
-if (liveLink.pending === waiting) showLinkToast('The Lead Checker has not picked the batch up. Click Work Tools in the Konnect Live tab; if nothing happens, use Copy instead.');
+if (liveLink.queue.some((b) => b.id === batch.id) && !isLiveLinked()) showLinkToast('The Lead Checker has not picked the batch up. Click Work Tools in the Konnect Live tab; if nothing happens, use Copy instead.');
 }, 90000);
 return true;
 }
 window._sendBatchToLeadChecker = sendBatchToLeadChecker;
+
+// The agent desktop's request (its Parked Calls). Only a fresh request this
+// page has not taken yet is queued; nothing here opens a tab.
+function takeDeskRequest(request) {
+if (!request || !request.id || request.id === liveLink.handledRequest || typeof request.tsv !== 'string') return;
+if (!(Date.now() - new Date(request.at).getTime() < 10 * 60 * 1000)) return;
+const status = readStoredJson(LIVE_STATUS_KEY);
+if (status && status.id === request.id && status.state !== 'waiting') return;
+liveLink.handledRequest = request.id;
+queueLiveBatch({ from: 'desk', id: request.id, kind: 'leads', tsv: request.tsv });
+if (!isLiveLinked()) writeDeskStatus(request.id, 'waiting', 'SLA Manager has your Parked Calls, but Konnect Live is not linked yet: press Send in SLA Manager once (or click Work Tools in its Konnect Live tab).');
+else if (liveLink.current) writeDeskStatus(request.id, 'waiting', 'The Lead Checker is finishing another batch; yours goes next.');
+}
+
+function saveDeskResults(id, tsv, progress) {
+const parsed = parseLeadCheckerImportTsv(tsv);
+if (!parsed.headerOk) { writeDeskStatus(id, 'failed', 'The Lead Checker results could not be read.'); return; }
+try { localStorage.setItem(DESK_RESULTS_KEY, JSON.stringify({ id, savedAt: new Date().toISOString(), results: parsed.rows })); } catch (error) { writeDeskStatus(id, 'failed', 'The results could not be saved (browser storage full).'); return; }
+writeDeskStatus(id, progress ? 'checking' : 'done', progress ? `Lead Checker: ${progress.done} of ${progress.total} checked.` : `Lead Checker done: ${parsed.rows.length} checked.`);
+}
 
 function importLinkedResults(kind, tsv, progress) {
 if (kind === 'national') {
@@ -3645,29 +3724,63 @@ else if (currentPageType === PAGE_SLA) displayPanel(currentCustomers, lastSlaDif
 }
 }
 
-if (!window.__workToolsLinkListening && typeof window.addEventListener === 'function') {
-window.__workToolsLinkListening = true;
-window.addEventListener('message', (event) => {
+// Results belong to the batch the Lead Checker said it took. After this page
+// reloads mid-batch, the desk's own status says whether it was the desk's.
+function currentLiveBatch() {
+if (liveLink.current) return liveLink.current;
+const status = readStoredJson(LIVE_STATUS_KEY);
+return status && ['sent', 'checking'].includes(status.state) ? { from: 'desk', id: status.id } : { from: 'manager' };
+}
+
+function onLiveMessage(event) {
 if (event.origin !== LIVE_ORIGIN) return;
 const data = event.data;
 if (!data || typeof data.type !== 'string' || !data.type.startsWith('workTools:')) return;
 if (data.type === 'workTools:ready') {
+// The Lead Checker says this every few seconds, so a reloaded SLA
+// Manager links up again with the Live tab it opened before.
+liveLink.win = event.source;
 liveLink.ready = true;
 if (typeof data.url === 'string' && /^https:\/\/carbot\.ai\/konnectlive\/[^#?]*$/i.test(data.url)) {
 try { localStorage.setItem(LIVE_URL_KEY, data.url); } catch (error) { /* the default still works */ }
 }
-liveLink.win = event.source;
-if (liveLink.pending) event.source.postMessage(liveLink.pending, LIVE_ORIGIN);
+sendNextLiveBatch();
 } else if (data.type === 'workTools:received') {
-liveLink.pending = null;
-showLinkToast(`The Lead Checker has the batch (${data.rows || 0} lead${data.rows === 1 ? "" : "s"}) and is checking it.`);
+const batch = liveLink.queue.find((b) => b.id === liveLink.sentId) || { from: 'manager', id: liveLink.sentId };
+liveLink.queue = liveLink.queue.filter((b) => b !== batch);
+liveLink.current = { ...batch, lastHeard: Date.now() };
+const rows = `${data.rows || 0} lead${data.rows === 1 ? '' : 's'}`;
+if (batch.from === 'desk') writeDeskStatus(batch.id, 'checking', `The Lead Checker is checking ${rows}.`);
+else showLinkToast(`The Lead Checker has the batch (${rows}) and is checking it.`);
 } else if (data.type === 'workTools:busy') {
-showLinkToast('The Lead Checker is still running a batch. Send again when it has finished.');
+const batch = liveLink.queue[0];
+if (batch && batch.from === 'desk') writeDeskStatus(batch.id, 'waiting', 'The Lead Checker is finishing another batch; yours goes next.');
+else showLinkToast('The Lead Checker is still running a batch. This one goes when it has finished.');
+liveLink.current = liveLink.current || { from: 'other', lastHeard: Date.now() };
 } else if (data.type === 'workTools:results' && typeof data.tsv === 'string') {
-importLinkedResults(data.kind, data.tsv, data.partial ? { done: data.done, total: data.total } : null);
+const batch = currentLiveBatch();
+const progress = data.partial ? { done: data.done, total: data.total } : null;
+if (data.kind === 'leads' && batch.from === 'desk') saveDeskResults(batch.id, data.tsv, progress);
+else importLinkedResults(data.kind, data.tsv, progress);
+if (progress) { if (liveLink.current) liveLink.current.lastHeard = Date.now(); }
+else { liveLink.current = null; sendNextLiveBatch(); }
 }
+}
+
+// One listener of each kind per page; each calls the newest copy of the
+// handler, so clicking the bookmark again does not leave an old one
+// answering.
+window.__workToolsOnLiveMessage = onLiveMessage;
+window.__workToolsOnDeskRequest = takeDeskRequest;
+if (!window.__workToolsLinkListening && typeof window.addEventListener === 'function') {
+window.__workToolsLinkListening = true;
+window.addEventListener('message', (event) => { if (window.__workToolsOnLiveMessage) window.__workToolsOnLiveMessage(event); });
+window.addEventListener('storage', (event) => {
+if (event.key === LIVE_REQUEST_KEY && window.__workToolsOnDeskRequest) window.__workToolsOnDeskRequest(readStoredJson(LIVE_REQUEST_KEY));
 });
 }
+// A request the desk made before this page (or this copy) was running.
+takeDeskRequest(readStoredJson(LIVE_REQUEST_KEY));
 
 window._copyLeadCheckerExport = function(buttonEl) {
 const original = buttonEl.textContent;
@@ -3826,6 +3939,14 @@ const eoAssigned = emailOnlyAssignmentsFrom([
 { ok: true, lead: { key: 'k4', name: 'Eve Evans', campaign: 'Y', email: 'eve@example.com', mobile: '' }, agent: { name: 'Agent B' } }
 ], new Map([['k1', { email: 'dan@example.com', phone: '' }], ['k2', { email: 'gus@example.com', phone: '07700900001' }], ['k3', { email: 'fay@example.com', phone: '' }]]));
 if (JSON.stringify(eoAssigned.map((e) => e.email)) !== JSON.stringify(['dan@example.com', 'eve@example.com'])) failures.push(`Expected only assigned Email Only leads to be recorded, got ${JSON.stringify(eoAssigned)}`);
+const desk = { from: 'desk', id: 'desk-1' };
+const t0 = 1000000;
+const link = (over) => ({ queue: [desk], current: null, sentId: null, sentAt: 0, ...over });
+if (nextLiveBatch(link({}), t0) !== desk) failures.push('Expected a waiting batch to be sent when nothing is running');
+if (nextLiveBatch(link({ current: { lastHeard: t0 - 1000 } }), t0) !== null) failures.push('Expected nothing to be sent while another batch is running');
+if (nextLiveBatch(link({ current: { lastHeard: t0 - LIVE_BATCH_STALE_MS - 1 } }), t0) !== desk) failures.push('Expected a batch that has gone quiet to stop holding up the next');
+if (nextLiveBatch(link({ sentId: 'desk-1', sentAt: t0 - 1000 }), t0) !== null) failures.push('Expected a batch just sent not to be sent again straight away');
+if (nextLiveBatch(link({ sentId: 'desk-1', sentAt: t0 - LIVE_RESEND_MS - 1 }), t0) !== desk) failures.push('Expected a batch never acknowledged to be sent again');
 const olderExport = parseLeadCheckerImportTsv(sampleTsv.split('\n').map((l) => l.split('\t').slice(0, 17).join('\t')).join('\n'));
 if (!olderExport.headerOk) failures.push('Expected an export without the reason column to still be accepted');
 
