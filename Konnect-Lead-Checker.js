@@ -70,7 +70,7 @@ function showLoginWaitNote() {
 if (!document.body || typeof document.body.appendChild !== 'function') return null;
 const note = document.createElement('div');
 note.setAttribute('role', 'status');
-note.textContent = 'Lead Checker will open once you have logged in. If it does not appear, click the bookmarklet again.';
+note.textContent = 'Logging you in. Lead Checker opens once you are in. If the page reloads instead, click Work Tools once more: a batch sent from SLA Manager then starts by itself.';
 note.style.cssText = 'position:fixed;top:16px;right:16px;max-width:300px;z-index:2147483000;background:#222;color:#fff;border:2px solid #C2CB42;border-radius:10px;padding:10px 12px;font:13px/1.4 -apple-system,Segoe UI,Roboto,sans-serif;';
 document.body.appendChild(note);
 setTimeout(() => { note.style.display = 'none'; }, 8000);
@@ -3461,6 +3461,15 @@ return postClosureOnly(Object.assign({}, result, patch, { processingTimestamp: n
 // needs contact?", everywhere: its notes are not given a tier, and a low
 // confidence tier guess is not a reason to review it. Real exceptions (lead
 // not found, cancelled) stay as they are.
+// Pure. Whether the lead being checked is a Post Closure lead: by the
+// batch's source, the lead's own Source, or its timeline heading.
+function isPostClosureEntry(row, panelFields, entryRow) {
+if (/post closure processing/i.test(String((row && row.source) || ''))) return true;
+if (/post closure processing/i.test(String((panelFields && panelFields.source) || ''))) return true;
+const heading = entryRow && typeof entryRow.querySelector === 'function' ? entryRow.querySelector('.connected-customer-title-pink') : null;
+return !!heading && /post closure processing/i.test(heading.textContent || '');
+}
+
 function postClosureOnly(r) {
 const isPostClosure = !!r.postClosureAction || /^post closure processing$/i.test(String(r.source || '').trim());
 if (!isPostClosure) return r;
@@ -3724,7 +3733,7 @@ const validation = validateLeadCandidate(panelFields, candidate.parsed, row);
 if (validation.ok) {
 const initialNotes = extractInitialNotes(modalState.panel);
 let followUp = [];
-if (/post closure processing/i.test(row.source || panelFields.source || '')) {
+if (isPostClosureEntry(row, panelFields, candidate.row)) {
 if (await clickModalTab(modalState.modal, 'Follow Up')) await waitForRepeat(modalState.modal, 'item in surveyDetailData', 1500);
 followUp = scopeItemsFor(modalState.modal, 'item in surveyDetailData');
 }
@@ -3783,7 +3792,10 @@ return finalizeResult(result, { status: 'EXCEPTION', exception: 'INITIAL_NOTES_E
 
 // Source falls back to the modal; campaign does not, because the modal
 // Campaign is the marketing form name, not Konnect's SLA categorisation.
-const resolvedSource = row.source || panelFields.source;
+// A Post Closure lead that was called is listed in Pending under its new
+// callback type (Auto Rescheduled), so it arrives with no source; its own
+// timeline heading still says Post Closure Processing.
+const resolvedSource = isPostClosureEntry(row, panelFields, candidate.row) ? POST_CLOSURE_LIST_SOURCE : (row.source || panelFields.source);
 // Call entries are only scanned for Post Closure rows (Step 13).
 const isPostClosureLead = String(resolvedSource || '').toLowerCase() === 'post closure processing';
 const decision = isPostClosureLead
@@ -4719,6 +4731,11 @@ const pcSendBack = postClosureOnly({ status: 'CLASSIFIED', source: 'Post Closure
 check('the send back reason is kept', [pcSendBack.postClosureAction, pcSendBack.postClosureReason, pcSendBack.tierName].join('|'), 'send back through|Email only|');
 check('a lead not found stays an exception', postClosureOnly({ status: 'EXCEPTION', exception: 'POST_CLOSURE_LEAD_NOT_FOUND', source: 'Post Closure Processing' }).status, 'EXCEPTION');
 check('other leads keep their tier', postClosureOnly(normalLead).tierName, 'WARM ENQUIRY');
+const pcHeading = { querySelector: (sel) => (sel === '.connected-customer-title-pink' ? { textContent: 'Manually Created Sales Lead from Post Closure Processing' } : null) };
+const otherHeading = { querySelector: () => ({ textContent: 'Manually Created Sales Lead from AA Cars' }) };
+check('a Pending row with no source is Post Closure by its heading', isPostClosureEntry({ source: '' }, { source: '' }, pcHeading), true);
+check('or by the lead\'s own Source', isPostClosureEntry({ source: '' }, { source: 'Post Closure Processing' }, otherHeading), true);
+check('another lead is not Post Closure', isPostClosureEntry({ source: '' }, { source: 'AA Cars' }, otherHeading), false);
 check('categoryBadge for a normal lead still leads with the tier pill as before', categoryBadge(normalLead).indexOf('WARM ENQUIRY') < categoryBadge(normalLead).indexOf('Quote'), true);
 
 if (failures.length > 0) {
@@ -6077,9 +6094,16 @@ s.fromManager = true;
 manager.postMessage({ type: 'workTools:received', rows: s.rows.length }, MANAGER_ORIGIN);
 host.style.display = 'block';
 badge.hide();
+clearTimeout(batchWait);
 if (s.headerOk && s.rows.length > 0 && !s.done) startProcessing();
-else render();
+else { uiHandle.setState(s.headerOk ? 'The batch sent over had no leads to check.' : `The batch sent over could not be read: ${s.headerError}`); render(); }
 });
+// Says so when the link is up but no batch follows (SLA Manager reloaded,
+// or the batch went to an earlier copy of this page before it reloaded).
+uiHandle.setState('Linked: waiting for the batch from SLA Manager or the agent desktop');
+const batchWait = setTimeout(() => {
+if (!isRunning && !(session && session.fromManager)) uiHandle.setState('Linked, but no batch came. Press Send (or Check my Parked Calls) again.');
+}, 10000);
 // Results go back in step as the batch runs (every 5 leads), so the lead
 // cards fill in as it goes; the full set follows when it finishes.
 let sentAtCount = 0;

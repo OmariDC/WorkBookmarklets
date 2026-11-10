@@ -3707,11 +3707,16 @@ const LEAD_CHECKER_IMPORT_KEY = '_slaLeadCheckerImportState';
 // files cannot share a module.
 const LEAD_CHECKER_IMPORT_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank', 'PostClosureReason', 'PostClosureEvidence'];
 
+// Results saved before Post Closure leads lost their tier can hold a wrong
+// tier (NURTURE) that would hide those leads from the next Send, so they
+// are dropped once.
+const LEAD_CHECKER_RESULTS_VALID_FROM = '2026-11-10T17:15:39Z';
+
 function loadLeadCheckerImportState() {
 try {
 const raw = JSON.parse(localStorage.getItem(LEAD_CHECKER_IMPORT_KEY));
 if (raw && typeof raw === 'object') {
-if (!isStoredTimeFresh(raw.savedAt)) {
+if (!isStoredTimeFresh(raw.savedAt) || !(new Date(raw.savedAt) >= new Date(LEAD_CHECKER_RESULTS_VALID_FROM))) {
 removeStoredKey(LEAD_CHECKER_IMPORT_KEY);
 return { rawInput: '', results: [] };
 }
