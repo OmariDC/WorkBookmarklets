@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.8.2'
+    version: '1.8.3'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -728,13 +728,14 @@
 
   function positionPalette() {
     if (state.palette && state.view === 'booking' && inboundContext()) {
-      /* No lead screen yet: dock on the right so the inbound screens stay usable. */
-      /* Sit just left of Konnect's Phone column so Hang Up and Hold stay reachable. */
+      /* No lead screen yet: dock bottom left and grow upwards, clear of the
+         Phone column on the right. */
       const anchor = phoneColumnAnchor();
       const rightEdge = anchor ? Math.round(anchor.getBoundingClientRect().left) - 12 : window.innerWidth - 16;
-      const width = Math.min(400, rightEdge - 8);
-      state.palette.style.left = `${Math.max(8, rightEdge - width)}px`;
-      state.palette.style.top = '16px';
+      const width = Math.max(280, Math.min(400, rightEdge - 16));
+      state.palette.style.left = '16px';
+      state.palette.style.top = 'auto';
+      state.palette.style.bottom = '16px';
       state.palette.style.width = `${width}px`;
       state.palette.style.maxHeight = `${Math.max(320, window.innerHeight - 32)}px`;
       return;
@@ -782,6 +783,7 @@
     state.palette.style.top = `${top}px`;
     state.palette.style.width = `${width}px`;
     state.palette.style.maxHeight = `${maxHeight}px`;
+    state.palette.style.bottom = '';
   }
 
   function renderHeader(title, backAction, showSettings) {
@@ -2905,16 +2907,49 @@
     return filled;
   }
 
-  function searchKonnect() {
+  /* Konnect's customer search box: by its field name, else the text box
+     closest to the Search button. */
+  function findSearchBox(button) {
+    const candidates = Array.from(document.querySelectorAll('input'))
+      .filter((input) => isVisible(input) && !input.closest(`#${PALETTE_ID}`) && !input.closest('.modal') &&
+        /^(text|search|tel|)$/i.test(input.getAttribute('type') || ''));
+    const named = candidates.find((input) => /search/i.test(`${input.getAttribute('ng-model') || ''} ${input.id} ${input.name} ${input.placeholder}`));
+    if (named) return named;
+    const target = button.getBoundingClientRect();
+    const distance = (input) => {
+      const rect = input.getBoundingClientRect();
+      return Math.hypot(rect.right - target.left, (rect.top + rect.height / 2) - (target.top + target.height / 2));
+    };
+    return candidates.sort((a, b) => distance(a) - distance(b))[0] || null;
+  }
+
+  /* Presses Customer Call first when needed, then searches by mobile (or name). */
+  async function searchKonnect() {
     const c = inbound.customer;
     const query = realText(c.mobile).replace(/[^\d+]/g, '').replace(/^\+44/, '0') || realText(c.name);
-    const button = document.getElementById('btnSearchCustomers');
-    if (!button || !query) {
-      showToast(button ? 'Add a mobile or name first' : 'Open Customer Call first to search');
+    if (!query) {
+      showToast('Add a mobile or name first');
       return;
     }
-    const scope = button.closest('form, .input-group, .form-group, .row, .panel-body') || button.parentElement;
-    const input = scope?.querySelector('input[type="text"], input[type="search"], input:not([type])');
+    const visibleSearch = () => {
+      const button = document.getElementById('btnSearchCustomers');
+      return button && isVisible(button) ? button : null;
+    };
+    let button = visibleSearch();
+    if (!button) {
+      const customerCall = Array.from(document.querySelectorAll('button[ng-click="setCallType(\'Customer\')"]')).find(isVisible);
+      if (!customerCall) {
+        showToast('Accept the call first, then search');
+        return;
+      }
+      customerCall.click();
+      button = await waitFor(visibleSearch, 3000);
+    }
+    if (!button) {
+      showToast('The customer search did not open');
+      return;
+    }
+    const input = await waitFor(() => findSearchBox(button), 1500);
     if (!input) {
       showToast('Could not find the search box');
       return;
