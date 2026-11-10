@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.9.0'
+    version: '1.9.1'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -1962,7 +1962,7 @@
     if (diaryShowsDate(modal, plan)) return true;
     modal.querySelector('button[ng-click="openStartDate($event)"]').click();
     // The picker may redraw itself, so the month title is looked up fresh each time.
-    const titleText = () => normaliseText(Array.from(document.querySelectorAll('button[id$="-title"], .uib-title')).find(isVisible)?.textContent);
+    const titleText = () => normaliseText(Array.from(document.querySelectorAll('button[id$="-title"], button[ng-click="toggleMode()"], .uib-title')).find(isVisible)?.textContent);
     if (!(await waitFor(titleText, 3000))) return false;
     const target = plan.year * 12 + plan.month - 1;
     for (let step = 0; step < 24; step += 1) {
@@ -1978,8 +1978,25 @@
     const day = Array.from(document.querySelectorAll('button[ng-click="select(dt.date)"]')).find((node) => isVisible(node) &&
       !node.querySelector('.text-muted') && !node.disabled && Number(normaliseText(node.textContent)) === plan.day);
     if (!day) return false;
+    // The old day's boxes stay on screen for a moment after the date changes.
+    const oldCell = diarySlotCells(modal)[0];
     day.click();
-    return !!(await waitFor(() => diaryShowsDate(modal, plan) && diarySlotCells(modal).length, 15000));
+    if (!(await waitFor(() => diaryShowsDate(modal, plan), 5000))) return false;
+    await waitFor(() => !oldCell || !oldCell.isConnected, 8000);
+    return !!(await diaryReady(modal));
+  }
+
+  /* Waits until the diary's boxes have been on screen unchanged for a moment. */
+  async function diaryReady(modal) {
+    let last = '';
+    let steady = 0;
+    return waitFor(() => {
+      const cells = diarySlotCells(modal);
+      const now = `${cells.length}|${cells[0]?.innerText || ''}|${cells[cells.length - 1]?.innerText || ''}`;
+      steady = cells.length && now === last ? steady + 1 : 0;
+      last = now;
+      return steady >= 6 ? modal : null;
+    }, 15000);
   }
 
   /* A free box: no name in it, not blocked and not in the past. */
@@ -1995,27 +2012,35 @@
       const slots = cells.filter((cell) => cell.matches('td[ng-click^="SelectTimeSlot"]'));
       const cell = cells.length === headers.length ? cells[column] : slots[column - (headers.length - slots.length)];
       if (!cell || !cell.matches('td[ng-click^="SelectTimeSlot"]')) continue;
-      const text = normaliseText(cell.textContent);
-      const titles = [cell, ...cell.querySelectorAll('[title]')].map((node) => node.getAttribute('title') || '').join(' ');
+      // Every box holds a hidden "BLOCKED" and a hidden name button, so only
+      // what is actually shown counts.
+      const text = normaliseText(cell.innerText);
+      const titles = [cell, ...Array.from(cell.querySelectorAll('[title]')).filter(isVisible)].map((node) => node.getAttribute('title') || '').join(' ');
       if (text || /past|soon|blocked/i.test(titles)) continue;
-      return { cell, person: normaliseText(cells[0] && cells[0] !== cell ? cells[0].textContent : '') };
+      return { cell, person: normaliseText(cells[0] && cells[0] !== cell ? cells[0].innerText : '') };
     }
     return { error: `no one is free at ${plan.time} on that day` };
   }
 
-  /* Opens a Time Span or Type list and picks the option, the way a person would. */
-  async function diaryChoose(modal, optionSelector, wanted) {
+  /* Opens a Time Span or Type list with its arrow and picks the option.
+     The options are only added to the page once the list is open. Before a
+     choice the button reads "Time Span" or "Type"; after one it shows the choice. */
+  async function diaryChoose(modal, label, optionSelector, wanted) {
     const findOption = () => Array.from(modal.querySelectorAll(optionSelector))
-      .find((node) => normaliseText(node.textContent).toLowerCase() === wanted.toLowerCase());
-    const option = await waitFor(findOption, 4000);
-    if (!option) return false;
-    const group = option.closest('.btn-group, .dropdown, .input-group, .input-group-btn');
-    const toggle = group?.querySelector('.dropdown-toggle');
-    if (toggle && !isVisible(option)) {
+      .find((node) => isVisible(node) && normaliseText(node.textContent).toLowerCase() === wanted.toLowerCase());
+    const labelButton = Array.from(modal.querySelectorAll('button'))
+      .find((node) => isVisible(node) && normaliseText(node.textContent).toLowerCase() === label.toLowerCase());
+    const groups = Array.from(modal.querySelectorAll('.dropdown-toggle')).filter(isVisible);
+    let toggle = labelButton?.parentElement?.querySelector('.dropdown-toggle');
+    if (!toggle) toggle = groups[label === 'Time Span' ? 0 : 1];
+    if (!toggle) return false;
+    let option = findOption();
+    for (let attempt = 0; !option && attempt < 2; attempt += 1) {
       toggle.click();
-      await waitFor(() => isVisible(findOption()), 1500);
+      option = await waitFor(findOption, 2500);
     }
-    findOption().click();
+    if (!option) return false;
+    option.click();
     return true;
   }
 
@@ -2049,7 +2074,7 @@
       // The diary can load instantly or take a few seconds.
       modal = await waitFor(() => { const m = diaryModal(); return m && diarySlotCells(m).length ? m : null; }, 15000);
       if (run.stopped) return;
-      if (!modal) return fail('the diary did not load');
+      if (!modal || !(await diaryReady(modal))) return fail('the diary did not load');
       if (!(await diaryPickDate(modal, plan))) return fail(`could not change the diary to ${plan.label.slice(0, 5)}`);
       if (run.stopped) return;
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -2060,8 +2085,8 @@
       if (run.stopped) return;
       if (!make) return fail('Make Appointment did not appear after picking the time');
       make.click();
-      if (!(await diaryChoose(modal, 'a[ng-click^="setAppointmentLength"]', plan.length))) return fail(`the ${plan.length} time span was not offered`);
-      if (!(await diaryChoose(modal, 'a[ng-click^="setAppointmentType"]', plan.type))) return fail(`the ${plan.type} type was not offered`);
+      if (!(await diaryChoose(modal, 'Time Span', 'a[ng-click^="setAppointmentLength"]', plan.length))) return fail(`the ${plan.length} time span was not offered`);
+      if (!(await diaryChoose(modal, 'Type', 'a[ng-click^="setAppointmentType"]', plan.type))) return fail(`the ${plan.type} type was not offered`);
       if (run.stopped) return;
       const confirm = await waitFor(() => Array.from(modal.querySelectorAll('button[ng-click="createAppointment()"]')).find((b) => isVisible(b) && !b.disabled), 3000);
       if (!confirm) return fail('the Confirm button was not ready');

@@ -16,12 +16,13 @@ const MAX = 60;
 const vis = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
 const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 // Keeps labels readable but strips anything that looks like customer data.
-function mask(s) {
-return clean(s)
+const scrub = (s) => clean(s)
 .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}/gi, '<email>')
 .replace(/(\+44\s?|\b0)7\d{3}\s?\d{3}\s?\d{3}\b/g, '<phone>')
 .replace(/\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/g, '<reg>')
-.slice(0, MAX);
+.replace(/\b[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2}\b/g, '<postcode>');
+function mask(s) {
+return scrub(s).slice(0, MAX);
 }
 const maskDigits = (s) => clean(s).replace(/\d+/g, '9');
 // Shape only: "Mr John Smith" becomes "Aa Aaaa Aaaaa".
@@ -30,7 +31,7 @@ function attrs(el) {
 const out = {};
 for (const name of ['id', 'class', 'href', 'ng-click', 'ng-href', 'ng-model', 'ng-repeat', 'ng-if', 'ng-show', 'ui-sref', 'title', 'type', 'name', 'value', 'download', 'role', 'col-id', 'data-toggle', 'aria-label']) {
 const v = el.getAttribute && el.getAttribute(name);
-if (v) out[name] = maskDigits(v).slice(0, 140);
+if (v) out[name] = maskDigits(scrub(v)).slice(0, 140);
 }
 if (el.disabled) out.disabled = true;
 return out;
@@ -55,8 +56,15 @@ const KEY = /recreate|regenerat|refresh|download|export|excel|csv|report|custome
 report.controls = Array.from(document.querySelectorAll('button, a, input[type="button"], input[type="submit"], [ng-click], [role="button"]'))
 .filter(vis)
 .map((el) => {
-const text = mask(el.textContent || el.value || el.getAttribute('title') || el.getAttribute('aria-label'));
-return { tag: el.tagName.toLowerCase(), text, relevant: KEY.test(text + ' ' + (el.getAttribute('ng-click') || '')), ...attrs(el) };
+let text = mask(el.textContent || el.value || el.getAttribute('title') || el.getAttribute('aria-label'));
+const out = { tag: el.tagName.toLowerCase(), text, relevant: KEY.test(text + ' ' + (el.getAttribute('ng-click') || '')), ...attrs(el) };
+// Inside table rows (diary boxes, history) the text is usually a person's
+// name, so only its shape is kept unless it is a status word or a time.
+if (el.closest('tbody')) {
+if (!/^(BLOCKED|[A-Z][a-z]+( [A-Z][a-z]+)? Appointment|\d{1,2}:\d{2}|\d{1,2})$/.test(text)) out.text = shape(text);
+if (out.title) out.title = out.title.replace(/^[^:]+:/, '<name>:');
+}
+return out;
 })
 .filter((c) => c.text || c['ng-click'])
 // Identical controls (one icon per timeline row) are listed once with a count.
@@ -95,12 +103,18 @@ statusTexts.push({ text: mask(t), parent: node.parentElement.tagName.toLowerCase
 report.statusTexts = statusTexts;
 
 // Tables: header labels, and the first three rows as structure only.
+// Titles in table cells often start with a person's name ("Name: Phone Call Appointment").
+function cellAttrs(el) {
+const out = attrs(el);
+if (out.title) out.title = out.title.replace(/^[^:]+:/, '<name>:');
+return out;
+}
 function describeCell(cell) {
 const link = cell.querySelector('a, [ng-click]');
 return {
 textShape: shape(cell.textContent),
-link: link ? { tag: link.tagName.toLowerCase(), ...attrs(link) } : null,
-buttons: Array.from(cell.querySelectorAll('button, i[class*="fa-"]')).slice(0, 4).map((b) => ({ tag: b.tagName.toLowerCase(), text: mask(b.textContent), ...attrs(b) }))
+link: link ? { tag: link.tagName.toLowerCase(), ...cellAttrs(link) } : null,
+buttons: Array.from(cell.querySelectorAll('button, i[class*="fa-"]')).slice(0, 4).map((b) => ({ tag: b.tagName.toLowerCase(), text: shape(b.textContent), ...cellAttrs(b) }))
 };
 }
 report.tables = Array.from(document.querySelectorAll('table')).filter(vis).slice(0, 8).map((t) => {
