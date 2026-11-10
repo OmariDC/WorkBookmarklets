@@ -4003,18 +4003,24 @@ return true;
 
 let isRunning = false;
 
-// Konnect Live logs out after 15 idle minutes but keeps the details in the
-// login box, so pressing Login carries the run on. False when that is not
-// possible (no saved password), and the run then pauses for the agent.
+// Konnect Live logs out after 15 idle minutes; the browser fills the
+// details back in, a moment after the page shows. Waits 0.15 seconds,
+// passes the filled boxes to Konnect, presses Login, and tries a few times.
 async function reLogin(uiHandle) {
-const password = document.querySelector('input[type="password"]');
+for (let attempt = 0; attempt < 3; attempt++) {
+await sleep(150);
 const button = Array.from(document.querySelectorAll('button[ng-click="login()"], button.btn-login')).find((b) => b.offsetWidth || b.offsetHeight);
-if (!password || !password.value || !button) return false;
+if (!button) return !onLoginPage();
 uiHandle.setState('Konnect Live logged out: logging back in');
+document.querySelectorAll('form input').forEach((input) => {
+input.dispatchEvent(new Event('input', { bubbles: true }));
+input.dispatchEvent(new Event('change', { bubbles: true }));
+});
 button.click();
-for (let waited = 0; waited < 30000; waited += 500) {
+for (let waited = 0; waited < 10000; waited += 500) {
 await sleep(500);
 if (!onLoginPage()) { await sleep(1500); return true; }
+}
 }
 return false;
 }
@@ -6279,6 +6285,9 @@ console.warn('KonnectLeadChecker UI did not initialize (expected outside a real 
 // A full page load after login ends this script, so the note says to
 // click again if nothing appears.
 if (onLoginPage()) {
+// The browser fills the login box itself, so pressing Login is usually
+// all that is needed; the wait below covers the rest.
+reLogin({ setState() {} });
 const note = showLoginWaitNote();
 window.__konnectLeadChecker = { focus() { if (note) note.style.display = 'block'; } };
 const wait = setInterval(() => {
