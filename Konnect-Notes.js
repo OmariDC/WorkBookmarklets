@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.8.1'
+    version: '1.8.2'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -3077,12 +3077,12 @@
     body.appendChild(card);
   }
 
-  /* Konnect's Phone column (bottom right, on every screen) ends with the
-     red Hang Up button. The Booking button goes straight under it, styled
-     like its neighbours, and only shows while on the inbound screens. */
+  /* Konnect's Phone column (bottom right, on every screen) starts with the
+     green Manual Call button. The Booking button goes directly above it,
+     styled like its neighbours, and only shows while on the inbound screens. */
   function phoneColumnAnchor() {
-    const hangUp = Array.from(document.querySelectorAll('button[ng-click="endCall()"]')).find(isVisible);
-    return hangUp || null;
+    const find = (selector) => Array.from(document.querySelectorAll(selector)).find(isVisible) || null;
+    return find('button[ng-click="manualCallClick()"]') || find('button[ng-click="endCall()"]');
   }
 
   function updateInboundLauncher() {
@@ -3106,7 +3106,7 @@
       });
     }
     if (anchor) {
-      if (launcher.previousElementSibling !== anchor) anchor.insertAdjacentElement('afterend', launcher);
+      if (launcher.nextElementSibling !== anchor) anchor.insertAdjacentElement('beforebegin', launcher);
       /* Same size and shape as the Phone buttons, without their colour or actions. */
       const keep = Array.from(anchor.classList).filter((name) => !/^btn-(danger|success|info|warning|primary|default|switch)$/.test(name) && !/^ng-/.test(name));
       launcher.className = `${keep.join(' ')} kn-ui kn-phone-launcher`;
