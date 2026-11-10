@@ -1733,8 +1733,11 @@ function nationalWindowStart(now) {
 return new Date(now.getFullYear(), now.getMonth(), now.getDate() - NATIONAL_WINDOW_DAYS);
 }
 const NATIONAL_BATCH_HEADER = ['NationalCheck', 'Customer', 'Reg', 'ActivityID', 'LeadCreated', 'Campaign', 'Dealer', 'LastContact', 'State', 'ExportOutcome', 'Attempts', 'ManualReschedules', 'AutoReschedules', 'ExportHint'];
-const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx', 'Reg', 'ResetFields'];
-const NATIONAL_VERDICTS = ['Reset', 'Check', 'Not found', 'OK'];
+const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'Reg'];
+// "Re setup": the lead must be set up again as a new lead. Older exports
+// said "Reset" and are read as Re setup.
+const RE_SETUP = 'Re setup';
+const NATIONAL_VERDICTS = [RE_SETUP, 'Check', 'Not found', 'OK'];
 const NATIONAL_RESULTS_KEY = '_slaNationalCheckResults';
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
@@ -1849,6 +1852,7 @@ const results = lines.slice(headerAt + 1).map((line) => {
 const cells = line.split('\t');
 const r = {};
 NATIONAL_RESULT_HEADER.forEach((h) => { const i = header.indexOf(h); r[h] = i >= 0 ? (cells[i] || '').trim() : ''; });
+if (r.Verdict === 'Reset') r.Verdict = RE_SETUP;
 return r;
 }).filter((r) => r.NationalResult === 'national');
 return { ok: true, results, error: null };
@@ -1859,24 +1863,6 @@ const counts = {};
 NATIONAL_VERDICTS.forEach((v) => { counts[v] = 0; });
 results.forEach((r) => { counts[r.Verdict] = (counts[r.Verdict] || 0) + 1; });
 return counts;
-}
-
-// The exact notes, line breaks included, travel inside ResetFields.
-function nationalResetNotes(r) {
-try {
-const fields = JSON.parse(r.ResetFields || '{}');
-if (fields && typeof fields.InitialNotes === 'string') return fields.InitialNotes;
-} catch (error) { /* fall back to the flattened column */ }
-return r.ResetInitialNotes || '';
-}
-
-function buildNationalResetBlock(r) {
-return [
-`Campaign: ${r.ResetCampaign || ''}`,
-`Initial notes: ${nationalResetNotes(r)}`,
-`Vehicle of interest: ${r.ResetVoi || ''}`,
-`Part exchange: ${r.ResetPx || ''}`
-].join('\n');
 }
 
 function saveNationalResults(results) {
@@ -2100,17 +2086,17 @@ ${row.nationalBatchTsv ? `<button type="button" onclick="window._copyNationalBat
 if (!results) return buttons;
 const counts = countNationalVerdicts(results);
 const countLine = NATIONAL_VERDICTS.map((v) => `${escapeHtml(v)}: ${counts[v] || 0}`).join(' &middot; ');
-const flagged = results.filter((r) => r.Verdict === 'Reset' || r.Verdict === 'Check');
+const flagged = results.filter((r) => r.Verdict === RE_SETUP || r.Verdict === 'Check');
 const list = flagged.map((r) => {
 const index = results.indexOf(r);
 const notes = r.FollowUpNotes ? `<div style="color: var(--wb-muted, #5b6577);">Notes: ${escapeHtml(r.FollowUpNotes.slice(0, 160))}${r.FollowUpNotes.length > 160 ? '…' : ''}</div>` : '';
 return `
-<div style="border: 1px solid var(--wb-border, #e2e8f0); border-left: 3px solid ${r.Verdict === 'Reset' ? '#dc2626' : '#d97706'}; border-radius: 6px; padding: 6px 8px; margin-top: 6px;">
+<div style="border: 1px solid var(--wb-border, #e2e8f0); border-left: 3px solid ${r.Verdict === RE_SETUP ? '#dc2626' : '#d97706'}; border-radius: 6px; padding: 6px 8px; margin-top: 6px;">
 <div><strong>${escapeHtml(r.Verdict)}</strong>: ${escapeHtml(r.Customer)} <span style="color: var(--wb-muted, #5b6577);">(lead ${escapeHtml(r.ActivityID)})</span></div>
 <div>${escapeHtml(r.Reason)}</div>
 ${r.FinalOutcome ? `<div style="color: var(--wb-muted, #5b6577);">Final outcome: ${escapeHtml(r.FinalOutcome)}</div>` : ''}
 ${notes}
-${r.Verdict === 'Reset' ? `<button type="button" onclick="window._copyNationalReset(${index}, this)" style="${nationalButtonStyle(false)} margin-top: 4px;">Copy reset details</button>` : ''}
+${r.Verdict === RE_SETUP ? `<div style="color: var(--wb-muted, #5b6577);">Set up again with Lead Re setup on the agent desktop${r.ResetCampaign ? ` (${escapeHtml(r.ResetCampaign)})` : ''}.</div>` : ''}
 </div>`;
 }).join('');
 return `${buttons}
@@ -2151,15 +2137,6 @@ saveNationalResults(parsed.results);
 displayMorningChecks();
 };
 
-window._copyNationalReset = function(index, btn) {
-const results = loadNationalResults() || [];
-const r = results[index];
-if (!r) return;
-navigator.clipboard.writeText(buildNationalResetBlock(r)).then(
-() => flashNationalButton(btn, 'Copied'),
-() => flashNationalButton(btn, 'Clipboard blocked')
-);
-};
 
 runSelfTest('national-check', function() {
 const failures = [];
@@ -2211,20 +2188,20 @@ check('file with nothing newer than the previous version is flagged', isHubFileO
 check('no previous version time means no warning', isHubFileOlderThan(freshRows, ''), false);
 check('values with tabs are cleaned', buildNationalBatchTsv([{ ...alex, customer: 'Alex\tSample' }]).split('\n')[1].split('\t')[1], 'Alex Sample');
 const resultTsv = [NATIONAL_RESULT_HEADER.join('\t'),
-['national', 'Alex Sample', '70000001', '1400001', 'OK', 'Closed with Max Attempts', '3', 'Max Attempts Reached', '', '', '', '', '', '', 'AB12CDE', ''].join('\t'),
-['national', 'Sam Buyer', '70000002', '1400002', 'Reset', 'Closed with no dealership', '2', 'Email Only Lead', '', 'Customer asked for a call back', 'Enquiry - Used', 'Looking for a hatchback | Petrol', 'AB12CDE', 'No', 'AB12CDE', JSON.stringify({ InitialNotes: 'Looking for a hatchback\nPetrol' })].join('\t'),
-['national', 'Jo Example', '70000003', '', 'Not found', 'No matching lead', '', '', '', '', '', '', '', '', '', ''].join('\t')
+['national', 'Alex Sample', '70000001', '1400001', 'OK', 'Closed with Max Attempts', '3', 'Max Attempts Reached', '', '', '', 'AB12CDE'].join('\t'),
+['national', 'Sam Buyer', '70000002', '1400002', 'Re setup', 'Closed with no dealership', '2', 'Email Only Lead', '', 'Customer asked for a call back', 'Enquiry - Used', 'AB12CDE'].join('\t'),
+['national', 'Jo Example', '70000003', '', 'Not found', 'No matching lead', '', '', '', '', '', ''].join('\t')
 ].join('\n');
 const parsed = parseNationalResultsTsv(resultTsv);
 check('results import accepts the exact header', parsed.ok, true);
-check('verdict counts', countNationalVerdicts(parsed.results), { Reset: 1, Check: 0, 'Not found': 1, OK: 1 });
+check('verdict counts', countNationalVerdicts(parsed.results), { 'Re setup': 1, Check: 0, 'Not found': 1, OK: 1 });
 check('results import rejects another header', parseNationalResultsTsv('Name\tPhone\nx\ty').ok, false);
-const olderExport = resultTsv.split('\n').map((l) => l.split('\t').slice(0, 14).join('\t')).join('\n');
-check('an export without the newer columns still imports', [parseNationalResultsTsv(olderExport).ok, parseNationalResultsTsv(olderExport).results[1].Verdict, parseNationalResultsTsv(olderExport).results[1].Reg], [true, 'Reset', '']);
+const olderHeader = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx'];
+const olderExport = [olderHeader.join('\t'), ['national', 'Sam Buyer', '70000002', '1400002', 'Reset', 'x', '2', '', '', '', 'Enquiry - Used', 'notes', '', ''].join('\t')].join('\n');
+check('an older export still imports and Reset reads as Re setup', [parseNationalResultsTsv(olderExport).ok, parseNationalResultsTsv(olderExport).results[0].Verdict, parseNationalResultsTsv(olderExport).results[0].Reg], [true, 'Re setup', '']);
+check('older notes columns are not kept', 'ResetInitialNotes' in parseNationalResultsTsv(olderExport).results[0], false);
 check('a stray line or byte order mark before the header is ignored', parseNationalResultsTsv('\uFEFFcopied from Lead Checker\n' + resultTsv).results.length, 3);
 check('an export missing a needed column is refused', parseNationalResultsTsv('NationalResult\tCustomer\nnational\tAlex').ok, false);
-check('reset block', buildNationalResetBlock(parsed.results[1]).split('\n')[0], 'Campaign: Enquiry - Used');
-check('reset block keeps the notes line breaks', buildNationalResetBlock(parsed.results[1]).split('\n').slice(1, 3), ['Initial notes: Looking for a hatchback', 'Petrol']);
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager national-check self-test FAILED:\n' + failures.join('\n'));
 } else {

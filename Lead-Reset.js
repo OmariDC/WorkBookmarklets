@@ -8,7 +8,7 @@
 // says what to do by hand.
 
 const PANEL_ID = '_leadResetPanel';
-const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'ResetInitialNotes', 'ResetVoi', 'ResetPx', 'Reg', 'ResetFields'];
+const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'Reg'];
 const NATIONAL_RESULTS_KEY = '_slaNationalCheckResults';
 const PASTED_RESULTS_KEY = '_leadResetPastedResults';
 const PROGRESS_KEY = '_leadResetProgress';
@@ -63,7 +63,8 @@ return typeof fields.InitialNotes === 'string' ? fields.InitialNotes : String((r
 }
 
 function resetLeadsFrom(results) {
-return (results || []).filter((r) => r && r.Verdict === 'Reset' && r.Customer).map((r) => ({
+// "Reset" is how older exports named Re setup.
+return (results || []).filter((r) => r && (r.Verdict === 'Re setup' || r.Verdict === 'Reset') && r.Customer).map((r) => ({
 activityId: r.ActivityID || '',
 name: r.Customer,
 reg: r.Reg || '',
@@ -183,18 +184,17 @@ if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${label}
 };
 try {
 const tsv = [NATIONAL_RESULT_HEADER.join('\t'),
-['national', 'Mr. Sam Buyer', '70000002', '1400002', 'Reset', 'Closed with no dealership', '2', 'Email Only Lead', '', '', 'Vauxhall - Offer Request - New', 'Line one | Line two', 'Vauxhall Corsa', 'No Part Exchange', 'AB12 CDE', JSON.stringify({ LeadTypeID: 2, InitialNotes: 'Line one\nLine two' })].join('\t'),
-['national', 'Alex Sample', '70000001', '1400001', 'OK', 'Sent to Preston', '1', '', 'Preston', '', '', '', '', '', 'AB12CDF', ''].join('\t')
+['national', 'Mr. Sam Buyer', '70000002', '1400002', 'Re setup', 'Closed with no dealership', '2', 'Email Only Lead', '', '', 'Vauxhall - Offer Request - New', 'AB12 CDE'].join('\t'),
+['national', 'Alex Sample', '70000001', '1400001', 'OK', 'Sent to Preston', '1', '', 'Preston', '', '', 'AB12CDF'].join('\t')
 ].join('\n');
 const parsed = parseResultsTsv(tsv);
 check('accepts the Lead Checker export', parsed.ok, true);
 check('rejects another header', parseResultsTsv('Name\tPhone\nx\ty').ok, false);
-check('reads an export without the newer columns', resetLeadsFrom(parseResultsTsv(tsv.split('\n').map((l) => l.split('\t').slice(0, 14).join('\t')).join('\n')).results).map((l) => [l.activityId, l.notes]), [['70000002', 'Line one | Line two']]);
 const leads = resetLeadsFrom(parsed.results);
-check('only Reset leads are kept', leads.map((l) => l.activityId), ['70000002']);
-check('exact notes come from the reset fields', leads[0].notes, 'Line one\nLine two');
-check('flattened notes are the fallback', resetNotesOf({ ResetInitialNotes: 'Flat', ResetFields: 'not json' }), 'Flat');
-check('reset fields parsed', leads[0].fields.LeadTypeID, 2);
+check('only Re setup leads are kept', leads.map((l) => [l.activityId, l.campaign, l.reg]), [['70000002', 'Vauxhall - Offer Request - New', 'AB12 CDE']]);
+check('an older export saying Reset still counts', resetLeadsFrom([{ Verdict: 'Reset', Customer: 'Jo Example', ResetFields: JSON.stringify({ InitialNotes: 'A\nB' }) }]).map((l) => l.notes), ['A\nB']);
+check('no notes in the export means none until the page supplies them', leads[0].notes, '');
+check('summary counts', leadSummaryText([{ activityId: '1', name: 'A' }, { activityId: '2', name: 'B' }, { activityId: '3', name: 'C' }], { byActivity: { 1: 'Done', 2: 'Skipped' } }), '1 done, 1 skipped, 1 left');
 check('title stripped', stripNameTitle('Mrs Jo Example'), 'Jo Example');
 const rows = [
 { name: 'Sam Buyerson', vehicles: 'XY12ZZZ', magic: '9001' },
@@ -525,10 +525,10 @@ ctx.notesFrom = adopted.notesFrom;
 const earlier = findEarlierReset(activities, lead);
 if (earlier && !ctx.allowExisting) {
 ctx.allowExisting = true;
-throw new NeedsYou(`This customer already has a ${lead.campaign} lead added by hand after the closed one, so it may already be reset. Press Skip lead to leave it, or carry on to add another.`, { carryOnLabel: 'Add another lead' });
+throw new NeedsYou(`This customer already has a ${lead.campaign} lead added by hand after the closed one, so it may already be set up again. Press Skip lead to leave it, or carry on to add another.`, { carryOnLabel: 'Add another lead' });
 }
 if (earlier) return 'Adding another lead as asked';
-return closed ? `Closed ${lead.campaign} lead found on this customer, not reset yet` : 'Closed lead not checked on this customer';
+return closed ? `Closed ${lead.campaign} lead found on this customer, not set up again yet` : 'Closed lead not checked on this customer';
 }
 
 async function chooseUpdateOutcomes() {
@@ -730,7 +730,7 @@ return 'Call parked';
 const STEPS = [
 { label: 'Open New Manual Outbound Call', run: openManualOutbound },
 { label: 'Find the customer', run: searchAndOpenCustomer },
-{ label: 'Check it is not already reset', run: checkNotAlreadyReset },
+{ label: 'Check it is not already set up again', run: checkNotAlreadyReset },
 { label: 'Choose Update Outcomes', run: chooseUpdateOutcomes },
 { label: 'Add the new lead', run: addNewLead },
 { label: 'Find the new lead', run: findNewLead },
@@ -830,7 +830,7 @@ if (answer === 'stop') state.stopRequested = true;
 }
 }
 }
-if (!state.stopRequested) addLog('All Reset leads are done');
+if (!state.stopRequested) addLog('All Re setup leads are done');
 } catch (error) {
 addLog(`Stopped: ${error && error.message}`);
 } finally {
@@ -855,6 +855,24 @@ const style = primary
 return `<button type="button" data-action="${action}" style="${style}border-radius:6px;padding:6px 10px;font-size:12px;cursor:pointer;margin:0 6px 6px 0;">${escapeHtml(label)}</button>`;
 }
 
+// "3 done, 1 skipped, 2 left" plus the names under each heading.
+function leadSummaryText(leads, progress) {
+const groups = { Done: [], Skipped: [], Left: [] };
+leads.forEach((l) => { (groups[progress.byActivity[l.activityId]] || groups.Left).push(l.name); });
+return `${groups.Done.length} done, ${groups.Skipped.length} skipped, ${groups.Left.length} left`;
+}
+
+function summaryForClipboard(leads, progress) {
+const lines = [leadSummaryText(leads, progress)];
+['Done', 'Skipped'].forEach((outcome) => {
+const names = leads.filter((l) => progress.byActivity[l.activityId] === outcome).map((l) => `${l.name} (${l.campaign || 'campaign not read'})`);
+if (names.length) lines.push(`${outcome}:`, ...names.map((n) => `- ${n}`));
+});
+const left = leads.filter((l) => !progress.byActivity[l.activityId]).map((l) => `- ${l.name}`);
+if (left.length) lines.push('Left:', ...left);
+return lines.join('\n');
+}
+
 function render() {
 const panel = document.getElementById(PANEL_ID);
 if (!panel) return;
@@ -868,9 +886,9 @@ const remaining = leads.filter((l) => !progress.byActivity[l.activityId]).length
 
 const banner = selfTestFailures.length
 ? `<div role="alert" style="margin-bottom:8px;padding:8px;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:12px;"><strong>Self-test failed:</strong> please send this on. ${escapeHtml(selfTestFailures[0])}</div>` : '';
-const where = onDesktop ? '' : `<div style="margin-bottom:8px;color:${COLORS.amber};">Open this on the agent desktop to reset leads.</div>`;
+const where = onDesktop ? '' : `<div style="margin-bottom:8px;color:${COLORS.amber};">Open this on the agent desktop to set leads up again.</div>`;
 const sourceLine = source
-? `<div style="margin-bottom:8px;">${leads.length} lead${leads.length === 1 ? '' : 's'} to reset from the National check at ${escapeHtml(savedAt)}. ${remaining} left.</div>`
+? `<div style="margin-bottom:8px;">${leads.length} lead${leads.length === 1 ? '' : 's'} to set up again from the National check at ${escapeHtml(savedAt)}. ${remaining} left.</div>`
 : `<div style="margin-bottom:8px;">No National results found. Import them in SLA Manager, or copy them from the Lead Checker and press Paste results.</div>`;
 
 const list = leads.map((l, i) => {
@@ -889,12 +907,16 @@ ${button('carry', state.paused.carryOnLabel, true)}${button('retry', 'Try again'
 : '';
 const controls = state.running
 ? (state.paused ? '' : button('stop', 'Stop after this step'))
-: `${remaining ? button('start', 'Start resets', true) : ''}${button('paste', 'Paste results')}${Object.keys(progress.byActivity).length || readJson(PASTED_RESULTS_KEY) ? button('clear', 'Clear') : ''}`;
+: `${remaining ? button('start', 'Start', true) : ''}${button('paste', 'Paste results')}${Object.keys(progress.byActivity).length || readJson(PASTED_RESULTS_KEY) ? button('clear', 'Clear') : ''}`;
+const outcomes = leads.map((l) => progress.byActivity[l.activityId]).filter(Boolean);
+const summary = !state.running && outcomes.length
+? `<div style="margin:6px 0;padding:8px;border-radius:6px;background:#f8fafc;border:1px solid ${COLORS.line};">${leadSummaryText(leads, progress)}</div>${button('copySummary', 'Copy summary')}`
+: '';
 const log = state.log.length ? `<details style="margin-top:6px;"><summary style="cursor:pointer;color:${COLORS.grey};">Activity</summary><div style="font-size:11px;color:${COLORS.grey};max-height:140px;overflow:auto;">${state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div></details>` : '';
 
 panel.querySelector('[data-body]').innerHTML = `${banner}${where}${sourceLine}
 <div style="max-height:220px;overflow:auto;margin-bottom:8px;">${list}</div>
-${pause}<div>${controls}</div>
+${pause}${summary}<div>${controls}</div>
 <label style="display:flex;gap:6px;align-items:center;margin-top:4px;font-size:12px;"><input type="checkbox" data-action="review" ${settings.reviewBeforePark ? 'checked' : ''}> Stop before parking so I can check each lead</label>
 ${log}`;
 }
@@ -908,7 +930,7 @@ return;
 const parsed = parseResultsTsv(text);
 if (!parsed.ok) { addLog(parsed.error); return; }
 writeJson(PASTED_RESULTS_KEY, { savedAt: new Date().toISOString(), results: parsed.results });
-addLog(`Pasted ${resetLeadsFrom(parsed.results).length} Reset leads`);
+addLog(`Pasted ${resetLeadsFrom(parsed.results).length} Re setup leads`);
 }
 
 function onPanelClick(event) {
@@ -916,7 +938,7 @@ const target = event.target.closest('[data-action]');
 if (!target) return;
 const action = target.getAttribute('data-action');
 if (action === 'close') {
-if (state.running) { addLog('Stop the resets before closing'); return; }
+if (state.running) { addLog('Stop the run before closing'); return; }
 document.getElementById(PANEL_ID).remove();
 return;
 }
@@ -927,6 +949,12 @@ return;
 }
 if (action === 'start') { runAll(); return; }
 if (action === 'paste') { pasteResults(); return; }
+if (action === 'copySummary') {
+const source = loadResults();
+const text = summaryForClipboard(source ? resetLeadsFrom(source.results) : [], loadProgress());
+navigator.clipboard.writeText(text).then(() => addLog('Summary copied'), () => addLog('Could not copy the summary'));
+return;
+}
 if (action === 'clear') {
 // Wipes everything this tool keeps, so the next start is from scratch.
 try { localStorage.removeItem(PROGRESS_KEY); localStorage.removeItem(PASTED_RESULTS_KEY); } catch (error) { /* ignore */ }
@@ -945,10 +973,10 @@ if (!document.body || typeof document.body.appendChild !== 'function') return;
 const panel = document.createElement('div');
 panel.id = PANEL_ID;
 panel.setAttribute('role', 'dialog');
-panel.setAttribute('aria-label', 'Lead Reset');
+panel.setAttribute('aria-label', 'Lead Re setup');
 panel.style.cssText = 'position:fixed;top:70px;right:16px;width:340px;max-width:calc(100vw - 32px);z-index:2147483000;background:#fff;color:#0f172a;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 10px 30px rgba(15,23,42,.18);font:13px/1.4 -apple-system,Segoe UI,Roboto,Arial,sans-serif;';
 panel.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:${COLORS.navy};color:#fff;border-radius:10px 10px 0 0;">
-<strong>Lead Reset</strong><button type="button" data-action="close" aria-label="Close" style="background:none;border:0;color:#fff;font-size:18px;cursor:pointer;line-height:1;">&times;</button></div>
+<strong>Lead Re setup</strong><button type="button" data-action="close" aria-label="Close" style="background:none;border:0;color:#fff;font-size:18px;cursor:pointer;line-height:1;">&times;</button></div>
 <div data-body style="padding:10px 12px;"></div>`;
 panel.addEventListener('click', onPanelClick);
 document.body.appendChild(panel);
