@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.8.3'
+    version: '1.8.4'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2955,7 +2955,37 @@
       return;
     }
     setLeadControl(input, query);
-    button.click();
+    const ng = window.angular;
+    try {
+      /* Make Konnect's model take the number now, even if the box waits for a pause or blur. */
+      const model = ng ? ng.element(input).controller('ngModel') : null;
+      if (model) {
+        model.$setViewValue(query);
+        if (typeof model.$commitViewValue === 'function') model.$commitViewValue();
+        const scope = ng.element(input).scope();
+        if (scope && !scope.$$phase && !scope.$root?.$$phase) scope.$apply();
+      }
+    } catch (error) {
+      // The input/change events from setLeadControl still apply.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    let searched = false;
+    try {
+      /* Run the same function the Search button runs, with the number. */
+      const scope = ng ? ng.element(button).scope() : null;
+      if (scope && typeof scope.searchCustomers === 'function') {
+        scope.$apply(() => scope.searchCustomers(query));
+        searched = true;
+      }
+    } catch (error) {
+      searched = false;
+    }
+    if (!searched) {
+      await waitFor(() => !button.disabled && !button.classList.contains('disabled'), 1500);
+      button.click();
+      ['keydown', 'keypress', 'keyup'].forEach((type) =>
+        input.dispatchEvent(new KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true })));
+    }
     showToast(`Searched Konnect for ${query}`);
   }
 
