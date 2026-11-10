@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.8.7'
+    version: '1.9.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -1910,6 +1910,172 @@
     closePalette();
   }
 
+  /* ---------- booking the appointment in the Konnect diary ---------- */
+
+  let diaryRun = null;
+  const MONTHS_SHORT = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+  /* The diary only offers Face To Face, Test Drive and Phone Call for us. */
+  function diaryType(input) {
+    const engine = bookingEngine();
+    if (engine && engine.isCallBooking(input)) return 'Phone Call';
+    if (input.type === 'testdrive') return 'Test Drive';
+    if (input.type === 'motability' && (!input.subtype || input.subtype === 'testdrive')) return 'Test Drive';
+    if (input.type === 'onlinestore' && input.subtype === 'similar') return 'Test Drive';
+    return 'Face To Face';
+  }
+
+  function diaryPlan(draft) {
+    const engine = bookingEngine();
+    if (!engine || draft.key === INBOUND_KEY) return null;
+    const input = bookingInput(draft);
+    if (!input.type || input.type === 'national') return null;
+    const date = engine.resolveDate(input.date, new Date());
+    const time = engine.resolveTime(input.time);
+    if (date.error || time.error) return null;
+    return {
+      year: date.year, month: date.month, day: date.day, time: time.text, label: `${date.text} at ${time.text}`,
+      length: engine.appointmentLength(input) === 30 ? '30 minutes' : '60 minutes',
+      type: diaryType(input)
+    };
+  }
+
+  function diaryModal() {
+    return Array.from(document.querySelectorAll('.modal')).find((modal) => isVisible(modal) &&
+      modal.querySelector('button[ng-click="openStartDate($event)"], td[ng-click^="SelectTimeSlot"]')) || null;
+  }
+
+  function diarySlotCells(modal) {
+    return Array.from(modal.querySelectorAll('td[ng-click^="SelectTimeSlot"]')).filter(isVisible);
+  }
+
+  /* The date button reads like "Tuesday Nov 10th". */
+  function diaryShowsDate(modal, plan) {
+    const label = modal.querySelector('button[ng-click="openStartDate($event)"]');
+    const match = normaliseText(label?.textContent).toLowerCase().match(/([a-z]{3})[a-z]*\s+(\d{1,2})/);
+    return !!match && MONTHS_SHORT.indexOf(match[1]) === plan.month - 1 && Number(match[2]) === plan.day;
+  }
+
+  /* Opens the date picker, moves to the right month and clicks the day.
+     Days from the next or previous month are shown greyed and skipped. */
+  async function diaryPickDate(modal, plan) {
+    if (diaryShowsDate(modal, plan)) return true;
+    modal.querySelector('button[ng-click="openStartDate($event)"]').click();
+    // The picker may redraw itself, so the month title is looked up fresh each time.
+    const titleText = () => normaliseText(Array.from(document.querySelectorAll('button[id$="-title"], .uib-title')).find(isVisible)?.textContent);
+    if (!(await waitFor(titleText, 3000))) return false;
+    const target = plan.year * 12 + plan.month - 1;
+    for (let step = 0; step < 24; step += 1) {
+      const match = titleText().match(/([A-Za-z]+)\s+(\d{4})/);
+      if (!match) return false;
+      const shown = Number(match[2]) * 12 + MONTHS_SHORT.indexOf(match[1].slice(0, 3).toLowerCase());
+      if (shown === target) break;
+      const move = Array.from(document.querySelectorAll(`button[ng-click="move(${shown < target ? 1 : -1})"]`)).find(isVisible);
+      if (!move) return false;
+      move.click();
+      await waitFor(() => titleText() && !titleText().includes(match[0]), 1500);
+    }
+    const day = Array.from(document.querySelectorAll('button[ng-click="select(dt.date)"]')).find((node) => isVisible(node) &&
+      !node.querySelector('.text-muted') && !node.disabled && Number(normaliseText(node.textContent)) === plan.day);
+    if (!day) return false;
+    day.click();
+    return !!(await waitFor(() => diaryShowsDate(modal, plan) && diarySlotCells(modal).length, 15000));
+  }
+
+  /* A free box: no name in it, not blocked and not in the past. */
+  function diaryFreeCell(modal, plan) {
+    const table = Array.from(modal.querySelectorAll('table')).find((t) => t.querySelector('td[ng-click^="SelectTimeSlot"]'));
+    if (!table) return { error: 'the diary table was not found' };
+    const headers = Array.from(table.querySelectorAll('thead th, tr:first-child th')).map((th) => normaliseText(th.textContent));
+    const column = headers.indexOf(plan.time);
+    if (column < 0) return { error: `there is no ${plan.time} column in the diary` };
+    const rows = Array.from(table.querySelectorAll('tbody tr')).filter(isVisible);
+    for (const row of rows) {
+      const cells = Array.from(row.children);
+      const slots = cells.filter((cell) => cell.matches('td[ng-click^="SelectTimeSlot"]'));
+      const cell = cells.length === headers.length ? cells[column] : slots[column - (headers.length - slots.length)];
+      if (!cell || !cell.matches('td[ng-click^="SelectTimeSlot"]')) continue;
+      const text = normaliseText(cell.textContent);
+      const titles = [cell, ...cell.querySelectorAll('[title]')].map((node) => node.getAttribute('title') || '').join(' ');
+      if (text || /past|soon|blocked/i.test(titles)) continue;
+      return { cell, person: normaliseText(cells[0] && cells[0] !== cell ? cells[0].textContent : '') };
+    }
+    return { error: `no one is free at ${plan.time} on that day` };
+  }
+
+  /* Opens a Time Span or Type list and picks the option, the way a person would. */
+  async function diaryChoose(modal, optionSelector, wanted) {
+    const findOption = () => Array.from(modal.querySelectorAll(optionSelector))
+      .find((node) => normaliseText(node.textContent).toLowerCase() === wanted.toLowerCase());
+    const option = await waitFor(findOption, 4000);
+    if (!option) return false;
+    const group = option.closest('.btn-group, .dropdown, .input-group, .input-group-btn');
+    const toggle = group?.querySelector('.dropdown-toggle');
+    if (toggle && !isVisible(option)) {
+      toggle.click();
+      await waitFor(() => isVisible(findOption()), 1500);
+    }
+    findOption().click();
+    return true;
+  }
+
+  async function bookInDiary(draft) {
+    const plan = diaryPlan(draft);
+    const result = buildCurrentBooking(draft);
+    if (!plan || !result || result.errors.length) {
+      state.bookingStatus = { kind: 'error', text: 'Finish the booking first (type, day and time).' };
+      renderPalette();
+      return;
+    }
+    if (diaryRun) return;
+    const run = { stopped: false };
+    diaryRun = run;
+    const say = (kind, text) => {
+      state.bookingStatus = { kind, text };
+      if (state.open && state.view === 'booking') renderPalette();
+    };
+    const fail = (text) => {
+      say('error', `Diary booking stopped: ${text}. Finish it by hand in the diary.`);
+      showToast(`Diary booking stopped: ${text}`);
+    };
+    try {
+      say('ok', `Booking the diary for ${plan.label}...`);
+      let modal = diaryModal();
+      if (!modal) {
+        const open = document.querySelector('button[ng-click^="manageSalesEventBookings"]');
+        if (!open) return fail('the Manage Appointments button was not found on this lead');
+        open.click();
+      }
+      // The diary can load instantly or take a few seconds.
+      modal = await waitFor(() => { const m = diaryModal(); return m && diarySlotCells(m).length ? m : null; }, 15000);
+      if (run.stopped) return;
+      if (!modal) return fail('the diary did not load');
+      if (!(await diaryPickDate(modal, plan))) return fail(`could not change the diary to ${plan.label.slice(0, 5)}`);
+      if (run.stopped) return;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const free = diaryFreeCell(modal, plan);
+      if (free.error) return fail(free.error);
+      free.cell.click();
+      const make = await waitFor(() => Array.from(modal.querySelectorAll('button[ng-click="makingAppointment=true"]')).find((b) => isVisible(b) && !b.disabled), 4000);
+      if (run.stopped) return;
+      if (!make) return fail('Make Appointment did not appear after picking the time');
+      make.click();
+      if (!(await diaryChoose(modal, 'a[ng-click^="setAppointmentLength"]', plan.length))) return fail(`the ${plan.length} time span was not offered`);
+      if (!(await diaryChoose(modal, 'a[ng-click^="setAppointmentType"]', plan.type))) return fail(`the ${plan.type} type was not offered`);
+      if (run.stopped) return;
+      const confirm = await waitFor(() => Array.from(modal.querySelectorAll('button[ng-click="createAppointment()"]')).find((b) => isVisible(b) && !b.disabled), 3000);
+      if (!confirm) return fail('the Confirm button was not ready');
+      confirm.click();
+      const done = await waitFor(() => !isVisible(confirm) || !confirm.isConnected, 10000);
+      if (!done) return fail('Konnect did not confirm the appointment');
+      const who = free.person ? ` with ${free.person}` : '';
+      say('ok', `Diary booked: ${plan.label}, ${plan.type}, ${plan.length}${who}.`);
+      showToast(`Diary booked: ${plan.label}, ${plan.type}${who}`);
+    } finally {
+      if (diaryRun === run) diaryRun = null;
+    }
+  }
+
   /* The Call Notes box for the open lead. Falls back to Konnect's own field
      name so it is still found when the section is folded shut. */
   function callNotesBox() {
@@ -2663,6 +2829,7 @@
     bookingRefs.insert.textContent = waitingForLead ? 'Insert after the lead is created'
       : draft.inserted ? 'Update Call Notes' : 'Insert into Call Notes';
     bookingRefs.insert.classList.toggle('kn-bk-blocked', waitingForLead || result.errors.length > 0);
+    if (bookingRefs.diary) bookingRefs.diary.classList.toggle('kn-bk-blocked', !!diaryRun || result.errors.length > 0 || !diaryPlan(draft));
   }
 
   function renderBooking() {
@@ -2750,6 +2917,12 @@
     const insert = button('Insert into Call Notes', 'kn-primary', () => insertBooking(draft));
     bookingRefs.insert = insert;
     actions.appendChild(insert);
+    if (draft.key !== INBOUND_KEY && draft.data.type !== 'national') {
+      const diary = button(diaryRun ? 'Booking diary...' : 'Book in diary', '', () => bookInDiary(draft));
+      diary.title = 'Opens Manage Appointments, picks the day and the first free person at the booking time, sets the time span and type, then confirms';
+      bookingRefs.diary = diary;
+      actions.appendChild(diary);
+    }
     actions.appendChild(button('Copy', '', () => {
       const result = buildCurrentBooking(draft);
       if (result) copyText(result.text, null).then((ok) => {
@@ -3803,6 +3976,7 @@
     clearTimeout(state.scanTimer);
     clearTimeout(bookingSaveTimer);
     clearTimeout(bookingSyncTimer);
+    if (diaryRun) diaryRun.stopped = true;
     if (state.observer) state.observer.disconnect();
     document.removeEventListener('keydown', handleAbbreviation, true);
     document.removeEventListener('keydown', handleGlobalKey, false);

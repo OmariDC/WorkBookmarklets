@@ -1,13 +1,16 @@
-// Page diagnostics for building the National leads check.
+// Page diagnostics for building and fixing the Konnect tools.
 //
 // Run it on a Konnect page and it collects the page's structure (buttons,
 // links, table headers, search options, field labels, Angular data keys)
 // so a new automated step can be written against the real page. Customer
 // data is masked: names, emails, phone numbers and note text are reduced
 // to their length or shape. Look over the output before sharing it.
+//
+// The panel stays open and keeps a history of snapshots. Alt+Shift+D takes
+// one without clicking (so open dropdowns and popups are kept), and Watch
+// takes one before every click on the page and after the page changes.
 
 (function () {
-if (window.__wbDiagnostics) { window.__wbDiagnostics.remove(); }
 
 const MAX = 60;
 const vis = (el) => !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
@@ -29,9 +32,11 @@ for (const name of ['id', 'class', 'href', 'ng-click', 'ng-href', 'ng-model', 'n
 const v = el.getAttribute && el.getAttribute(name);
 if (v) out[name] = maskDigits(v).slice(0, 140);
 }
+if (el.disabled) out.disabled = true;
 return out;
 }
 
+function collect() {
 const report = {
 capturedAt: new Date().toISOString(),
 page: { origin: location.origin, hash: maskDigits(location.hash), path: maskDigits(location.pathname), title: clean(document.title) },
@@ -70,7 +75,7 @@ name: r.name, value: r.value, checked: r.checked,
 label: mask((r.closest('label') || document.querySelector(`label[for="${r.id}"]`) || r.parentElement || {}).textContent)
 }));
 report.selects = Array.from(document.querySelectorAll('select')).filter(vis).map((s) => ({
-...attrs(s), options: Array.from(s.options).slice(0, 40).map((o) => mask(o.textContent))
+...attrs(s), selected: mask((s.options[s.selectedIndex] || {}).textContent), options: Array.from(s.options).slice(0, 40).map((o) => mask(o.textContent))
 }));
 
 // Text that looks like a status or a date/time (for "has it finished
@@ -214,37 +219,233 @@ report.modalRecord = records;
 }
 }
 
+// Short-lived things: open dropdowns, date pickers, popups, alerts and
+// validation messages, plus the focused field. Most vanish on the next
+// click, so the hotkey and the before-click snapshots are what catch them.
+const TRANSIENT = '.dropdown-menu, .popover, .tooltip, .alert, .toast, .growl, .notification, [role="alert"], [role="tooltip"], [role="listbox"], .uib-datepicker-popup, .help-block, .has-error, .validation-message, .ng-invalid.ng-touched';
+report.transient = Array.from(document.querySelectorAll(TRANSIENT)).filter(vis).slice(0, 40).map((el) => ({
+tag: el.tagName.toLowerCase(), text: mask(el.textContent), ...attrs(el),
+items: [...new Set(Array.from(el.querySelectorAll('a, li, button')).filter(vis).map((i) => mask(i.textContent)).filter(Boolean))].slice(0, 25)
+}));
+const active = document.activeElement;
+report.focused = active && active !== document.body && !(window.__wbDiagnostics && window.__wbDiagnostics.contains(active)) ? { tag: active.tagName.toLowerCase(), ...attrs(active), contentLength: clean(active.value || '').length } : null;
+return report;
+}
+
+const VERSION = 2;
 // A tool's Report a problem button passes its own recent activity here,
 // with customer names already replaced; emails, phones and regs are masked too.
+function takeExtra() {
 const extra = window.__wbDiagnosticsExtra;
-if (extra && typeof extra === 'object') {
+window.__wbDiagnosticsExtra = null;
+if (!extra || typeof extra !== 'object') return null;
 const cleanLine = (t) => clean(t)
 .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}/gi, '<email>')
 .replace(/(\+44\s?|\b0)7\d{3}\s?\d{3}\s?\d{3}\b/g, '<phone>')
 .replace(/\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/g, '<reg>')
 .slice(0, 200);
-report.tool = {
-name: cleanLine(extra.tool),
-state: cleanLine(extra.state || ''),
-log: (Array.isArray(extra.log) ? extra.log : []).slice(-40).map(cleanLine)
-};
-window.__wbDiagnosticsExtra = null;
+return { name: cleanLine(extra.tool), state: cleanLine(extra.state || ''), log: (Array.isArray(extra.log) ? extra.log : []).slice(-40).map(cleanLine) };
 }
-const json = JSON.stringify(report, null, 1);
+
+// Running the bookmarklet again while the panel is open takes a new
+// snapshot in the same panel instead of starting over.
+const existing = window.__wbDiagnostics;
+if (existing && existing.wbApi && existing.wbApi.version === VERSION && document.body.contains(existing)) {
+existing.wbApi.snap('bookmarklet run', takeExtra());
+existing.wbApi.expand();
+return;
+}
+if (existing) { if (existing.wbApi) existing.wbApi.destroy(); else existing.remove(); }
+
+const HISTORY_MAX = 30;
+const history = [];
+const events = [];
+let selected = -1;
+let watching = false;
+let collapsed = false;
+let corner = 0;
+
+// Short text lines per area of the page, used to say what changed between snapshots.
+function signature(r) {
+return {
+page: [r.page.hash + ' ' + r.page.title],
+controls: r.controls.map((c) => [c.tag, c.text, c['ng-click'] || '', c.disabled ? 'disabled' : ''].join(' | ')),
+status: r.statusTexts.map((s) => s.text),
+transient: r.transient.map((t) => `${t.class || t.tag}: ${t.text}`),
+selects: r.selects.map((s) => `${s['ng-model'] || s.name || s.id || 'select'} = ${s.selected}`),
+tables: r.tables.map((t) => `${t.class || 'table'}: ${t.headers.slice(0, 6).join(', ')} (${t.rowCount} rows)`),
+modal: r.modal ? [`open: ${r.modal.class || ''}`] : [],
+focused: r.focused ? [`${r.focused.tag} ${r.focused['ng-model'] || r.focused.id || r.focused.placeholder || ''}`] : []
+};
+}
+function diff(a, b) {
+const out = {};
+Object.keys(b).forEach((k) => {
+const before = new Set(a ? a[k] : []);
+const after = new Set(b[k]);
+const added = b[k].filter((x) => !before.has(x));
+const removed = (a ? a[k] : []).filter((x) => !after.has(x));
+if (added.length || removed.length) out[k] = { added: [...new Set(added)].slice(0, 40), removed: [...new Set(removed)].slice(0, 40) };
+});
+return out;
+}
+const countChanges = (changes) => Object.values(changes).reduce((n, c) => n + c.added.length + c.removed.length, 0);
 
 const host = document.createElement('div');
-host.style.cssText = 'position:fixed;top:16px;right:16px;z-index:2147483647;width:min(420px,calc(100vw - 32px));background:#fff;color:#1e293b;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.25);font:13px system-ui,sans-serif;padding:14px;';
-host.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><strong>Page diagnostics</strong><button type="button" aria-label="Close" data-close style="border:none;background:none;font-size:18px;cursor:pointer;">×</button></div>'
-+ '<p style="margin:0 0 8px;color:#5b6577;">Structure of this page and the tool\'s recent activity, with customer details masked. Copy it and send it on with a line about what went wrong.</p>'
-+ '<textarea readonly aria-label="Diagnostics output" style="width:100%;height:180px;font:11px ui-monospace,monospace;box-sizing:border-box;"></textarea>'
-+ '<button type="button" data-copy style="margin-top:8px;padding:8px 14px;border:none;border-radius:8px;background:#1e293b;color:#fff;cursor:pointer;font-weight:600;">Copy</button> <span data-status style="color:#5b6577;"></span>';
-host.querySelector('textarea').value = json;
-host.querySelector('[data-close]').addEventListener('click', () => host.remove());
-host.querySelector('[data-copy]').addEventListener('click', async () => {
-const status = host.querySelector('[data-status]');
-try { await navigator.clipboard.writeText(json); status.textContent = `Copied (${Math.round(json.length / 1024)} KB)`; }
-catch (e) { host.querySelector('textarea').select(); status.textContent = 'Clipboard blocked: press Ctrl+C'; }
+const btn = 'padding:6px 10px;border:1px solid #cbd5e1;border-radius:7px;background:#f8fafc;color:#1e293b;cursor:pointer;font:600 12px system-ui,sans-serif;';
+host.innerHTML = '<div data-head style="display:flex;gap:6px;align-items:center;">'
++ '<strong style="flex:1;">Page diagnostics <span data-count style="font-weight:400;color:#5b6577;"></span></strong>'
++ '<button type="button" data-move title="Move to another corner" style="border:none;background:none;cursor:pointer;font-size:14px;">⇆</button>'
++ '<button type="button" data-collapse title="Shrink" style="border:none;background:none;cursor:pointer;font-size:16px;">–</button>'
++ '<button type="button" data-close aria-label="Close" style="border:none;background:none;font-size:18px;cursor:pointer;">×</button></div>'
++ '<div data-bodywrap>'
++ '<p style="margin:6px 0 8px;color:#5b6577;">Customer details are masked. <b>Alt+Shift+D</b> takes a snapshot without clicking, so open menus and popups are kept. <b>Watch</b> takes one before each click and after the page changes.</p>'
++ `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;"><button type="button" data-snap style="${btn}background:#1e293b;color:#fff;border-color:#1e293b;">Snapshot now</button><button type="button" data-watch style="${btn}">Watch: off</button><button type="button" data-clear style="${btn}">Clear history</button></div>`
++ '<select data-list size="6" aria-label="Snapshots" style="width:100%;font:11px ui-monospace,monospace;box-sizing:border-box;"></select>'
++ '<textarea readonly aria-label="Diagnostics output" style="width:100%;height:150px;margin-top:6px;font:11px ui-monospace,monospace;box-sizing:border-box;"></textarea>'
++ `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center;"><button type="button" data-copy="one" style="${btn}">Copy this</button><button type="button" data-copy="changes" style="${btn}" title="The first snapshot in full, then only what changed">Copy changes</button><button type="button" data-copy="all" style="${btn}">Copy all</button><span data-status style="color:#5b6577;"></span></div>`
++ '</div>';
+const $ = (sel) => host.querySelector(sel);
+const list = $('[data-list]');
+const output = $('textarea');
+const statusEl = $('[data-status]');
+const CORNERS = ['top:16px;right:16px;', 'bottom:16px;right:16px;', 'bottom:16px;left:16px;', 'top:16px;left:16px;'];
+function place() {
+host.style.cssText = `position:fixed;${CORNERS[corner]}z-index:2147483647;width:${collapsed ? 'auto' : 'min(440px,calc(100vw - 32px))'};background:#fff;color:#1e293b;border:1px solid ${watching ? '#16a34a' : '#cbd5e1'};border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.25);font:13px system-ui,sans-serif;padding:${collapsed ? '6px 10px' : '12px 14px'};`;
+$('[data-bodywrap]').style.display = collapsed ? 'none' : '';
+$('[data-collapse]').textContent = collapsed ? '+' : '–';
+$('[data-collapse]').title = collapsed ? 'Expand' : 'Shrink';
+}
+
+function label(i) {
+const s = history[i];
+const n = countChanges(s.changes);
+const time = s.at.slice(11, 19);
+return `${time}  ${s.label}${i === 0 ? '  (first)' : n ? `  · ${n} change${n === 1 ? '' : 's'}` : '  · no change'}`;
+}
+function render() {
+list.innerHTML = '';
+history.forEach((s, i) => { const o = document.createElement('option'); o.value = i; o.textContent = label(i); list.appendChild(o); });
+if (selected >= history.length) selected = history.length - 1;
+list.selectedIndex = selected;
+const s = history[selected];
+output.value = s ? JSON.stringify({ label: s.label, at: s.at, changes: s.changes, report: s.report }, null, 1) : '';
+$('[data-count]').textContent = `· ${history.length} snapshot${history.length === 1 ? '' : 's'}${watching ? ' · watching' : ''}`;
+$('[data-watch]').textContent = watching ? 'Watch: on' : 'Watch: off';
+$('[data-watch]').style.background = watching ? '#dcfce7' : '#f8fafc';
+place();
+}
+
+// The panel is hidden while the page is read so its own buttons are not listed.
+function snap(why, tool, onlyIfChanged) {
+const shown = host.style.display;
+host.style.display = 'none';
+let report;
+try { report = collect(); } catch (e) { report = { error: String(e && e.message || e) }; }
+host.style.display = shown;
+if (tool) report.tool = tool;
+const sig = report.controls ? signature(report) : null;
+const prev = history[history.length - 1];
+const changes = sig ? diff(prev && prev.sig, sig) : {};
+if (onlyIfChanged && prev && !countChanges(changes)) return false;
+history.push({ label: why, at: new Date().toISOString(), report, sig, changes: prev ? changes : {} });
+while (history.length > HISTORY_MAX) history.shift();
+selected = history.length - 1;
+render();
+return true;
+}
+
+function describe(el) {
+const target = el.closest ? el.closest('button, a, [ng-click], td, th, li, label, input, select, textarea') || el : el;
+const text = mask(target.textContent || target.value || target.getAttribute('title') || target.getAttribute('placeholder') || '');
+return `${target.tagName.toLowerCase()}${target.getAttribute('ng-click') ? ` [${maskDigits(target.getAttribute('ng-click')).slice(0, 50)}]` : ''}${text ? ` "${text.slice(0, 40)}"` : ''}`;
+}
+function logEvent(text) {
+events.push(`${new Date().toISOString().slice(11, 19)} ${text}`);
+if (events.length > 200) events.shift();
+}
+
+// Watch mode: a snapshot just before each click (the page state the click
+// would wipe), then one when the page settles afterwards.
+let settleTimer = null;
+let lastAuto = 0;
+const observer = new MutationObserver((records) => {
+if (!watching || records.every((r) => host.contains(r.target))) return;
+clearTimeout(settleTimer);
+const wait = Math.max(500, 1000 - (Date.now() - lastAuto));
+settleTimer = setTimeout(() => { lastAuto = Date.now(); snap('page changed', null, true); }, wait);
 });
+function onPointerDown(e) {
+if (!watching || host.contains(e.target)) return;
+const what = describe(e.target);
+logEvent(`click ${what}`);
+snap(`before click ${what}`);
+}
+function onHash() { logEvent(`page ${maskDigits(location.hash)}`); }
+function onKey(e) {
+if (e.altKey && e.shiftKey && (e.key === 'D' || e.key === 'd' || e.code === 'KeyD')) {
+e.preventDefault();
+e.stopPropagation();
+logEvent('hotkey snapshot');
+snap('hotkey');
+}
+}
+function setWatch(on) {
+watching = on;
+if (on) {
+observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'disabled', 'hidden'] });
+logEvent('watch on');
+} else {
+observer.disconnect();
+clearTimeout(settleTimer);
+logEvent('watch off');
+}
+render();
+}
+document.addEventListener('pointerdown', onPointerDown, true);
+window.addEventListener('keydown', onKey, true);
+window.addEventListener('hashchange', onHash);
+
+// Clicks on the panel stay in the panel, so the page does not close its
+// open menus or date pickers and keeps focus where it was.
+['pointerdown', 'mousedown', 'mouseup', 'click'].forEach((type) => host.addEventListener(type, (e) => {
+if (type === 'mousedown' && e.target.closest('button')) e.preventDefault();
+e.stopPropagation();
+}));
+
+async function copy(kind) {
+let data;
+const base = { tool: 'Page diagnostics', copiedAt: new Date().toISOString(), page: location.origin, events };
+if (kind === 'one') { const s = history[selected]; data = s ? { label: s.label, at: s.at, changes: s.changes, report: s.report } : {}; }
+else if (kind === 'changes') data = { ...base, snapshots: history.map((s, i) => (i === 0 ? { label: s.label, at: s.at, report: s.report } : { label: s.label, at: s.at, changes: s.changes, transient: s.report.transient, focused: s.report.focused, tool: s.report.tool })) };
+else data = { ...base, snapshots: history.map((s) => ({ label: s.label, at: s.at, changes: s.changes, report: s.report })) };
+const text = JSON.stringify(data, null, 1);
+try { await navigator.clipboard.writeText(text); statusEl.textContent = `Copied (${Math.round(text.length / 1024)} KB)`; }
+catch (e) { output.value = text; output.select(); statusEl.textContent = 'Clipboard blocked: press Ctrl+C'; }
+}
+
+function destroy() {
+observer.disconnect();
+clearTimeout(settleTimer);
+document.removeEventListener('pointerdown', onPointerDown, true);
+window.removeEventListener('keydown', onKey, true);
+window.removeEventListener('hashchange', onHash);
+host.remove();
+if (window.__wbDiagnostics === host) window.__wbDiagnostics = null;
+}
+
+$('[data-close]').addEventListener('click', destroy);
+$('[data-snap]').addEventListener('click', () => { logEvent('manual snapshot'); snap('manual'); });
+$('[data-watch]').addEventListener('click', () => setWatch(!watching));
+$('[data-clear]').addEventListener('click', () => { history.length = 0; events.length = 0; selected = -1; statusEl.textContent = ''; render(); });
+$('[data-collapse]').addEventListener('click', () => { collapsed = !collapsed; place(); });
+$('[data-move]').addEventListener('click', () => { corner = (corner + 1) % CORNERS.length; place(); });
+list.addEventListener('change', () => { selected = list.selectedIndex; render(); });
+host.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', () => copy(b.getAttribute('data-copy'))));
+
+host.wbApi = { version: VERSION, snap, destroy, expand: () => { collapsed = false; place(); } };
+place();
 document.body.appendChild(host);
 window.__wbDiagnostics = host;
+snap('opened', takeExtra());
 })();
