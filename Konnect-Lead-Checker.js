@@ -4003,26 +4003,33 @@ return true;
 
 let isRunning = false;
 
-// Konnect Live logs out after 15 idle minutes; the browser fills the
-// details back in, a moment after the page shows. Waits 0.15 seconds,
-// passes the filled boxes to Konnect, presses Login, and tries a few times.
-async function reLogin(uiHandle) {
-for (let attempt = 0; attempt < 3; attempt++) {
+// Konnect Live logs out after 15 idle minutes. Browsers hide a saved
+// password from page scripts until the agent touches the page, so one
+// press of Login is tried (it works where the browser allows it) and the
+// boxes are never written to. Otherwise the tab is flagged and the run
+// waits for the agent's own Login press, then carries on by itself.
+async function reLogin(uiHandle, waitMs) {
 await sleep(150);
 const button = Array.from(document.querySelectorAll('button[ng-click="login()"], button.btn-login')).find((b) => b.offsetWidth || b.offsetHeight);
-if (!button) return !onLoginPage();
-uiHandle.setState('Konnect Live logged out: logging back in');
-document.querySelectorAll('form input').forEach((input) => {
-input.dispatchEvent(new Event('input', { bubbles: true }));
-input.dispatchEvent(new Event('change', { bubbles: true }));
-});
-button.click();
-for (let waited = 0; waited < 10000; waited += 500) {
+if (button) button.click();
+for (let waited = 0; waited < 3000; waited += 250) {
+await sleep(250);
+if (!onLoginPage()) { await sleep(1500); return true; }
+}
+uiHandle.setState('Konnect Live logged out: press Login and the check carries on');
+const title = document.title;
+let flash = false;
+const timer = setInterval(() => { flash = !flash; document.title = flash ? 'Press Login to carry on' : title; }, 1000);
+try {
+for (let waited = 0; waited < (waitMs || 30 * 60 * 1000); waited += 500) {
 await sleep(500);
 if (!onLoginPage()) { await sleep(1500); return true; }
 }
-}
 return false;
+} finally {
+clearInterval(timer);
+document.title = title;
+}
 }
 
 // A lead that failed because the page logged out mid-check is checked
@@ -4053,7 +4060,7 @@ if (document.hidden) { uiHandle.setState('Paused: tab is in the background'); aw
 if (onLoginPage()) {
 if (!await reLogin(uiHandle)) {
 session.paused = true;
-lcNotices.stopped = 'Konnect Live logged you out and could not log back in. Press Login, then Start to carry on.';
+lcNotices.stopped = 'Konnect Live stayed logged out for 30 minutes, so the check paused. Log in, then press Start to carry on.';
 notifyNoticesChanged();
 continue;
 }
