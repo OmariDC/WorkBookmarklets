@@ -4,8 +4,8 @@ Browser bookmarklets used by staff inside the Konnect CRM. The main tools are:
 
 - `SLA-Manager.js` runs on Konnect Manager. It lists SLA and Pending leads, exports them for the Lead Checker and imports its results back onto the lead cards.
 - `Konnect-Lead-Checker.js` runs on Konnect Live. It takes the pasted batch, finds each lead, classifies its Initial Notes into six tiers and sends the results back.
-- `Lead-Reset.js` (Lead Re setup) runs on the agent desktop. It takes the National check's Re setup leads and adds each one back as a new lead, then parks the call; on a customer already open (an inbound, say) it sets a chosen closed lead up again and stops in the new lead. It never presses Finished.
-- `Work-Tools.js` is one bookmark that loads the right tools for the page: the three above, plus Konnect Notes on the agent desktop and Reg Check everywhere. The Konnect Tools bookmark other staff use is separate and must stay unchanged.
+- `Lead-Reset.js` (Lead Re setup) runs on the agent desktop. It takes the National check's Re setup leads and adds each one back as a new lead, then parks the call; on a customer already open (an inbound, say) it sets a chosen closed lead up again and stops in the new lead. Re setup never presses Finished. The same panel has two runs that do press Finished: Post Closure (opens each "send back through" lead from Parked Calls, types the Konnect Notes `cad`/`cah` shorthand in Post Closure Notes and sets Customer Hub Team > No Opportunity > Catch All) and Email Only (works only the Email Only leads SLA Manager recorded as assigned, as they present: Reject, Update Outcomes, `eo` in Call Notes, Customer Hub Team > Ongoing > Email Only Lead).
+- `Work-Tools.js` is one bookmark that loads the right tools for the page: the three above, plus Konnect Notes and Reg Check on the agent desktop. Reg Check is not loaded automatically anywhere else, as its pop up blocks the automatic runs. The Konnect Tools bookmark other staff use is separate and must stay unchanged.
 - `Konnect-Notes.js` runs on the agent desktop. It inserts call-note phrases and has the Booking Builder (Alt+B), which writes the booking block into Call Notes using the wording rules in `Konnect-Booking-Engine.js`.
 
 ## How the tools are released
@@ -21,7 +21,7 @@ node tests/booking-engine.test.js
 node --check Konnect-Notes.js && node --check Konnect-Booking-Engine.js
 ```
 
-Where Playwright with Chromium is available, also run `node tests/lead-reset.e2e.mjs`: it drives Lead Re setup through mock agent desktop pages in `tests/agent-desktop-mock/`.
+Where Playwright with Chromium is available, also run `node tests/lead-reset.e2e.mjs` and `node tests/desk-runs.e2e.mjs`: they drive Lead Re setup (Re setup, Post Closure and Email Only) through mock agent desktop pages in `tests/agent-desktop-mock/`.
 
 The runner loads both tools with a minimal DOM stub, runs every built-in self-test and checks that the values shared between the files still match. Any failure exits non-zero.
 

@@ -105,6 +105,26 @@ function sharedContractChecks() {
       grab(lc, /function postClosureColor\(action\) \{\s*return ([^;]*);/, 'postClosureColor'),
       [grab(sla, /function postClosureActionColor\(action\) \{\s*return ([^;]*);/, 'postClosureActionColor')]],
   ];
+  // The desktop run types the same shorthand the Lead Checker shows, and
+  // checks for the text Konnect Notes writes for it.
+  try {
+    const literal = (src, re) => { const m = src.match(re); return m ? Function(`return (${m[1]});`)() : null; };
+    const lcShort = literal(lc, /const SEND_BACK_SHORTHAND = (\{[^}]*\})/);
+    const steps = literal(reset, /const SEND_BACK_STEPS = (\{[\s\S]*?\n\});/);
+    const markers = literal(reset, /const SHORTHAND_MARKERS = (\{[^}]*\})/);
+    if (!lcShort || !steps || !markers) problems.push('could not read SEND_BACK_SHORTHAND, SEND_BACK_STEPS or SHORTHAND_MARKERS');
+    else {
+      const a = JSON.stringify(Object.keys(lcShort).sort().map((k) => [k, lcShort[k]]));
+      const b = JSON.stringify(Object.keys(steps).sort().map((k) => [k, steps[k].shorthand.toUpperCase()]));
+      if (a !== b) problems.push(`Send back shorthand differs between the Lead Checker and Lead Re setup:\n    ${a}\n    ${b}`);
+      const phrases = JSON.parse(readFileSync(join(root, 'Konnect-Notes-Phrases.json'), 'utf8')).phrases;
+      for (const word of Object.keys(markers)) {
+        const phrase = phrases.find((p) => (p.aliases || []).includes(word));
+        if (!phrase) problems.push(`Konnect Notes has no "${word}" shorthand, which Lead Re setup types`);
+        else if (!markers[word].test(phrase.text.replace(/\{\{email\}\}/g, ' jo@example.com'))) problems.push(`Konnect Notes "${word}" text no longer matches what Lead Re setup checks for`);
+      }
+    }
+  } catch (error) { problems.push('shorthand check threw: ' + error.message); }
   for (const [label, a, others] of pairs) {
     if (a == null) continue;
     if (!others.length) problems.push(`${label}: nothing found on the other side`);
@@ -140,6 +160,9 @@ for (const file of TOOLS) {
     const all = (host, path) => ctx.window.WorkTools.toolsForPage(host, path).map((t) => t.file).join(',');
     const desk = all('konnectonlineservices.co.uk', '/(v9.9.9)/agent-desktop/index.html');
     if (desk !== 'Konnect-Notes.js,Reg-Check.js,Lead-Reset.js') cases.push(['agent desktop list', '', `Konnect-Notes.js,Reg-Check.js,Lead-Reset.js (got ${desk})`]);
+    for (const [host, path, want] of [['carbot.ai', '/konnectlive/home.html', 'Konnect-Lead-Checker.js'], ['konnectonlineservices.co.uk', '/manager/index.html', 'SLA-Manager.js']]) {
+      if (all(host, path) !== want) cases.push([`${host} list (Reg Check only by hand there)`, '', `${want} (got ${all(host, path)})`]);
+    }
     const wrong = cases.filter(([h, p, want]) => pick(h, p) !== want).map(([h, p, want]) => `${h}${p} should load ${want}, got ${pick(h, p)}`);
     if (wrong.length) problem = wrong.join('; ');
   } catch (error) { problem = 'threw: ' + error.message; }
