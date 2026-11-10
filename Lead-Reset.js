@@ -36,7 +36,7 @@ const date = list && list[0] && list[0].commit && list[0].commit.committer && li
 if (date) { state.publishedAt = new Date(date); onChange(state); }
 }).catch(() => {});
 fileText().then((text) => { if (text) baseline = fingerprint(text); }).catch(() => {});
-setInterval(() => {
+state.timer = setInterval(() => {
 if (state.newer || baseline == null) return;
 fileText().then((text) => {
 if (text && fingerprint(text) !== baseline) { state.newer = true; onChange(state); }
@@ -997,7 +997,10 @@ const STYLE = `
 .icon-btn { background: transparent; border: 0; color: #cbd5e1; width: 28px; height: 28px; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font: inherit; font-size: 16px; }
 .icon-btn:hover { background: rgba(255,255,255,.12); color: #fff; }
 .body { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-.panel.minimised .body { display: none; }
+.panel.minimised .body, .panel.minimised .foot { display: none; }
+.foot { flex-shrink: 0; padding: 8px 12px; background: var(--surface); display: flex; justify-content: center; border-top: 1px solid var(--border); }
+.stop-clear { font: inherit; font-size: 12.5px; font-weight: 600; color: var(--red); background: transparent; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.stop-clear:hover { background: #fef2f2; }
 .card { background: var(--surface); border-radius: 12px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05), 0 1px 1px rgba(0,0,0,.03); }
 .muted { color: var(--muted); }
 .small { font-size: 11.5px; }
@@ -1134,30 +1137,40 @@ const d = new Date(iso);
 return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-GB');
 }
 
-// The newest closed lead, or the newest lead when none is closed.
-function defaultHereChoice(activities) {
-const closed = activities.filter((a) => outcomeLabel(a) !== 'Open');
-const pool = closed.length ? closed : activities;
-return pool.slice().sort((x, y) => new Date(y.CreatedDate) - new Date(x.CreatedDate))[0] || null;
+// The lead whose tab is open: Konnect hides the other leads' sections, so
+// it is the only lead with visible controls. null when that is unclear.
+function leadInView() {
+const entries = liveActivities();
+if (entries.length === 1) return entries[0].activity;
+const visible = entries.filter(({ activity }) => controlsOf(activity, 'select, textarea, button, input').some(isVisible));
+return visible.length === 1 ? visible[0].activity : null;
+}
+
+// Ticked: the agent's own pick for this customer, else the lead in view.
+function hereChoice() {
+const activities = liveActivities().map(({ activity }) => activity);
+const customerKey = activities.map((a) => a.ID).sort().join(',');
+if (ui.hereCustomer !== customerKey) { ui.hereCustomer = customerKey; ui.herePicked = ''; }
+if (ui.herePicked && activities.some((a) => String(a.ID) === ui.herePicked)) return ui.herePicked;
+const inView = leadInView();
+return inView ? String(inView.ID) : '';
 }
 
 function renderHereCard() {
 const activities = liveActivities().map(({ activity }) => activity);
-if (!activities.some((a) => String(a.ID) === String(ui.hereChoice))) {
-const pick = defaultHereChoice(activities);
-ui.hereChoice = pick ? String(pick.ID) : '';
-}
+const chosen = hereChoice();
+const inView = leadInView();
 const rows = activities.map((a) => {
 const outcome = outcomeLabel(a);
-const checked = String(a.ID) === String(ui.hereChoice) ? ' checked' : '';
 const meta = [shortDate(a.CreatedDate), a.SalesLead && a.SalesLead.DealerName, outcome === 'Open' ? 'Open' : `Closed: ${outcome}`].filter(Boolean).join(' · ');
-return `<label class="pick"><input type="radio" name="hereLead" value="${escapeHtml(String(a.ID))}" data-action="pickHere"${checked}><span><strong>${escapeHtml(a.CampaignName || 'Lead')}</strong><br><span class="muted small">${escapeHtml(meta)}</span></span></label>`;
+const viewTag = inView && inView === a ? ' <span class="chip" style="background:#C2CB4233;color:#5b6300;">In view</span>' : '';
+return `<label class="pick"><input type="radio" name="hereLead" value="${escapeHtml(String(a.ID))}" data-action="pickHere"${String(a.ID) === chosen ? ' checked' : ''}><span><strong>${escapeHtml(a.CampaignName || 'Lead')}</strong>${viewTag}<br><span class="muted small">${escapeHtml(meta)}</span></span></label>`;
 }).join('');
 return `<div class="card">
 <strong>This customer</strong>
-<div class="muted small" style="margin:2px 0 6px;">Pick the lead to set up again. It stops in the new lead; the call is left to you.</div>
+<div class="muted small" style="margin:2px 0 6px;">The lead in view is ticked; tick another to set that one up again instead. Only the ticked lead is copied, and it stops in the new lead.</div>
 ${rows}
-<div style="margin-top:10px;">${btn('here', 'Set up again', 'primary', 'wide')}</div>
+<div style="margin-top:10px;">${chosen ? btn('here', 'Set up the ticked lead again', 'primary', 'wide') : '<div class="muted small">Tick the lead to set up again.</div>'}</div>
 </div>`;
 }
 
@@ -1280,10 +1293,28 @@ writeJson(PASTED_RESULTS_KEY, { savedAt: new Date().toISOString(), results: pars
 addLog(`Pasted ${resetLeadsFrom(parsed.results).length} Re setup leads`);
 }
 
+// Same as SLA Manager's Clear & Stop: ends any run after its current step,
+// wipes everything this tool keeps and removes the panel, so the next
+// click of the bookmarklet starts from scratch.
+function clearAndStop() {
+state.stopRequested = true;
+if (resolvePause) answerPause('stop');
+try { localStorage.removeItem(PROGRESS_KEY); localStorage.removeItem(PASTED_RESULTS_KEY); } catch (error) { /* ignore */ }
+if (versionState && versionState.timer) clearInterval(versionState.timer);
+if (ui) {
+clearInterval(ui.pageTimer);
+ui.host.remove();
+ui = null;
+}
+window._leadResetState = null;
+console.info('Lead Re setup stopped and cleared. Click the bookmarklet again to start fresh.');
+}
+
 function onPanelClick(event) {
 const target = event.target.closest('[data-action]');
 if (!target) return;
 const action = target.getAttribute('data-action');
+if (action === 'clearStop') { clearAndStop(); return; }
 if (action === 'close') {
 if (state.running) { addLog('Stop the run before closing'); return; }
 ui.host.remove();
@@ -1304,8 +1335,13 @@ if (state.ctx) state.ctx.settings = loadSettings();
 return;
 }
 if (action === 'start') { runAll(); return; }
-if (action === 'pickHere') { ui.hereChoice = target.value; return; }
-if (action === 'here') { runHere(ui.hereChoice); return; }
+if (action === 'pickHere') { ui.herePicked = target.value; render(); return; }
+if (action === 'here') {
+const chosen = hereChoice();
+if (!chosen) { addLog('Tick the lead to set up again first'); return; }
+runHere(chosen);
+return;
+}
 if (action === 'paste') { pasteResults(); return; }
 if (action === 'copySummary') {
 const source = loadResults();
@@ -1341,6 +1377,7 @@ root.innerHTML = `<style>${STYLE}</style>
 <button type="button" class="icon-btn" data-action="minimise" aria-label="Minimise">&ndash;</button>
 <button type="button" class="icon-btn" data-action="close" aria-label="Close">&times;</button></div>
 <div class="body" aria-live="polite"></div>
+<div class="foot"><button type="button" class="stop-clear" data-action="clearStop">Clear &amp; Stop</button></div>
 </div>`;
 document.body.appendChild(host);
 const panel = root.querySelector('.panel');
@@ -1355,9 +1392,10 @@ if (section === 'log') ui.logOpen = event.target.open;
 if (section === 'steps') ui.stepsOpen = event.target.open;
 }, true);
 // Redraw when the agent moves to another page or customer.
-setInterval(() => {
+ui.pageTimer = setInterval(() => {
 if (!ui || state.running) return;
-const signature = `${onCallPage()}|${liveActivities().map(({ activity }) => activity.ID).join(',')}`;
+const inView = onCallPage() ? leadInView() : null;
+const signature = `${onCallPage()}|${liveActivities().map(({ activity }) => activity.ID).join(',')}|${inView ? inView.ID : ''}`;
 if (signature !== ui.pageSignature) { ui.pageSignature = signature; render(); }
 }, 2000);
 // Drag by the header so the panel can be moved off Konnect's buttons.
