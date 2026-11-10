@@ -30,6 +30,41 @@
 // testing, not a confirmed selector like everything else here.
 // ===================================================================
 
+// Shows when the running copy was published and notices a newer one going
+// live. The date comes from GitHub once per open; later checks compare the
+// published file's text, which has no rate limit to share between staff.
+function startVersionWatch(fileName, onChange) {
+const state = { publishedAt: null, newer: false };
+if (typeof fetch !== 'function') return state;
+const repo = 'OmariDC/WorkBookmarklets';
+const fileText = () => fetch(`https://raw.githubusercontent.com/${repo}/main/${fileName}?_=${Date.now()}`).then((r) => (r.ok ? r.text() : null));
+const fingerprint = (text) => { let h = 0; for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0; return `${text.length}:${h}`; };
+let baseline = null;
+fetch(`https://api.github.com/repos/${repo}/commits?path=${encodeURIComponent(fileName)}&sha=main&per_page=1`)
+.then((r) => (r.ok ? r.json() : null))
+.then((list) => {
+const date = list && list[0] && list[0].commit && list[0].commit.committer && list[0].commit.committer.date;
+if (date) { state.publishedAt = new Date(date); onChange(state); }
+}).catch(() => {});
+fileText().then((text) => { if (text) baseline = fingerprint(text); }).catch(() => {});
+setInterval(() => {
+if (state.newer || baseline == null) return;
+fileText().then((text) => {
+if (text && fingerprint(text) !== baseline) { state.newer = true; onChange(state); }
+}).catch(() => {});
+}, 20 * 60 * 1000);
+return state;
+}
+
+function versionLineText(state) {
+if (state.newer) return 'A newer version is out. Close this panel and click the bookmarklet again.';
+if (!state.publishedAt) return '';
+const d = state.publishedAt;
+const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const pad = (n) => String(n).padStart(2, '0');
+return `Version of ${d.getDate()} ${months[d.getMonth()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function konnectNavReady() {
 const nav = document.querySelector('nav.navbar.navbar-inverse.navbar-fixed-top');
 return !!(nav && nav.querySelector('ul.nav.navbar-right.top-nav'));
@@ -3799,7 +3834,7 @@ reason: engaged
 confidence: 'low'
 });
 } else if (callFallback.status !== 'NO_CALL_MATCH') {
-console.warn('[KonnectLeadChecker] Call-entry fallback did not resolve to a lead for row.created=', JSON.stringify(row.created), '- status:', callFallback.status);
+debugLog('[KonnectLeadChecker] Call-entry fallback did not resolve to a lead for row.created=', JSON.stringify(row.created), '- status:', callFallback.status);
 return finalizeResult(result, { status: 'EXCEPTION', exception: `CALL_FALLBACK_${callFallback.status}` });
 }
 }
@@ -3847,7 +3882,7 @@ break;
 }
 const clickTarget = findLeadClickTarget(candidate.row);
 if (!clickTarget || !clickTarget.isConnected) {
-console.warn('[KonnectLeadChecker] click target not found for candidate at', candidate.rawTimestamp);
+debugLog('[KonnectLeadChecker] click target not found for candidate at', candidate.rawTimestamp);
 candidateFailures.push('LEAD_CLICK_TARGET_NOT_FOUND');
 continue;
 }
@@ -3862,7 +3897,7 @@ candidateFailures.push('CANCELLED');
 break;
 }
 if (!modalState) {
-console.warn('[KonnectLeadChecker] modal did not become ready for candidate at', candidate.rawTimestamp);
+debugLog('[KonnectLeadChecker] modal did not become ready for candidate at', candidate.rawTimestamp);
 candidateFailures.push('LEAD_MODAL_TIMEOUT');
 continue;
 }
@@ -3874,7 +3909,7 @@ continue;
 // without being the real, freshly-opened lead modal. Logging the
 // actual matched element (not just the fields we tried to pull out of
 // it) removes the guesswork either way.
-console.info('[KonnectLeadChecker] modal element matched:', modalState.modal.className, '| panel used:', modalState.panel === modalState.modal ? '(fell back to whole modal - no .tab-pane.active found)' : modalState.panel.className, '| visible rect:', JSON.stringify(modalState.modal.getBoundingClientRect()));
+debugLog('[KonnectLeadChecker] modal element matched:', modalState.modal.className, '| panel used:', modalState.panel === modalState.modal ? '(fell back to whole modal - no .tab-pane.active found)' : modalState.panel.className, '| visible rect:', JSON.stringify(modalState.modal.getBoundingClientRect()));
 debugLog('[KonnectLeadChecker] modal panel outerHTML (first 1500 chars):', modalState.panel.outerHTML.slice(0, 1500));
 const panelFields = extractLeadPanelFields(modalState.panel);
 debugLog('[KonnectLeadChecker] modal opened - extracted fields:', JSON.stringify(panelFields));
@@ -3888,7 +3923,7 @@ followUp = scopeItemsFor(modalState.modal, 'item in surveyDetailData');
 }
 validated.push({ candidate, panelFields, initialNotes, followUp, warnings: validation.warnings || [] });
 } else {
-console.warn('[KonnectLeadChecker] validation rejected candidate:', validation.reason);
+debugLog('[KonnectLeadChecker] validation rejected candidate:', validation.reason);
 candidateFailures.push('LEAD_VALIDATION_FAILED');
 // Both the candidate's own timestamp and the row's original Created/
 // Last-Actioned value are shown, not just one - a call-fallback match
@@ -3997,8 +4032,15 @@ standard: { label: 'Normal check', detail: 'SLA and Pending leads, matched by cr
 national: { label: 'National check', detail: 'National leads, checked for a reschedule or a dealer send', color: '#7c3aed' },
 postClosureList: { label: 'Post Closure check', detail: 'Newest Post Closure lead on each customer', color: '#b45309' }
 };
-function checkScenarioOf(mode) {
-return CHECK_SCENARIOS[mode || 'standard'] || CHECK_SCENARIOS.standard;
+// SLA Manager's Pending export leaves Source blank (Post Closure aside),
+// while SLA rows always carry one, so the rows tell the two apart.
+function checkScenarioOf(mode, rows) {
+const scenario = CHECK_SCENARIOS[mode || 'standard'] || CHECK_SCENARIOS.standard;
+if ((mode || 'standard') !== 'standard' || !rows || rows.length === 0) return scenario;
+const pendingLike = rows.filter((r) => !r.source || /post closure processing/i.test(r.source)).length;
+if (pendingLike === rows.length) return { ...scenario, label: 'Normal check: Pending', detail: 'Pending leads, matched by last actioned time' };
+if (pendingLike === 0) return { ...scenario, label: 'Normal check: SLA', detail: 'SLA leads, matched by created time' };
+return scenario;
 }
 
 runSelfTest('postClosureSearchBatchSelfTest', function postClosureSearchBatchSelfTest() {
@@ -4073,6 +4115,11 @@ isDealerAction(t(9, 1, '01T09:00', 'Sale (Offer Accepted)', "Final Outcome 'Sale
 ], [true, true, false, true]);
 check('the dealership named in an entry', [dealerNamedIn({ Description: 'Offer Sent by Dealer C for Preston' }), dealerNamedIn({ Description: "Final Outcome 'No Sale' set by Dealer D at Preston" })], ['preston', 'preston']);
 check('reason shown with the action', postClosureLabel({ postClosureAction: 'send back through', postClosureReason: 'Email only' }), 'send back through: Email only');
+check('SLA and Pending batches told apart', [
+checkScenarioOf('standard', [{ source: 'Customer First' }, { source: 'Autotrader' }]).label,
+checkScenarioOf('standard', [{ source: '' }, { source: 'Post Closure Processing' }]).label,
+checkScenarioOf('standard', [{ source: 'Customer First' }, { source: '' }]).label
+], ['Normal check: SLA', 'Normal check: Pending', 'Normal check']);
 check('scenario labels', ['standard', 'national', 'postClosureList', undefined].map((m) => checkScenarioOf(m).label), ['Normal check', 'National check', 'Post Closure check', 'Normal check']);
 check('the usual batch header still works', parseBatchInput('Name\tPhone\tEmail\tSource\tCampaign\tCreated\nA\t07700900123\t\tX\tY\tSat, 26 Sep 2026 18:05').headerOk, true);
 if (failures.length) console.error('KonnectLeadChecker post-closure-search self-test FAILED:\n' + failures.join('\n'));
@@ -5426,7 +5473,7 @@ setProgress() {}
 };
 }
 
-console.warn('KonnectLeadChecker: navbar not found, falling back to a fixed badge');
+debugLog('KonnectLeadChecker: navbar not found, falling back to a fixed badge');
 const badge = document.createElement('div');
 badge.id = KLC_BADGE_ID;
 Object.assign(badge.style, {
@@ -5524,6 +5571,9 @@ button.primary { background: #C2CB42; color: #1c1c1e; }
 button.primary:hover { background: #aab238; }
 .status { background: var(--wb-surface); border: none; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); padding: 10px 12px; margin-bottom: 8px; }
 .status div { margin-bottom: 2px; }
+.version-line { font-size: 10.5px; color: var(--wb-muted); margin: -2px 0 6px; }
+.version-line.newer { color: var(--wb-danger); font-weight: 700; font-size: 11.5px; }
+.version-line:empty { display: none; }
 .mode-banner { display: flex; align-items: center; gap: 8px; padding: 7px 10px; margin-bottom: 8px; border-radius: 10px; border: 1px solid; font-size: 11.5px; }
 .mode-banner strong { font-size: 12px; }
 .mode-banner .mode-detail { color: var(--wb-text-2); }
@@ -5612,6 +5662,7 @@ textarea, .search-input, .review-reason, .review-subcategory { background: var(-
 </div>
 <div class="bodyEl" id="bodyEl">
 <div class="notice-bar hidden" id="noticeBar" role="status" aria-live="polite"></div>
+<div class="version-line" id="versionLine" aria-live="polite"></div>
 <details class="topSection" id="topSection" open>
 <summary>${detailsChevronIcon()}Batch input</summary>
 <div class="topSection-content">
@@ -5720,6 +5771,8 @@ const curCustomerEl = root.getElementById('curCustomer');
 const curTargetEl = root.getElementById('curTarget');
 const curStateEl = root.getElementById('curState');
 const modeBannerEl = root.getElementById('modeBanner');
+const versionLineEl = root.getElementById('versionLine');
+const versionState = startVersionWatch('Konnect-Lead-Checker.js', () => render());
 const completedCountEl = root.getElementById('completedCount');
 const exceptionCountEl = root.getElementById('exceptionCount');
 const totalCountEl = root.getElementById('totalCount');
@@ -5929,6 +5982,7 @@ render();
 function render() {
 ensureBadgeAttached();
 renderNotices();
+renderVersionLine();
 renderModeBanner();
 if (!session) {
 rowCountEl.textContent = '0 rows parsed';
@@ -6152,8 +6206,13 @@ btnCopyNationalResultsEl.classList.toggle('hidden', !v.copyRawForExtract || !nat
 handoffControlsEl.classList.toggle('hidden', !v.handoffControls);
 }
 
+function renderVersionLine() {
+versionLineEl.textContent = versionLineText(versionState);
+versionLineEl.classList.toggle('newer', versionState.newer);
+}
+
 function renderModeBanner() {
-const scenario = session && session.headerOk ? checkScenarioOf(session.mode) : null;
+const scenario = session && session.headerOk ? checkScenarioOf(session.mode, session.rows) : null;
 modeBannerEl.classList.toggle('hidden', !scenario);
 if (!scenario) { modeBannerEl.innerHTML = ''; return; }
 modeBannerEl.style.background = `${scenario.color}14`;

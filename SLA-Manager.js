@@ -30,6 +30,57 @@ try { localStorage.removeItem(key); } catch (error) { /* ignore */ }
 }
 
 
+// Shows when the running copy was published and notices a newer one going
+// live. The date comes from GitHub once per open; later checks compare the
+// published file's text, which has no rate limit to share between staff.
+function startVersionWatch(fileName, onChange) {
+const state = { publishedAt: null, newer: false };
+if (typeof fetch !== 'function') return state;
+const repo = 'OmariDC/WorkBookmarklets';
+const fileText = () => fetch(`https://raw.githubusercontent.com/${repo}/main/${fileName}?_=${Date.now()}`).then((r) => (r.ok ? r.text() : null));
+const fingerprint = (text) => { let h = 0; for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0; return `${text.length}:${h}`; };
+let baseline = null;
+fetch(`https://api.github.com/repos/${repo}/commits?path=${encodeURIComponent(fileName)}&sha=main&per_page=1`)
+.then((r) => (r.ok ? r.json() : null))
+.then((list) => {
+const date = list && list[0] && list[0].commit && list[0].commit.committer && list[0].commit.committer.date;
+if (date) { state.publishedAt = new Date(date); onChange(state); }
+}).catch(() => {});
+fileText().then((text) => { if (text) baseline = fingerprint(text); }).catch(() => {});
+setInterval(() => {
+if (state.newer || baseline == null) return;
+fileText().then((text) => {
+if (text && fingerprint(text) !== baseline) { state.newer = true; onChange(state); }
+}).catch(() => {});
+}, 20 * 60 * 1000);
+return state;
+}
+
+function versionLineText(state) {
+if (state.newer) return 'A newer version is out. Close this panel and click the bookmarklet again.';
+if (!state.publishedAt) return '';
+const d = state.publishedAt;
+const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const pad = (n) => String(n).padStart(2, '0');
+return `Version of ${d.getDate()} ${months[d.getMonth()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+let slaVersionState = null;
+function renderVersionLine() {
+const html = () => {
+const text = versionLineText(slaVersionState);
+const newer = slaVersionState.newer;
+return text ? `<div id="_slaVersionLine" role="status" style="margin: 0 0 8px; font-size: ${newer ? '12px' : '11px'}; ${newer ? 'font-weight: 700; color: #b91c1c;' : 'color: var(--wb-muted, #64748b);'}">${escapeHtml(text)}</div>` : '<div id="_slaVersionLine"></div>';
+};
+if (!slaVersionState) {
+slaVersionState = startVersionWatch('SLA-Manager.js', () => {
+const el = document.getElementById('_slaVersionLine');
+if (el) el.outerHTML = html();
+});
+}
+return html();
+}
+
 // Self-tests run on every load. A failure is logged and also shown as a
 // banner in the panel, so a broken build is visible to the person using it.
 const selfTestFailures = [];
@@ -905,7 +956,7 @@ return false;
 await sleep(500);
 const agents = scrapeAgentQueuePositions();
 // No visible confirmation this scrape actually found anything real.
-console.info(`[SLA Manager] Queue by Agent scan: ${agents.length} agent panel(s) found`, agents.map((a) => ({
+if (isDebugLogging()) console.info(`[SLA Manager] Queue by Agent scan: ${agents.length} agent panel(s) found`, agents.map((a) => ({
 agent: a.agentName, notDone: a.notDoneCount, totalShown: a.totalShown,
 sample: isDebugLogging()
 ? a.queue.slice(0, 3).map((q) => ({ position: q.position, name: q.name, email: q.email, phone: q.phone, processed: q.processed }))
@@ -5496,6 +5547,7 @@ ${assignSectionHtml}
 
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
 ${renderSelfTestBanner()}
+${renderVersionLine()}
 ${hideSearch ? '' : `
 ${showLeadChecker ? `<button onclick="window._pasteAndClassifyLeadChecker(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 10px;" title="Reads the results copied from Konnect Lead Checker off the clipboard and classifies them">${svgIcon('copy', 13)}Paste & Classify from Lead Checker</button>` : ''}
 <div style="position: sticky; top: 0; z-index: 2; background: var(--wb-bg, #f2f2f7); padding-bottom: 10px; margin-bottom: 10px;">

@@ -19,6 +19,41 @@ const OUTCOME_UPDATE_ONLY = 'Update Outcomes (No Call Made)';
 const OUTCOME_NONE = '(Select a Call Outcome)';
 const STATUS_WHILE_RESETTING = 'Shift Start';
 
+// Shows when the running copy was published and notices a newer one going
+// live. The date comes from GitHub once per open; later checks compare the
+// published file's text, which has no rate limit to share between staff.
+function startVersionWatch(fileName, onChange) {
+const state = { publishedAt: null, newer: false };
+if (typeof fetch !== 'function') return state;
+const repo = 'OmariDC/WorkBookmarklets';
+const fileText = () => fetch(`https://raw.githubusercontent.com/${repo}/main/${fileName}?_=${Date.now()}`).then((r) => (r.ok ? r.text() : null));
+const fingerprint = (text) => { let h = 0; for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) | 0; return `${text.length}:${h}`; };
+let baseline = null;
+fetch(`https://api.github.com/repos/${repo}/commits?path=${encodeURIComponent(fileName)}&sha=main&per_page=1`)
+.then((r) => (r.ok ? r.json() : null))
+.then((list) => {
+const date = list && list[0] && list[0].commit && list[0].commit.committer && list[0].commit.committer.date;
+if (date) { state.publishedAt = new Date(date); onChange(state); }
+}).catch(() => {});
+fileText().then((text) => { if (text) baseline = fingerprint(text); }).catch(() => {});
+setInterval(() => {
+if (state.newer || baseline == null) return;
+fileText().then((text) => {
+if (text && fingerprint(text) !== baseline) { state.newer = true; onChange(state); }
+}).catch(() => {});
+}, 20 * 60 * 1000);
+return state;
+}
+
+function versionLineText(state) {
+if (state.newer) return 'A newer version is out. Close this panel and click the bookmarklet again.';
+if (!state.publishedAt) return '';
+const d = state.publishedAt;
+const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const pad = (n) => String(n).padStart(2, '0');
+return `Version of ${d.getDate()} ${months[d.getMonth()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 // ===================================================================
 // PURE HELPERS
 // ===================================================================
@@ -750,6 +785,7 @@ const state = window._leadResetState || (window._leadResetState = {
 running: false, paused: null, stopRequested: false, currentIndex: -1, stepIndex: 0, ctx: null, log: []
 });
 let resolvePause = null;
+let versionState = null;
 
 function leadsToDo() {
 const source = loadResults();
@@ -884,6 +920,9 @@ const savedAt = source ? new Date(source.savedAt).toTimeString().slice(0, 5) : '
 const onDesktop = /agent-desktop/i.test(location.pathname || '');
 const remaining = leads.filter((l) => !progress.byActivity[l.activityId]).length;
 
+if (!versionState) versionState = startVersionWatch('Lead-Reset.js', () => render());
+const versionText = versionLineText(versionState);
+const versionLine = versionText ? `<div style="margin-bottom:8px;font-size:${versionState.newer ? '12px;font-weight:700;color:' + COLORS.red : '11px;color:' + COLORS.grey};">${escapeHtml(versionText)}</div>` : '';
 const banner = selfTestFailures.length
 ? `<div role="alert" style="margin-bottom:8px;padding:8px;border-radius:6px;background:#fef2f2;color:#991b1b;font-size:12px;"><strong>Self-test failed:</strong> please send this on. ${escapeHtml(selfTestFailures[0])}</div>` : '';
 const where = onDesktop ? '' : `<div style="margin-bottom:8px;color:${COLORS.amber};">Open this on the agent desktop to set leads up again.</div>`;
@@ -914,7 +953,7 @@ const summary = !state.running && outcomes.length
 : '';
 const log = state.log.length ? `<details style="margin-top:6px;"><summary style="cursor:pointer;color:${COLORS.grey};">Activity</summary><div style="font-size:11px;color:${COLORS.grey};max-height:140px;overflow:auto;">${state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div></details>` : '';
 
-panel.querySelector('[data-body]').innerHTML = `${banner}${where}${sourceLine}
+panel.querySelector('[data-body]').innerHTML = `${banner}${versionLine}${where}${sourceLine}
 <div style="max-height:220px;overflow:auto;margin-bottom:8px;">${list}</div>
 ${pause}${summary}<div>${controls}</div>
 <label style="display:flex;gap:6px;align-items:center;margin-top:4px;font-size:12px;"><input type="checkbox" data-action="review" ${settings.reviewBeforePark ? 'checked' : ''}> Stop before parking so I can check each lead</label>
