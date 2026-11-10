@@ -780,17 +780,35 @@ ctx.missedFields = missed;
 return `Filled ${done.length ? done.join(', ') : 'nothing'}${missed.length ? '. Not filled: ' + missed.join(', ') : ''}`;
 }
 
+function openDiaries() {
+return Array.from(document.querySelectorAll('.modal')).filter((m) => (isVisible(m) || m.classList.contains('in')) && /manage appointments/i.test(m.textContent || ''));
+}
+
+// The diary's own Close (or the cross). Its date picker has a hidden Close
+// button of its own, so only visible cancel() buttons count.
+async function closeDiaries() {
+for (let attempt = 0; attempt < 3 && openDiaries().length; attempt++) {
+const diary = openDiaries().pop();
+const cancels = Array.from(diary.querySelectorAll('button[ng-click="cancel()"]')).filter(isVisible);
+const close = cancels.find((b) => /^close$/i.test(b.textContent.trim())) || cancels[0];
+if (close) close.click();
+await waitFor(() => !document.body.contains(diary) || !isVisible(diary), 5000);
+}
+return openDiaries().length === 0;
+}
+
 async function manageAppointments(ctx) {
+// Try again after a diary stayed open: close it rather than open another.
+if (openDiaries().length) {
+if (!await closeDiaries()) throw new NeedsYou('The diary did not close. Close it yourself.');
+return 'Diary closed';
+}
 const button = ctx.newLead ? visibleFirst(controlsOf(ctx.newLead.activity, '[ng-click^="manageSalesEventBookings"]')) : null;
 if (!button) throw new NeedsYou('Press Manage Appointments on the new lead, then close the diary yourself.');
 button.click();
-const diary = await waitFor(() => openModal((m) => /manage appointments/i.test(m.textContent || '')), 15000);
-if (!diary) throw new NeedsYou('The diary did not open. Press Manage Appointments, then close the diary yourself.');
+if (!await waitFor(() => openDiaries().length > 0, 15000)) throw new NeedsYou('The diary did not open. Press Manage Appointments, then close the diary yourself.');
 await sleep(800);
-const close = byText(diary, 'button', /^close$/i)[0] || byClick(diary, 'cancel()');
-if (!close) throw new NeedsYou('Close the diary yourself.');
-close.click();
-if (!await waitFor(() => !document.body.contains(diary) || !isVisible(diary), 10000)) throw new NeedsYou('The diary did not close. Close it yourself.');
+if (!await closeDiaries()) throw new NeedsYou('The diary did not close. Close it yourself.');
 return 'Manage Appointments opened and closed';
 }
 
@@ -986,7 +1004,7 @@ render();
 const STYLE = `
 :host { all: initial; }
 * { box-sizing: border-box; }
-.panel { position: fixed; top: 70px; right: 16px; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 90px); display: flex; flex-direction: column; z-index: 2147483000;
+.panel { position: fixed; bottom: 16px; left: 16px; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); display: flex; flex-direction: column; z-index: 2147483000;
   --bg: #f2f2f7; --surface: #ffffff; --text: #1c1c1e; --text-2: #334155; --muted: #64748b; --border: #e2e8f0; --accent: #C2CB42; --head: #1c1c1e;
   --green: #047857; --amber: #b45309; --red: #d70015;
   background: var(--bg); color: var(--text); border-radius: 16px; box-shadow: 0 18px 40px rgba(15, 23, 42, .22), 0 2px 6px rgba(15, 23, 42, .08); overflow: hidden;
@@ -1407,7 +1425,7 @@ const dy = event.clientY - rect.top;
 const move = (e) => {
 panel.style.left = `${Math.max(0, Math.min(window.innerWidth - 80, e.clientX - dx))}px`;
 panel.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, e.clientY - dy))}px`;
-panel.style.right = 'auto';
+panel.style.bottom = 'auto';
 };
 const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
 window.addEventListener('mousemove', move);
