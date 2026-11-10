@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.7.2'
+    version: '1.8.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -534,7 +534,13 @@
       state.lastPostClosureTransaction = null;
     }
     updateLauncher();
-    if (!state.target && state.open) closePalette();
+    updateInboundLauncher();
+    if (!state.target && state.open && !(state.view === 'booking' && inboundContext())) closePalette();
+    else if (state.open && targetChanged && state.view === 'booking') {
+      /* The lead's Call Notes just appeared (or changed): pick up its draft and read its boxes. */
+      if (state.target && bookingEngine()) syncLead(currentDraft());
+      renderPalette();
+    }
     else if (state.open && targetChanged) positionPalette();
   }
 
@@ -683,6 +689,8 @@
       .kn-bk-actions { display: flex; gap: 6px; align-items: center; }
       .kn-bk-actions .kn-primary { flex: 1; }
       .kn-bk-blocked { opacity: 0.55; }
+      .kn-inbound-launcher { position: fixed; left: 20px; bottom: 20px; z-index: 2147482999; padding: 10px 16px; border: none; border-radius: 999px; background: #1c1c1e; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,0.3); }
+      .kn-inbound-launcher:hover { background: #2c2c2e; }
       .kn-bk-version { margin-top: 6px; text-align: right; font-size: 10px; color: #aeaeb2; }
       @media (max-width: 720px) {
         #${PALETTE_ID} { width: 200px; }
@@ -715,6 +723,15 @@
   }
 
   function positionPalette() {
+    if (state.palette && state.view === 'booking' && inboundContext()) {
+      /* No lead screen yet: dock on the right so the inbound screens stay usable. */
+      const width = Math.min(400, window.innerWidth - 24);
+      state.palette.style.left = `${Math.max(8, window.innerWidth - width - 16)}px`;
+      state.palette.style.top = '16px';
+      state.palette.style.width = `${width}px`;
+      state.palette.style.maxHeight = `${Math.max(320, window.innerHeight - 32)}px`;
+      return;
+    }
     if (!state.palette || !state.launcherSection?.isConnected || !state.target) return;
     const rail = state.launcherSection.closest('.userQuotesAffix');
     const anchorRect = state.launcherSection.getBoundingClientRect();
@@ -1441,6 +1458,7 @@
   }
 
   function leadKey() {
+    if (!state.target && (inboundScreen() || inbound.pending)) return INBOUND_KEY;
     const pane = activeLeadPane();
     const tabs = pane?.closest('.tab-content')?.parentElement;
     const active = tabs?.querySelector('li.active[id^="salesTab-"]') ||
@@ -1451,6 +1469,13 @@
   function currentDraft() {
     const key = leadKey();
     if (state.booking && state.booking.key === key) return state.booking;
+    if (inbound.mobileLead && key !== inbound.mobileLead && key !== INBOUND_KEY) forgetInboundCustomer();
+    const adopted = adoptInboundDraft(key);
+    if (adopted) {
+      state.booking = adopted;
+      saveDraftNow();
+      return state.booking;
+    }
     const stored = readDrafts()[key];
     state.booking = stored && stored.data ? {
       key,
@@ -1468,7 +1493,7 @@
       fromLead: {},
       notices: [],
       inserted: null,
-      openSection: 'type',
+      openSection: key === INBOUND_KEY ? 'customer' : 'type',
       updated: Date.now()
     };
     return state.booking;
@@ -1829,9 +1854,14 @@
   }
 
   function insertBooking(draft) {
-    const target = callNotesBox();
+    const target = draft.key === INBOUND_KEY ? null : callNotesBox();
     const result = buildCurrentBooking(draft);
-    if (!(target instanceof HTMLTextAreaElement) || !result) return;
+    if (!(target instanceof HTMLTextAreaElement)) {
+      state.bookingStatus = { kind: 'warn', text: 'Create the lead first. This booking moves onto it when its Call Notes box appears.' };
+      renderPalette();
+      return;
+    }
+    if (!result) return;
     if (result.errors.length) {
       state.bookingStatus = { kind: 'error', text: 'Fix the items in red first.' };
       renderPalette();
@@ -2079,6 +2109,7 @@
   }
 
   function changed(draft, rerender) {
+    if (draft.key === INBOUND_KEY) inbound.pending = true;
     saveDraftSoon();
     state.bookingStatus = null;
     if (rerender) renderPalette();
@@ -2128,6 +2159,10 @@
   function sectionSummary(draft, id) {
     const d = draft.data;
     const label = (list, value) => (list.find((item) => item.value === value) || {}).label || '';
+    if (id === 'customer') {
+      const c = inbound.customer;
+      return [realText(c.name), c.dealer ? dealerLabel(c.dealer) : ''].filter(Boolean).join(' · ') || 'Name and dealer needed';
+    }
     if (id === 'contact') {
       const parts = [];
       parts.push({ none: 'No contact header', vm: 'VM left', engaged: 'Line engaged', email: 'Email only' }[d.contact]);
@@ -2181,6 +2216,7 @@
 
   function sectionMissing(draft, id) {
     const d = draft.data;
+    if (id === 'customer') return !realText(inbound.customer.name) || !inbound.customer.dealer;
     if (id === 'type') return !d.type;
     if (id === 'when') return d.type !== 'national' && (!d.day || !d.time);
     if (id === 'vehicle') return !d.vehicles.some((v) => realText(v.make) || realText(v.model) || realText(v.reg)) && !realText(d.category);
@@ -2509,6 +2545,8 @@
 
   /* Required sections first, in the order an agent usually fills them. */
   const BOOKING_SECTIONS = [
+    { id: 'customer', title: 'Customer', required: true, render: (draft, body) => renderCustomerSection(draft, body),
+      hidden: () => state.booking?.key !== INBOUND_KEY },
     { id: 'type', title: 'Appointment', required: true, prompt: 'What is the appointment?', render: renderTypeSection },
     { id: 'when', title: 'When', required: (d) => d.type !== 'national', prompt: 'Tap a day, then a time', render: renderWhenSection },
     { id: 'vehicle', title: 'Vehicle', required: true, prompt: 'Which car are they interested in?', render: renderVehicleSection, hidden: (d) => d.type === 'valuation' },
@@ -2612,8 +2650,10 @@
     bookingRefs.issues.textContent = '';
     result.errors.forEach((text) => bookingRefs.issues.appendChild(element('div', 'kn-bk-error', text)));
     result.warnings.forEach((text) => bookingRefs.issues.appendChild(element('div', 'kn-bk-warn', text)));
-    bookingRefs.insert.textContent = draft.inserted ? 'Update Call Notes' : 'Insert into Call Notes';
-    bookingRefs.insert.classList.toggle('kn-bk-blocked', result.errors.length > 0);
+    const waitingForLead = draft.key === INBOUND_KEY;
+    bookingRefs.insert.textContent = waitingForLead ? 'Insert after the lead is created'
+      : draft.inserted ? 'Update Call Notes' : 'Insert into Call Notes';
+    bookingRefs.insert.classList.toggle('kn-bk-blocked', waitingForLead || result.errors.length > 0);
   }
 
   function renderBooking() {
@@ -2648,6 +2688,7 @@
     });
 
     bookingRefs = { summaries: {}, badges: {}, needed: null, readout: null, preview: null, issues: null, insert: null };
+    renderMobileCard(draft, body);
     renderNeededBar(draft, body);
     visibleSections(d).forEach((section, index) => {
       const open = draft.openSection === section.id;
@@ -2708,11 +2749,16 @@
       });
     }));
     const clear = button('Clear', 'kn-danger', () => {
-      const removed = clearCallNotes();
-      state.booking = { ...draft, data: blankBooking(), fromLead: {}, notices: [], inserted: null, leadSeen: {}, openSection: 'type' };
+      const removed = draft.key === INBOUND_KEY ? 0 : clearCallNotes();
+      if (draft.key === INBOUND_KEY) {
+        forgetInboundCustomer();
+        inbound.pending = false;
+      }
+      const isInbound = draft.key === INBOUND_KEY;
+      state.booking = { ...draft, data: blankBooking(), fromLead: {}, notices: [], inserted: null, leadSeen: {}, openSection: isInbound ? 'customer' : 'type' };
       syncLead(state.booking);
       saveDraftNow();
-      state.bookingStatus = removed < 0
+      state.bookingStatus = isInbound ? { kind: 'ok', text: 'Booking and customer details cleared.' } : removed < 0
         ? { kind: 'error', text: 'Couldn\'t find the Call Notes box, so it was not cleared. The booking form was reset.' }
         : { kind: 'ok', text: removed ? `Cleared Call Notes (${removed} characters). Ctrl+Z in Call Notes undoes it.` : 'Call Notes was already empty. Booking form reset.' };
       renderPalette();
@@ -2730,7 +2776,7 @@
 
   function openBooking() {
     scanPage();
-    if (!state.target) return;
+    if (!state.target && !inboundContext()) return;
     state.open = true;
     state.view = 'booking';
     state.bookingStatus = null;
@@ -2746,6 +2792,296 @@
       }).catch(() => {});
     }
     renderPalette();
+  }
+
+  /* ---------- inbound calls ----------
+     On the inbound screens (Accept, then Customer Call) there is no lead or
+     Call Notes yet. The booking is built under the key "inbound" with a
+     Customer step that can search Konnect and fill the New Customer form.
+     When the new lead's Call Notes box appears, the booking moves onto that
+     lead. Customer details are only held in memory, never in localStorage:
+     everything except the mobile is dropped at the handover, and the mobile
+     is kept so it can be added back if Konnect loses it on Save. */
+
+  const INBOUND_KEY = 'inbound';
+  const INBOUND_LAUNCHER_ID = 'kn-inbound-launcher';
+  const INBOUND_MAX_AGE = 3 * 60 * 60 * 1000;
+  const KONNECT_DEALERS = [
+    'Stellantis &You Birmingham Central', 'Stellantis &You Birmingham North', 'Stellantis &You Birmingham South',
+    'Stellantis &You Brentford', 'Stellantis &You Bristol Cribbs', 'Stellantis &You Chingford',
+    'Stellantis &You Coventry', 'Stellantis &You Crawley', 'Stellantis &You Croydon', 'Stellantis &You Edgware',
+    'Stellantis &You General Sales', 'Stellantis &You Service Bookings', 'Stellantis &You Guildford',
+    'Stellantis &You Hatfield', 'Stellantis &You Leicester', 'Stellantis &You Liverpool', 'Stellantis &You Maidstone',
+    'Stellantis &You Manchester', 'National', 'Stellantis &You Newport', 'Stellantis &You Nottingham',
+    'Stellantis &You Preston', 'Stellantis &You Redditch', 'Stellantis &You Romford', 'Stellantis &You Sale',
+    'Stellantis &You Sheffield', 'Stellantis &You National Used Cars', 'Stellantis &You Stockport',
+    'Stellantis &You Walton', 'Stellantis &You West London', 'Stellantis &You Wimbledon'
+  ];
+  const KONNECT_BRANDS = ['Abarth', 'Alfa Romeo', 'Citroen', 'DS', 'Fiat', 'Jeep', 'Leapmotor', 'Peugeot',
+    'Stellantis &You', 'Vauxhall', 'Other'];
+
+  const inbound = {
+    customer: blankCustomer(),
+    pending: false,
+    mobile: '',
+    mobileLead: '',
+    brand: '',
+    dealer: ''
+  };
+
+  function blankCustomer() {
+    return { name: '', mobile: '', email: '', postcode: '', address1: '', dealer: '', brand: '' };
+  }
+
+  function inboundScreen() {
+    return /^#!\/(present-inbound-call|select-call-type\/calldirection\/inbound)/i.test(location.hash || '');
+  }
+
+  /* True while there is no Call Notes box but an inbound booking is under way. */
+  function inboundContext() {
+    if (state.target) return false;
+    return inboundScreen() || inbound.pending;
+  }
+
+  function dealerLabel(option) {
+    return String(option || '').replace(/^Stellantis &You\s+/, '');
+  }
+
+  function waitFor(check, timeout) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const tick = () => {
+        const found = check();
+        if (found || Date.now() - started > (timeout || 2500)) resolve(found || null);
+        else setTimeout(tick, 80);
+      };
+      tick();
+    });
+  }
+
+  function visibleCustomerModal() {
+    return Array.from(document.querySelectorAll('.modal'))
+      .find((modal) => isVisible(modal) && modal.querySelector('input[ng-model="customer.FullName"]')) || null;
+  }
+
+  function findButtonByClick(selector, text) {
+    return Array.from(document.querySelectorAll(selector))
+      .find((node) => isVisible(node) && (!text || normaliseText(node.textContent).toLowerCase().includes(text))) || null;
+  }
+
+  /* The brand to pick: the agent's choice, else the vehicle of interest's
+     make when this dealer offers it, else "Stellantis &You". */
+  function brandFor(select, chosen) {
+    const options = Array.from(select?.options || []).map((option) => normaliseText(option.textContent));
+    const has = (name) => options.some((option) => option.toLowerCase() === String(name).toLowerCase());
+    if (chosen && has(chosen)) return chosen;
+    const make = realText(state.booking?.data?.vehicles?.[0]?.make);
+    const engine = bookingEngine();
+    const tidyMake = make && engine ? engine.normaliseMake(make) : make;
+    if (tidyMake && has(tidyMake)) return tidyMake;
+    return has('Stellantis &You') ? 'Stellantis &You' : '';
+  }
+
+  /* Sets Dealer (if given and not already set) then waits for the Brand list
+     that loads for it and picks the brand. Returns the names of the fields set. */
+  async function setDealerAndBrand(modal, dealer, brand) {
+    const filled = [];
+    const dealerSelect = modal.querySelector('select[ng-model="selected.dealer"]');
+    if (dealerSelect && dealer && setLeadControl(dealerSelect, dealer)) filled.push('Dealer');
+    const brandSelect = await waitFor(() => {
+      const select = modal.querySelector('select[ng-model="customer.VehicleBadgeID"]');
+      return select && select.options.length > 1 ? select : null;
+    }, 3000);
+    const pick = brandSelect ? brandFor(brandSelect, brand) : '';
+    if (brandSelect && pick && setLeadControl(brandSelect, pick)) filled.push(`Brand (${pick})`);
+    else if (brandSelect && pick && selectedText(brandSelect) === pick) filled.push(`Brand (${pick})`);
+    return filled;
+  }
+
+  function searchKonnect() {
+    const c = inbound.customer;
+    const query = realText(c.mobile).replace(/\s+/g, '') || realText(c.name);
+    const button = document.getElementById('btnSearchCustomers');
+    if (!button || !query) {
+      showToast(button ? 'Add a mobile or name first' : 'Open Customer Call first to search');
+      return;
+    }
+    const scope = button.closest('form, .input-group, .form-group, .row, .panel-body') || button.parentElement;
+    const input = scope?.querySelector('input[type="text"], input[type="search"], input:not([type])');
+    if (!input) {
+      showToast('Could not find the search box');
+      return;
+    }
+    setLeadControl(input, query);
+    button.click();
+    showToast(`Searched Konnect for ${query}`);
+  }
+
+  async function fillCustomerForm() {
+    const c = inbound.customer;
+    let modal = visibleCustomerModal();
+    if (!modal) {
+      const newButton = findButtonByClick('button[ng-click^="showCustomerModal"]', 'new customer');
+      if (!newButton) {
+        showToast('Open Customer Call first, then try again');
+        return;
+      }
+      newButton.click();
+      modal = await waitFor(visibleCustomerModal, 3000);
+    }
+    if (!modal) {
+      showToast('The New Customer form did not open');
+      return;
+    }
+    const filled = [];
+    const put = (selector, value, label) => {
+      const control = modal.querySelector(selector);
+      if (control && realText(value) && setLeadControl(control, normaliseText(value))) filled.push(label);
+    };
+    put('input[ng-model="customer.FullName"]', c.name, 'Name');
+    put('input[ng-model^="customer.Address"]', c.address1, 'Address line 1');
+    put('input[ng-model="customer.PostCode"]', String(c.postcode || '').toUpperCase(), 'Postcode');
+    put('input[ng-model^="customer.Mobile"]', String(c.mobile || '').replace(/\s+/g, ''), 'Mobile 1');
+    put('input[ng-model="customer.EmailAddress"]', c.email, 'Email');
+    filled.push(...await setDealerAndBrand(modal, c.dealer, c.brand));
+    inbound.pending = true;
+    showToast(filled.length ? `Filled ${filled.join(', ')}. Check it and press Save.` : 'Nothing new to fill');
+  }
+
+  /* After the lead is created Konnect can lose the mobile. This opens Edit
+     Customer Details, puts it back in Mobile 1 and reselects the brand,
+     which resets every time the form opens. The agent presses Save. */
+  async function readdMobile() {
+    const mobile = inbound.mobile;
+    if (!mobile) return;
+    let modal = visibleCustomerModal();
+    if (!modal) {
+      const edit = findButtonByClick('a[ng-click^="showCustomerModal"], span[ng-click^="showCustomerModal"]', 'edit customer');
+      if (!edit) {
+        showToast('Could not find Edit Customer Details on this screen');
+        return;
+      }
+      edit.click();
+      modal = await waitFor(visibleCustomerModal, 3000);
+    }
+    if (!modal) {
+      showToast('Edit Customer Details did not open');
+      return;
+    }
+    const filled = [];
+    const mobileBox = modal.querySelector('input[ng-model^="customer.Mobile"]');
+    if (mobileBox && setLeadControl(mobileBox, mobile)) filled.push('Mobile 1');
+    const dealerSelect = modal.querySelector('select[ng-model="selected.dealer"]');
+    const dealer = dealerSelect && !selectedText(dealerSelect) ? inbound.dealer : '';
+    filled.push(...await setDealerAndBrand(modal, dealer, inbound.brand));
+    showToast(filled.length ? `Filled ${filled.join(', ')}. Press Save.` : 'Mobile is already there');
+  }
+
+  function forgetInboundCustomer() {
+    inbound.customer = blankCustomer();
+    inbound.mobile = '';
+    inbound.mobileLead = '';
+    inbound.brand = '';
+    inbound.dealer = '';
+  }
+
+  /* Moves the inbound booking onto the lead whose Call Notes just appeared. */
+  function adoptInboundDraft(key) {
+    if (!inbound.pending || key === INBOUND_KEY) return null;
+    const drafts = readDrafts();
+    const source = drafts[INBOUND_KEY];
+    if (!source || !source.data || Date.now() - (source.updated || 0) > INBOUND_MAX_AGE) return null;
+    const existing = drafts[key];
+    if (existing && existing.inserted) return null;
+    delete drafts[INBOUND_KEY];
+    writeDrafts(drafts);
+    inbound.pending = false;
+    inbound.mobile = String(inbound.customer.mobile || '').replace(/\s+/g, '');
+    inbound.mobileLead = inbound.mobile ? key : '';
+    inbound.brand = inbound.customer.brand;
+    inbound.dealer = inbound.customer.dealer;
+    inbound.customer = blankCustomer();
+    state.bookingStatus = { kind: 'ok', text: 'Booking carried over from the inbound call.' };
+    return {
+      key,
+      data: { ...blankBooking(), ...source.data },
+      leadSeen: {},
+      fromLead: {},
+      notices: [],
+      inserted: null,
+      openSection: '',
+      updated: Date.now()
+    };
+  }
+
+  function renderCustomerSection(draft, body) {
+    const c = inbound.customer;
+    const update = (key) => (value) => { c[key] = value; inbound.pending = true; changed(draft); };
+    const row = element('div', 'kn-bk-row');
+    row.appendChild(bkInput('Name', c.name, update('name')));
+    row.appendChild(bkInput('Mobile', c.mobile, update('mobile'), { inputMode: 'tel' }));
+    body.appendChild(row);
+    body.appendChild(bkInput('Email', c.email, update('email')));
+    const row2 = element('div', 'kn-bk-row');
+    row2.appendChild(bkInput('Postcode', c.postcode, update('postcode')));
+    row2.appendChild(bkInput('Address line 1 (in person)', c.address1, update('address1')));
+    body.appendChild(row2);
+
+    const dealerWrap = element('label', 'kn-bk-field');
+    dealerWrap.appendChild(element('span', 'kn-bk-label', 'Dealer'));
+    const dealer = element('select', 'kn-input');
+    [['', '(Select a dealer)'], ...KONNECT_DEALERS.map((option) => [option, dealerLabel(option)])].forEach(([value, label]) => {
+      const option = element('option', '', label);
+      option.value = value;
+      if (value === c.dealer) option.selected = true;
+      dealer.appendChild(option);
+    });
+    dealer.addEventListener('change', () => { c.dealer = dealer.value; inbound.pending = true; changed(draft, true); });
+    dealer.addEventListener('keydown', (event) => event.stopPropagation());
+    dealerWrap.appendChild(dealer);
+    body.appendChild(dealerWrap);
+
+    body.appendChild(element('div', 'kn-bk-label', 'Brand'));
+    body.appendChild(bkChips([{ value: '', label: 'Auto (vehicle make)' }, ...KONNECT_BRANDS.map((name) => ({ value: name, label: name }))],
+      c.brand, (value) => { c.brand = value; inbound.pending = true; changed(draft, true); }, 'kn-bk-sub'));
+
+    const actions = element('div', 'kn-bk-row kn-bk-gap');
+    actions.appendChild(button('Search Konnect', '', searchKonnect));
+    actions.appendChild(button('Fill new customer form', 'kn-primary', fillCustomerForm));
+    body.appendChild(actions);
+    body.appendChild(element('div', 'kn-muted', 'Customer details stay in this page only and are wiped when the booking moves onto the new lead.'));
+  }
+
+  function renderMobileCard(draft, body) {
+    if (!inbound.mobile || draft.key !== inbound.mobileLead) return;
+    const card = element('div', 'kn-bk-notice');
+    card.appendChild(element('div', 'kn-bk-notice-text', `Mobile from the inbound call: ${inbound.mobile}`));
+    const actions = element('div', 'kn-bk-notice-actions');
+    actions.appendChild(button('Re-add mobile', 'kn-primary', readdMobile));
+    actions.appendChild(button('Forget', '', () => { forgetInboundCustomer(); renderPalette(); }));
+    card.appendChild(actions);
+    body.appendChild(card);
+  }
+
+  function updateInboundLauncher() {
+    let launcher = document.getElementById(INBOUND_LAUNCHER_ID);
+    const show = inboundContext();
+    if (!show) {
+      if (launcher) launcher.style.display = 'none';
+      return;
+    }
+    if (!launcher) {
+      launcher = element('button', 'kn-ui kn-inbound-launcher', '⚡ Booking');
+      launcher.id = INBOUND_LAUNCHER_ID;
+      launcher.type = 'button';
+      launcher.title = 'Booking (Alt+B)';
+      launcher.addEventListener('click', () => {
+        if (state.open && state.view === 'booking') closePalette();
+        else openBooking();
+      });
+      document.body.appendChild(launcher);
+    }
+    launcher.style.display = '';
   }
 
   function renderPalette() {
@@ -3324,7 +3660,8 @@
     ['change', 'focusout', 'click'].forEach((type) =>
       document.removeEventListener(type, onLeadActivity, true));
     window.removeEventListener('resize', positionPalette);
-    [PALETTE_ID, STYLE_ID, LAUNCHER_SECTION_ID].forEach((id) => document.getElementById(id)?.remove());
+    forgetInboundCustomer();
+    [PALETTE_ID, STYLE_ID, LAUNCHER_SECTION_ID, INBOUND_LAUNCHER_ID].forEach((id) => document.getElementById(id)?.remove());
     try { delete window.KonnectNotes; } catch (error) { window.KonnectNotes = undefined; }
     /* Confirmation, styled inline because the stylesheet has just been removed. */
     const toast = document.createElement('div');
