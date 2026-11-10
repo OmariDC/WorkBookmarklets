@@ -2113,6 +2113,16 @@ if (section === 'list') ui.listOpen = event.target.open;
 if (section === 'log') ui.logOpen = event.target.open;
 if (section === 'steps') ui.stepsOpen = event.target.open;
 }, true);
+// Redraw when SLA Manager, in another tab on this site, saves new results
+// or Email Only assignments, so the lists update without a refresh.
+// One listener per page; it calls whichever copy of the tool loaded last.
+window.__leadResetOnStorage = (key) => {
+if (ui && !state.running && [LEAD_CHECKER_RESULTS_KEY, EMAIL_ONLY_ASSIGNED_KEY, NATIONAL_RESULTS_KEY].includes(key)) render();
+};
+if (typeof window.addEventListener === 'function' && !window.__leadResetStorageWatch) {
+window.__leadResetStorageWatch = true;
+window.addEventListener('storage', (event) => { if (window.__leadResetOnStorage) window.__leadResetOnStorage(event.key); });
+}
 // Redraw when the agent moves to another page or customer.
 ui.pageTimer = setInterval(() => {
 if (!ui || state.running) return;
