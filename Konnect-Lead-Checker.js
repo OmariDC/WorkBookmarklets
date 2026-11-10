@@ -1,33 +1,11 @@
 // ===================================================================
 // KONNECT LEAD CHECKER
 //
-// Separate tool, separate site - runs on Konnect Live, not the Konnect
-// Manager app SLA-Manager.js lives in. Takes a batch of
-// SLA leads pasted from SLA-Manager.js's "Copy for Lead Checker"
-// export (Name/Phone/Email/Source/Campaign/Created, tab-separated),
-// finds each customer, locates the exact lead, and classifies its
-// Initial Notes as a booking or not.
-//
-// CLASSIFIER: implements lead-classification-spec.md v1.10 in full -
-// built from ~6,000 reviewed real leads, not the earlier ad-hoc 4-
-// category scheme this replaced. 6 priority tiers (CONFIRMED DATE &
-// TIME / DATE ONLY / LIKELY BOOKING / WARM ENQUIRY / NURTURE /
-// REDIRECT-NO CALL), each with its own sub-categories and sort ranks,
-// 20+ independent flags, a 13-step ordered pipeline (Section 3 of the
-// spec - order matters: agent-note detection and customer redirect/
-// reschedule checks both run before any system-template or campaign-
-// based classification, so a booking/cancellation/complaint/fleet
-// lead is never miscategorised as a fresh enquiry just because its
-// notes also happen to mention a car). Every rule traces back to a
-// numbered spec section, cited in that result's own `reason` text.
-// The spec's own worked test cases (Section 12), plus real leads from
-// manual review, are ported below as this file's self-test suite.
-//
-// Everything through search, timeline scan/matching, lead modal read/
-// validate/close, and Initial Notes classification is confirmed
-// against live Konnect Live DOM. loadOlderTimelineEntries' scroll
-// container is a best-effort guess (see its own comment) pending live
-// testing, not a confirmed selector like everything else here.
+// Runs on Konnect Live. Takes the batch pasted from SLA-Manager.js
+// ("Copy for Lead Checker"), finds each customer and the exact lead, and
+// classifies its Initial Notes per lead-classification-spec.md v1.10:
+// six priority tiers, flags and a 13-step ordered pipeline. Reasons cite
+// the spec section; Section 12 cases are ported as self-tests.
 // ===================================================================
 
 // Shows when the running copy was published and notices a newer one going
@@ -87,17 +65,15 @@ return note;
 }
 
 (function () {
-// Re-running the bookmarklet should focus the existing panel, not
-// inject a second copy of everything - same pattern as Halo-Tool.js's
-// window.__haloAssistant guard.
+// Re-running the bookmarklet focuses the existing panel instead of
+// injecting a second copy.
 if (window.__konnectLeadChecker && window.__konnectLeadChecker.focus) {
 window.__konnectLeadChecker.focus();
 return;
 }
 
-// Problems the panel must show the user, not just the console. Set from
-// anywhere (self-tests run before the panel exists); the panel renders
-// them in its notice bar on every render.
+// Problems the panel must show the user, not just the console. Self-tests
+// set these before the panel exists; the notice bar shows them on render.
 const lcNotices = { saveFailed: false, otherTab: false, selfTestFailures: [], stopped: null, onChange: null };
 function notifyNoticesChanged() {
 if (typeof lcNotices.onChange === 'function') { try { lcNotices.onChange(); } catch (error) { /* panel not ready */ } }
@@ -118,7 +94,6 @@ console.error = originalError;
 if (failed) { lcNotices.selfTestFailures.push(name); notifyNoticesChanged(); }
 }
 
-// Off by default.
 function isDebugLogging() {
 try { return localStorage.getItem('workBookmarklets:debug') === '1'; } catch (error) { return false; }
 }
@@ -132,10 +107,8 @@ if (isDebugLogging()) console.log(...args);
 
 function low(s) { return String(s || '').toLowerCase(); }
 
-// Section 3.1: normalise - strip system suffixes before any keyword
-// scan (Cargurus IMV/deal-rating block, collection-point line, the
-// "URL of vehicle of interest:" label, the Vehicle notes price line,
-// the generic "Requests: General enquiry." line).
+// Section 3.1: strip system suffixes (CarGurus IMV block, collection
+// point, vehicle URL label, price line, "General enquiry") before scanning.
 function stripSystemSuffixes(text) {
 let t = String(text || '');
 t = t.replace(/\(CarGurus (IMV|deal rating)[^)]*\)\.?/gi, '');
@@ -158,21 +131,14 @@ const m = String(text || '').match(re);
 return m ? m[1].trim() : null;
 }
 
-// Real terms fields (Deposit, Term, Monthly Budget) sometimes appear
-// as "Deposit £5,000" with no colon, not just "Deposit: £5,000" -
-// this checks presence of the field with either shape.
+// Terms fields sometimes appear without a colon ("Deposit £5,000").
 function hasAmountField(text, name) {
 return new RegExp(name + '\\s*:?\\s*£?[\\d,]+', 'i').test(String(text || ''));
 }
 
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-// Real AA Cars lead: "Could we please view this car sat afternoon." -
-// hasDayMention's plain .includes() check only recognised full weekday
-// names, so an abbreviated one fell through every day-detection rule
-// and needed a human. Word-boundary (\b), not a bare substring match -
-// unlike the full names, these are short enough to collide with real
-// words otherwise ("mon" in "money", "fri" in "friend", "sat" in
-// "satisfied", "wed" in "wedding", "thu" in "thunder").
+// Abbreviated weekdays ("sat afternoon"). Word boundaries matter: these
+// collide with real words otherwise ("mon" in "money", "sat" in "satisfied").
 const WEEKDAY_ABBR_RE = /\b(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)\b/i;
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const WRITTEN = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
@@ -180,9 +146,8 @@ const WRITTEN_KEYS = Object.keys(WRITTEN).join('|');
 
 // Section 10: date/time parsing.
 
-// Placeholder 00:00 must never count as a real clock time (Fiat/Abarth
-// First Desired Schedule, template placeholders) - stripped before
-// scanning for a genuine time elsewhere in the same text.
+// Placeholder 00:00 (Fiat/Abarth First Desired Schedule, templates) is
+// never a real clock time, so it is stripped before scanning.
 function stripPlaceholderTime(lowerText) {
 return lowerText.replace(/\b00:00\b/g, ' ');
 }
@@ -225,11 +190,9 @@ if (/\b\d{1,2}\/\d{1,2}\b/.test(lowered)) return true;
 return false;
 }
 
-// Section 6: flags. Attached to every result regardless of which
-// pipeline step matched, over the same normalised text - ctx carries
-// signals the matching step already worked out (e.g. whether "Finance"
-// wording was genuinely a customer request vs a system field name)
-// that a flat text regex alone can't always tell apart.
+// Section 6: flags, attached to every result. ctx carries signals the
+// matching step already worked out (e.g. whether "Finance" was a real
+// customer request or just a field name).
 function computeFlags(text, campaign, source, ctx) {
 ctx = ctx || {};
 const lowered = low(text);
@@ -347,10 +310,9 @@ if (/commercial\s*\/\s*fleet sales team/i.test(lowered)) return true;
 return false;
 }
 
-// Section 7.11: finance override - restricted to customer-typed text
-// only (never form-label fields), whole-word matched so "tech" never
-// fires inside PureTech/Tech Line/etc, with an explicit negation list
-// so "no finance owned"/"self financed" never count as a request.
+// Section 7.11: finance override. Customer-typed text only, whole-word
+// ("tech" must not fire inside PureTech), with a negation list
+// ("no finance owned", "self financed").
 function hasFinanceWording(lowered) {
 if (/no finance|no outstanding finance|cleared and owned|self financed|self finance|arranged my own finance|finance paid off/i.test(lowered)) return false;
 return /\bfinance\b|\bpcp\b|\bhp\b|\bquote\b|\bquotes\b|\bleasing\b|\b0%\b|\bbest price\b|\btechnical\b|\btech support\b/i.test(lowered);
@@ -380,8 +342,8 @@ result = R(6, 'Non-Customer / Admin', 10, 'high', 'Matched non-customer admin de
 if (isSuspicious(lowered)) flagCtx.suspicious = true;
 }
 
-// Step 5: our agent notes (skipped for Live chat/marketplace sources,
-// which are customer-originated even when third-person-shaped).
+// Step 5: our agent notes. Skipped for Live chat/marketplace sources,
+// which are customer-originated even when third-person-shaped.
 const isLiveChat = src === 'live chat';
 const isMarketplace = /cargurus|aa cars|cargeneralemaildealer|vangeneralemaildealer|dealerimageenquiry|vehiclecartradeenquiry|vehiclevantradeenquiry|autotrader/i.test(src);
 if (!result && !isLiveChat && !isMarketplace && looksLikeAgentNote(text0)) {
@@ -498,10 +460,8 @@ if (/recall|\bmot\b|service plan|warranty|spare key|gap policy|courtesy car|rent
 if (isMotabilityHandback(lowered) && !/next car|newer|replace/i.test(lowered)) flagCtx.motab = true;
 return R(6, 'Aftersales', 8, 'high', 'Aftersales/recall/warranty/admin wording (Section 3.6.9).');
 }
-// A day+time mention still wins over a plain handback read (Section
-// 5's "a day/time still raises it to Tier 1/2" pattern, applied here
-// too) - a scheduled visit is a real appointment, not just handback
-// admin, even when it's framed around a Motability lease.
+// A day+time still wins over a plain Motability handback: a scheduled
+// visit is a real appointment.
 if (isMotabilityHandback(lowered) && !/next car|newer|replace/i.test(lowered) && !(hasDayMention(text) && hasClockTime(text))) {
 flagCtx.motab = true;
 return R(6, 'Aftersales', 8, 'high', 'Motability handback, no next car mentioned (Section 7.9).');
@@ -514,9 +474,8 @@ return R(6, 'Aftersales', 8, 'medium', 'Settlement/login/extension question, no 
 return null;
 }
 
-// Step 9: free-text date/time detection - also reused by the
-// reschedule check above for "does the reschedule request itself
-// carry a new day/time".
+// Step 9: free-text date/time. Also used by the reschedule check to see
+// if the request itself carries a new day/time.
 function freeTextDateTime(text, lowered, referenceDate, flagCtx, forReschedule) {
 const hasTime = hasClockTime(text);
 const hasDay = hasDayMention(text);
@@ -545,14 +504,13 @@ return R(2, 'Website Booking Date', 2, 'high', 'Booking date template (Section 7
 const sourceFieldMatch = text.match(/Comment Line #1:\s*Source:\s*([\s\S]*)$/i);
 if (sourceFieldMatch) {
 const formName = sourceFieldMatch[1];
-// 7.9: a form NAME containing Motability goes to 3.6, not this
-// rank - same "Source:" template, just naming a Motability form.
+// 7.9: a form name containing Motability goes to 3.6, not this rank.
 if (isMotabilityText(low(formName))) {
 flagCtx.motab = true;
 return R(3, 'Motability: Information Only', 6, 'high', 'Comment Line #1: Source: template naming a Motability form (Section 7.9).');
 }
-// 8.2 v1.10: Register Interest / Keep Me Informed forms are a
-// passive notify-me sign-up, not this phone-led rank.
+// 8.2 v1.10: Register Interest / Keep Me Informed forms are a passive
+// sign-up, not this phone-led rank.
 if (/register interest|keep me informed/i.test(formName)) {
 return R(5, 'Enquiry: Blank', 9, 'medium', 'Comment Line #1: Source: template naming a Register Interest/Keep Me Informed form (Section 8.2, v1.10).');
 }
@@ -603,8 +561,7 @@ return R(3, 'Finance Quote Request: Specific Car', 9, 'high', 'Finance quote req
 // 7.9: Motability wording (non-CF marketing code paths).
 if (isMotabilityText(lowered) && !camp.includes('motability')) {
 flagCtx.motab = true;
-// Day+time still wins - falls through to step 9 instead of being
-// caught here as a lower-tier Motability read.
+// Day+time still wins: fall through to step 9.
 if (hasDayMention(text) && hasClockTime(text)) return null;
 if (/visit|test drive|order|view|come in|see the car/i.test(lowered)) {
 return R(3, 'Motability Enquiry: Visit Intent', 5, 'medium', 'Motability wording + visit intent (Section 7.9).');
@@ -616,9 +573,8 @@ return R(3, 'Motability: Information Only', 6, 'medium', 'Motability wording, qu
 const marketplaceResult = marketplaceTemplates(text, lowered, camp, src, referenceDate, flagCtx);
 if (marketplaceResult) return marketplaceResult;
 
-// 7.14: live chat templates (customer-originated, Source = Live chat
-// only - the same wording on any other source is an agent note,
-// already handled in step 5).
+// 7.14: live chat templates (Source = Live chat only; the same wording on
+// any other source is an agent note, handled in step 5).
 if (src === 'live chat') {
 const liveChatResult = liveChatTemplates(text, lowered, flagCtx);
 if (liveChatResult) return liveChatResult;
@@ -628,16 +584,14 @@ if (liveChatResult) return liveChatResult;
 const spoticarResult = spoticarTemplates(text, lowered, flagCtx);
 if (spoticarResult) return spoticarResult;
 
-// Section 5, Tier 4 rank 7: Used Stock Search - no specific car, but
-// concrete criteria (model/trim, year range, gearbox, fuel, mileage,
-// budget, colour), distinguished from a vague request (5.9) by at
-// least one concrete detail alongside "looking for" wording.
+// Section 5, Tier 4 rank 7: Used Stock Search. No specific car, but at
+// least one concrete criterion alongside "looking for" (vague requests are 5.9).
 if (/looking for a\b|i'?m looking for\b/i.test(lowered) && /\b20\d{2}\b|onwards|or newer|automatic|manual|hybrid|electric|petrol|diesel|\bblack\b|\bwhite\b|\bblue\b|\bred\b|\bseater\b/i.test(lowered)) {
 return R(4, 'Used Stock Search', 7, 'medium', 'Concrete stock-search criteria, no specific car identified (Section 5, Tier 4 rank 7).');
 }
 
-// Section 5, Tier 4 rank 3: Quote/Offer Request: Detailed - real terms
-// (deposit, term, mileage) on a model with no specific stock car.
+// Section 5, Tier 4 rank 3: Detailed quote. Real terms on a model with no
+// specific stock car.
 if (!(hasDayMention(text) && hasClockTime(text)) && /lease deals?\b|\b\d+\s*(year|yr|month)s?\s*(contract|lease|term)\b/i.test(lowered) && /\b\d[\d,]*\s*(k\s*)?miles?\b/i.test(lowered)) {
 flagCtx.finance = true;
 return R(4, 'Quote / Offer Request: Detailed', 3, 'medium', 'Real quote terms in free text - contract length + mileage (Section 5, Tier 4 rank 3).');
@@ -719,8 +673,8 @@ return R(5, 'Email Campaign (Autofunnel)', 10, 'medium', 'Autofunnel template (S
 function mbMailResult(text, lowered, flagCtx) {
 const findOutMore = (field(text, 'FindOutMore') || '').toLowerCase();
 if (field(text, 'PartExReg')) flagCtx.noPx = false;
-// The Purchase timeframe is what the reviewers actually tiered on: ASAP
-// / Within 3 Months = Warm Enquiry, Just Browsing = Nurture.
+// Reviewers tiered on Purchase timeframe: ASAP / Within 3 Months = Warm
+// Enquiry, Just Browsing = Nurture.
 const enquiry = field(text, 'Enquiry');
 if (!findOutMore && enquiry !== null) {
 const purchase = (field(text, 'Purchase') || '').toLowerCase();
@@ -731,9 +685,8 @@ if (/^(asap|within 3 months)$/.test(purchase)) {
 return R(4, 'MB Mail Enquiry: Near-term Purchase', 12, 'high', `MB Mail form, Purchase = ${field(text, 'Purchase')} (manual review).`);
 }
 if (/^just browsing$/.test(purchase)) {
-// Part-Exchange as the ONLY ticked option was tiered both 5 and 6
-// by reviewers on near-identical leads, so it stays low confidence
-// (Needs Review) until there's a consistent decision for it.
+// Part-Exchange as the only option was tiered both 5 and 6 by reviewers,
+// so it stays low confidence (Needs Review).
 if (/^part-exchange$/i.test(enquiry.trim())) {
 return R(5, 'MB Mail Enquiry Form', 11, 'low', 'MB Mail form, Just Browsing with Part-Exchange as the only option - reviewers split 5/6 on this shape.');
 }
@@ -787,12 +740,8 @@ const m = text.match(/Reg:\s*(\S+)\s*\|\s*Message from customer:\s*([\s\S]*?)\s*
 if (m) {
 const msg = m[2];
 const msgLower = msg.toLowerCase();
-// Real example: "Could we please view this car sat afternoon." -
-// every sibling marketplace branch (Autotrader, CarGurus, Vehicle
-// URL, email-style) already checks day/time before falling back to
-// a generic enquiry result; this branch never did, so a lead that
-// gave an actual day fell straight to the medium-confidence
-// catch-all and needed a human despite stating a real day/time.
+// Day/time check, as every sibling marketplace branch does before its
+// generic fallback.
 if (hasDayMention(msgLower) && hasClockTime(msgLower)) return R(1, 'Customer-Stated Slot', 3, 'high', 'AA Cars message with day+time (Section 5, Tier 1 rank 3).');
 if (hasDayMention(msgLower)) return R(2, 'Customer-Stated Day', 3, 'high', 'AA Cars message with a day only (Section 5, Tier 2 rank 3).');
 if (/would like to book a test drive/i.test(msgLower)) return R(3, 'Test Drive Request (no date)', 2, 'high', 'AA Cars test drive request (Section 7.13).');
@@ -878,8 +827,8 @@ return null;
 
 // Step 8: Customer First marketing codes (Section 8.2).
 function customerFirstMarketingCode(text, lowered, camp, src, flagCtx) {
-// Both shapes are accepted: labelled first, falling back to segment 0
-// when it doesn't look like some other known field.
+// Labelled first, falling back to segment 0 when it does not look like
+// another known field.
 let code = field(text, 'Marketing Code');
 if (!code) {
 const firstSeg = segs(text)[0] || '';
@@ -946,9 +895,7 @@ if (hasAmountField(text, 'Deposit') || hasAmountField(text, 'Term') || hasAmount
 flagCtx.finance = true;
 return R(4, 'Quote / Offer Request: Detailed', 3, 'medium', 'Social/Meta offer form with real terms (Section 8.2).');
 }
-// Checked ahead of the generic fallback since that one also covers other
-// marketing-code families (pch/pcp/cs offers pages, Fiat website, etc.)
-// this doesn't apply to.
+// Ahead of the generic fallback, which also covers other code families.
 if (/^social-meta-/i.test(codeLower) && /\b(fb\.me|facebook\.com)\b/i.test(commentsLower)) {
 return R(5, 'Quote / Offer Request: Blank', 4, 'high', "Social/Meta ad click-through - comment is just the ad's own vehicle/price blurb with a facebook tracking link, no free text (Section 8.2).");
 }
@@ -968,10 +915,8 @@ if (/brandsite-enquiry/i.test(codeLower)) {
 if (!comments || comments === '-') return R(4, 'Brand Site Enquiry (blank)', 6, 'medium', 'BrandSite-Enquiry marketing code, blank comment (manual review).');
 return null; // classify by comment
 }
-// Hyphenated Pop-in-Test-Drive-* (e.g. "-New_Users_CDP") is a
-// different code family from the underscore Pop-in-Test_Drive_ one
-// above; reviewers tiered it blank as Warm Enquiry (Peugeot). Fiat/
-// Abarth versions are already caught by the Fiat/Abarth branch.
+// Hyphenated Pop-in-Test-Drive-* is a different family from the underscore
+// one above; reviewers tiered it as Warm Enquiry. Fiat/Abarth is caught earlier.
 if (/^pop-in-test-drive-/i.test(codeLower)) {
 if (!comments || comments === '-') return R(4, 'Pop-in Test Drive (CDP)', 6, 'high', 'Pop-in-Test-Drive-* marketing code, blank comment (manual review).');
 return null;
@@ -994,9 +939,7 @@ if (/reserve\s*-\s*(new|used)/i.test(camp)) {
 if (hasDayMention(text) && hasClockTime(text)) return R(1, 'Reserve with Appointment', 5, 'high', 'Reserve campaign with day+time (Section 8.3).');
 return R(3, 'Reserve Online', 3, 'medium', 'Reserve campaign (Section 8.3).');
 }
-// Leapmotor (ID only) - reaching here means nothing more specific
-// (templates, marketing codes, day/time) already matched, so a
-// Leapmotor-sourced lead with nothing else is the "ID only" case
+// Leapmotor with nothing more specific matched is the "ID only" case
 // (Section 5, Tier 3 rank 4).
 if (/leapmotor/i.test(src) || /leapmotor/i.test(camp)) {
 return R(3, 'Leapmotor (ID only)', 4, 'high', 'Leapmotor source/brand, only a Lead ID (Section 5, Tier 3 rank 4).');
@@ -1004,10 +947,8 @@ return R(3, 'Leapmotor (ID only)', 4, 'high', 'Leapmotor source/brand, only a Le
 return null;
 }
 
-// Section 9.1: dedupe keys, computed per row from its own fields.
-// null when no rule applies for that source - matches the spec's own
-// acknowledged "known limit" that cross-channel dedupe can't be caught
-// by text alone.
+// Section 9.1: dedupe key per row. null when no rule applies (the spec's
+// known limit: cross-channel duplicates cannot be caught by text alone).
 function computeDedupeKey(text, campaign, source) {
 const leadId = field(text, 'Lead ID');
 if (leadId) return 'leadid:' + leadId.toLowerCase();
@@ -1029,13 +970,8 @@ if (msgMatch) return 'autotrader:' + low(msgMatch[1]).replace(/\s+/g, ' ').trim(
 return null;
 }
 
-// Section 9.1: dedupe pass over an already-classified batch. Dedupe
-// keys for several source types depend on Initial Notes content, only
-// available after each lead's live read, so this runs as a post-
-// processing pass over results already produced by classifyLead, not
-// a pre-filter that skips live reads. `getResult`/`getCreated`/
-// `setDuplicate` are small accessors so this stays agnostic to
-// whatever shape the caller's own row/result objects use.
+// Section 9.1: dedupe pass over already-classified results, since keys
+// depend on Initial Notes read live. Accessors keep it shape-agnostic.
 function applyDedupe(rows, getResult, getCreatedMs, isPostClosure, setDuplicate) {
 const byKey = new Map();
 rows.forEach((row) => {
@@ -1067,23 +1003,16 @@ window.KonnectLeadChecker.stripSystemSuffixes = stripSystemSuffixes;
 
 
 // ===================================================================
-// SEARCH (state machine steps: OPEN_SEARCH -> SET_SEARCH_TYPE ->
-// ENTER_IDENTIFIER -> SUBMIT_SEARCH -> READ_RESULTS -> OPEN_CUSTOMER)
-//
-// Every selector below is confirmed live against Konnect Live's real
-// search page - none of it is guessed. Timeline/lead-modal/Initial
-// Notes extraction still need their own live confirmation before
-// they're built; this is only the search step.
+// SEARCH (OPEN_SEARCH -> SET_SEARCH_TYPE -> ENTER_IDENTIFIER ->
+// SUBMIT_SEARCH -> READ_RESULTS -> OPEN_CUSTOMER)
 // ===================================================================
 
 function sleep(ms) {
 return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Same native-setter pattern as Halo-Tool.js (setNativeValue/
-// setNativeChecked there) - Angular's own input/radio directives listen
-// for real 'input'/'change' events, not a plain .value= or .checked=
-// assignment, so those are dispatched explicitly rather than assumed.
+// Angular's input/radio directives only react to real 'input'/'change'
+// events, so those are dispatched after setting the value.
 function setNativeValue(el, value) {
 const proto = Object.getPrototypeOf(el);
 const desc = Object.getOwnPropertyDescriptor(proto, 'value');
@@ -1224,19 +1153,12 @@ window.KonnectLeadChecker.readSearchResultRows = readSearchResultRows;
 window.KonnectLeadChecker.isSafeCustomerLink = isSafeCustomerLink;
 
 // ===================================================================
-// TIMELINE READINESS (state machine step: WAIT_FOR_TIMELINE)
+// TIMELINE READINESS (WAIT_FOR_TIMELINE)
 //
-// Confirmed live via a high-resolution repeated trace: the route
-// changes (~825ms) well before the timeline actually finishes loading
-// (~1000-1160ms) - customer identity even populates mid-load, so
-// "route changed" and "customer root exists" are both real but
-// insufficient signals on their own. The verified boundary is route +
-// both roots present + loading spinner hidden + Refresh control
-// visible. Pink entries are deliberately NOT required - a customer can
-// legitimately have zero sales leads and still be a fully "loaded"
-// timeline (READY_WITH_ZERO_ELIGIBLE_SALES_LEADS), which the caller
-// then treats as NO_ELIGIBLE_LEAD_EVENTS rather than waiting forever
-// for pink entries that will never appear.
+// The route changes (~825ms) before the timeline finishes loading
+// (~1000-1160ms), so readiness is route + both roots + spinner hidden +
+// Refresh visible. Pink entries are not required: a customer can have
+// zero sales leads and still be fully loaded.
 // ===================================================================
 
 const CONNECTED_CUSTOMER_ROUTE_PATTERN = /^#\/connectedCustomer\/\d+(?:\?|$)/;
@@ -1369,23 +1291,14 @@ console.info('KonnectLeadChecker timeline-readiness self-test passed (3/3)');
 });
 
 // ===================================================================
-// TIMELINE (state machine steps: WAIT_FOR_TIMELINE -> SCAN_LOADED_ENTRIES
-// -> MATCH_CREATED_DATETIME -> OPEN_LEAD_MODAL -> WAIT_FOR_REQUIRED_FIELDS
-// -> VALIDATE_LEAD -> EXTRACT_INITIAL_NOTES)
-//
-// Every selector/structure below is confirmed live against a real
-// Konnect Live customer timeline and lead modal - none of it is
-// guessed. LOAD_OLDER_ENTRIES (scrolling for entries not yet loaded),
-// CLOSE_MODAL, and the outer per-customer/per-row orchestration loop
-// are not built yet - still pending further confirmation.
+// TIMELINE (SCAN_LOADED_ENTRIES -> MATCH_CREATED_DATETIME ->
+// OPEN_LEAD_MODAL -> WAIT_FOR_REQUIRED_FIELDS -> VALIDATE_LEAD ->
+// EXTRACT_INITIAL_NOTES)
 // ===================================================================
 
-// That same investigation found the pink styling itself is nowhere near
-// specific to leads either - on one real customer, 144 entries were
-// pink, nearly all "Email sent" (rss icon) or "New Sales Event
-// Opportunity Added" (ticket icon) - so this heading-prefix allowlist is
-// still the only thing distinguishing a genuine lead entry from those,
-// and may need widening again if a fourth genuine prefix turns up.
+// Pink styling is not specific to leads (most pink entries are "Email
+// sent" or "New Sales Event Opportunity Added"), so this heading-prefix
+// allowlist is what identifies a genuine lead entry.
 const LEAD_HEADING_PREFIXES = ['Manually Created Sales Lead from', 'New Sales Lead from', 'Source Unknown'];
 
 function getLoadedLeadEntries() {
@@ -1400,9 +1313,8 @@ return LEAD_HEADING_PREFIXES.some((prefix) => text.startsWith(prefix));
 });
 }
 
-// Direct text nodes first (the common case, since the Lead ID lives in
-// its own child <span>, not as a text-node sibling); a sanitized-clone
-// fallback only if that comes back empty.
+// Direct text nodes first (the Lead ID lives in its own child span), with
+// a sanitized-clone fallback if that comes back empty.
 function extractTimelineTimestamp(row) {
 const heading = row.querySelector('.connected-customer-timeline-heading-left-pink, .connected-customer-timeline-heading-right-pink');
 if (!heading) return null;
@@ -1433,8 +1345,7 @@ const key = String(text || '').slice(0, 3).toLowerCase();
 return Object.prototype.hasOwnProperty.call(MONTH_NAMES, key) ? MONTH_NAMES[key] : null;
 }
 
-// Never falls back to Date.parse() for these UK-ordered,
-// ambiguous-if-misparsed strings.
+// Never falls back to Date.parse(): these UK-ordered strings misparse.
 function parseTimelineTimestamp(text, referenceDate) {
 const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
 
@@ -1456,14 +1367,8 @@ return { year: ref.getFullYear(), month, day: Number(withoutYear[1]), hour: Numb
 return null;
 }
 
-// Pending Customers' Last Actioned field (fed into this same column for
-// the call-entry fallback above - see
-// buildPendingLeadCheckerTsv/findMatchingCallLeadId) follows a
-// different, Konnect-wide convention instead - the same one
-// parseTimelineTimestamp already handles for timeline entries
-// themselves: no year shown at all for the current calendar year ("26
-// Sep 14:18", no weekday prefix either), only shown for older ones ("30
-// Jan 2025 12:26").
+// Pending Customers' Last Actioned value uses Konnect's convention: no
+// year for the current year ("26 Sep 14:18"), a year for older ones.
 function parseSlaCreated(text, referenceDate) {
 const cleaned = String(text || '').replace(/\s+/g, ' ').trim();
 
@@ -1490,9 +1395,7 @@ return { year: Number(isoLike[1]), month: Number(isoLike[2]) - 1, day: Number(is
 return null;
 }
 
-// Stripped down to the same "D MMM YYYY HH:mm" shape
-// parseTimelineTimestamp's with-year branch already handles, rather than
-// a separate parser to maintain.
+// Reduced to the "D MMM YYYY HH:mm" shape parseTimelineTimestamp handles.
 function parseModalDate(text) {
 const cleaned = String(text || '')
 .replace(/^[A-Za-z]{3,}\s+/, '')
@@ -1507,11 +1410,8 @@ if (!a || !b) return false;
 return a.year === b.year && a.month === b.month && a.day === b.day && a.hour === b.hour && a.minute === b.minute;
 }
 
-// Never chooses "nearest" or "same day, different time" - only an
-// exact minute match is ever a candidate at all. Multiple candidates
-// sharing the same displayed minute are all retained here and left for
-// the caller to validate individually through their modals (see
-// VALIDATE_LEAD) rather than picked between at this stage.
+// Only an exact minute match is a candidate. Several at the same minute
+// are all kept for the caller to validate through their modals.
 function findMatchingLeadCandidates(targetCreatedText, referenceDate) {
 const referenceNow = referenceDate || new Date();
 const target = parseSlaCreated(targetCreatedText, referenceNow);
@@ -1528,39 +1428,17 @@ return { target, candidates };
 }
 
 // ===================================================================
-// CALL-ENTRY FALLBACK - for Pending Customers leads specifically, which
-// (unlike SLA rows) have no lead-creation timestamp to export at all
-// (see SLA-Manager.js's own buildPendingLeadCheckerTsv) and instead
-// export their Last Actioned date/time, as shown on Konnect Manager's
-// own Pending Customers table. That value is NOT an exact-minute match
-// against the blue "call" entry (a.connected-customer-timeline-centre-lightblue
-// > i.fa.fa-phone) on Konnect Live's own timeline for the same event -
-// confirmed live via 14 real paired examples that Konnect Manager's
-// displayed time runs AT OR AFTER Konnect Live's own timestamp for the
-// same call, never earlier, by a variable amount (0 to 3 minutes
-// observed, most commonly 1). That range rules out a simple rounding/
-// truncation difference (which could only ever produce 0 or ±1 minute,
-// never +2/+3) - this is a genuine processing/sync delay between the
-// two systems, Manager apparently showing when IT recorded the update
-// rather than when the call itself happened. So the match below is a
-// bounded, one-directional window (see CALL_MATCH_TOLERANCE_MINUTES),
-// not equality.
+// CALL-ENTRY FALLBACK
 //
-// Confirmed NOT reliable: matching by DOM order/proximity to the
-// nearest pink entry. A real example had an unrelated second lead
-// logged between a call and the lead it actually belonged to, which a
-// "nearest entry" heuristic would have matched to the wrong lead - and
-// blue rows never show a visible Lead ID the way pink rows do
-// (extractVisibleLeadId's own selector is pink-only), so there's no
-// DOM-visible link at all. The only reliable link confirmed live is
-// Angular's own underlying scope data (angular.element(row).scope().item.LeadID) -
-// a call entry carries the exact same LeadID as its corresponding
-// lead's own pink row. Used here only to pick WHICH already-detected
-// lead entry (getLoadedLeadEntries already reliably narrows to genuine
-// leads via LEAD_HEADING_PREFIXES) a given call belongs to - not to
-// detect lead-ness itself, since it's unconfirmed whether LeadID is
-// exclusive to lead entries (an "Email sent" entry about the same lead
-// might plausibly carry it too).
+// Pending Customers leads export Last Actioned, not a created time. That
+// runs 0 to 3 minutes AT OR AFTER the blue call entry's own time (a sync
+// delay, not rounding), so the match is a one-directional window (see
+// CALL_MATCH_TOLERANCE_MINUTES).
+//
+// DOM proximity is not reliable (an unrelated lead can sit between a call
+// and its lead) and blue rows show no Lead ID. The call's Angular scope
+// LeadID is the only reliable link, used only to pick which detected lead
+// entry a call belongs to, not to detect lead-ness.
 // ===================================================================
 
 function getLoadedCallEntries() {
@@ -1575,26 +1453,15 @@ const heading = row.querySelector('.connected-customer-timeline-heading-left-lig
 return heading ? heading.textContent.replace(/\s+/g, ' ').trim() : null;
 }
 
-// No Lead-ID- span contamination to strip here (unlike
-// extractTimelineTimestamp's pink equivalent) - the only other child is
-// an <img> badge with no text content of its own.
+// Unlike the pink rows, there is no Lead ID span to strip here.
 function extractCallHeadingText(row) {
 const title = row.querySelector('.connected-customer-title-lightblue');
 return title ? title.textContent.replace(/\s+/g, ' ').trim() : null;
 }
 
-// A call entry whose own LeadID can't be read, or doesn't match the
-// target's, is never counted; if the target's own LeadID can't be read
-// either, nothing counts at all - this falls to the safer "check: needs
-// contact?" default rather than guessing which entries are actually this
-// lead's own. readScope defaults to the real readTimelineItemScope
-// (which needs a live Angular app) - overridable so self-tests can
-// inject a fake reader instead, without ever touching a real or
-// Node-only global (readTimelineItemScope itself reads the bare
-// `angular` global; a self-test standing that up would mean either a
-// Node-only `global` reference that throws in a real browser, or briefly
-// clobbering a live Konnect page's own actual Angular app to point at a
-// fake - neither is acceptable just to get coverage).
+// A call entry whose LeadID can't be read or doesn't match is never
+// counted; if the target's LeadID can't be read, nothing counts. readScope
+// is injectable so self-tests never touch the real `angular` global.
 function anyCallEntryIndicatesAlreadyEngaged(callEntryRows, targetLeadId, readScope) {
 const resolveScope = readScope || readTimelineItemScope;
 if (!targetLeadId) return false;
@@ -1612,12 +1479,9 @@ function hasAlreadyEngagedCallEntry(targetLeadId) {
 return anyCallEntryIndicatesAlreadyEngaged(getLoadedCallEntries(), targetLeadId);
 }
 
-// TimelineItemType (read straight off each row's own Angular scope, not
-// CSS class/icon matching - the only way to even find these, since they
-// don't share the pink/blue styling
-// getLoadedLeadEntries/getLoadedCallEntries look for) is what actually
-// distinguishes them: 1 = lead created, 2 = sent to Enquiry Max, 3 =
-// call, 9 = final outcome, 20 = Post Closure Note sent.
+// Read from each row's Angular scope, since these rows share no styling.
+// TimelineItemType: 1 = lead created, 2 = sent to Enquiry Max, 3 = call,
+// 9 = final outcome, 20 = Post Closure Note sent.
 function getAllTimelineRows() {
 return [...document.querySelectorAll('div.row.ng-scope[ng-repeat*="customerTimeLine"]')];
 }
@@ -1660,15 +1524,8 @@ function hasOtherLeadRejected(targetLeadId) {
 return anyOtherLeadWasRejected(getAllTimelineRows(), targetLeadId);
 }
 
-// Used when row.created couldn't be matched to any lead at all
-// (TARGET_CREATED_DATETIME_NOT_FOUND) or matched more than one
-// (AMBIGUOUS_CALL_MATCH) - there's no candidate.leadId in either case,
-// so the engagement-signal checks above have nothing to check against.
-// Finds the Post Closure lead's own LeadID directly by its heading text
-// instead, reusing getLoadedLeadEntries/extractVisibleLeadId exactly as
-// the normal pink-match path already does - only when there's exactly
-// one such entry on the page, since more than one is the same
-// unresolved ambiguity this is trying to route around, not guessed at.
+// For when row.created matched no lead or more than one: finds the Post
+// Closure lead by heading instead, only when exactly one is on the page.
 function findUnambiguousPostClosureLeadId() {
 const postClosureEntries = getLoadedLeadEntries().filter((row) => {
 const heading = row.querySelector('.connected-customer-title-pink');
@@ -1832,29 +1689,15 @@ return !!match && !!dealerActionAfterSend(items, match.sends, (i) => Number(i.Ti
 }
 
 // ===================================================================
-// Self-test for the already-engaged detection - real row text pulled
-// directly from a live DOM dump of three actual customers (one
-// voicemail-only "needs contact" case, one with a "Scheduled a call"
-// entry mixed in among voicemail-only calls on either side, and one
-// with "Spoke To Customer" outcomes - a real reported case that had
-// been wrongly left classified by tier (WARM ENQUIRY) instead).
+// Self-test for already-engaged detection (row text from live customers).
 // ===================================================================
 runSelfTest('alreadyEngagedDetectionSelfTest', function alreadyEngagedDetectionSelfTest() {
 const failures = [];
 function check(label, actual, expected) {
 if (actual !== expected) failures.push(`${label}: expected "${expected}", got "${actual}"`);
 }
-// leadId undefined means "the scope reader can't resolve this row at
-// all" (the real equivalent being angular.element(row).scope() failing) -
-// distinct from a resolvable-but-different leadId. fakeReadScope is
-// injected as anyCallEntryIndicatesAlreadyEngaged's 3rd argument rather
-// than touching any real global - the real readTimelineItemScope reads
-// the bare `angular` global, which is Node-only as `global.angular`
-// (throws in a real browser) and would mean briefly clobbering a live
-// Konnect page's own actual Angular app as `window.angular` otherwise;
-// neither is acceptable just to get test coverage (unlike
-// findMatchingCallLeadId, which uses the same real mechanism with no
-// self-test coverage at all, for exactly this reason).
+// leadId undefined means the scope reader cannot resolve the row. The
+// fake reader is injected so no real `angular` global is touched.
 function fakeCallRow(headingText, leadId) {
 return {
 querySelector: (sel) => sel === '.connected-customer-title-lightblue' ? { textContent: headingText } : null,
@@ -1881,10 +1724,8 @@ fakeCallRow('Adam Ali called the customer with an outcome of No Answer Message L
 ];
 check('Real "needs contact" example (Sylvia Lyddy) - voicemail only, no engagement signal', anyCallEntryIndicatesAlreadyEngaged(voicemailOnlyRows, '123', fakeReadScope), false);
 
-// Real "do not contact again" example (Kevin Hu) - voicemail calls both
-// BEFORE and AFTER the Scheduled a call entry, all sharing the same
-// LeadID as the target. The entry itself is what matters, not its
-// position relative to the other calls.
+// Voicemails before and after the Scheduled a call entry: the entry
+// matters, not its position.
 const scheduledCallMixedIn = [
 fakeCallRow('Darryl Nwafor called the customer with an outcome of No Answer Message Left', '456'),
 fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left', '456'),
@@ -1894,10 +1735,7 @@ fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Mess
 ];
 check('Real "do not contact again" example (Kevin Hu) - Scheduled a call mixed in among voicemail-only calls', anyCallEntryIndicatesAlreadyEngaged(scheduledCallMixedIn, '456', fakeReadScope), true);
 
-// Real "wrongly filtered as a warm lead" example - a genuine live
-// connection ("Spoke To Customer") appears twice in this customer's
-// history, once resulting in a Face To Face appointment, mixed among
-// otherwise voicemail-only calls, all sharing the target's LeadID.
+// "Spoke To Customer" mixed among voicemail-only calls.
 const spokeToCustomerMixedIn = [
 fakeCallRow('Omari Duporte- Clarke called the customer with an outcome of No Answer Message Left', '789'),
 fakeCallRow('Jamario Belnavis called the customer with an outcome of Spoke To Customer', '789'),
@@ -1906,10 +1744,8 @@ fakeCallRow('Lillian Ferrando Auberton called the customer with an outcome of No
 ];
 check('Real "wrongly filtered as a warm lead" example - Spoke To Customer is also an already-engaged signal', anyCallEntryIndicatesAlreadyEngaged(spokeToCustomerMixedIn, '789', fakeReadScope), true);
 
-// Real "Mrs Brady" example - one customer, two leads on the same
-// timeline: an EARLIER, unrelated lead (LeadID 111) with a genuine
-// Scheduled-call entry, and the CURRENT Post Closure lead (LeadID 222)
-// that only ever got voicemails of its own.
+// Two leads on one timeline: an earlier lead with a Scheduled call and the
+// current Post Closure lead with only voicemails.
 const bradyRows = [
 fakeCallRow('Some Agent Scheduled a call', '111'),
 fakeCallRow('Henry Marnell called the customer with an outcome of No Answer Message Left', '222'),
@@ -1921,8 +1757,7 @@ check('Checking against the OTHER lead\'s own LeadID correctly finds its own Sch
 const bradyWithGenuineSignal = bradyRows.concat([fakeCallRow('Someone Scheduled a call', '222')]);
 check('A genuine engagement signal sharing the target\'s own LeadID still counts', anyCallEntryIndicatesAlreadyEngaged(bradyWithGenuineSignal, '222', fakeReadScope), true);
 
-// A row whose own LeadID can't be resolved at all (angular scope read
-// failed) is dropped rather than guessed into matching or not matching.
+// A row whose LeadID can't be resolved is dropped, not guessed.
 const unresolvableRow = fakeCallRow('Someone Scheduled a call', undefined);
 check('A row with an unreadable LeadID never counts, even with a genuine engagement heading', anyCallEntryIndicatesAlreadyEngaged([unresolvableRow], '222', fakeReadScope), false);
 
@@ -1934,12 +1769,7 @@ console.info('KonnectLeadChecker already-engaged-detection self-test passed (12/
 });
 
 // ===================================================================
-// Self-test for Lead Rejected detection (Type 9) - real scope data
-// pulled directly from a live customer's full 8-row timeline (leads,
-// calls, sent-to-dealer, a Post Closure Note, and a genuine dealer
-// rejection), read via Angular scope rather than CSS/icon matching,
-// since a Type 9 row shares none of the pink/blue styling the other
-// detection functions key off.
+// Self-test for Lead Rejected detection (Type 9), read via Angular scope.
 // ===================================================================
 runSelfTest('leadRejectedDetectionSelfTest', function leadRejectedDetectionSelfTest() {
 const failures = [];
@@ -1951,11 +1781,8 @@ return { __fakeItem: item };
 }
 function fakeReadScope(row) { return row.__fakeItem; }
 
-// Real 8-row timeline (Liverpool/Daniel Folger example): an older lead
-// (1385403) that went through voicemail-only calls, max attempts, sent
-// to dealer, and was ultimately rejected by the dealer; a newer Post
-// Closure lead (1386301) created in between, with no rows of its own
-// at all yet.
+// An older lead rejected by the dealer, and a newer Post Closure lead
+// with no rows of its own yet.
 const realTimeline = [
 fakeScopeRow({ EventTime: '2026-09-30T16:50:00', TimelineItemType: 1, LeadID: 1385403, Description: 'Manually Created Sales Lead from Customer First' }),
 fakeScopeRow({ EventTime: '2026-09-30T16:56:00', TimelineItemType: 3, LeadID: 1385403, Description: 'No Answer, Message Left.\r\nNo Activity Outcome\r\n' }),
@@ -2003,11 +1830,8 @@ return null;
 }
 }
 
-// Deliberately erring toward "wide enough to actually catch real
-// matches" over "tight enough to never need the ambiguity check" -
-// widening this risks more AMBIGUOUS_CALL_MATCH results (safe: nothing
-// gets guessed), not wrong matches, since every candidate found within
-// the window still has to resolve to a lead before anything's trusted.
+// Errs wide: a wider window risks more AMBIGUOUS_CALL_MATCH (safe), not
+// wrong matches.
 const CALL_MATCH_TOLERANCE_MINUTES = 5;
 
 function minutesSinceEpoch(parsed) {
@@ -2015,10 +1839,8 @@ if (!parsed) return null;
 return Math.floor(new Date(parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute).getTime() / 60000);
 }
 
-// Multiple calls can legitimately fall inside that window (the delay
-// isn't exact, and a customer can have several close-together calls) -
-// what actually matters is whether they agree on WHICH lead, not how
-// many rows matched.
+// Several calls can fall in the window; what matters is whether they
+// agree on which lead.
 function findMatchingCallLeadId(targetCreatedText, referenceDate) {
 const referenceNow = referenceDate || new Date();
 const target = parseSlaCreated(targetCreatedText, referenceNow);
@@ -2051,10 +1873,8 @@ if (!leadId) return null;
 return getLoadedLeadEntries().find((row) => extractVisibleLeadId(row) === leadId) || null;
 }
 
-// Bounded scroll-and-retry, mirroring processLeadRow's own existing
-// loop for the direct pink-match path - a call from before the
-// timeline's initial load window needs the same "load older entries
-// and rescan" treatment a lead's own entry would.
+// A call from before the initial load window needs the same "load older
+// and rescan" loop as the direct pink match.
 async function findLeadCandidateViaCallFallback(targetCreatedText, session, referenceDate) {
 const referenceNow = referenceDate || new Date();
 let callMatch = findMatchingCallLeadId(targetCreatedText, referenceNow);
@@ -2095,11 +1915,7 @@ if (!modal) return null;
 const panel = modal.querySelector('.tab-pane.active') || modal;
 const notes = panel.querySelector('#txtInitialNotes');
 if (!notes) return null;
-// The original spec's own stated readiness condition ("Date and Source
-// are present") was never actually implemented in its reference code,
-// which only checked #txtInitialNotes existing - this closes that gap by
-// requiring Date to have a genuine value too, not just its container
-// existing.
+// Date must have a real value, not just exist, before the modal is ready.
 const dateValue = extractLabeledFooterField(panel, 'Date');
 if (!dateValue) return null;
 return { modal, panel, notes };
@@ -2180,9 +1996,7 @@ customer: extractCustomerField(panel)
 };
 }
 
-// Internal line breaks are preserved (only outer whitespace trimmed),
-// since trim() alone doesn't collapse internal whitespace the way the
-// label extractors above deliberately do.
+// Keeps internal line breaks; only outer whitespace is trimmed.
 function extractInitialNotes(panel) {
 const el = panel.querySelector('#txtInitialNotes');
 return el ? el.textContent.trim() : null;
@@ -2192,12 +2006,9 @@ function normalizeForCompare(value) {
 return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
-// Created date/time remains the decisive key (already matched before a
-// modal was ever opened, via findMatchingLeadCandidates or, for a
-// Pending Customers lead, findLeadCandidateViaCallFallback) - this
-// re-confirms it against the modal's own Date, then treats Source and
-// Campaign as confirmation fields that can REJECT a clearly
-// contradictory candidate but never redirect to a different lead.
+// Created date/time (already matched) is re-confirmed against the modal
+// Date. Source and Campaign can reject a contradictory candidate but never
+// redirect to a different lead.
 function validateLeadCandidate(panelFields, candidateParsed, slaRow) {
 const modalDateParsed = panelFields.date ? parseModalDate(panelFields.date) : null;
 if (!datetimesMatchAtMinute(modalDateParsed, candidateParsed)) {
@@ -2208,9 +2019,8 @@ if (slaRow.source && panelFields.source && normalizeForCompare(slaRow.source) !=
 return { ok: false, reason: `Source contradicts: SLA="${slaRow.source}" modal="${panelFields.source}"` };
 }
 
-// Treating a mismatch here as a contradiction was rejecting correct
-// leads every time. Kept as an informational warning only, never a
-// rejection.
+// Treating a mismatch here as a contradiction rejected correct leads, so
+// it is a warning only.
 const warnings = [];
 if (slaRow.campaign && panelFields.campaign && (panelFields.campaign.primary || panelFields.campaign.parenthetical)) {
 const target = normalizeForCompare(slaRow.campaign);
@@ -2267,8 +2077,8 @@ document.dispatchEvent(escEvent);
 return waitForLeadModalGone(timeout);
 }
 
-// Detects progress by diffing timelineEntryKey() sets before/after, not
-// by trusting the scroll call itself to mean anything happened.
+// Progress is detected by diffing timelineEntryKey() sets, not by
+// trusting the scroll call.
 function findScrollableAncestor(element) {
 let node = element ? element.parentElement : null;
 while (node && node !== document.body) {
@@ -2308,14 +2118,8 @@ return { status: 'OK', loadedNewEntries: true, scrollContainer: scrollTarget ? '
 return { status: 'OK', loadedNewEntries: false, scrollContainer: scrollTarget ? 'internal' : 'window' };
 }
 
-// Email: trim + lowercase. Phone: digits only, UK +44 and leading 0
-// treated as equivalent by canonicalizing to the leading-0 form - e.g.
-// "+44 7700 900123" and "07700900123" both normalize to
-// "07700900123". No normalizeRegistration - Registration was
-// deliberately dropped from the SLA-Manager.js export (see that
-// repo's own history: "not something we need to copy, nor can search
-// reliably by anyways"), so it's never part of this tool's input at
-// all, not just optional.
+// Email: trim + lowercase. Phone: digits only, +44 canonicalised to a
+// leading 0. Registration is not part of the export.
 function normalizeEmail(value) {
 return String(value || '').trim().toLowerCase();
 }
@@ -2326,10 +2130,7 @@ if (digits.startsWith('44')) return '0' + digits.slice(2);
 return digits;
 }
 
-// Matches the CURRENT SLA-Manager.js "Copy for Lead Checker" export
-// exactly - six columns, no Registration (an earlier draft of this
-// tool's spec still assumed a 7-column Registration-included schema; the
-// export itself changed after that spec was written).
+// Matches the SLA-Manager.js "Copy for Lead Checker" export exactly.
 const EXPECTED_BATCH_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'];
 
 function parseBatchInput(rawText) {
@@ -2426,25 +2227,20 @@ return entries.filter((c) => minutes(c) === newest);
 // ===================================================================
 // NATIONAL CHECK MODE
 //
-// A second batch shape, produced by SLA Manager's Customer Hub morning
-// check: national leads from the last few days, one row per lead. Each
-// customer is found by name, their timeline is read once, and every lead
-// gets a verdict (OK, Re setup, Check or Not found) from the timeline data:
-// Enquiry Max sends, call outcomes, appointments and newer leads.
+// Batch from SLA Manager's Customer Hub morning check, one row per lead.
+// Each customer's timeline is read once and every lead gets a verdict
+// (OK, Re setup, Check or Not found).
 // ===================================================================
 
 const NATIONAL_BATCH_HEADER = ['NationalCheck', 'Customer', 'Reg', 'ActivityID', 'LeadCreated', 'Campaign', 'Dealer', 'LastContact', 'State', 'ExportOutcome', 'Attempts', 'ManualReschedules', 'AutoReschedules', 'ExportHint'];
 const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'Reg'];
-// "Re setup": the lead must be set up again as a new lead. Older exports
-// said "Reset".
+// "Re setup": set up again as a new lead. Older exports said "Reset".
 const RE_SETUP = 'Re setup';
 const NATIONAL_VERDICT_ORDER = [RE_SETUP, 'Check', 'Not found', 'OK'];
 const NATIONAL_ADMIN_OUTCOMES = /test lead|duplicate record|invalid contact details|s&y invalid lead drop|multiple lead enq|gdpr restricted/i;
-// Closing outcomes that leave a national lead with nowhere to go unless it
-// was also sent to a dealership through Enquiry Max.
-// Outcomes where the agent meant to pass the enquiry on. Only these can be
-// covered by a newer lead: an Email Only or no-answer closure still needs a
-// reset even when the customer has a newer lead elsewhere.
+// HANDOVER: outcomes meant to pass the enquiry on; only these can be
+// covered by a newer lead. DEAD_END: closures with nowhere to go unless
+// also sent to a dealership through Enquiry Max.
 const NATIONAL_HANDOVER_OUTCOMES = /sent direct to enquiry max|sent to dealer|closed - other activity/i;
 const NATIONAL_DEAD_END_OUTCOMES = /email only|in market|not interested|just browsing|face to face|test drive|phone call|appointment|wont commit|won't commit|no answer|catch all|defer to site|video|sent direct to enquiry max|sent to dealer|closed - other activity|in progress with dealer|hub reservation|no appointment|no opportunity/i;
 
@@ -2743,11 +2539,9 @@ return item ? Object.assign({}, item, { __row: row }) : null;
 }).filter(Boolean);
 }
 
-// Pure: every lead-created (type 1) item whose time matches the batch's
-// LeadCreated to the minute.
-// The export and the timeline can disagree by a minute (seen on a lead
-// created from a phone call: 14:15 in the export, 14:14 on the timeline),
-// so the closest lead within a couple of minutes is taken.
+// Pure. The export and the timeline can disagree by a minute or so
+// (14:15 vs 14:14 on a phone-call lead), so the closest lead within this
+// many minutes is taken.
 const NATIONAL_CREATED_TOLERANCE_MINUTES = 2;
 
 // Pure. Fallback when no lead's created time matches: the lead whose call
@@ -2806,9 +2600,8 @@ const m = String(item.Description || '').match(/received at\s+(.+?)\s*\.?\s*$/i)
 return m ? m[1].replace(/\s+with\s+EMax confirmation$/i, '').trim() : '';
 }
 
-// One call can cover several of a customer's leads; its timeline entry
-// then lists an outcome per lead but sits under only one of them, so an
-// outcome is only read when the entry has exactly one.
+// A call covering several leads lists an outcome per lead under only one
+// of them, so an outcome is only read when the entry has exactly one.
 function outcomeFromCallDescription(description) {
 const lines = String(description || '').split(/\r?\n/).map((l) => l.trim()).filter((l) => /^sales\s*->/i.test(l));
 if (lines.length !== 1) return null;
@@ -3117,8 +2910,7 @@ window.KonnectLeadChecker.normalizePhone = normalizePhone;
 window.KonnectLeadChecker.parseBatchInput = parseBatchInput;
 
 // ===================================================================
-// Self-test for batch-input parsing and normalization - no DOM
-// dependency.
+// Self-test for batch-input parsing and normalization.
 // ===================================================================
 runSelfTest('batchInputSelfTest', function batchInputSelfTest() {
 const failures = [];
@@ -3156,9 +2948,7 @@ console.info('KonnectLeadChecker batch-input self-test passed (6/6)');
 });
 
 // ===================================================================
-// Self-test for the pure parsing/matching logic above - no DOM
-// dependency, so it can run the same way the classifier's self-test
-// does. Uses the exact example strings confirmed live.
+// Self-test for timeline parsing and matching.
 // ===================================================================
 runSelfTest('timelineSelfTest', function timelineSelfTest() {
 const failures = [];
@@ -3173,11 +2963,7 @@ const now2026 = new Date(2026, 8, 27); // 27 Sep 2026, matches "today" at time o
 check('parseTimelineTimestamp with year', parseTimelineTimestamp('5 May 2023 07:02'), { year: 2023, month: 4, day: 5, hour: 7, minute: 2, yearWasImplicit: false });
 check('parseTimelineTimestamp without year', parseTimelineTimestamp('26 Sep 22:10', now2026), { year: 2026, month: 8, day: 26, hour: 22, minute: 10, yearWasImplicit: true });
 check('parseSlaCreated', parseSlaCreated('Sat, 26 Sep 2026 17:48'), { year: 2026, month: 8, day: 26, hour: 17, minute: 48 });
-// Pending Customers' Last Actioned field (fed into this same column for
-// the call-entry fallback) omits the year for the current calendar
-// year, the same convention timeline entries themselves use - without
-// this branch, every such lead would fail to parse at all before ever
-// reaching the call-entry match.
+// Last Actioned omits the year for the current year.
 check('parseSlaCreated without year (Last Actioned format)', parseSlaCreated('26 Sep 14:18', now2026), { year: 2026, month: 8, day: 26, hour: 14, minute: 18 });
 check('parseSlaCreated with year still wins even when a referenceDate is also given', parseSlaCreated('Sat, 26 Sep 2020 17:48', now2026), { year: 2020, month: 8, day: 26, hour: 17, minute: 48 });
 check('parseSlaCreated accepts the reporting export\'s ISO-like format', parseSlaCreated('2026-09-01 15:20:35'), { year: 2026, month: 8, day: 1, hour: 15, minute: 20 });
@@ -3187,9 +2973,7 @@ check('parseModalDate', parseModalDate('Fri 5th May 2023 07:02'), { year: 2023, 
 check('datetimesMatchAtMinute true', datetimesMatchAtMinute(parseModalDate('Fri 5th May 2023 07:02'), parseTimelineTimestamp('5 May 2023 07:02')), true);
 check('datetimesMatchAtMinute false (different minute)', datetimesMatchAtMinute(parseTimelineTimestamp('5 May 2023 07:02'), parseTimelineTimestamp('5 May 2023 07:03')), false);
 
-// A current-year (no displayed year) timeline entry must only match a
-// target from that SAME year - not an arbitrary different year sharing
-// the same day/month/time.
+// A no-year entry must only match a target from the same year.
 const impliedThisYear = parseTimelineTimestamp('26 Sep 22:10', now2026);
 const targetSameYear = parseSlaCreated('Sat, 26 Sep 2026 22:10');
 const targetDifferentYear = parseSlaCreated('Thu, 26 Sep 2024 22:10');
@@ -3229,14 +3013,9 @@ console.info(`KonnectLeadChecker timeline self-test passed (${12 + REAL_MANAGER_
 
 
 // ===================================================================
-// Self-test against all 119 worked test cases from lead-classification-
-// spec.md v1.10 Section 12 - the spec's own acceptance criteria for
-// the classifier, run automatically on load so a regression here is
-// loud immediately, not discovered later against real customer data.
-// Only checks the resulting TIER (what Section 12's table itself
-// gives) - sub-category/rank/flags are exercised structurally by the
-// pipeline but the spec's own worked examples only commit to a tier
-// number per case, so that's what's asserted here.
+// Self-test against the Section 12 worked cases of
+// lead-classification-spec.md v1.10. Checks the tier only, which is all
+// the spec commits to per case.
 // ===================================================================
 runSelfTest('classifyLeadSelfTest', function classifyLeadSelfTest() {
 const cases = [
@@ -3359,11 +3138,9 @@ const cases = [
 ['T117', 'Hello team. I am looking to join the motability scheme and weighing up mid size SUV options. Is there someone I can speak to about the Jeep Compass?', 'Jeep General', 'R&D', 3],
 ['T118', 'The customer was on the following website page, before completing the valuation: https://example.com/leapmotor/new/offers/c10-0-apr', 'Leapmotor P/X Valuation', 'R&D', 4],
 ['T119', 'The customer was on the following website page, before completing the valuation: https://example.com/leapmotor/new', 'Leapmotor P/X Valuation', 'R&D', 5],
-// Also exercises the new abbreviated-weekday support ("sat", not
-// "saturday").
+// Abbreviated weekday ("sat").
 ['T120', 'Vehicle notes: *£5,584*    2015    42,025 miles    Petrol    Manual    Reg: AB15CDE | Message from customer: Could we please view this car sat afternoon. | URL of vehicle of interest: https://example.com/track/click/x', 'Enquiry - Used', 'AA Cars', 2],
-// Real AA Cars lead, confirms the existing "would like to book a test
-// drive" rule still wins when no day/time is present at all.
+// No day/time: the "would like to book a test drive" rule still wins.
 ['T121', 'Vehicle notes: *£14,129*    2025    4,182 miles    Petrol    Manual    Reg: AB25CDE | Message from customer: I would like to book a test drive for vehicle Vauxhall Corsa 1.2 Turbo GS | Hatchback 5dr Petrol Manual Euro 6 (s/s) (100 ps) (AB25CDE). | URL of vehicle of interest: https://example.com/track/click/x', 'Enquiry - Used', 'AA Cars', 3],
 ['T122', 'Lead ID: 00Qa200000EXAMPLE1 | Marketing Code: Social-Meta-Q4-PCH3 | Customer Comments: PCH Frontera Hybrid GS £339 - https://fb.me/adspreview/facebook/2bqthHxfokGg4VG', 'Vauxhall - Offer Request - New', 'Customer First', 5, 'high'],
 ['T123', "Comment Line #1: Hi, |  | I was hoping to get some information on returning my current vehicle and getting a new vehicle on finance. |  | I've been told that I may be eligible for a no fee agreement whereby I hand my current vehicle back to you.", 'Enquiry - Used', 'Robins & Day Website', 6, 'medium'],
@@ -3378,8 +3155,7 @@ const cases = [
 ['T132', 'Lead ID: 00Qa200000EXAMPLE4 | Marketing Code: PCH Offers Pages | First Desired Schedule: 00:00 | Customer Comments: -', 'Fiat - Offer Request - New', 'Customer First', 4, 'medium'],
 ['T133', 'Lead ID: 00Qa200000EXAMPLE5 | Marketing Code: Google-DemandGen-Model | Customer Comments: -', 'Peugeot - Enquiry - New', 'Customer First', 5, 'medium'],
 ['T134', 'Comment Line #1: The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/citroen/service/offers/citroen-we-care', 'PX Valuation - Used', 'Robins & Day Website', 5, 'medium'],
-// Guard for T124's new aftersales wording: a used-car enquiry asking
-// about service history must stay a sales lead, not Aftersales.
+// A service-history question on a used car stays a sales lead.
 ['T135', 'Comment Line #1: Does this car come with a full service history? Could I view it this Saturday at 11am?', 'Enquiry - Used', 'Robins & Day Website', 1]
 ];
 
@@ -3411,9 +3187,7 @@ console.info(`KonnectLeadChecker classifyLead spec self-test passed (${cases.len
 }
 });
 
-// Section 9.1 dedupe - not covered by the spec's own tier-only test
-// cases above, so exercised separately here against computeDedupeKey
-// and the applyDedupe batch pass.
+// Section 9.1 dedupe, not covered by the tier-only cases above.
 runSelfTest('dedupeSelfTest', function dedupeSelfTest() {
 const failures = [];
 function check(label, actual, expected) {
@@ -3463,8 +3237,7 @@ function check(label, actual, expected) {
 if (actual !== expected) failures.push(`${label}: expected ${expected}, got ${actual}`);
 }
 
-// A genuine CarGurus lead with a blank Source column - only the
-// "(CarGurus IMV: ...)" signature in the notes themselves gives it away.
+// Blank Source: only the "(CarGurus IMV: ...)" signature gives it away.
 const carGurusResult = classifyLead(
 "Message from customer: I am interested in your 2026 Peugeot 3008 1.2 Hybrid 145 Gt Premium 5dr E-dsc6. You can reach me by email at sam.buyer@example.com or phone at 07700 900789. Thank you! (CarGurus IMV: £28,354 / Deal rating: Fair Deal / Is from deliverable listing: No)",
 { campaign: 'Enquiry - Used', source: '' }
@@ -3487,11 +3260,7 @@ console.info('KonnectLeadChecker real-reviewed-leads self-test passed (4/4)');
 });
 
 // ===================================================================
-// Self-test for classifyLead's Step 13 postClosureAction output - being
-// carved out incrementally (per instruction) as each real criterion is
-// confirmed. Scheduled-call is the first one; everything else still
-// falls to the "check" bucket until dealer-contact/rejected signals are
-// confirmed too.
+// Self-test for classifyLead's Step 13 postClosureAction output.
 // ===================================================================
 runSelfTest('postClosureActionSelfTest', function postClosureActionSelfTest() {
 const failures = [];
@@ -3513,16 +3282,10 @@ console.info('KonnectLeadChecker postClosureAction self-test passed (4/4)');
 });
 
 // ===================================================================
-// ORCHESTRATION (the outer per-row/per-customer state machine loop)
-// and UI PANEL - the two pieces this file was still missing. Everything
-// this section calls (search, timeline, modal, classify) is already
-// built and confirmed above; this just wires it together in order.
+// ORCHESTRATION AND UI PANEL
 //
-// Cancellation/pause are cooperative, checked between steps, not true
-// abort-in-flight - none of the built wait functions accept an abort
-// signal, so a Cancel press stops the loop from starting its NEXT step
-// rather than interrupting a wait already underway. Acceptable given
-// waits are bounded (a few seconds at most).
+// Cancel and pause are cooperative, checked between steps: the waits take
+// no abort signal but are bounded to a few seconds.
 // ===================================================================
 
 const SESSION_STORAGE_KEY = 'konnectLeadChecker:session:v1';
@@ -3606,9 +3369,7 @@ group.rows.push(row);
 return groups;
 }
 
-// Finds the earliest group, starting from fromIndex, that ISN'T fully
-// resolved (every row in it already has a result) - i.e. the correct
-// place to resume/retry from.
+// The earliest group from fromIndex with any row still unresolved.
 function firstUnresolvedGroupIndex(groups, results, fromIndex) {
 let groupIndex = fromIndex || 0;
 while (groupIndex < groups.length && groups[groupIndex].rows.every((r) => results[r.inputIndex])) {
@@ -3637,22 +3398,13 @@ function finalizeResult(result, patch) {
 return Object.assign({}, result, patch, { processingTimestamp: new Date().toISOString(), classifierVersion: CLASSIFIER_VERSION });
 }
 
-// Identifies the same LEAD (not just the same customer - groupKey alone
-// would conflate two different leads from one customer) across two
-// separate pastes, so a genuinely-completed result can be carried over
-// rather than reprocessed. campaign/source/created together are the
-// same real-world fields Extract's own "Copy for Lead Checker" export
-// draws from a specific SLA row - two rows sharing all of these really
-// are the same lead, not a coincidence.
+// Identifies the same lead (not just customer) across two pastes, so a
+// completed result can be carried over.
 function rowIdentityKey(row) {
 return [row.groupKey, row.campaign, row.source, row.created, row.activityId || ''].join('||');
 }
 
-// This is a pure starting-state computation - it does not change
-// stepOnce/runLoop's own per-step behavior at all, which is deliberate:
-// the live DOM automation those drive can't be verified without a live
-// browser, so nothing about how a row actually gets processed changes
-// here, only which rows still need to be.
+// Only computes the starting state; how a row is processed is unchanged.
 function newSession(rawInput, previousSession) {
 const parsed = parseBatchInput(rawInput);
 const rows = parsed.rows;
@@ -3680,9 +3432,7 @@ if (carried) results[row.inputIndex] = carried;
 
 const groups = buildProcessingGroups(rows);
 
-// Skip past whole groups that are already fully resolved (every row
-// in them has a carried-over result) - resuming from here behaves
-// identically to having genuinely just finished processing them.
+// Skip groups fully resolved by carried-over results.
 const groupIndex = firstUnresolvedGroupIndex(groups, results, 0);
 
 return {
@@ -3693,17 +3443,9 @@ done: !parsed.headerOk || groupIndex >= groups.length
 };
 }
 
-// Email preferred; phone tried only if there's no email, or as a
-// single fallback after email returns zero records - never repeatedly
-// alternates. A non-empty result set that fails to resolve to a safe,
-// unique customer (CUSTOMER_NOT_LINKED/CUSTOMER_AMBIGUOUS) is terminal
-// for that attempt, not a trigger to try the other identifier.
-// session is optional (standalone/console use doesn't need it) but
-// checked between every awaited sub-step when given, not just once
-// per attempt - Cancel/Clear & Stop are cooperative by necessity (none
-// of the underlying waits carry an abort signal), so this is what
-// keeps that gap to "at most one in-flight wait" rather than
-// "possibly this whole customer's remaining rows".
+// Email first; phone only with no email, or once after email finds no
+// records. A non-unique or unlinked result is terminal for that attempt.
+// session is optional and checked between every awaited sub-step.
 function isCancelled(session) {
 return !!(session && session.cancelled);
 }
@@ -3780,10 +3522,9 @@ if (!attempt.needsLeadProof) return { status: 'FAILED', exception: lastException
 return { status: 'FAILED', exception: lastException };
 }
 
-// Processes exactly one SLA row against the ALREADY-open timeline for
-// its customer - opens each exact-minute candidate one at a time,
-// closes it whether or not it validates, and only classifies once
-// exactly one candidate survives validation.
+// One SLA row against the already-open timeline: opens each exact-minute
+// candidate, closes it either way, and classifies only when exactly one
+// validates.
 async function processLeadRow(row, session) {
 const result = makeResultBase(row);
 const referenceNow = new Date();
@@ -3808,14 +3549,8 @@ if (!scrollResult.loadedNewEntries) break;
 
 if (isCancelled(session)) return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
 if (workingCandidates.length === 0) {
-// Direct match against row.created as a lead's own Created timestamp
-// failed - try it as a Last Actioned value instead, matching a blue
-// call entry first and following that call's own LeadID to its lead's
-// pink entry (see the CALL-ENTRY FALLBACK section above). This is
-// deliberately a fallback, not a separate up-front branch chosen by
-// row type - SLA rows always match directly above and never reach
-// here, so Lead Checker never needs the batch input to declare in
-// advance which kind of row it's looking at.
+// No direct match: try row.created as Last Actioned via the call-entry
+// fallback. SLA rows always match above, so no row type is needed.
 const callFallback = await findLeadCandidateViaCallFallback(row.created, session, referenceNow);
 if (callFallback.status === 'CANCELLED') return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
 if (callFallback.status === 'OK') {
@@ -3840,11 +3575,8 @@ return finalizeResult(result, { status: 'EXCEPTION', exception: `CALL_FALLBACK_$
 }
 
 if (workingCandidates.length === 0) {
-// Logging every loaded entry's raw text and parse result here - even
-// though it's visible on the page and recorded identically to working
-// leads, per the report that exposed this gap - is what actually shows
-// whether the match failed on a genuine timestamp mismatch or on a
-// raw-text shape this parser doesn't recognize.
+// Log every loaded entry to tell a timestamp mismatch from an
+// unrecognised raw-text shape.
 debugLog('[KonnectLeadChecker] TARGET_CREATED_DATETIME_NOT_FOUND for row.created=', JSON.stringify(row.created), 'parsed target=', target, '- entries seen:', getLoadedLeadEntries().map((entryRow) => {
 const raw = extractTimelineTimestamp(entryRow);
 return { raw, parsed: raw ? parseTimelineTimestamp(raw, referenceNow) : null };
@@ -3889,9 +3621,7 @@ continue;
 debugLog('[KonnectLeadChecker] clicking candidate at', candidate.rawTimestamp, 'visibleLeadId=', candidate.leadId);
 const modalState = await openLeadModal(candidate.row);
 if (isCancelled(session)) {
-// The modal may have opened right as Cancel/Clear & Stop was
-// pressed - close it before giving up, so it isn't left open and
-// unattended once this stops.
+// The modal may have opened as Cancel was pressed: close it first.
 if (modalState) await closeLeadModal();
 candidateFailures.push('CANCELLED');
 break;
@@ -3901,14 +3631,8 @@ debugLog('[KonnectLeadChecker] modal did not become ready for candidate at', can
 candidateFailures.push('LEAD_MODAL_TIMEOUT');
 continue;
 }
-// Empty Date/Source in the extracted fields (seen in real testing)
-// could mean either a genuine modal with an unexpected internal
-// structure, or - given no modal is visibly appearing on screen at
-// all per direct observation - that this matched some other stale or
-// hidden element that merely satisfies the readiness selectors
-// without being the real, freshly-opened lead modal. Logging the
-// actual matched element (not just the fields we tried to pull out of
-// it) removes the guesswork either way.
+// Empty Date/Source has been seen; logging the matched element shows
+// whether it is a stale or hidden lookalike of the modal.
 debugLog('[KonnectLeadChecker] modal element matched:', modalState.modal.className, '| panel used:', modalState.panel === modalState.modal ? '(fell back to whole modal - no .tab-pane.active found)' : modalState.panel.className, '| visible rect:', JSON.stringify(modalState.modal.getBoundingClientRect()));
 debugLog('[KonnectLeadChecker] modal panel outerHTML (first 1500 chars):', modalState.panel.outerHTML.slice(0, 1500));
 const panelFields = extractLeadPanelFields(modalState.panel);
@@ -3925,11 +3649,8 @@ validated.push({ candidate, panelFields, initialNotes, followUp, warnings: valid
 } else {
 debugLog('[KonnectLeadChecker] validation rejected candidate:', validation.reason);
 candidateFailures.push('LEAD_VALIDATION_FAILED');
-// Both the candidate's own timestamp and the row's original Created/
-// Last-Actioned value are shown, not just one - a call-fallback match
-// legitimately has different values for each (the lead's own time vs
-// the call's), and collapsing them to one label would hide exactly the
-// distinction that matters when diagnosing a rejection.
+// Both the candidate's time and the row's Created/Last Actioned are shown,
+// since a call-fallback match differs between them.
 candidateFailureDetails.push(`${validation.reason} (modal Date="${panelFields.date || ''}", candidate timeline entry="${candidate.rawTimestamp || ''}", modal Source="${panelFields.source || ''}", SLA/input Created="${row.created}", SLA Source="${row.source}")`);
 }
 await closeLeadModal();
@@ -3963,20 +3684,10 @@ if (initialNotes === '') {
 return finalizeResult(result, { status: 'EXCEPTION', exception: 'INITIAL_NOTES_EMPTY', ...auditPatch });
 }
 
-// Safe for existing SLA rows: row.source is already reliable there, so
-// this only ever changes behavior when it was otherwise going to
-// classify against nothing. campaign deliberately does NOT get the same
-// fallback - panelFields.campaign (extractCampaignField) is a completely
-// different concept from row.campaign, not just a different format of
-// the same value (see validateLeadCandidate's own comment on this) -
-// falling back to it would feed the classifier the lead's marketing form
-// name where it expects Konnect's SLA-queue categorization, a wrong
-// value, not a missing one.
+// Source falls back to the modal; campaign does not, because the modal
+// Campaign is the marketing form name, not Konnect's SLA categorisation.
 const resolvedSource = row.source || panelFields.source;
-// Only scanned for Post Closure Processing rows - classifyLead's own
-// Step 13 is the only place this matters, and getLoadedCallEntries scans
-// the customer's whole currently-loaded timeline, no reason to pay for
-// that on every other row.
+// Call entries are only scanned for Post Closure rows (Step 13).
 const isPostClosureLead = String(resolvedSource || '').toLowerCase() === 'post closure processing';
 const decision = isPostClosureLead
 ? postClosureSendBackReason(candidate.leadId, { sent: sentThroughNotes(followUp), team: initialNotes })
@@ -3984,11 +3695,8 @@ const decision = isPostClosureLead
 const alreadyEngagedCallEntry = !!decision.reason;
 const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry });
 if (classification.confidence === 'low') {
-// tier/subCategory/flags/reason/confidence are stored even though
-// status stays EXCEPTION (never auto-trusted/applied) - so a human
-// reviewing it in the Needs Review section, or anyone diagnosing it
-// afterward, can see the classifier's own tentative reasoning without
-// re-deriving it by hand.
+// Tentative tier and reasoning are kept on an EXCEPTION so a reviewer can
+// see them; it is never auto-applied.
 return finalizeResult(result, {
 status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', initialNotes,
 source: classification.source,
@@ -4167,10 +3875,8 @@ session.rowInGroupIndex = 0;
 if (session.groupIndex >= session.groups.length) session.done = true;
 }
 
-// Reuses newSession's own group-resume-skip logic (rewind groupIndex to
-// the earliest group with any unresolved row) rather than a separate
-// mechanism, since "some rows in an already-processed group need
-// reprocessing" is exactly what that logic already handles correctly.
+// Reuses newSession's resume logic: rewind groupIndex to the earliest
+// group with any unresolved row.
 function retryExceptions(session) {
 session.rows.forEach((row) => {
 if (row.status === 'INVALID_INPUT') return;
@@ -4188,12 +3894,8 @@ session.cancelled = false;
 session.done = groupIndex >= session.groups.length;
 }
 
-// Ephemeral, in-memory only (not persisted to session/localStorage) -
-// purely a display aid so the status panel shows what just finished
-// instead of only the current in-flight "Searching for X..." line,
-// which changes too fast to read during a fast batch. Capped at 5;
-// reset whenever a session is cleared, in the two btnClear/
-// btnClearStop handlers.
+// In memory only: shows what just finished, since the live status line
+// changes too fast to read. Capped at 5, reset when a session is cleared.
 let recentCompletions = [];
 function recordResult(session, inputIndex, result) {
 session.results[inputIndex] = result;
@@ -4203,14 +3905,8 @@ if (recentCompletions.length > 5) recentCompletions.length = 5;
 
 async function stepOnce(session, uiHandle) {
 if (session.done || session.cancelled) return false;
-// Re-checked on EVERY call, not just once at session creation (that
-// happens too, in newSession, via this exact same helper) - without
-// this, retryExceptions rewinding groupIndex back to some EARLIER group
-// (to reprocess a scattered exception) would then have
-// advanceToNextGroup's own blind +1 sequential advance march forward
-// through every group after it too, reprocessing already-good results
-// all the way to the end of the batch instead of stopping once caught
-// back up.
+// Re-checked on every call: after retryExceptions rewinds to an earlier
+// group, a plain +1 advance would reprocess every good group after it.
 session.groupIndex = firstUnresolvedGroupIndex(session.groups, session.results, session.groupIndex);
 if (session.groupIndex >= session.groups.length) { session.done = true; return false; }
 
@@ -4260,15 +3956,9 @@ try {
 while (!session.done && !session.cancelled) {
 if (session.paused) { await sleep(200); continue; }
 if (lcNotices.stopped) { lcNotices.stopped = null; notifyNoticesChanged(); }
-// Every DOM wait a step depends on (waitForModal, waitForTimelineReady,
-// etc) is setTimeout/MutationObserver-based, so a throttled tab risks a
-// wait timing out and misreading a lead as failed purely because of
-// throttling, not a real automation problem.
+// Waits are timer/observer based, so a throttled background tab could time
+// out and misread a lead as failed.
 if (document.hidden) { uiHandle.setState('Paused: tab is in the background'); await sleep(200); continue; }
-// Same "(N left)" countdown SLA-Manager.js's own overlay shows during
-// batch ingestion (setBadgeProgress there) - showPageFlashOverlay just
-// updates the existing overlay's text when already showing, so this
-// is cheap to call every iteration.
 const remaining = session.rows.length - Object.keys(session.results).length;
 showPageFlashOverlay(`Checking leads… (${remaining} left)`);
 const advanced = await stepOnce(session, uiHandle);
@@ -4326,14 +4016,9 @@ compareByBookingPriority(
 ) > 0,
 true);
 
-// The exact contract SLA-Manager.js's "Classify Lead Checker
-// results" panel parses (LEAD_CHECKER_IMPORT_HEADER there) - pinned
-// down explicitly since the two files can't share a module and would
-// otherwise only find out they'd drifted apart by failing silently on
-// a real paste. Extract now trusts these columns directly instead of
-// re-classifying (see its own lead-checker-import self-test), so this
-// check also confirms the actual computed tier/subCategory/rank land
-// in the right columns, not just that the header row's shape is right.
+// The contract SLA-Manager.js's import parses (LEAD_CHECKER_IMPORT_HEADER).
+// The two files cannot share a module, so this pins the header and that
+// tier/subCategory/rank land in the right columns.
 const rawExtractTsv = buildRawNotesTsvForExtract(fakeSession);
 const rawExtractLines = rawExtractTsv.split('\n');
 check('raw Extract export header shape', rawExtractLines[0], 'Name\tPhone\tEmail\tSource\tCampaign\tCreated\tInitialNotes\tTier\tTierName\tSubCategory\tSubRank\tFlags\tConfidence\tReason\tDedupeKey\tPostClosureAction\tPriorityRank\tPostClosureReason\tPostClosureEvidence');
@@ -4374,10 +4059,8 @@ const originalDee = { name: 'Dee', status: 'EXCEPTION', exception: 'NO_SEARCH_ID
 const fakeSession = {
 rows: parsed.rows,
 groups,
-// isRunning-but-paused is the real scenario this has to work
-// correctly under (a live runLoop idling on session.paused, still
-// holding this exact object) - included here so mutating in place,
-// not returning a new object, is actually exercised.
+// Paused with a live runLoop holding this object, so mutation in place is
+// what gets tested.
 groupIndex: 3, done: true, cancelled: false, paused: true,
 results: {
 0: originalAlice,
@@ -4398,12 +4081,8 @@ check('done recalculated as false - there is work left', fakeSession.done, false
 check('cancelled reset to false', fakeSession.cancelled, false);
 check('paused is left alone - retrying doesn\'t itself resume a paused run', fakeSession.paused, true);
 
-// Root cause was stepOnce only ever skipping resolved groups ONCE, at
-// session creation - after retryExceptions rewinds groupIndex back to
-// Bob's group (index 1), advanceToNextGroup's own blind +1 would move on
-// to Carol's group (index 2) next and stepOnce would reprocess it too,
-// even though results[2] (Carol) was never cleared and is still
-// perfectly valid.
+// After rewinding to Bob's group, Carol's still-valid result must not be
+// reprocessed.
 fakeSession.results[1] = { name: 'Bob', status: 'CLASSIFIED', tier: 4, tierName: 'WARM ENQUIRY' };
 const nextIndex = firstUnresolvedGroupIndex(fakeSession.groups, fakeSession.results, 2);
 check('Already-resolved Carol\'s group (index 2) is skipped, not reprocessed, once Bob\'s retry is done', nextIndex, 3);
@@ -4432,14 +4111,10 @@ function hasRetryableExceptions(s) {
 return retryableExceptionCount(s) > 0;
 }
 
-// Grouped into run controls / maintenance / handoff, each button now
-// only shown when it would actually do something, so at most 2-4 are
-// visible at once instead of a static 7.
+// Each button shows only when it would do something.
 function computeButtonVisibility(s, loopAlive) {
 const hasSession = !!s;
-// isRunning alone stays true for the whole time a run is paused too
-// (runLoop just idles on its own poll, see runLoop's own comment) -
-// "actively running" means mid-step-and-unpaused specifically.
+// isRunning stays true while paused; "running" means mid-step and unpaused.
 const running = loopAlive && !(hasSession && s.paused);
 const doneOrNoSession = !hasSession || s.done;
 const hasResults = hasSession && orderedResults(s).some((r) => r.status === 'CLASSIFIED' || r.status === 'EXCEPTION');
@@ -4453,10 +4128,7 @@ start,
 pauseResume,
 processNext,
 cancel,
-// The container is only ever empty (Done state) once none of its own
-// buttons have anything to show - deriving it from them, rather than
-// a separate ad-hoc condition, is what keeps Start visible on a fresh
-// no-session page load instead of being hidden along with it.
+// Derived from its buttons so Start stays visible on a fresh page load.
 runControls: start || pauseResume || processNext || cancel,
 retryExceptions: retryable,
 clear: hasSession,
@@ -4466,19 +4138,12 @@ handoffControls: hasResults
 };
 }
 
-// One color per tier (6, was 4 categories) - same palette family SLA-
-// Extract.js's own leadCheckerImportCategoryColor uses, extended for
-// the new tier count, so a lead reads the same color whichever tool
-// it's looked at in.
-// Kept in lockstep with SLA-Manager.js's LEAD_CHECKER_TIER_COLORS (see
-// that file's comment) - tier 2 moved off '#d97706' since it collided
-// with postClosureColor's "check" amber and with SLA's urgency-amber on
-// the same card; ramp shifted up a slot to clear every locked/urgency hex.
+// One colour per tier, kept in lockstep with SLA-Manager.js
+// LEAD_CHECKER_TIER_COLORS. Tier 2 avoids '#d97706', the Post Closure
+// "check" and SLA urgency amber.
 const TIER_COLORS = { 1: '#059669', 2: '#2563eb', 3: '#7c3aed', 4: '#9333ea', 5: '#64748b', 6: '#94a3b8' };
 
-// Shared by categoryColor/categoryKey/ categoryBadge and Extract's own
-// postClosureActionColor (kept in lockstep the same way TIER_COLORS
-// already is) so a lead reads the same way wherever it's looked at.
+// Kept in lockstep with SLA-Manager.js's postClosureActionColor.
 function postClosureColor(action) {
 return action === 'send back through' ? '#0891b2' : '#d97706';
 }
@@ -4526,13 +4191,8 @@ if (r.postClosureAction) return postClosureColor(r.postClosureAction);
 return TIER_COLORS[r.tier] || '#1e293b';
 }
 
-// Stable key for both the stats bar and the category filter - EXCEPTION
-// rows have no tier at all yet (they have r.exception instead), so
-// this gives them one consistent key rather than leaving them grouped
-// under whatever raw exception code happens to be on each one.
-// Post Closure leads get their own two keys, checked before tierName,
-// for the same reason categoryBadge below leads with postClosureAction -
-// tier isn't what should group/filter these.
+// Stable key for the stats bar and filter. Exceptions share one key; Post
+// Closure leads get their own two, ahead of tier.
 function categoryKey(r) {
 if (!r) return 'PENDING';
 if (r.exception) return 'EXCEPTION';
@@ -4540,11 +4200,8 @@ if (r.postClosureAction) return r.postClosureAction === 'send back through' ? 'P
 return r.tierName || 'PENDING';
 }
 
-// Split into a short primary pill + a separately-styled, muted secondary
-// label instead of one long concatenated string ("WARM ENQUIRY - Quote /
-// Offer Request: Detailed") - the single pill read as one dense block
-// next to the customer name, hurting scannability in the collapsed
-// summary row.
+// Short primary pill plus a muted secondary label, which scans better than
+// one long string.
 const EXCEPTION_LABELS = {
 POST_CLOSURE_LEAD_NOT_FOUND: 'No Post Closure lead on this customer',
 CLASSIFICATION_REVIEW_REQUIRED: 'Needs review',
@@ -4601,9 +4258,7 @@ const subcat = r.subCategory ? `<span class="subcat-label" title="${escapeHtmlFo
 return tierPill + subcat;
 }
 
-// Returns null specifically while actively stepping (isRunning && not
-// paused), since a live setState call already owns the label in that
-// state and this must not stomp it with a generic one between steps.
+// null while actively stepping, since setState owns the label then.
 function deriveRestStateLabel(s, loopAlive) {
 if (!s) return 'Idle';
 if (loopAlive && !s.paused) return null;
@@ -4613,17 +4268,10 @@ if (s.done) return 'Done';
 return 'Idle';
 }
 
-// Section 2's own sort order: tier ASC, then subRank ASC, then (for
-// Tier 1-2) appointment date ASC, then lead received time ASC. The
-// single-number PriorityRank (tier*100 + subRank) carries the primary
-// two keys directly - it's what gets exported to Extract, which sorts
-// on it as a plain number (see classifyLeadCheckerImportRows there).
-// The appointment-date tie-break isn't implemented (would need a real
-// date VALUE extracted from free text, not just the yes/no hasDayMention/
-// hasClockTime checks the classifier itself uses) - a known
-// simplification, not a silent gap: same-tier/same-subRank leads fall
-// straight to the `created` (received time) tie-break below instead,
-// which is the spec's own final tie-break anyway.
+// Section 2 order: tier, subRank, (Tier 1-2) appointment date, received
+// time. PriorityRank = tier*100 + subRank is what SLA-Manager.js sorts on.
+// The appointment-date tie-break is not implemented (no parsed date value),
+// so ties fall to received time.
 function bookingPriorityRankValue(result) {
 if (!result || result.status !== 'CLASSIFIED') return 700;
 const tier = result.tier || 6;
@@ -4631,9 +4279,7 @@ const subRank = result.subRank != null ? result.subRank : 99;
 return tier * 100 + subRank;
 }
 
-// Full comparator (used for the panel's own within-tier ordering,
-// where real result objects - not just the flattened export number -
-// are available to tie-break on `created`).
+// Full comparator, tie-breaking on `created`.
 function compareByBookingPriority(a, b) {
 const diff = bookingPriorityRankValue(a) - bookingPriorityRankValue(b);
 if (diff !== 0) return diff;
@@ -4647,26 +4293,15 @@ return 0;
 }
 
 // ===================================================================
-// NEEDS REVIEW - manual triage for low-confidence classifications
-// (classifyLead's own confidence:'low' already refuses to guess rather
-// than risk a wrong auto-classification - see its own fallback step -
-// and processLeadRow turns that into this one specific EXCEPTION
-// rather than genuinely failing, since the Initial Notes WERE read
-// successfully; there's just no confident rule for them yet). An
-// easier way to confirm, across many leads at once, which of the 6
-// tiers one of these should actually go into, with a free-text sub-
-// category/reason - captured specifically so those decisions can be
-// handed back as real examples to extend classifyLead's own rules
-// with, the same way every rule in this file originated from a real
-// reported lead.
+// NEEDS REVIEW
+//
+// Manual triage for low-confidence results (notes read, but no confident
+// rule). Decisions are exported as examples for new classifier rules.
 // ===================================================================
 
-// 6 tiers (was 4 fixed categories) - matches lead-classification-
-// spec.md v1.10's own tier names, in tier order.
 const REVIEW_TIER_OPTIONS = [1, 2, 3, 4, 5, 6];
 
-// These always go to their own Post Closure section in the tier list
-// instead (see render()'s virtual -2/-1 tier keys).
+// These go to their own Post Closure section instead.
 function isNeedsReview(r) {
 return !!(r && r.status === 'EXCEPTION' && r.exception === 'CLASSIFICATION_REVIEW_REQUIRED' && !r.postClosureAction);
 }
@@ -4715,11 +4350,7 @@ function tsvCell(value) {
 return String(value == null ? '' : value).replace(/\t/g, ' ').replace(/\r?\n/g, ' | ');
 }
 
-// No name/phone/email - deliberately just the content that's actually
-// useful for extending the classifier's rules (the real notes text,
-// what a human decided it meant, and the campaign/source context those
-// rules dispatch on), not the customer's personal details, which have
-// no bearing on what a future rule should match against.
+// No personal details: only what a future rule would match on.
 function buildManualReviewDecisionsExport(session) {
 const rows = orderedResults(session).filter((r) => r.manualOverride);
 const header = ['InitialNotes', 'Tier', 'TierName', 'SubCategory', 'Reason', 'Campaign', 'Source', 'Created', 'Flags', 'ClassifierTier', 'ClassifierSubCategory', 'ClassifierConfidence', 'ClassifierReason', 'Conflict'].join('\t');
@@ -4742,8 +4373,7 @@ conflicts.join('; ')
 return [header, ...lines].join('\n');
 }
 
-// Feeds the reverse handoff into SLA-Manager.js.
-// "send back through: Email only" when a reason is known.
+// For the handoff back into SLA-Manager.js, e.g. "send back through: Email only".
 function postClosureLabel(r) {
 return r.postClosureReason ? `${r.postClosureAction}: ${r.postClosureReason}` : r.postClosureAction;
 }
@@ -4783,11 +4413,7 @@ window.KonnectLeadChecker.compareByBookingPriority = compareByBookingPriority;
 window.KonnectLeadChecker.buildRawNotesTsvForExtract = buildRawNotesTsvForExtract;
 
 // ===================================================================
-// Self-test for computeButtonVisibility - the button row used to be
-// one flat always-visible row of 7 regardless of state; this locks in
-// which of them should actually be shown for each real session state
-// (no session, running, paused with/without retryable exceptions,
-// done) without needing a real DOM.
+// Self-test for computeButtonVisibility in each session state.
 // ===================================================================
 runSelfTest('buttonVisibilitySelfTest', function buttonVisibilitySelfTest() {
 const failures = [];
@@ -4866,10 +4492,8 @@ console.info('KonnectLeadChecker button-visibility self-test passed (7/7)');
 });
 
 // ===================================================================
-// Self-test for the Post Closure carve-out's card/grouping display -
-// categoryColor/categoryKey/categoryBadge must all treat postClosureAction
-// as the primary signal (per instruction: tier isn't what matters for
-// these leads), ahead of the tier they'd otherwise group/colour under.
+// Self-test for Post Closure display: postClosureAction, not tier, drives
+// colour, key and badge.
 // ===================================================================
 runSelfTest('postClosureDisplaySelfTest', function postClosureDisplaySelfTest() {
 const failures = [];
@@ -4903,12 +4527,8 @@ console.info('KonnectLeadChecker postClosureDisplay self-test passed (9/9)');
 });
 
 // ===================================================================
-// Self-test for deriveRestStateLabel - reopening the panel on a
-// restored session left "State" stuck on its hardcoded "Idle" HTML
-// placeholder forever (render() never touched it, only setState did,
-// and nothing calls setState on a plain reopen) - confirmed live via a
-// 42/42-resolved session still reading "State: Idle" until a button
-// was clicked.
+// Self-test for deriveRestStateLabel: a reopened panel must not stay on
+// its "Idle" placeholder.
 // ===================================================================
 runSelfTest('deriveRestStateLabelSelfTest', function deriveRestStateLabelSelfTest() {
 const failures = [];
@@ -4932,12 +4552,7 @@ console.info('KonnectLeadChecker deriveRestStateLabel self-test passed (7/7)');
 });
 
 // ===================================================================
-// Self-test for newSession's merge behavior (pasting a grown batch over
-// a session already in progress) - the actual improvement this was
-// added for: new leads streaming in from Extract shouldn't force
-// redoing already-completed work. Kept separate from the orchestration
-// self-test above since this is specifically about session-merge
-// semantics, not the search/classify pipeline itself.
+// Self-test for newSession merging a grown batch over one in progress.
 // ===================================================================
 runSelfTest('sessionMergeSelfTest', function sessionMergeSelfTest() {
 const failures = [];
@@ -4953,13 +4568,11 @@ const batch1 = [
 'Bob\t07000000000\t\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 20:05'
 ].join('\n');
 const session1 = newSession(batch1);
-// Simulate both rows having genuinely finished processing, same shape
-// stepOnce itself produces.
+// Both rows finished, in the shape stepOnce produces.
 session1.results[0] = finalizeResult(makeResultBase(session1.rows[0]), { status: 'CLASSIFIED', tier: 2, tierName: 'DATE ONLY', initialNotes: 'Customer Comments: -' });
 session1.results[1] = finalizeResult(makeResultBase(session1.rows[1]), { status: 'CLASSIFIED', tier: 1, tierName: 'CONFIRMED DATE & TIME', initialNotes: 'Customer Comments: 3pm works' });
 
-// batch2 = the exact same two rows (as a real re-export from Extract
-// would produce, byte-for-byte) plus one genuinely new one.
+// The same two rows (a re-export) plus one new one.
 const batch2 = [
 'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
 'Alice\t\talice@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 18:05',
@@ -4974,9 +4587,7 @@ check('Carol (genuinely new) has no result yet', session2.results[2], undefined)
 check('Cursor resumes past both fully-resolved groups, landing on Carol\'s', session2.groups[session2.groupIndex].rows[0].name, 'Carol');
 check('Session is not marked done - Carol still needs processing', session2.done, false);
 
-// A paste with NOTHING carried over (genuinely unrelated batch) must
-// still behave exactly like the pre-merge newSession(rawInput) always
-// did - groupIndex 0, nothing pre-resolved.
+// An unrelated paste carries nothing over.
 const unrelatedBatch = [
 'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
 'Dee\t\tdee@example.com\tCustomer First\tCitroen - Enquiry - New\tSat, 26 Sep 2026 22:05'
@@ -4985,8 +4596,7 @@ const session3 = newSession(unrelatedBatch, session1);
 check('Unrelated batch: no carried-over results', session3.results[0], undefined);
 check('Unrelated batch: cursor starts at the beginning as normal', session3.groupIndex, 0);
 
-// Re-pasting the exact same fully-completed batch (nothing new at all)
-// must mark the session done immediately, not require a wasted step.
+// Re-pasting a completed batch is done immediately.
 const session4 = newSession(batch1, session1);
 check('Re-pasting a fully-completed batch is immediately done', session4.done, true);
 
@@ -5130,14 +4740,10 @@ console.info('KonnectLeadChecker needs-review self-test passed (20/20)');
 });
 
 // ===================================================================
-// PAGE FLASH OVERLAY - same pattern as SLA-Manager.js's own
-// showPageFlashOverlay/hidePageFlashOverlay (Refreshing leads/Clearing
-// the queue/Morning Checks there). Konnect Live's own pages re-
-// rendering mid-navigation while searching/opening a customer/opening
-// a lead modal looks exactly like the same "glitching" that overlay
-// was built to hide, just on a different site. Lower z-index than the
-// panel host (2147483000) so the floating panel itself - and its own
-// live progress state - stays visible on top of the dimmed page.
+// PAGE FLASH OVERLAY
+//
+// Hides Konnect Live re-rendering mid-navigation. Sits below the panel
+// host (2147483000) so the panel stays visible on top.
 // ===================================================================
 
 const KLC_PAGE_FLASH_OVERLAY_ID = '_klcPageFlashOverlay';
@@ -5175,12 +4781,8 @@ klcPageFlashOverlayPrevOverflow = null;
 }
 
 // ===================================================================
-// ICONS - ported verbatim from SLA-Manager.js's own redesign (small
-// inline-SVG line icons, Lucide/Feather-style: 24x24 viewBox, stroke-
-// based, currentColor) so this panel matches the rest of the toolset
-// instead of the plain-text/emoji buttons it had before. Only the icons
-// this panel actually uses are included, not the full set - extend as
-// needed rather than porting everything preemptively.
+// ICONS: inline SVG line icons matching SLA-Manager.js. Only the ones
+// this panel uses.
 // ===================================================================
 
 const ICONS = {
@@ -5202,10 +4804,7 @@ function svgIcon(name, size, extraStyle) {
 return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;${extraStyle || ''}">${ICONS[name]}</svg>`;
 }
 
-// Used only for the true full-panel empty state (no session started at
-// all) - the other two .empty-state strings (no results yet mid-session,
-// no results match the current filter) stay as compact one-liners since
-// they're transient/contextual, not "there is nothing here at all."
+// Only for the full empty state (no session at all).
 function renderZeroState(iconName, title, subtitle) {
 return `<div style="padding: 40px 16px; text-align: center;">
 <div style="width: 56px; height: 56px; border-radius: 50%; background: var(--wb-control); display: flex; align-items: center; justify-content: center; margin: 0 auto 14px;">
@@ -5216,21 +4815,15 @@ ${svgIcon(iconName, 24, ' stroke-width: 1.5; color: var(--wb-muted);')}
 </div>`;
 }
 
-// A ".chev"-classed chevron for the <details> summary rows below - kept
-// separate from svgIcon (whose third argument is raw CSS text appended
-// to its own style attribute, not a class) since the rotation here is
-// driven by a plain CSS "parent:not([open]) .chev" rule, not a JS-
-// computed transform - these are native <details> elements with no
-// toggle listener/re-render of their own, so there's no "collapsed"
-// boolean to pass in the way SLA-Manager.js's own chevronIcon needs one.
+// Rotated by a CSS ":not([open]) .chev" rule, since native <details> has no
+// collapsed state to pass in.
 function detailsChevronIcon() {
 return `<svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;">${ICONS.chevron}</svg>`;
 }
 
 // ===================================================================
-// UI PANEL - Shadow DOM, draggable, per the spec's interface list.
-// Only initializes in a real browser (guarded below) so the self-tests
-// above still run cleanly under a plain Node harness.
+// UI PANEL: Shadow DOM, draggable. Browser only, so the self-tests run
+// under Node.
 // ===================================================================
 
 // ===================================================================
@@ -5431,22 +5024,15 @@ else console.info('KonnectLeadChecker evaluate-national self-test passed');
 const KLC_NAV_ITEM_ID = '_klcNavItem';
 const KLC_BADGE_ID = '_klcBadge';
 
-// Reusing that exact shape, plus the page's own text-konnect-live class
-// for the icon color (rather than hardcoding its hex), is what makes
-// this actually blend in as "one more of the page's own nav items"
-// instead of a generic badge that happens to sit nearby - same intent as
-// SLA-Manager.js's own createBadge() docking into Konnect Manager's
-// navbar, just matched to Konnect Live's real markup.
+// Matches Konnect Live's own nav item markup and text-konnect-live colour
+// so it blends in as one of its icons.
 function buildBadge() {
 document.getElementById(KLC_NAV_ITEM_ID)?.remove();
 document.getElementById(KLC_BADGE_ID)?.remove();
 
 const nav = document.querySelector('nav.navbar.navbar-inverse.navbar-fixed-top');
-// Requiring at least one of the real module <ul class="nav navbar-right
-// top-nav"> siblings to already be present confirms this is genuinely
-// the authenticated app's nav, not a same-classed lookalike - same fix
-// shape as SLA-Manager.js's own createBadge() matching on "Client
-// Config" content rather than the shared "nav navbar-nav" class alone.
+// A module nav sibling confirms this is the real app nav, not a
+// same-classed lookalike.
 const hasModuleIcons = nav && !!nav.querySelector('ul.nav.navbar-right.top-nav');
 if (nav && hasModuleIcons) {
 const ul = document.createElement('ul');
@@ -5466,10 +5052,8 @@ a.appendChild(icon);
 a.appendChild(label);
 li.appendChild(a);
 ul.appendChild(li);
-// A float can't rise above a preceding block-level box, only avoid
-// content that comes after it, so appending there put this on its own
-// row starting below that div's full height, instead of alongside the
-// other icons at all.
+// Inserted before .navbar-collapse: a float cannot rise above a preceding
+// block, so appending put it on its own row.
 const collapseDiv = nav.querySelector('.navbar-collapse');
 if (collapseDiv) nav.insertBefore(ul, collapseDiv); else nav.appendChild(ul);
 return {
@@ -5520,9 +5104,7 @@ badge.style.fontSize = '18px';
 };
 }
 
-// Idle (no session, or a finished one) always falls back to the plain
-// idle label/icon - the number only means something while there's
-// still work left, same as SLA-Manager.js's own setBadgeProgress.
+// The number only shows while work is left.
 function updateBadgeProgress(badge, ordered, session) {
 if (!badge) return;
 if (!session || ordered.length === 0 || session.done) {
@@ -5534,9 +5116,7 @@ badge.setProgress(remaining > 0 ? remaining : null);
 }
 
 function buildPanelMarkup() {
-// Removing any existing host by ID unconditionally, right before
-// creating a fresh one, makes this correct regardless of why the guard
-// might be wrong, not just when it happens to be right.
+// Removed by ID right before creating a fresh host, whatever the guard says.
 document.getElementById('_klcPanelHost')?.remove();
 const host = document.createElement('div');
 host.id = '_klcPanelHost';
@@ -5732,7 +5312,7 @@ function escapeHtmlForUi(value) {
 return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// Trying the synchronous path first fixes it.
+// Synchronous execCommand first; the async Clipboard API can be blocked.
 function copyTextToClipboard(text) {
 try {
 const textarea = document.createElement('textarea');
@@ -5755,11 +5335,7 @@ return navigator.clipboard && navigator.clipboard.writeText
 
 function showButtonFeedback(button, text, isError) {
 if (!button) return;
-// innerHTML, not textContent - several of these buttons carry an icon
-// (svgIcon output) alongside their label; textContent would silently
-// strip it out permanently the first time feedback fires, since
-// setting .textContent replaces ALL child content, icon included, not
-// just the text.
+// innerHTML, not textContent, so the icon survives.
 const original = button.innerHTML;
 const originalColor = button.style.color;
 button.textContent = text;
@@ -5840,10 +5416,8 @@ const pauseResumeBtn = root.getElementById('btnPauseResume');
 const topSectionEl = root.getElementById('topSection');
 const btnClearPasteStartEl = root.getElementById('btnClearPasteStart');
 
-// This combined button lives outside topSection so it survives the
-// collapse, and only shows up once collapsed - while topSection is open,
-// the existing separate Paste/ Clear buttons inside it already cover the
-// same ground.
+// Lives outside topSection so it survives the collapse; only shown when
+// collapsed.
 function syncClearPasteStartVisibility() {
 btnClearPasteStartEl.classList.toggle('hidden', topSectionEl.open);
 }
@@ -5862,8 +5436,7 @@ let badge = buildBadge();
 badge.show();
 wireBadgeClick();
 
-// Angular has no knowledge of a manually-injected element, so its own
-// re-renders of the <nav> it owns don't preserve it.
+// Angular re-renders of the nav don't preserve an injected element.
 function ensureBadgeAttached() {
 if (document.getElementById(KLC_NAV_ITEM_ID)) return;
 // A floating button made before Konnect's menu bar existed moves into the
@@ -5877,22 +5450,13 @@ wireBadgeClick();
 if (panelCurrentlyOpen) badge.hide(); else badge.show();
 }
 
-// Category filter toggled by clicking a stat pill - empty set means "no
-// filter, show everything" (also true again once every category has
-// been individually re-toggled back on, per containsAny-style set
-// semantics below), not "show nothing". Name filter is plain live text
-// match, kept as a local variable rather than in `session`/localStorage
-// since it's a transient view concern, not something worth persisting
-// across a panel reopen.
+// Empty set means no filter. The name filter is transient, so not persisted.
 const activeCategoryFilters = new Set();
 let nameFilterText = '';
 
 let session = loadStoredSession();
 if (session) pasteBox.value = session.rawInput || '';
-// A restored session (page reload mid-batch) should start with the
-// same reclaimed space startProcessing's own collapse gives a run that
-// begins in this tab - otherwise reopening on an in-progress batch
-// goes right back to the textarea/buttons eating most of the panel.
+// A restored session starts collapsed, as a fresh run does.
 if (session && session.rows && session.rows.length > 0) {
 topSectionEl.open = false;
 syncClearPasteStartVisibility();
@@ -5914,10 +5478,7 @@ if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
 return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-// Primary visual anchor for a lead row, matching SLA-Manager.js's
-// avatar-circle pattern - color is categoryColor(r), the same single
-// status color categoryBadge already uses for its dominant pill, so
-// the avatar and the badge always agree.
+// Avatar uses categoryColor(r), so it always agrees with the badge.
 function renderAvatarCircle(name, colorHex, size) {
 return `<div aria-hidden="true" style="width: ${size}px; height: ${size}px; border-radius: 50%; background: ${readableTextColor(colorHex, false)}; color: white; font-size: ${Math.round(size * 0.4)}px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">${escapeHtmlForUi(initialsForKlc(name))}</div>`;
 }
@@ -5941,9 +5502,7 @@ else if (r.status === 'EXCEPTION') parts.push(`<div class="reason" title="${esca
 return parts.join('');
 }
 
-// Ordered by the same priority scale as the tier pills, so both the
-// stats bar and its column-selection filtering behavior read
-// top-to-bottom as "most to least actionable" consistently.
+// Same priority order as the tier pills.
 const STATS_BAR_CATEGORY_ORDER = ['POST CLOSURE: SEND BACK', 'POST CLOSURE: CHECK'].concat([1, 2, 3, 4, 5, 6].map((t) => TIER_NAMES[t])).concat(['EXCEPTION']);
 
 function renderNeedsReviewSection(needsReview) {
@@ -6024,9 +5583,7 @@ isTierOpen: (key, openByDefault) => detailsState.tiers.has(key) || openByDefault
 avatar: (name, color) => renderAvatarCircle(name, color, 28)
 });
 } else {
-// Re-run on every render (idempotent: setDuplicate only adds the flag
-// once) rather than once at the end, so duplicates already show
-// correctly while a batch is still mid-run.
+// Run on every render (idempotent) so duplicates show mid-run.
 applyDedupe(
 orderedAll,
 (r) => r,
@@ -6039,16 +5596,12 @@ const ordered = orderedAll.filter((r) => !isNeedsReview(r));
 renderNeedsReviewSection(needsReview);
 const percent = session.rows.length > 0 ? Math.round((100 * orderedAll.length) / session.rows.length) : 0;
 progressFillEl.style.width = `${percent}%`;
-// Animated only while actual work is happening - at rest (idle,
-// paused, or done) a moving stripe would read as "still working" when
-// it isn't.
+// Animated only while working, so it never reads as busy at rest.
 progressFillEl.classList.toggle('active', isRunning && !session.done);
 updateBadgeProgress(badge, orderedAll, session);
 
 if (ordered.length === 0) {
-// Distinct from "nothing processed at all" - if every processed row
-// so far is sitting in the Needs Review section above, saying "no
-// results yet" here would read as wrong/contradictory.
+// If every processed row is in Needs Review, "no results yet" would be wrong.
 resultsBody.innerHTML = needsReview.length > 0
 ? '<div class="empty-state">All results so far need review. See above.</div>'
 : '<div class="empty-state">No results yet. Press Start or Process next.</div>';
@@ -6058,10 +5611,7 @@ filterBarEl.classList.add('hidden');
 statsBarEl.classList.remove('hidden');
 filterBarEl.classList.remove('hidden');
 
-// Stats bar is built from the FULL unfiltered set - it's the stable
-// overview a filter selection narrows FROM, not a count of what's
-// currently showing (which would shrink to match itself the moment
-// any filter is active, defeating the point of showing it).
+// Built from the unfiltered set, so it does not shrink with the filter.
 const countsByKey = new Map();
 ordered.forEach((r) => {
 const key = categoryKey(r);
@@ -6093,18 +5643,13 @@ resultsBody.innerHTML = '<div class="empty-state">No results match the current f
 } else {
 const byTier = new Map();
 filtered.forEach((r) => {
-// Genuine automation failures (SEARCH_NO_RESULTS etc.) never reach
-// classifyLead at all, so they have no tier of their own - grouped into
-// a trailing "Unclassified" bucket (7) rather than sorting first via
-// null-coerces-to-0 arithmetic.
+// Automation failures have no tier, so they go to a trailing
+// "Unclassified" bucket (7).
 const tier = r.postClosureAction ? (r.postClosureAction === 'send back through' ? -2 : -1) : (r.tier || 7);
 if (!byTier.has(tier)) byTier.set(tier, []);
 byTier.get(tier).push(r);
 });
 resultsBody.innerHTML = Array.from(byTier.keys()).sort((a, b) => a - b).map((tier) => {
-// Sorted by the spec's own priority order (tier/subRank, then
-// received time) so the most actionable leads in each tier surface
-// at the top rather than input order.
 const rows = [...byTier.get(tier)].sort(compareByBookingPriority);
 const customersHtml = rows.map((r) => {
 const open = detailsState.customers.has(r.inputIndex);
@@ -6136,8 +5681,6 @@ resultsBody.querySelectorAll('details.tier').forEach((el) => {
 const key = Number(el.dataset.key);
 el.addEventListener('toggle', () => { if (el.open) detailsState.tiers.add(key); else detailsState.tiers.delete(key); });
 });
-// Same detailsState Set, same persistence-across-re-render behavior,
-// just a different event source triggering the add/delete.
 resultsBody.querySelectorAll('.customer').forEach((el) => {
 const key = Number(el.dataset.key);
 const summary = el.querySelector('.customer-summary');
@@ -6185,10 +5728,7 @@ setTimeout(() => { el.textContent = original; el.style.background = ''; el.style
 });
 });
 
-// orderedAll here, not the reduced `ordered` - needs-review rows are
-// real EXCEPTION-status results too (just pulled into their own
-// section above instead of the tier list), so using the reduced set
-// would silently undercount them out of this summary.
+// orderedAll, so Needs Review rows are counted too.
 completedCountEl.textContent = String(orderedAll.filter((r) => r.status === 'CLASSIFIED').length);
 exceptionCountEl.textContent = String(orderedAll.filter((r) => r.status === 'EXCEPTION').length);
 totalCountEl.textContent = String(session.rows.length);
@@ -6249,11 +5789,7 @@ render
 
 function ensureSessionFromPasteBox() {
 if (session && session.rawInput === pasteBox.value) return session;
-// Passes the outgoing session so newSession can carry over already-
-// completed results for any row that's still present (same lead) in
-// the new paste - the common real case being a grown batch (previous
-// leads + new ones just exported from Extract), not a genuinely
-// unrelated one.
+// Passes the old session so completed results carry over to a grown batch.
 session = newSession(pasteBox.value, session);
 saveSession(session);
 return session;
@@ -6272,11 +5808,7 @@ hidePageFlashOverlay();
 uiHandle.setState(s.done ? 'Done' : 'Paused after one row');
 });
 
-// pauseResumeBtn.textContent alone would wipe out its icon (textContent
-// replaces ALL child content, SVG included, not just the label text) -
-// this keeps both in sync instead, swapping the icon to match (pause
-// icon while running/offering to pause, play icon while paused/offering
-// to resume).
+// textContent would wipe the icon, so label and icon are set together.
 function setPauseResumeLabel(text) {
 pauseResumeBtn.innerHTML = svgIcon(text === 'Pause' ? 'pause' : 'play', 11) + text;
 }
@@ -6288,8 +5820,6 @@ s.paused = false;
 s.cancelled = false;
 setPauseResumeLabel('Pause');
 showPageFlashOverlay('Checking leads…');
-// Collapsing it here reclaims that space the moment a run actually
-// begins, rather than requiring a manual collapse click.
 topSectionEl.open = false;
 syncClearPasteStartVisibility();
 runLoop(s, uiHandle);
@@ -6303,11 +5833,7 @@ autoStartToggle.addEventListener('change', () => {
 saveSettings({ autoStart: autoStartToggle.checked });
 });
 
-// Only triggers on an actual paste, not on manual typing - the
-// checkbox's own opt-in nature already limits this to users who
-// explicitly want it, but distinguishing paste from typing still matters
-// so autofilling one character at a time doesn't repeatedly try to start
-// a run against an incomplete/invalid batch.
+// Paste only, not typing, so a half-typed batch never starts a run.
 pasteBox.addEventListener('paste', () => {
 if (!autoStartToggle.checked) return;
 setTimeout(() => {
@@ -6317,11 +5843,7 @@ if (s.headerOk && s.rows.length > 0 && !s.done) startProcessing();
 }, 0);
 });
 
-// Debounced rather than reparsing on every keystroke -
-// ensureSessionFromPasteBox re-parses the whole batch AND writes it to
-// localStorage (saveSession), which for a large pasted batch would
-// otherwise mean doing both on every single keystroke while still
-// mid-paste/mid-edit.
+// Debounced: each parse also writes the batch to localStorage.
 let pasteBoxInputDebounce = null;
 pasteBox.addEventListener('input', () => {
 clearTimeout(pasteBoxInputDebounce);
@@ -6331,15 +5853,8 @@ render();
 }, 300);
 });
 
-// One click instead of switching windows/tabs, copying, switching
-// back, clicking into the textarea, and pasting - reads the clipboard
-// directly via the async Clipboard API, same approach and same
-// fallback (that API needs clipboard-read permission and can be
-// blocked entirely in some contexts) already proven out in
-// SLA-Manager.js's own "Paste from clipboard & Classify" button.
-// Setting pasteBox.value directly does NOT fire its 'paste' event, so
-// ensureSessionFromPasteBox/render/auto-start are called explicitly
-// here rather than relying on the listeners above.
+// Reads the clipboard directly. Setting pasteBox.value fires no paste
+// event, so the handlers are called explicitly.
 root.getElementById('btnPasteClipboard').addEventListener('click', async (event) => {
 const btn = event.currentTarget; // read before any await: it is null afterwards
 if (!navigator.clipboard || !navigator.clipboard.readText) {
@@ -6383,15 +5898,8 @@ root.getElementById('btnCancel').addEventListener('click', () => {
 if (session) { session.cancelled = true; uiHandle.setState('Cancelling...'); }
 });
 
-// Only genuinely mid-loop-and-unpaused is unsafe to mutate into - a step
-// could be actively in flight, and stepOnce reads session.groupIndex/
-// rowInGroupIndex at its own start, writing back based on whatever they
-// are when it finishes; racing that with a concurrent rewind here could
-// advance against the wrong group. retryExceptions mutates session in
-// place (not a reassignment) specifically so a currently-paused runLoop
-// - still holding this exact object - picks the change up correctly the
-// moment it's resumed, rather than being silently orphaned on a stale
-// session.
+// Unsafe only mid-step and unpaused. retryExceptions mutates in place so
+// a paused runLoop holding this object picks the change up.
 root.getElementById('btnRetryExceptions').addEventListener('click', (event) => {
 const btn = event.currentTarget; // read before any await: it is null afterwards
 if (!session) return;
@@ -6407,9 +5915,8 @@ return;
 retryExceptions(session);
 saveSession(session);
 if (isRunning) {
-// A paused loop is still alive (see runLoop's own comment on this) -
-// just clearing paused lets its own poll pick the change up; calling
-// runLoop again here would start a second, duplicate loop.
+// A paused loop is still alive: clearing paused resumes it; calling
+// runLoop again would start a duplicate.
 session.paused = false;
 setPauseResumeLabel('Pause');
 uiHandle.setState('Resuming...');
@@ -6435,13 +5942,8 @@ hidePageFlashOverlay();
 uiHandle.setState('Idle', '-', '-');
 });
 
-// Fuses btnClear + btnPasteClipboard + Start into one click, for the
-// collapsed-topSection case (see syncClearPasteStartVisibility) where
-// reopening "Batch input" just to run the same three steps manually is
-// the exact friction this button exists to remove. Always attempts to
-// start on a successful paste, regardless of the autoStart toggle - the
-// toggle governs the passive paste-into-textarea case, not this
-// explicit single-purpose button.
+// Clear + paste + start in one click for the collapsed panel. Always
+// starts, whatever the autoStart toggle (that governs paste-into-textarea).
 root.getElementById('btnClearPasteStart').addEventListener('click', async (event) => {
 const btn = event.currentTarget; // read before any await: it is null afterwards
 if (!navigator.clipboard || !navigator.clipboard.readText) {
@@ -6471,9 +5973,7 @@ showButtonFeedback(btn, s.headerOk ? 'No rows parsed' : `Header error: ${s.heade
 }
 });
 
-// Now a genuine full reset - stops whatever's running, wipes the stored
-// session, and tears down the panel - so reopening always starts from a
-// clean slate.
+// Full reset: stops the run, wipes the stored session and removes the panel.
 root.getElementById('btnClearStop').addEventListener('click', () => {
 if (session) { session.cancelled = true; session.discarded = true; }
 isRunning = false;
@@ -6525,10 +6025,7 @@ host.style.display = 'none';
 badge.show();
 });
 
-// Live filter-as-you-type, not rebuilt by render() itself (searchInputEl
-// is part of the static panel shell, not resultsBody's rebuilt innerHTML)
-// so typing never loses focus/cursor position mid-batch-run the way
-// resetting .value on every render would.
+// Not rebuilt by render(), so typing never loses focus mid-run.
 searchInputEl.addEventListener('input', () => {
 nameFilterText = searchInputEl.value.trim().toLowerCase();
 render();
