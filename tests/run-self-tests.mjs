@@ -134,6 +134,9 @@ for (const file of TOOLS) {
       ['konnectonlineservices.co.uk', '/(v9.9.9)/manager/index.html', 'SLA-Manager.js'],
       ['example.com', '/', null]
     ];
+    const all = (host, path) => ctx.window.WorkTools.toolsForPage(host, path).map((t) => t.file).join(',');
+    const desk = all('konnectonlineservices.co.uk', '/(v9.9.9)/agent-desktop/index.html');
+    if (desk !== 'Konnect-Notes.js,Reg-Check.js,Lead-Reset.js') cases.push(['agent desktop list', '', `Konnect-Notes.js,Reg-Check.js,Lead-Reset.js (got ${desk})`]);
     const wrong = cases.filter(([h, p, want]) => pick(h, p) !== want).map(([h, p, want]) => `${h}${p} should load ${want}, got ${pick(h, p)}`);
     if (wrong.length) problem = wrong.join('; ');
   } catch (error) { problem = 'threw: ' + error.message; }

@@ -3518,14 +3518,18 @@ return currentPageType === PAGE_PENDING
 : (() => { const s = loadLeadCheckerExportSettings(); return buildLeadCheckerTsv(s.tiers, s.customerFirstOnly); })();
 }
 
-// Reuses the Live tab this opened before; a new tab is sent to Konnect Live.
+// Opens Konnect Live straight away (a blank tab steered afterwards was
+// left blank by the browser). A Live tab this page already opened is
+// brought forward rather than reloaded.
 function openLiveTab() {
-const win = window.open('', LIVE_WINDOW_NAME);
+if (liveLink.win && !liveLink.win.closed) {
+try { liveLink.win.focus(); } catch (error) { /* still usable */ }
+return liveLink.win;
+}
+const win = window.open(LIVE_URL, LIVE_WINDOW_NAME);
 if (!win) return null;
-let blank = false;
-try { blank = win.location.href === 'about:blank'; } catch (error) { blank = false; }
-if (blank) { win.location.href = LIVE_URL; liveLink.ready = false; }
 liveLink.win = win;
+liveLink.ready = false;
 return win;
 }
 
@@ -3560,6 +3564,12 @@ const win = openLiveTab();
 if (!win) return false;
 if (liveLink.ready) win.postMessage(liveLink.pending, LIVE_ORIGIN);
 showLinkToast(liveLink.ready ? 'Sent to the Lead Checker.' : 'Konnect Live is opening. Click Work Tools there to start the Lead Checker; the batch is passed over and the results come back here.');
+// If the tabs never link up (a page that blocks it), say so instead of
+// leaving the batch waiting.
+const waiting = liveLink.pending;
+setTimeout(() => {
+if (liveLink.pending === waiting) showLinkToast('The Lead Checker has not picked the batch up. Click Work Tools in the Konnect Live tab; if nothing happens, use Copy instead.');
+}, 90000);
 return true;
 }
 window._sendBatchToLeadChecker = sendBatchToLeadChecker;
