@@ -36,7 +36,7 @@ const date = list && list[0] && list[0].commit && list[0].commit.committer && li
 if (date) { state.publishedAt = new Date(date); onChange(state); }
 }).catch(() => {});
 fileText().then((text) => { if (text) baseline = fingerprint(text); }).catch(() => {});
-setInterval(() => {
+state.timer = setInterval(() => {
 if (state.newer || baseline == null) return;
 fileText().then((text) => {
 if (text && fingerprint(text) !== baseline) { state.newer = true; onChange(state); }
@@ -997,7 +997,10 @@ const STYLE = `
 .icon-btn { background: transparent; border: 0; color: #cbd5e1; width: 28px; height: 28px; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font: inherit; font-size: 16px; }
 .icon-btn:hover { background: rgba(255,255,255,.12); color: #fff; }
 .body { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-.panel.minimised .body { display: none; }
+.panel.minimised .body, .panel.minimised .foot { display: none; }
+.foot { flex-shrink: 0; padding: 8px 12px; background: var(--surface); display: flex; justify-content: center; border-top: 1px solid var(--border); }
+.stop-clear { font: inherit; font-size: 12.5px; font-weight: 600; color: var(--red); background: transparent; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.stop-clear:hover { background: #fef2f2; }
 .card { background: var(--surface); border-radius: 12px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05), 0 1px 1px rgba(0,0,0,.03); }
 .muted { color: var(--muted); }
 .small { font-size: 11.5px; }
@@ -1290,10 +1293,28 @@ writeJson(PASTED_RESULTS_KEY, { savedAt: new Date().toISOString(), results: pars
 addLog(`Pasted ${resetLeadsFrom(parsed.results).length} Re setup leads`);
 }
 
+// Same as SLA Manager's Clear & Stop: ends any run after its current step,
+// wipes everything this tool keeps and removes the panel, so the next
+// click of the bookmarklet starts from scratch.
+function clearAndStop() {
+state.stopRequested = true;
+if (resolvePause) answerPause('stop');
+try { localStorage.removeItem(PROGRESS_KEY); localStorage.removeItem(PASTED_RESULTS_KEY); } catch (error) { /* ignore */ }
+if (versionState && versionState.timer) clearInterval(versionState.timer);
+if (ui) {
+clearInterval(ui.pageTimer);
+ui.host.remove();
+ui = null;
+}
+window._leadResetState = null;
+console.info('Lead Re setup stopped and cleared. Click the bookmarklet again to start fresh.');
+}
+
 function onPanelClick(event) {
 const target = event.target.closest('[data-action]');
 if (!target) return;
 const action = target.getAttribute('data-action');
+if (action === 'clearStop') { clearAndStop(); return; }
 if (action === 'close') {
 if (state.running) { addLog('Stop the run before closing'); return; }
 ui.host.remove();
@@ -1356,6 +1377,7 @@ root.innerHTML = `<style>${STYLE}</style>
 <button type="button" class="icon-btn" data-action="minimise" aria-label="Minimise">&ndash;</button>
 <button type="button" class="icon-btn" data-action="close" aria-label="Close">&times;</button></div>
 <div class="body" aria-live="polite"></div>
+<div class="foot"><button type="button" class="stop-clear" data-action="clearStop">Clear &amp; Stop</button></div>
 </div>`;
 document.body.appendChild(host);
 const panel = root.querySelector('.panel');
@@ -1370,7 +1392,7 @@ if (section === 'log') ui.logOpen = event.target.open;
 if (section === 'steps') ui.stepsOpen = event.target.open;
 }, true);
 // Redraw when the agent moves to another page or customer.
-setInterval(() => {
+ui.pageTimer = setInterval(() => {
 if (!ui || state.running) return;
 const inView = onCallPage() ? leadInView() : null;
 const signature = `${onCallPage()}|${liveActivities().map(({ activity }) => activity.ID).join(',')}|${inView ? inView.ID : ''}`;
