@@ -43,6 +43,19 @@ const pad = (n) => String(n).padStart(2, '0');
 return `Version of ${d.getDate()} ${months[d.getMonth()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Report a problem: runs the Diagnostics capture (customer details masked)
+// with this tool's recent activity added, ready to copy and send on.
+async function reportProblem(tool, state, lines) {
+window.__wbDiagnosticsExtra = { tool, state, log: lines };
+try {
+const response = await fetch(`https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Diagnostics.js?_=${Date.now()}`);
+if (!response.ok) throw new Error(`HTTP ${response.status}`);
+Function(await response.text())();
+} catch (error) {
+alert(`Could not open the problem report: ${error && error.message}`);
+}
+}
+
 function konnectNavReady() {
 const nav = document.querySelector('nav.navbar.navbar-inverse.navbar-fixed-top');
 return !!(nav && nav.querySelector('ul.nav.navbar-right.top-nav'));
@@ -5212,7 +5225,8 @@ button.primary:hover { background: #aab238; }
 @keyframes klcProgressStripes { from { background-position: 0 0; } to { background-position: 14px 0; } }
 /* !important: button.action's own display rule is more specific than .hidden. */
 .hidden { display: none !important; }
-.footer { flex-shrink: 0; padding: 10px 14px; background: var(--wb-surface); display: flex; justify-content: center; border-radius: 0 0 20px 20px; }
+.footer { flex-shrink: 0; padding: 10px 14px; background: var(--wb-surface); display: flex; justify-content: space-between; border-radius: 0 0 20px 20px; }
+.footer .report-btn { color: var(--wb-muted); }
 .footer button { padding: 4px 8px; background: transparent; color: var(--wb-danger); border: none; border-radius: 6px; cursor: pointer; font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
 .topSection { flex-shrink: 0; border: 1px solid var(--wb-border); border-radius: 6px; background: var(--wb-surface); margin-bottom: 8px; }
 .topSection > summary { padding: 6px 8px; cursor: pointer; font-weight: 600; color: var(--wb-text-2); list-style: none; display: flex; align-items: center; gap: 6px; }
@@ -5338,6 +5352,7 @@ Auto-start on paste
 </div>
 </div>
 <div class="footer">
+<button id="btnReport" class="report-btn">Report a problem</button>
 <button id="btnClearStop">${svgIcon('trash', 11)}Clear & Stop</button>
 </div>
 </div>
@@ -6011,6 +6026,15 @@ showButtonFeedback(btn, s.headerOk ? 'No rows parsed' : `Header error: ${s.heade
 });
 
 // Full reset: stops the run, wipes the stored session and removes the panel.
+// No names are sent: only statuses, verdicts and counts.
+root.getElementById('btnReport').addEventListener('click', () => {
+const s = session;
+const results = s ? orderedResults(s) : [];
+const state = s ? `${checkScenarioOf(s.mode, s.rows).label}; ${results.length} of ${s.rows.length} done; ${curStateEl.textContent}` : 'No batch loaded';
+const lines = results.slice(-25).map((r, i) => [`row ${i + 1}`, r.status, r.exception ? exceptionLabel(r.exception) : '', r.verdict || r.tierName || '', r.postClosureAction ? `${r.postClosureAction}${r.postClosureReason ? ': ' + r.postClosureReason : ''}` : ''].filter(Boolean).join(' | '));
+reportProblem('Lead Checker', state, lines);
+});
+
 root.getElementById('btnClearStop').addEventListener('click', () => {
 if (session) { session.cancelled = true; session.discarded = true; }
 isRunning = false;

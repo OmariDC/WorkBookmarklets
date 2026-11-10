@@ -78,6 +78,19 @@ if (el) el.outerHTML = html();
 return html();
 }
 
+// Report a problem: runs the Diagnostics capture (customer details masked)
+// with this tool's recent activity added, ready to copy and send on.
+async function reportProblem(tool, state, lines) {
+window.__wbDiagnosticsExtra = { tool, state, log: lines };
+try {
+const response = await fetch(`https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Diagnostics.js?_=${Date.now()}`);
+if (!response.ok) throw new Error(`HTTP ${response.status}`);
+Function(await response.text())();
+} catch (error) {
+alert(`Could not open the problem report: ${error && error.message}`);
+}
+}
+
 // Self-tests run on every load. A failure is logged and also shown as a
 // banner in the panel, so a broken build is visible to the person using it.
 const selfTestFailures = [];
@@ -4753,7 +4766,8 @@ style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid
 ${bodyHtml}
 </div>
 
-<div style="border-top: 1px solid var(--wb-border, #cbd5e1); padding: 8px 14px; background: var(--wb-surface, white); flex-shrink: 0; display: flex; justify-content: flex-end; align-items: center; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
+<div style="border-top: 1px solid var(--wb-border, #cbd5e1); padding: 8px 14px; background: var(--wb-surface, white); flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
+<button onclick="window._slaReportProblem();" style="padding: 6px 12px; background: transparent; color: var(--wb-muted, #64748b); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Report a problem</button>
 <button onclick="window._slaResetBookmarklet();"
 style="padding: 6px 12px; background: transparent; color: var(--wb-danger, #dc2626); border: 1px solid var(--wb-danger, #dc2626); border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
 </div>
@@ -5264,6 +5278,13 @@ console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
 }
 
 window._slaResetBookmarklet = resetBookmarklet;
+
+// No names are sent: the panel, page and morning check statuses only.
+window._slaReportProblem = function() {
+const checks = (typeof morningChecksResults !== 'undefined' && Array.isArray(morningChecksResults) ? morningChecksResults : [])
+.map((r) => `${r.key || r.label}: ${r.status || ''}${r.ok === false ? ' (failed)' : ''}`);
+reportProblem('SLA Manager', `panel ${currentPanelMode || '-'}, page ${currentPageType || '-'}, ${location.hash}`, checks);
+};
 
 // ===================================================================
 // PANEL UI TOGGLES

@@ -12,6 +12,16 @@ fetch -> check response.ok -> Function(code)() -> alert on failure.
 
 --------------------------------------------------------------------
 
+Work Tools (one bookmark for SLA Manager, Lead Checker and Lead Re setup)
+
+Opens the right tool for the page: Lead Checker on Konnect Live, Lead Re
+setup on the agent desktop, SLA Manager on Konnect Manager. Not the same
+as the Konnect Tools bookmark (Konnect Notes, Reg Check) other agents use.
+
+javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Work-Tools.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Work Tools: "+e);}})();
+
+--------------------------------------------------------------------
+
 Auto-AcceptLP
 
 javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Auto-AcceptLP.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Auto-AcceptLP: "+e);}})();
@@ -48,7 +58,7 @@ javascript:(async function(){try{const url="https://raw.githubusercontent.com/Om
 
 --------------------------------------------------------------------
 
-Lead-Reset (agent desktop)
+Lead Re setup (agent desktop)
 
 javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Lead-Reset.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Lead-Reset: "+e);}})();
 

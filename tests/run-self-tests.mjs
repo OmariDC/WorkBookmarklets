@@ -120,6 +120,27 @@ for (const file of TOOLS) {
   if (counts.failed > 0 || counts.passed === 0) failed = true;
 }
 
+// Work Tools picks the tool from the page's address.
+{
+  const ctx = { alert() {}, location: { hostname: 'example.com', pathname: '/' }, console };
+  ctx.window = ctx;
+  let problem = null;
+  try {
+    vm.runInNewContext(readFileSync(join(root, 'Work-Tools.js'), 'utf8'), ctx, { filename: 'Work-Tools.js' });
+    const pick = (host, path) => (ctx.window.WorkTools.toolForPage(host, path) || {}).file || null;
+    const cases = [
+      ['carbot.ai', '/konnectlive/(v9.9.9)/Home.html', 'Konnect-Lead-Checker.js'],
+      ['konnectonlineservices.co.uk', '/(v9.9.9)/agent-desktop/index.html', 'Lead-Reset.js'],
+      ['konnectonlineservices.co.uk', '/(v9.9.9)/manager/index.html', 'SLA-Manager.js'],
+      ['example.com', '/', null]
+    ];
+    const wrong = cases.filter(([h, p, want]) => pick(h, p) !== want).map(([h, p, want]) => `${h}${p} should load ${want}, got ${pick(h, p)}`);
+    if (wrong.length) problem = wrong.join('; ');
+  } catch (error) { problem = 'threw: ' + error.message; }
+  console.log(`\nWork-Tools.js: ${problem ? 'FAIL ' + problem : 'routing passed'}`);
+  if (problem) failed = true;
+}
+
 const contract = sharedContractChecks();
 console.log(`\nShared contract: ${contract.length ? contract.length + ' problem(s)' : 'all values match'}`);
 for (const p of contract) console.log('  FAIL ' + p);

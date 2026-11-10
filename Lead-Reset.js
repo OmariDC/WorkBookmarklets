@@ -54,6 +54,19 @@ const pad = (n) => String(n).padStart(2, '0');
 return `Version of ${d.getDate()} ${months[d.getMonth()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// Report a problem: runs the Diagnostics capture (customer details masked)
+// with this tool's recent activity added, ready to copy and send on.
+async function reportProblem(tool, state, lines) {
+window.__wbDiagnosticsExtra = { tool, state, log: lines };
+try {
+const response = await fetch(`https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Diagnostics.js?_=${Date.now()}`);
+if (!response.ok) throw new Error(`HTTP ${response.status}`);
+Function(await response.text())();
+} catch (error) {
+alert(`Could not open the problem report: ${error && error.message}`);
+}
+}
+
 // ===================================================================
 // PURE HELPERS
 // ===================================================================
@@ -1044,9 +1057,14 @@ const STYLE = `
 .icon-btn:hover { background: rgba(255,255,255,.12); color: #fff; }
 .body { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
 .panel.minimised .body, .panel.minimised .foot { display: none; }
-.foot { flex-shrink: 0; padding: 8px 12px; background: var(--surface); display: flex; justify-content: center; border-top: 1px solid var(--border); }
+.launcher { position: fixed; bottom: 16px; left: 16px; z-index: 2147483000; align-items: center; gap: 6px; padding: 8px 14px; border: 0; border-radius: 999px; background: #1c1c1e; color: #fff; font: 600 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; box-shadow: 0 6px 16px rgba(15, 23, 42, .25); cursor: pointer; }
+.launcher:hover { background: #2c2c2e; }
+.launcher:focus-visible { outline: 2px solid #C2CB42; outline-offset: 2px; }
+.foot { flex-shrink: 0; padding: 8px 12px; background: var(--surface); display: flex; justify-content: space-between; border-top: 1px solid var(--border); }
 .stop-clear { font: inherit; font-size: 12.5px; font-weight: 600; color: var(--red); background: transparent; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 .stop-clear:hover { background: #fef2f2; }
+.report { font: inherit; font-size: 12.5px; font-weight: 600; color: var(--muted); background: transparent; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.report:hover { background: var(--bg); color: var(--text); }
 .card { background: var(--surface); border-radius: 12px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05), 0 1px 1px rgba(0,0,0,.03); }
 .muted { color: var(--muted); }
 .small { font-size: 11.5px; }
@@ -1361,10 +1379,25 @@ const target = event.target.closest('[data-action]');
 if (!target) return;
 const action = target.getAttribute('data-action');
 if (action === 'clearStop') { clearAndStop(); return; }
+if (action === 'report') {
+// Names never leave the page: every known customer name is replaced.
+const names = leadsToDo().map((l) => l.name).concat(state.hereLead ? [state.hereLead.name] : []).filter(Boolean);
+const redact = (line) => names.reduce((text, name) => text.split(name).join('<customer>'), String(line));
+const where = state.running ? `running ${state.mode || ''} step ${state.stepIndex + 1}${state.paused ? ', needs you: ' + state.paused.message : ''}` : 'idle';
+reportProblem('Lead Re setup', redact(where), state.log.map(redact));
+return;
+}
 if (action === 'close') {
-if (state.running) { addLog('Stop the run before closing'); return; }
-ui.host.remove();
-ui = null;
+// Tucks the panel away behind a small launcher button rather than closing
+// it, so the tool stays one click away without the bookmark.
+ui.panel.style.display = 'none';
+ui.launcher.style.display = 'inline-flex';
+return;
+}
+if (action === 'reopen') {
+ui.launcher.style.display = 'none';
+ui.panel.style.display = '';
+render();
 return;
 }
 if (action === 'minimise') {
@@ -1410,7 +1443,7 @@ answerPause(action);
 // it, and the steps' page searches cannot mistake its buttons for Konnect's.
 function buildPanel() {
 const existing = document.getElementById(PANEL_ID);
-if (existing && ui) { ui.panel.classList.remove('minimised'); ui.minimised = false; render(); return; }
+if (existing && ui) { ui.panel.classList.remove('minimised'); ui.minimised = false; ui.panel.style.display = ''; ui.launcher.style.display = 'none'; render(); return; }
 if (existing) existing.remove();
 if (!document.body || typeof document.body.appendChild !== 'function') return;
 const host = document.createElement('div');
@@ -1421,15 +1454,16 @@ root.innerHTML = `<style>${STYLE}</style>
 <div class="panel" role="dialog" aria-label="Lead Re setup">
 <div class="head"><div class="title"><span aria-hidden="true">&#8635;</span><span>Lead Re setup</span><span class="mini-status"></span></div>
 <button type="button" class="icon-btn" data-action="minimise" aria-label="Minimise">&ndash;</button>
-<button type="button" class="icon-btn" data-action="close" aria-label="Close">&times;</button></div>
+<button type="button" class="icon-btn" data-action="close" aria-label="Hide" title="Hide (the Re setup button brings it back)">&times;</button></div>
 <div class="body" aria-live="polite"></div>
-<div class="foot"><button type="button" class="stop-clear" data-action="clearStop">Clear &amp; Stop</button></div>
-</div>`;
+<div class="foot"><button type="button" class="report" data-action="report">Report a problem</button><button type="button" class="stop-clear" data-action="clearStop">Clear &amp; Stop</button></div>
+</div>
+<button type="button" class="launcher" data-action="reopen" style="display:none;" title="Show Lead Re setup">&#8635; Re setup</button>`;
 document.body.appendChild(host);
 const panel = root.querySelector('.panel');
 const head = root.querySelector('.head');
 if (!panel || !head) return;
-ui = { host, root, panel, minimised: false, listOpen: false, logOpen: false, stepsOpen: false };
+ui = { host, root, panel, launcher: root.querySelector('.launcher'), minimised: false, listOpen: false, logOpen: false, stepsOpen: false };
 root.addEventListener('click', onPanelClick);
 root.addEventListener('toggle', (event) => {
 const section = event.target.getAttribute && event.target.getAttribute('data-section');

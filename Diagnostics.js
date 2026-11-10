@@ -214,12 +214,28 @@ report.modalRecord = records;
 }
 }
 
+// A tool's Report a problem button passes its own recent activity here,
+// with customer names already replaced; emails, phones and regs are masked too.
+const extra = window.__wbDiagnosticsExtra;
+if (extra && typeof extra === 'object') {
+const cleanLine = (t) => clean(t)
+.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}/gi, '<email>')
+.replace(/(\+44\s?|\b0)7\d{3}\s?\d{3}\s?\d{3}\b/g, '<phone>')
+.replace(/\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b/g, '<reg>')
+.slice(0, 200);
+report.tool = {
+name: cleanLine(extra.tool),
+state: cleanLine(extra.state || ''),
+log: (Array.isArray(extra.log) ? extra.log : []).slice(-40).map(cleanLine)
+};
+window.__wbDiagnosticsExtra = null;
+}
 const json = JSON.stringify(report, null, 1);
 
 const host = document.createElement('div');
 host.style.cssText = 'position:fixed;top:16px;right:16px;z-index:2147483647;width:min(420px,calc(100vw - 32px));background:#fff;color:#1e293b;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.25);font:13px system-ui,sans-serif;padding:14px;';
 host.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><strong>Page diagnostics</strong><button type="button" aria-label="Close" data-close style="border:none;background:none;font-size:18px;cursor:pointer;">×</button></div>'
-+ '<p style="margin:0 0 8px;color:#5b6577;">Structure of this page, with customer details masked. Copy it and paste it back into the chat.</p>'
++ '<p style="margin:0 0 8px;color:#5b6577;">Structure of this page and the tool\'s recent activity, with customer details masked. Copy it and send it on with a line about what went wrong.</p>'
 + '<textarea readonly aria-label="Diagnostics output" style="width:100%;height:180px;font:11px ui-monospace,monospace;box-sizing:border-box;"></textarea>'
 + '<button type="button" data-copy style="margin-top:8px;padding:8px 14px;border:none;border-radius:8px;background:#1e293b;color:#fff;cursor:pointer;font-weight:600;">Copy</button> <span data-status style="color:#5b6577;"></span>';
 host.querySelector('textarea').value = json;

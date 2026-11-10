@@ -5,6 +5,7 @@ Browser bookmarklets used by staff inside the Konnect CRM. The main tools are:
 - `SLA-Manager.js` runs on Konnect Manager. It lists SLA and Pending leads, exports them for the Lead Checker and imports its results back onto the lead cards.
 - `Konnect-Lead-Checker.js` runs on Konnect Live. It takes the pasted batch, finds each lead, classifies its Initial Notes into six tiers and sends the results back.
 - `Lead-Reset.js` (Lead Re setup) runs on the agent desktop. It takes the National check's Re setup leads and adds each one back as a new lead, then parks the call; on a customer already open (an inbound, say) it sets a chosen closed lead up again and stops in the new lead. It never presses Finished.
+- `Work-Tools.js` is the single bookmark for the three tools above: it loads the right one for the page. It is separate from the Konnect Tools bookmark (Konnect Notes, Reg Check) other agents use.
 - `Konnect-Notes.js` runs on the agent desktop. It inserts call-note phrases and has the Booking Builder (Alt+B), which writes the booking block into Call Notes using the wording rules in `Konnect-Booking-Engine.js`.
 
 ## How the tools are released
