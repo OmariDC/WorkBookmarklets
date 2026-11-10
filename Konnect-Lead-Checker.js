@@ -3880,6 +3880,10 @@ isDealerAction(t(3, 1, '01T09:00', 'Agent A called the customer with an outcome 
 isDealerAction(t(9, 1, '01T09:00', 'Sale (Offer Accepted)', "Final Outcome 'Sale (Offer Accepted)' set by Dealer B at Preston", false))
 ], [true, true, false, true]);
 check('the dealership named in an entry', [dealerNamedIn({ Description: 'Offer Sent by Dealer C for Preston' }), dealerNamedIn({ Description: "Final Outcome 'No Sale' set by Dealer D at Preston" })], ['preston', 'preston']);
+const pcResult = { inputIndex: 0, status: 'CLASSIFIED', tier: 5, postClosureAction: 'check: needs contact?', postClosureReason: '', postClosureEvidence: '' };
+const decidedPc = applyPostClosureDecision(pcResult, 'send back through', 'Email only', 'email only in follow up');
+check('a hand Post Closure decision', [decidedPc.postClosureAction, decidedPc.postClosureReason, decidedPc.manualOverride, decidedPc.tentative.postClosureAction], ['send back through', 'Email only', true, 'check: needs contact?']);
+check('undo restores the checker decision', undoManualReviewDecision(decidedPc).postClosureAction, 'check: needs contact?');
 check('reason shown with the action', postClosureLabel({ postClosureAction: 'send back through', postClosureReason: 'Email only' }), 'send back through: Email only');
 check('SLA and Pending batches told apart', [
 checkScenarioOf('standard', [{ source: 'Customer First' }, { source: 'Autotrader' }]).label,
@@ -4374,6 +4378,21 @@ exception: null
 });
 }
 
+// Pure. A hand decision on a Post Closure lead: send back through with a
+// reason, or a call is needed. Undo restores the checker's own decision.
+function applyPostClosureDecision(result, action, reason, note) {
+const { preDecision: _ignored, ...beforeDecision } = result;
+return finalizeResult(result, {
+tentative: { postClosureAction: result.postClosureAction, postClosureReason: result.postClosureReason, postClosureEvidence: result.postClosureEvidence, tier: result.tier, subCategory: result.subCategory, reason: result.reason, confidence: result.confidence },
+preDecision: beforeDecision,
+postClosureAction: action,
+postClosureReason: action === 'send back through' ? reason : '',
+postClosureEvidence: note ? `Decided by hand: ${note}` : 'Decided by hand',
+manualOverride: true,
+manualNote: note || ''
+});
+}
+
 // Restores the row exactly as it was before the manual decision.
 function undoManualReviewDecision(result) {
 return result && result.manualOverride && result.preDecision ? result.preDecision : result;
@@ -4404,7 +4423,7 @@ return String(value == null ? '' : value).replace(/\t/g, ' ').replace(/\r?\n/g, 
 // No personal details: only what a future rule would match on.
 function buildManualReviewDecisionsExport(session) {
 const rows = orderedResults(session).filter((r) => r.manualOverride);
-const header = ['InitialNotes', 'Tier', 'TierName', 'SubCategory', 'Reason', 'Campaign', 'Source', 'Created', 'Flags', 'ClassifierTier', 'ClassifierSubCategory', 'ClassifierConfidence', 'ClassifierReason', 'Conflict'].join('\t');
+const header = ['InitialNotes', 'Tier', 'TierName', 'SubCategory', 'Reason', 'Campaign', 'Source', 'Created', 'Flags', 'ClassifierTier', 'ClassifierSubCategory', 'ClassifierConfidence', 'ClassifierReason', 'Conflict', 'PostClosureDecision', 'ClassifierPostClosure', 'ClassifierPostClosureWhy'].join('\t');
 const fingerprints = rows.map(reviewFingerprint);
 const lines = rows.map((r, i) => {
 const t = r.tentative || {};
@@ -4418,7 +4437,10 @@ tsvCell(r.manualNote),
 r.campaign || '', r.source || '', r.created || '',
 (r.flags || []).join(', '),
 t.tier != null ? String(t.tier) : '', tsvCell(t.subCategory), t.confidence || '', tsvCell(t.reason),
-conflicts.join('; ')
+conflicts.join('; '),
+r.postClosureAction ? postClosureLabel(r) : '',
+t.postClosureAction ? (t.postClosureReason ? `${t.postClosureAction}: ${t.postClosureReason}` : t.postClosureAction) : '',
+tsvCell(t.postClosureEvidence)
 ].join('\t');
 });
 return [header, ...lines].join('\n');
@@ -4763,7 +4785,7 @@ results: { 0: decided, 1: classified }
 };
 const exportTsv = buildManualReviewDecisionsExport(fakeSessionForExport);
 const exportLines = exportTsv.split('\n');
-check('Review-decisions export header has no name/phone/email columns', exportLines[0], 'InitialNotes\tTier\tTierName\tSubCategory\tReason\tCampaign\tSource\tCreated\tFlags\tClassifierTier\tClassifierSubCategory\tClassifierConfidence\tClassifierReason\tConflict');
+check('Review-decisions export header has no name/phone/email columns', exportLines[0], 'InitialNotes\tTier\tTierName\tSubCategory\tReason\tCampaign\tSource\tCreated\tFlags\tClassifierTier\tClassifierSubCategory\tClassifierConfidence\tClassifierReason\tConflict\tPostClosureDecision\tClassifierPostClosure\tClassifierPostClosureWhy');
 check('Review-decisions export includes only the manually-overridden row', exportLines.length, 2);
 check('Review-decisions export row carries the chosen tier name', exportLines[1].split('\t')[2], 'WARM ENQUIRY');
 
@@ -5287,6 +5309,9 @@ button.primary:hover { background: #aab238; }
 .customer-summary:focus-visible { border-radius: 6px; }
 .klc-copyable { cursor: pointer; padding: 1px 5px; border-radius: 6px; background: var(--wb-copy-bg); color: var(--wb-copy-text); display: inline-block; }
 .undo-review { margin-top: 6px; }
+.disagree { margin-top: 6px; }
+.disagree > summary { cursor: pointer; font-size: 11.5px; color: var(--wb-muted); }
+.disagree .review-actions { margin: 6px 0; }
 textarea, .search-input, .review-reason, .review-subcategory { background: var(--wb-surface); color: var(--wb-text); }
 .review-subcategory { width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid var(--wb-border-strong); border-radius: 6px; font-size: 11px; font-family: inherit; margin-bottom: 4px; }
 .auto-start-label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--wb-muted); margin-bottom: 6px; cursor: pointer; }
@@ -5536,6 +5561,21 @@ function renderAvatarCircle(name, colorHex, size) {
 return `<div aria-hidden="true" style="width: ${size}px; height: ${size}px; border-radius: 50%; background: ${readableTextColor(colorHex, false)}; color: white; font-size: ${Math.round(size * 0.4)}px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">${escapeHtmlForUi(initialsForKlc(name))}</div>`;
 }
 
+// Lets a checked lead be corrected by hand; the correction goes into
+// Copy review decisions for writing new rules.
+function disagreeHtml(r) {
+const choices = r.postClosureAction
+? [['send back through', 'Actioned by dealership'], ['send back through', 'Email only'], ['send back through', "In market won't commit"], ['check: needs contact?', '']]
+.filter(([action, reason]) => !(action === r.postClosureAction && reason === (r.postClosureReason || '')))
+.map(([action, reason]) => `<button type="button" class="action" data-pc-action="${escapeHtmlForUi(action)}" data-pc-reason="${escapeHtmlForUi(reason)}">${escapeHtmlForUi(reason ? `Send back: ${reason}` : 'Needs a call')}</button>`).join('')
+: REVIEW_TIER_OPTIONS.filter((tier) => tier !== r.tier)
+.map((tier) => `<button type="button" class="action" data-tier="${tier}" style="background: ${categoryColor({ tier })}1a; color: ${readableTextColor(categoryColor({ tier }))};">Tier ${tier}: ${escapeHtmlForUi(TIER_NAMES[tier])}</button>`).join('');
+return `<details class="disagree" data-key="${r.inputIndex}"><summary>Disagree</summary>
+<div class="review-actions" role="group" aria-label="Correct the result for ${escapeHtmlForUi(r.name)}">${choices}</div>
+<input type="text" class="review-reason" aria-label="Why (optional)" placeholder="Why (optional): helps me add a rule">
+</details>`;
+}
+
 function customerBodyHtml(r) {
 const parts = [];
 parts.push(`<div class="field"><b>Name:</b> ${copyableField(r.name)}</div>`);
@@ -5551,6 +5591,7 @@ if (r.postClosureEvidence) parts.push(`<div class="field"><b>Why:</b> ${escapeHt
 if (r.reason) parts.push(`<div class="reason">${escapeHtmlForUi(r.reason)}</div>`);
 if (r.initialNotes) parts.push(`<div class="notes-block">${escapeHtmlForUi(r.initialNotes)}</div>`);
 if (r.manualOverride && r.preDecision) parts.push(`<button type="button" class="action undo-review" data-undo-key="${r.inputIndex}">Undo review decision</button>`);
+else if (r.status === 'CLASSIFIED' && (r.tier || r.postClosureAction)) parts.push(disagreeHtml(r));
 else if (r.status === 'EXCEPTION') parts.push(`<div class="reason" title="${escapeHtmlForUi(r.exception || '')}">No Initial Notes read: ${escapeHtmlForUi(exceptionLabel(r.exception))}</div>`);
 return parts.join('');
 }
@@ -5749,6 +5790,22 @@ if (opening) detailsState.customers.add(key); else detailsState.customers.delete
 summary.addEventListener('keydown', (event) => {
 if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); summary.click(); }
 });
+});
+resultsBody.querySelectorAll('details.disagree').forEach((box) => {
+const key = Number(box.dataset.key);
+const note = () => box.querySelector('.review-reason').value.trim();
+box.querySelectorAll('button[data-tier]').forEach((btn) => btn.addEventListener('click', () => {
+if (!session || !session.results[key]) return;
+session.results[key] = applyManualReviewDecision(session.results[key], Number(btn.dataset.tier), '', note());
+saveSession(session);
+render();
+}));
+box.querySelectorAll('button[data-pc-action]').forEach((btn) => btn.addEventListener('click', () => {
+if (!session || !session.results[key]) return;
+session.results[key] = applyPostClosureDecision(session.results[key], btn.dataset.pcAction, btn.dataset.pcReason, note());
+saveSession(session);
+render();
+}));
 });
 resultsBody.querySelectorAll('.undo-review').forEach((btn) => {
 btn.addEventListener('click', () => {
