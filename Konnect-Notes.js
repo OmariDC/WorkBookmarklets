@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.9.5'
+    version: '1.10.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -688,6 +688,7 @@
       .kn-bk-status-error { color: #ff3b30; }
       .kn-bk-actions { display: flex; gap: 6px; align-items: center; }
       .kn-bk-actions .kn-primary { flex: 1; }
+      .kn-bk-actions .kn-bk-small { padding: 6px 8px; font-size: 11px; white-space: nowrap; }
       .kn-bk-blocked { opacity: 0.55; }
       .kn-inbound-launcher { position: fixed; left: 20px; bottom: 20px; z-index: 2147482999; padding: 10px 16px; border: none; border-radius: 999px; background: #1c1c1e; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,0.3); }
       .kn-inbound-launcher:hover { background: #2c2c2e; }
@@ -1493,6 +1494,7 @@
       fromLead: stored.fromLead || {},
       notices: stored.notices || [],
       inserted: stored.inserted || null,
+      diaryBooked: stored.diaryBooked || null,
       openSection: stored.openSection || 'type',
       updated: stored.updated || Date.now()
     } : {
@@ -1524,6 +1526,7 @@
       fromLead: draft.fromLead,
       notices: draft.notices,
       inserted: draft.inserted,
+      diaryBooked: draft.diaryBooked || null,
       openSection: draft.openSection,
       updated: draft.updated
     };
@@ -1862,19 +1865,20 @@
     return result;
   }
 
-  function insertBooking(draft) {
+  function insertBooking(draft, options) {
+    const keepOpen = !!(options && options.keepOpen);
     const target = draft.key === INBOUND_KEY ? null : callNotesBox();
     const result = buildCurrentBooking(draft);
     if (!(target instanceof HTMLTextAreaElement)) {
       state.bookingStatus = { kind: 'warn', text: 'Create the lead first. This booking moves onto it when its Call Notes box appears.' };
       renderPalette();
-      return;
+      return false;
     }
-    if (!result) return;
+    if (!result) return false;
     if (result.errors.length) {
       state.bookingStatus = { kind: 'error', text: 'Fix the items in red first.' };
       renderPalette();
-      return;
+      return false;
     }
     const value = target.value;
     const text = result.text;
@@ -1904,10 +1908,32 @@
     if (note) {
       state.bookingStatus = { kind: 'warn', text: note };
       renderPalette();
-      return;
+      return true;
     }
     state.bookingStatus = null;
-    closePalette();
+    if (!keepOpen) closePalette();
+    return true;
+  }
+
+  /* The main button: notes into Call Notes, then the diary and outcome.
+     A booking already in the diary at the same day, time and type is not
+     booked again, so pressing it after an edit only updates the notes. */
+  async function insertAndBook(draft) {
+    const plan = diaryPlan(draft);
+    if (!plan || diaryAlreadyBooked(draft, plan)) {
+      insertBooking(draft);
+      return;
+    }
+    if (!insertBooking(draft, { keepOpen: true })) return;
+    if (await bookInDiary(draft)) closePalette();
+  }
+
+  function diaryKey(plan) {
+    return plan ? `${plan.year}-${plan.month}-${plan.day} ${plan.time} ${plan.type}` : '';
+  }
+
+  function diaryAlreadyBooked(draft, plan) {
+    return !!plan && draft.diaryBooked === diaryKey(plan);
   }
 
   /* ---------- booking the appointment in the Konnect diary ---------- */
@@ -2113,9 +2139,18 @@
     if (!plan || !result || result.errors.length) {
       state.bookingStatus = { kind: 'error', text: 'Finish the booking first (type, day and time).' };
       renderPalette();
-      return;
+      return false;
     }
-    if (diaryRun) return;
+    if (diaryRun) return false;
+    if (diaryAlreadyBooked(draft, plan) && !draft.diaryRepeat) {
+      draft.diaryRepeat = true;
+      state.bookingStatus = { kind: 'warn', text: `This booking is already in the diary for ${plan.label}. Press Diary only again to add a second appointment.` };
+      renderPalette();
+      return false;
+    }
+    draft.diaryRepeat = false;
+    const moved = draft.diaryBooked && draft.diaryBooked !== diaryKey(plan)
+      ? ' The earlier diary appointment for this booking is still there, so remove it by hand.' : '';
     const run = { stopped: false };
     diaryRun = run;
     const say = (kind, text) => {
@@ -2163,14 +2198,17 @@
       close?.click();
       const closed = await waitFor(() => !diaryModal(), 6000);
       const who = free.person ? ` with ${free.person}` : '';
+      draft.diaryBooked = diaryKey(plan);
+      saveDraftNow();
       const outcomeProblem = closed ? await setLeadOutcome(draft, plan) : 'the diary did not close';
       if (outcomeProblem) {
-        say('warn', `Diary booked: ${plan.label}, ${plan.type}${who}. Outcome not set: ${outcomeProblem}.`);
+        say('warn', `Diary booked: ${plan.label}, ${plan.type}${who}. Outcome not set: ${outcomeProblem}.${moved}`);
         showToast(`Diary booked. Set the outcome by hand: ${outcomeProblem}`);
-        return;
+        return false;
       }
-      say('ok', `Diary booked: ${plan.label}, ${plan.type}, ${plan.length}${who}. Outcome set to Customer Hub Team, Appointment, ${plan.type}.`);
+      say(moved ? 'warn' : 'ok', `Diary booked: ${plan.label}, ${plan.type}, ${plan.length}${who}. Outcome set to Customer Hub Team, Appointment, ${plan.type}.${moved}`);
       showToast(`Diary booked and outcome set: ${plan.type}${who}`);
+      return !moved;
     } finally {
       if (diaryRun === run) diaryRun = null;
     }
@@ -2926,8 +2964,12 @@
     result.errors.forEach((text) => bookingRefs.issues.appendChild(element('div', 'kn-bk-error', text)));
     result.warnings.forEach((text) => bookingRefs.issues.appendChild(element('div', 'kn-bk-warn', text)));
     const waitingForLead = draft.key === INBOUND_KEY;
+    const plan = bookingRefs.diary ? diaryPlan(draft) : null;
+    const withDiary = !!plan && !diaryAlreadyBooked(draft, plan);
     bookingRefs.insert.textContent = waitingForLead ? 'Insert after the lead is created'
+      : withDiary ? (draft.inserted ? 'Update notes + book diary' : 'Insert + book diary')
       : draft.inserted ? 'Update Call Notes' : 'Insert into Call Notes';
+    if (bookingRefs.notesOnly) bookingRefs.notesOnly.classList.toggle('kn-bk-blocked', result.errors.length > 0);
     bookingRefs.insert.classList.toggle('kn-bk-blocked', waitingForLead || result.errors.length > 0);
     if (bookingRefs.diary) bookingRefs.diary.classList.toggle('kn-bk-blocked', !!diaryRun || result.errors.length > 0 || !diaryPlan(draft));
   }
@@ -3014,22 +3056,21 @@
       footer.appendChild(element('div', `kn-bk-status kn-bk-status-${state.bookingStatus.kind}`, state.bookingStatus.text));
     }
     const actions = element('div', 'kn-bk-actions');
-    const insert = button('Insert into Call Notes', 'kn-primary', () => insertBooking(draft));
+    const canDiary = draft.key !== INBOUND_KEY && draft.data.type !== 'national';
+    const insert = button('Insert into Call Notes', 'kn-primary', () => (canDiary ? insertAndBook(draft) : insertBooking(draft)));
+    insert.title = canDiary ? 'Puts the booking into Call Notes, books it in the diary and sets the outcome' : '';
     bookingRefs.insert = insert;
     actions.appendChild(insert);
-    if (draft.key !== INBOUND_KEY && draft.data.type !== 'national') {
-      const diary = button(diaryRun ? 'Booking diary...' : 'Book in diary', '', () => bookInDiary(draft));
-      diary.title = 'Books the open lead in the diary (first free person at the booking time) and sets its outcome to Customer Hub Team, Appointment and the appointment type';
+    if (canDiary) {
+      const notesOnly = button('Notes only', 'kn-bk-small', () => insertBooking(draft));
+      notesOnly.title = 'Only puts the booking into Call Notes';
+      bookingRefs.notesOnly = notesOnly;
+      actions.appendChild(notesOnly);
+      const diary = button(diaryRun ? 'Booking...' : 'Diary only', 'kn-bk-small', () => bookInDiary(draft));
+      diary.title = 'Only books the open lead in the diary (first free person at the booking time) and sets its outcome';
       bookingRefs.diary = diary;
       actions.appendChild(diary);
     }
-    actions.appendChild(button('Copy', '', () => {
-      const result = buildCurrentBooking(draft);
-      if (result) copyText(result.text, null).then((ok) => {
-        state.bookingStatus = ok ? { kind: 'ok', text: 'Copied.' } : { kind: 'warn', text: 'Copy was blocked.' };
-        renderPalette();
-      });
-    }));
     const clear = button('Clear', 'kn-danger', () => {
       const removed = draft.key === INBOUND_KEY ? 0 : clearCallNotes();
       if (draft.key === INBOUND_KEY) {
@@ -3037,7 +3078,7 @@
         inbound.pending = false;
       }
       const isInbound = draft.key === INBOUND_KEY;
-      state.booking = { ...draft, data: blankBooking(), fromLead: {}, notices: [], inserted: null, leadSeen: {}, openSection: isInbound ? 'customer' : 'type' };
+      state.booking = { ...draft, data: blankBooking(), fromLead: {}, notices: [], inserted: null, diaryBooked: null, diaryRepeat: false, leadSeen: {}, openSection: isInbound ? 'customer' : 'type' };
       syncLead(state.booking);
       saveDraftNow();
       state.bookingStatus = isInbound ? { kind: 'ok', text: 'Booking and customer details cleared.' } : removed < 0
