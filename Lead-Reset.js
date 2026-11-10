@@ -1555,8 +1555,20 @@ continue;
 const presented = presentedPerson();
 const lead = matchEmailOnly(left(), presented);
 if (!lead) {
-addLog('A lead that is not one of your Email Only leads presented; left alone');
-if (!await askToCarryOn('This lead is not one of the Email Only leads you assigned, so it is left alone (Accept or Reject it yourself before it dials). Deal with it, then carry on to wait for the next.', 'Done, wait for the next')) break;
+// Rejected and reset all the same, so it cannot dial unnoticed, then
+// left for the agent: nothing else on it is changed.
+let opened = true;
+try {
+await rejectPresented();
+await chooseCallOutcome(OUTCOME_NONE);
+} catch (error) {
+opened = false;
+}
+addLog(`A lead that is not one of your Email Only leads presented; ${opened ? 'rejected so it does not dial, and' : ''} left to you`);
+const message = opened
+? 'This lead is not one of the Email Only leads you assigned. It has been rejected so it does not dial, and the call outcome is back to (Select a Call Outcome). Deal with it yourself and finish or park it, then carry on to wait for the next.'
+: 'This lead is not one of the Email Only leads you assigned, and it could not be rejected. Reject it yourself before it dials, deal with it, then carry on to wait for the next.';
+if (!await askToCarryOn(message, 'Done, wait for the next')) break;
 continue;
 }
 state.deskLead = lead;

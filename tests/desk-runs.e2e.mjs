@@ -218,7 +218,7 @@ async function emailOnly() {
 
   const atUma = await settle(page);
   check('pauses when a lead that is not assigned presents', /not one of the Email Only leads you assigned/.test(atUma.paused || ''), atUma.paused || atUma.log);
-  check('log says it was left alone', atUma.log.some((l) => /not one of your Email Only leads presented; left alone/.test(l)), atUma.log);
+  check('log says it was rejected and left to the agent', atUma.log.some((l) => /not one of your Email Only leads presented; rejected so it does not dial, and left to you/.test(l)), atUma.log);
   const ev1 = atUma.events;
   check('status set to Available first', ev1[0] === 'status:Available', ev1);
   check('Dan rejected, not accepted', ev1.includes('reject:dan') && !ev1.includes('ACCEPT:dan'), ev1);
@@ -235,7 +235,9 @@ async function emailOnly() {
   check('Dan: EO note with the email in Call Notes', danEo.callNotes === 'EMAIL ONLY LEAD: dan.davis@example.com', danEo.callNotes);
   check('Dan: outcome at Finished', danEo.levels && danEo.levels.join(' > ') === 'Customer Hub Team > Ongoing > Email Only Lead' && dan.next === 'Available' && dan.callOutcome === 'Update Outcomes (No Call Made)', dan);
   check('Dan: the older closed lead untouched', danOld.callNotes === 'Older lead notes.' && danOld.levels.join('') === '', danOld);
-  check('Uma presented but not rejected, accepted or touched', ev1.includes('presented:uma') && !ev1.some((e) => /(reject|ACCEPT|open|FINISHED):uma|:uma-/.test(e)) && ev1[ev1.length - 1] === 'presented:uma', ev1);
+  const umaCall = ev1.slice(ev1.indexOf('presented:uma'));
+  check('Uma rejected so it cannot dial, then the call outcome reset', after(umaCall, 'reject:uma', 'outcome:(Select a Call Outcome)'), umaCall);
+  check('Uma otherwise untouched: not accepted, no notes, outcomes or Finished', !umaCall.some((e) => /ACCEPT:uma|FINISHED:uma|:uma-|konnect-notes|level\d|next:|Update Outcomes/.test(e)), umaCall);
 
   // The agent deals with Uma by hand, then carries on.
   await page.evaluate(() => window.mock.agentHandlesPresented());
