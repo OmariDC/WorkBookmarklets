@@ -290,7 +290,7 @@ return false;
 
 // Section 7.16: non-customer / admin.
 function isNonCustomerAdmin(lowered) {
-if (/apply for a job role|industry placement|work experience|\bcv\b|sales advisor position|t level industry placement/i.test(lowered)) return true;
+if (/apply for a job role|industry placement|work experience|\bcv\b|sales advisor position|t level industry placement|apprenticeship|\bapprentice\b|job vacanc|any vacancies|career opportunit/i.test(lowered)) return true;
 if (/remittance|require a payment of £|financial interest in this vehicle/i.test(lowered)) return true;
 if (/would you consider listing this on|head of trade/i.test(lowered)) return true;
 if (/\bdonation\b|community project discount|publicity car loan/i.test(lowered)) return true;
@@ -371,7 +371,7 @@ if (!result) result = customerFirstMarketingCode(text0, lowered, camp, src, flag
 if (!result) result = freeTextDateTime(text0, lowered, referenceDate, flagCtx);
 
 // Step 10: campaign rules.
-if (!result) result = campaignRules(text0, lowered, camp, src, flagCtx);
+if (!result) result = campaignRules(text0, lowered, camp, src, flagCtx, opts.leadRequest);
 
 // Step 11: fallback.
 if (!result) result = R(5, 'Enquiry: Blank', 9, 'low', 'Nothing matched - fallback to Enquiry: Blank.');
@@ -386,6 +386,28 @@ const postClosureAction = src === 'post closure processing'
 
 return Object.assign({}, result, { flags, dedupeKey: computeDedupeKey(text0, campaign, source), postClosureAction, source });
 }
+
+// Leads reviewed by hand on 10 Nov 2026 (fictional details).
+runSelfTest('reviewedLeadsNov10SelfTest', function reviewedLeadsNov10SelfTest() {
+const failures = [];
+const cases = [
+['apprenticeship request', 'Comment Line #1: I am 17 and looking to start an apprenticeship within a car dealership. Do you have any apprenticeship positions?', 'Enquiry - Used', 'Robins & Day Website', '', 6],
+['monthly HP price with PX', 'Message from customer: Hi there id like to know what this works out a per month HP etc please\n(I have a part exchange)\nRegistration: AB12CDE', 'Enquiry - Used', 'VehicleVanTradeEnquiry', '', 4],
+['finance questions on a stock car', 'Comment Line #1: I want to ask a few questions on the Peugeot you have in stock for finance availability', 'Enquiry - Used', 'Robins & Day Website', '', 4],
+['Spoticar interest with a part exchange', 'Lead ID: 00Qa200000EXAMPLE | Marketing Code: SP-SPOTICAR | Customer Comments: I would be interested in the above vehicle. I would be looking to part ex my car.', 'Offer Request - Used', 'Customer First', '', 4],
+['parts request', 'Lead ID: 00Qa200000EXAMPLE | Marketing Code: SP-SPOTICAR | Customer Comments: I would like to install the right door autodimming mirror and need a VIN', 'Offer Request - Used', 'Customer First', '', 6],
+['certificate of conformity', 'Comment Line #1: We bought 5 new chassis and need a SOC for IVA testing. Where can I request copies of SOC?', 'DS - General', 'Robins & Day Website', '', 6],
+['bare website lead with a Motability lead request', 'Sourced from Robins & Day Website.', 'Peugeot - Enquiry - New', 'Robins & Day Website', 'Motability', 3],
+['blank affiliate form', 'Lead ID: 00Qa200000EXAMPLE | Marketing Code: Affiliates-TopGear-Q4-26 | Customer Comments: -', 'Peugeot - Enquiry - New', 'Customer First', '', 5],
+['blank brand site quote', 'Lead ID: 00Qa200000EXAMPLE | Marketing Code: BrandSite-Quote | Customer Comments: -', 'Peugeot - Offer Request - New', 'Customer First', '', 5]
+];
+cases.forEach(([label, notes, campaign, source, leadRequest, want]) => {
+const r = classifyLead(notes, { campaign, source, leadRequest, referenceDate: new Date(2026, 10, 10, 9, 0) });
+if (r.tier !== want) failures.push(`${label}: expected tier ${want}, got ${r.tier} (${r.subCategory})`);
+});
+if (failures.length) console.error('KonnectLeadChecker reviewed-leads-10-Nov self-test FAILED:\n' + failures.join('\n'));
+else console.info(`KonnectLeadChecker reviewed-leads-10-Nov self-test passed (${cases.length}/${cases.length})`);
+});
 
 function customerRedirectChecks(text, lowered, camp, src, flagCtx) {
 // 6.1/6.2: cancellation-without-rebook / withdrawal.
@@ -456,7 +478,7 @@ return R(6, 'Existing Order', 7, 'high', 'Order/reservation cancellation or admi
 
 // Narrow phrasing on purpose: "full service history" on a used-car
 // enquiry must NOT match.
-if (/recall|\bmot\b|service plan|warranty|spare key|gap policy|courtesy car|rental car|direct debit|account login|\bpassword\b|record of (the|my) ['"]?service/i.test(lowered)) {
+if (/recall|\bmot\b|service plan|warranty|spare key|gap policy|courtesy car|rental car|direct debit|account login|\bpassword\b|record of (the|my) ['"]?service|certificates? of conformity|copies of (the )?soc\b|request a soc\b|\biva test|parts? department|part number|door mirror|wing mirror|autodimming/i.test(lowered)) {
 if (isMotabilityHandback(lowered) && !/next car|newer|replace/i.test(lowered)) flagCtx.motab = true;
 return R(6, 'Aftersales', 8, 'high', 'Aftersales/recall/warranty/admin wording (Section 3.6.9).');
 }
@@ -811,6 +833,7 @@ if (hasDayMention(comment) && hasClockTime(comment)) return R(1, 'Customer-State
 if (/test drive|view|come to see/i.test(commentLower)) return R(3, 'Test Drive Request (no date)', 2, 'high', 'Spoticar form, test drive/view (Section 7.15).');
 if (/transfer|move.*to/i.test(commentLower)) { flagCtx.systemTransferField = false; return R(3, 'Used Enquiry: Specific Car', 7, 'medium', 'Spoticar form, transfer request (Section 7.15).'); }
 if (hasFinanceWording(commentLower) && !/no finance owned/i.test(commentLower)) { flagCtx.finance = true; return R(3, 'Finance Quote Request: Specific Car', 9, 'medium', 'Spoticar form, finance terms (Section 7.15).'); }
+if (/part ?ex|\bpx\b|trade ?in/i.test(commentLower) && !/purchase|\bbuy\b|straight swap|go ahead|ready to/i.test(commentLower)) { flagCtx.noPx = false; return R(4, 'Valuation + VOI Stated', 9, 'medium', 'Spoticar form, interest in the car with a part exchange (manual review).'); }
 return R(3, 'Vehicle URL / Video Request', 10, 'medium', 'Spoticar form comment (Section 7.15).');
 }
 if (/Marketing Code:\s*SP-SPOTICAR-FINANCE/i.test(text)) {
@@ -911,6 +934,8 @@ if (/jeep website|alfa romeo - test drive|pop-in-test_drive_/i.test(codeLower)) 
 return R(3, 'Test Drive Request (no date)', 2, 'high', 'Jeep/Alfa/blank test drive marketing code, real request (Section 8.2, v1.9).');
 }
 if (/brandsite-takata_recall_certificate/i.test(codeLower)) return R(6, 'Aftersales', 8, 'high', 'Takata recall certificate marketing code (Section 8.2).');
+if (/^affiliates-/i.test(codeLower) && (!comments || comments === '-')) return R(5, 'Enquiry: Blank', 9, 'medium', 'Affiliate marketing code, blank comment (manual review).');
+if (/brandsite-quote/i.test(codeLower) && (!comments || comments === '-')) return R(5, 'Quote / Offer Request: Blank', 4, 'medium', 'BrandSite-Quote marketing code, blank comment (manual review).');
 if (/brandsite-enquiry/i.test(codeLower)) {
 if (!comments || comments === '-') return R(4, 'Brand Site Enquiry (blank)', 6, 'medium', 'BrandSite-Enquiry marketing code, blank comment (manual review).');
 return null; // classify by comment
@@ -934,7 +959,19 @@ return null;
 }
 
 // Step 10: campaign rules (Section 8.3).
-function campaignRules(text, lowered, camp, src, flagCtx) {
+function campaignRules(text, lowered, camp, src, flagCtx, leadRequest) {
+// Reviewers tiered a bare website lead whose lead request is Motability
+// as Likely Booking; the notes alone say nothing.
+if (isMotabilityText(low(leadRequest)) && /^sourced from [^.]*\.?$/i.test(text.trim())) {
+flagCtx.motab = true;
+return R(3, 'Motability: Information Only', 6, 'medium', 'Bare website lead with a Motability lead request (manual review).');
+}
+// A finance or monthly price question about a car in stock or in the
+// lead: Warm (manual review), below the Spoticar and template rules.
+if (/per month|monthly|\bhp\b|\bpcp\b|finance/i.test(lowered) && /this car|the car|this vehicle|in stock|you have|registration:|\bthe peugeot|\bthe citroen|\bthe vauxhall|\bwhat this works out/i.test(lowered) && !/no finance|self financ/i.test(lowered)) {
+flagCtx.finance = true;
+return R(4, 'Quote / Offer Request: Detailed', 3, 'medium', 'Finance or monthly price question about a specific car (manual review).');
+}
 if (/reserve\s*-\s*(new|used)/i.test(camp)) {
 if (hasDayMention(text) && hasClockTime(text)) return R(1, 'Reserve with Appointment', 5, 'high', 'Reserve campaign with day+time (Section 8.3).');
 return R(3, 'Reserve Online', 3, 'medium', 'Reserve campaign (Section 8.3).');
@@ -3293,7 +3330,7 @@ const SESSION_STORAGE_KEY = 'konnectLeadChecker:session:v1';
 // Bump CLASSIFIER_VERSION whenever classifyLead's rules change: results
 // from an older version are re-checked rather than carried into a new
 // paste. SESSION_SCHEMA changes when the stored session shape changes.
-const CLASSIFIER_VERSION = '2026-11-04';
+const CLASSIFIER_VERSION = '2026-11-10';
 const SESSION_SCHEMA = 2;
 // The stored batch holds customer details, so it is dropped after a shift.
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
@@ -3693,7 +3730,7 @@ const decision = isPostClosureLead
 ? postClosureSendBackReason(candidate.leadId, { sent: sentThroughNotes(followUp), team: initialNotes })
 : { reason: '', evidence: '' };
 const alreadyEngagedCallEntry = !!decision.reason;
-const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry });
+const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry, leadRequest: panelFields.campaign && panelFields.campaign.parenthetical });
 if (classification.confidence === 'low') {
 // Tentative tier and reasoning are kept on an EXCEPTION so a reviewer can
 // see them; it is never auto-applied.
