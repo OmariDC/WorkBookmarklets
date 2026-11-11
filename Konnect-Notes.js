@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.13.0'
+    version: '1.13.1'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -741,9 +741,13 @@
       .kn-bk-status-ok { color: #248a3d; }
       .kn-bk-status-warn { color: #b25000; }
       .kn-bk-status-error { color: #c9251c; }
-      .kn-bk-actions { display: flex; gap: 6px; align-items: center; }
-      .kn-bk-actions .kn-primary { flex: 1; }
-      .kn-bk-actions .kn-bk-small { padding: 6px 8px; font-size: 11px; white-space: nowrap; }
+      /* The main action has a row to itself; the others sit under it and wrap as whole buttons when narrow. */
+      .kn-bk-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+      .kn-bk-actions .kn-button { white-space: nowrap; }
+      .kn-bk-actions .kn-primary { flex: 1 0 100%; padding: 10px 14px; font-size: 14px; font-weight: 700; }
+      .kn-bk-actions .kn-bk-small { flex: 0 1 auto; padding: 6px 12px; font-size: 12px; }
+      .kn-bk-actions .kn-bk-small:not(.kn-danger):not(:disabled) { box-shadow: inset 0 0 0 1px #d1d1d6; }
+      .kn-bk-actions .kn-danger { margin-left: auto; padding: 6px 4px; }
       .kn-inbound-launcher { position: fixed; left: 20px; bottom: 20px; z-index: 2147482999; padding: 10px 16px; border: none; border-radius: 999px; background: #1c1c1e; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,0.3); }
       .kn-inbound-launcher:hover { background: #2c2c2e; }
       .kn-phone-launcher { display: block; background: #1c1c1e !important; color: #fff !important; border: none !important; font-size: 18px; font-weight: 900; line-height: 1; cursor: pointer; }

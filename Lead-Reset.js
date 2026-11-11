@@ -1980,9 +1980,10 @@ const STYLE = `
 .alert.red { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
 .alert.amber { background: #fffbeb; color: #78350f; border: 1px solid #fde68a; }
 .alert .row { margin-top: 8px; }
-.big-count { display: flex; align-items: baseline; gap: 8px; }
+.big-count { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
 .big-count strong { font-size: 30px; line-height: 1; letter-spacing: -.5px; }
-.btn { font: inherit; font-weight: 600; font-size: 12.5px; border-radius: 999px; padding: 8px 14px; cursor: pointer; border: 1px solid transparent; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+/* 20px is a full pill on one line and a tidy rounded box if a long label wraps. */
+.btn { font: inherit; font-weight: 600; font-size: 12.5px; line-height: 1.3; text-align: center; border-radius: 20px; padding: 8px 14px; cursor: pointer; border: 1px solid transparent; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .btn.primary { background: var(--accent); color: #1c1c1e; }
 .btn.primary:hover { filter: brightness(.95); }
 .btn.secondary { background: #e5e5ea; color: var(--text); }
@@ -1992,12 +1993,12 @@ const STYLE = `
 .btn.danger { background: transparent; color: var(--red); border-color: transparent; }
 .btn.danger:hover { background: #fef2f2; }
 .btn.wide { width: 100%; padding: 10px 14px; font-size: 13.5px; }
-.btn.small { padding: 5px 11px; font-size: 12px; }
+.btn.small { padding: 5px 11px; font-size: 12px; white-space: nowrap; }
 .btn:focus-visible, .tab:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible, .report:focus-visible, .stop-clear:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 .icon-btn:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
 .row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .tabs { display: flex; gap: 4px; background: #e5e5ea; border-radius: 10px; padding: 3px; }
-.tab { flex: 1; font: inherit; font-size: 12px; font-weight: 600; color: var(--text-2); background: transparent; border: 0; border-radius: 8px; padding: 6px 4px; cursor: pointer; }
+.tab { flex: 1; font: inherit; font-size: 12px; font-weight: 600; color: var(--text-2); background: transparent; border: 0; border-radius: 8px; padding: 6px 4px; cursor: pointer; white-space: nowrap; }
 .tab.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
 .toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
 .toggle input { width: 16px; height: 16px; accent-color: #1c1c1e; margin: 0; }
@@ -2021,7 +2022,7 @@ const STYLE = `
 .done-steps > summary { padding: 2px 0; font-weight: 500; font-size: 12.5px; justify-content: flex-start; cursor: pointer; }
 .steps.inner { margin: 2px 0 4px 26px; }
 .needs-card { border: 2px solid #f59e0b; background: #fffbeb; }
-.needs-card .who { font-size: 11.5px; color: #78350f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.needs-card .who { font-size: 11.5px; color: #78350f; overflow-wrap: anywhere; }
 .needs-card h3 { margin: 0 0 4px; font-size: 14px; color: #7c2d12; }
 .needs-card p { margin: 0 0 10px; color: #451a03; font-size: 13px; }
 .needs-card .others { margin-top: 8px; justify-content: space-between; }
@@ -2037,7 +2038,15 @@ details.how > div { margin-top: 4px; font-size: 11.5px; color: var(--muted); }
 .list-row { display: flex; align-items: center; gap: 9px; padding: 7px 0; border-top: 1px solid var(--border); }
 .avatar { width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
 .list-row .who { flex: 1; min-width: 0; }
-.list-row .who div { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.list-row .who div { overflow-wrap: anywhere; }
+.list-row .when { font-size: 11px; }
+.field { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.field label { font-size: 12px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
+.select-wrap { position: relative; flex: 1; min-width: 0; display: flex; }
+/* The arrow is drawn here, as the select's own is switched off with its native look. */
+.select-wrap::after { content: ''; position: absolute; right: 13px; top: 50%; width: 6px; height: 6px; border-right: 1.5px solid var(--text-2); border-bottom: 1.5px solid var(--text-2); transform: translateY(-70%) rotate(45deg); pointer-events: none; }
+.field select { flex: 1; min-width: 0; -webkit-appearance: none; appearance: none; font: inherit; font-size: 12.5px; font-weight: 600; line-height: 1.3; color: var(--text); background: var(--surface); border: 1px solid #cbd5e1; border-radius: 20px; padding: 6px 30px 5px 12px; margin: 0; cursor: pointer; text-overflow: ellipsis; }
+.field select:hover { background: var(--bg); }
 .chip { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
 .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0 10px; }
 .tile { background: var(--bg); border-radius: 10px; padding: 8px; text-align: center; }
@@ -2167,9 +2176,9 @@ const tab = (key, label) => `<button type="button" class="tab${view === key ? ' 
 return `<div class="tabs" role="group" aria-label="Choose a run">${tab('re', 'Re setup')}${tab('pc', 'Post Closure')}${tab('eo', 'Email Only')}</div>`;
 }
 
-function listRow(name, detail, status) {
+function listRow(name, detail, status, when) {
 const color = CHIP_COLORS[status] || '#5b6577';
-return `<div class="list-row"><span class="avatar" style="background:${color}1a;color:${color};">${escapeHtml(initials(name))}</span><div class="who"><div><strong>${escapeHtml(name)}</strong></div><div class="muted small">${escapeHtml(detail)}</div></div>${chip(status)}</div>`;
+return `<div class="list-row"><span class="avatar" style="background:${color}1a;color:${color};">${escapeHtml(initials(name))}</span><div class="who"><div><strong>${escapeHtml(name)}</strong></div><div class="muted small">${escapeHtml(detail)}</div>${when ? `<div class="muted when">${escapeHtml(when)}</div>` : ''}</div>${chip(status)}</div>`;
 }
 
 function listFold(title, doneCount, rows) {
@@ -2198,7 +2207,7 @@ if (!leads.length) {
 return [`<div class="card empty"><strong>No send backs yet</strong><div class="muted small">Check your Parked Calls on the Lead Checker. The ones marked "send back through" show here.${needContact ? ' ' + needContact : ''}</div>${ageLine}${howItWorks(SEND_BACK_HOW)}${checkButton}${requestLine}</div>`];
 }
 const now = Date.now();
-const rows = leads.map((l) => listRow(l.name, `${l.shorthand.toUpperCase()} · ${l.reason}${l.checkedAt ? ' · checked ' + ageText(l.checkedAt, now) : ''}`, done[l.key] || 'Waiting'));
+const rows = leads.map((l) => listRow(l.name, `${l.shorthand.toUpperCase()} · ${l.reason}`, done[l.key] || 'Waiting', l.checkedAt ? `Checked ${ageText(l.checkedAt, now)}` : ''));
 return [`<div class="card">
 <div class="big-count"><strong>${left}</strong><span>to send back through</span></div>
 <div class="muted small" style="margin-top:4px;">Opens each one from your Parked Calls, writes CAD or CAH, sets the outcomes and presses Finished.</div>
@@ -2219,7 +2228,7 @@ if (!leads.length) {
 return [`<div class="card empty"><strong>No Email Only leads assigned today</strong><div class="muted small">Assign your Email Only leads in SLA Manager first; they show here. Anything else that presents is left to you.</div></div>`];
 }
 const chosen = agents.includes(settings.emailOnlyAgent) ? settings.emailOnlyAgent : agents[0];
-const picker = agents.length > 1 ? `<label class="small muted" style="display:block;margin-bottom:8px;">Assigned to <select data-action="eoAgent">${agents.map((a) => `<option${a === chosen ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('')}</select></label>` : '';
+const picker = agents.length > 1 ? `<div class="field"><label for="_lrEoAgent">Assigned to</label><span class="select-wrap"><select id="_lrEoAgent" data-action="eoAgent">${agents.map((a) => `<option${a === chosen ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('')}</select></span></div>` : '';
 const rows = leads.map((l) => listRow(l.name, l.campaign || 'Email Only', done[l.key] || 'Waiting'));
 return [`<div class="card">
 ${picker}
