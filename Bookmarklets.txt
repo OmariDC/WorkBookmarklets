@@ -38,12 +38,6 @@ javascript:(async function(){try{const url="https://raw.githubusercontent.com/Om
 
 --------------------------------------------------------------------
 
-Auto-Summary
-
-javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Auto-Summary.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Auto-Summary: "+e);}})();
-
---------------------------------------------------------------------
-
 Diagnostics (page capture)
 
 Stays open and keeps a history of page snapshots with customer details
@@ -51,12 +45,6 @@ masked. Alt+Shift+D takes one without clicking; Watch takes one before
 every click and after the page changes. Copy changes to send it on.
 
 javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Diagnostics.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Diagnostics: "+e);}})();
-
---------------------------------------------------------------------
-
-Halo-Tool
-
-javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Halo-Tool.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Halo-Tool: "+e);}})();
 
 --------------------------------------------------------------------
 
