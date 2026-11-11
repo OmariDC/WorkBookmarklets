@@ -159,6 +159,7 @@ async function postClosureNoReview() {
   check('run ended without pausing', !out.running && !out.paused, out.paused || out.log);
   const ev = out.events;
   check('only Jo was opened from Parked Calls', ev.filter((e) => e.startsWith('open:')).join() === 'open:jo', ev);
+  check('Shift Start is set before Parked Calls is used', ev.includes('status:Shift Start') && ev.indexOf('status:Shift Start') < ev.indexOf('open:jo'), ev);
   check('log says one was not in Parked Calls', out.log.some((l) => /1 not in your Parked Calls, left alone/.test(l)), out.log);
   check('Konnect Notes expanded cad', ev.includes('konnect-notes:cad'), ev);
   check('call outcome Update Outcomes', ev.includes('outcome:Update Outcomes (No Call Made)'), ev);

@@ -1366,10 +1366,14 @@ function settledParkedRows() {
 return settledList(() => readSearchRows().rows, (rows) => rows.map((r) => r.tr.textContent).join('|'), 6000, 1200);
 }
 
+// Shift Start comes first every time, so no lead presents and no inbound is
+// forced while Parked Calls is open.
 async function goToParked() {
 const already = onParkedPage();
+if (!already && onCallPage()) throw new NeedsYou('A call is open. Finish or park it yourself, then carry on.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
+const status = await ensureShiftStart();
+if (/^Status set/.test(status)) addLog(status);
 if (!already) {
-if (onCallPage()) throw new NeedsYou('A call is open. Finish or park it yourself, then carry on.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
 const nav = byText(document, '[ng-click]', /^parked( calls)?$/i).find(isVisible);
 if (nav) nav.click(); else location.hash = '#!/search/parked';
 if (!await waitFor(onParkedPage, 15000)) throw new NeedsYou('Parked Calls did not open. Open it yourself.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
