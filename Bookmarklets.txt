@@ -99,17 +99,11 @@ javascript:(async function(){try{const url="https://raw.githubusercontent.com/Om
 
 --------------------------------------------------------------------
 
-SLA-Extract
-
-javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/SLA-Extract.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading SLA-Extract: "+e);}})();
-
---------------------------------------------------------------------
-
 SLA-Manager
 
 javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/SLA-Manager.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading SLA-Manager: "+e);}})();
 
 --------------------------------------------------------------------
 
-Not included: Auto-Fill.js (placeholder stub, not a real bookmarklet)
-and Konnect-Notes-Phrases.json (data file, not a script).
+Not included: Konnect-Notes-Phrases.json and Konnect-Booking-Engine.js
+(Konnect Notes loads them itself; they are not bookmarklets).

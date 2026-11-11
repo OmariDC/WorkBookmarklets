@@ -91,10 +91,10 @@ function sharedContractChecks() {
     ['National check results header',
       grab(lc, /const NATIONAL_RESULT_HEADER = (\[[^\]]*\])/, 'NATIONAL_RESULT_HEADER (Lead Checker)'),
       [grab(sla, /const NATIONAL_RESULT_HEADER = (\[[^\]]*\])/, 'NATIONAL_RESULT_HEADER (SLA Manager)'),
-        grab(reset, /const NATIONAL_RESULT_HEADER = (\[[^\]]*\])/, 'NATIONAL_RESULT_HEADER (Lead Reset)')]],
+        grab(reset, /const NATIONAL_RESULT_HEADER = (\[[^\]]*\])/, 'NATIONAL_RESULT_HEADER (Lead Re setup)')]],
     ['National results storage key',
       grab(sla, /const NATIONAL_RESULTS_KEY = ('[^']*')/, 'NATIONAL_RESULTS_KEY (SLA Manager)'),
-      [grab(reset, /const NATIONAL_RESULTS_KEY = ('[^']*')/, 'NATIONAL_RESULTS_KEY (Lead Reset)')]],
+      [grab(reset, /const NATIONAL_RESULTS_KEY = ('[^']*')/, 'NATIONAL_RESULTS_KEY (Lead Re setup)')]],
     ...[['LIVE_REQUEST_KEY', 'LIVE_REQUEST_KEY'], ['LIVE_STATUS_KEY', 'LIVE_STATUS_KEY'], ['LIVE_LINK_KEY', 'LIVE_LINK_KEY'],
       ['DESK_RESULTS_KEY', 'DESK_RESULTS_KEY'], ['EMAIL_ONLY_ASSIGNED_KEY', 'EMAIL_ONLY_ASSIGNED_KEY']].map(([inSla, inReset]) => [
       `Storage shared by SLA Manager and Lead Re setup (${inSla})`,
