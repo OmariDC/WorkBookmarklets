@@ -10,7 +10,9 @@
 window.toLive = [];
 const live = document.getElementById('live').contentWindow;
 live.postMessage = (message, origin) => { if (origin === 'https://carbot.ai') window.toLive.push(message); };
-window.open = () => live;
+// Counted, so a test can tell a tab was asked for.
+window.opened = 0;
+window.open = () => { window.opened++; return live; };
 window.fromLive = (data) => window.dispatchEvent(new MessageEvent('message', { origin: 'https://carbot.ai', source: live, data }));
 </script>
 </body></html>

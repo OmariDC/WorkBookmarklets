@@ -1,0 +1,92 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Konnect Live (mock)</title>
+<style>
+body { margin: 0; font-family: sans-serif; background: #fff; }
+nav { background: #222; height: 50px; }
+.ng-hide { display: none !important; }
+#searchForm, #loginForm { padding: 70px 20px 10px; }
+</style>
+</head>
+<body>
+<!-- A stand-in for Konnect Live, enough for the Lead Checker to search for
+     a customer and open a timeline. Fictional data only.
+     - An email containing "none" finds nobody.
+     - Any other search finds one customer whose timeline has no sales leads.
+     window.mock.logOut() swaps the page for the login form; pressing Login
+     brings it back. -->
+<nav class="navbar navbar-inverse navbar-fixed-top"><ul class="nav navbar-right top-nav"><li>Menu</li></ul><div class="navbar-collapse"></div></nav>
+<div id="searchForm">
+  <label><input type="radio" name="bookingSearchBy" value="1"> Name</label>
+  <label><input type="radio" name="bookingSearchBy" value="3"> Phone</label>
+  <label><input type="radio" name="bookingSearchBy" value="4"> Email</label>
+  <label><input type="radio" name="bookingSearchBy" value="5"> Reg</label>
+  <input type="text" ng-model="uiSettings.searchText">
+  <button id="btnSearch">Search</button>
+  <div><label>Records Found:</label> <span class="ng-binding"></span> <i class="fa fa-refresh ng-hide"></i></div>
+  <div id="grid"></div>
+</div>
+<div ng-view></div>
+<script>
+(function () {
+  const mock = window.mock = { searches: [], opened: 0, searchDelay: 120, timelineDelay: 120, loginClicks: 0 };
+  const view = document.querySelector('[ng-view]');
+  const grid = document.getElementById('grid');
+  const input = document.querySelector('input[ng-model="uiSettings.searchText"]');
+  const found = document.querySelector('#searchForm span.ng-binding');
+  const spinner = document.querySelector('#searchForm i.fa-refresh');
+
+  document.getElementById('btnSearch').addEventListener('click', () => {
+    const text = input.value;
+    mock.searches.push(text);
+    spinner.classList.remove('ng-hide');
+    setTimeout(() => {
+      grid.innerHTML = '';
+      const none = /none/i.test(text);
+      if (!none) {
+        grid.innerHTML = '<div role="row" row-index="0"><div col-id="CustomerName"><a ng-click="navToConnectedCustomer(700123)">Sam Example</a></div><div col-id="DealerName">Preston</div><div col-id="RegistrationNumber">AB12CDE</div><div col-id="Summary"></div></div>';
+        grid.querySelector('a').addEventListener('click', openCustomer);
+      }
+      found.textContent = none ? '0' : '1';
+      spinner.classList.add('ng-hide');
+    }, mock.searchDelay);
+  });
+
+  function openCustomer() {
+    mock.opened++;
+    location.hash = '#/connectedCustomer/700123?redirectRoute=%2Fsearch';
+    view.innerHTML = '<div class="ng-scope"><div class="row timeline-editing-header">Sam Example <i title="Refreshing..." ng-show="loading" class="fa ng-hide">.</i><i title="Refresh" ng-show="!loading" class="fa ng-hide">R</i></div><div style="margin-top:80px;"></div></div>';
+    setTimeout(() => {
+      const ready = view.querySelector('i[title="Refresh"]');
+      if (ready) ready.classList.remove('ng-hide');
+    }, mock.timelineDelay);
+  }
+
+  window.addEventListener('hashchange', () => { if (/^#\/search/.test(location.hash)) view.innerHTML = ''; });
+
+  mock.logOut = () => {
+    const navHtml = '<ul class="nav navbar-right top-nav"><li>Menu</li></ul><div class="navbar-collapse"></div>';
+    document.querySelector('nav').remove();
+    document.getElementById('searchForm').style.display = 'none';
+    view.innerHTML = '';
+    const form = document.createElement('div');
+    form.id = 'loginForm';
+    form.innerHTML = '<input type="password"><button class="btn-login" id="loginBtn" style="width:120px;height:40px">Login</button>';
+    document.body.appendChild(form);
+    form.querySelector('button').addEventListener('click', () => {
+      mock.loginClicks++;
+      if (!mock.allowLogin) return;
+      form.remove();
+      const nav = document.createElement('nav');
+      nav.className = 'navbar navbar-inverse navbar-fixed-top';
+      nav.innerHTML = navHtml;
+      document.body.insertBefore(nav, document.body.firstChild);
+      document.getElementById('searchForm').style.display = '';
+    });
+  };
+})();
+</script>
+</body>
+</html>

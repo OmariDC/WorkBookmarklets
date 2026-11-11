@@ -31,7 +31,7 @@ try { localStorage.removeItem(key); } catch (error) { /* ignore */ }
 // live. The date comes from GitHub once per open; later checks compare the
 // published file's text, which has no rate limit to share between staff.
 function startVersionWatch(fileName, onChange) {
-const state = { publishedAt: null, newer: false };
+const state = { publishedAt: null, newer: false, timer: null };
 if (typeof fetch !== 'function') return state;
 const repo = 'OmariDC/WorkBookmarklets';
 const fileText = () => fetch(`https://raw.githubusercontent.com/${repo}/main/${fileName}?_=${Date.now()}`).then((r) => (r.ok ? r.text() : null));
@@ -44,7 +44,7 @@ const date = list && list[0] && list[0].commit && list[0].commit.committer && li
 if (date) { state.publishedAt = new Date(date); onChange(state); }
 }).catch(() => {});
 fileText().then((text) => { if (text) baseline = fingerprint(text); }).catch(() => {});
-setInterval(() => {
+state.timer = setInterval(() => {
 if (state.newer || baseline == null) return;
 fileText().then((text) => {
 if (text && fingerprint(text) !== baseline) { state.newer = true; onChange(state); }
@@ -140,7 +140,6 @@ checklist: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 
 copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
 focus: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>',
 check: '<polyline points="20 6 9 17 4 12"/>',
-chevronRight: '<polyline points="9 18 15 12 9 6"/>',
 x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'
 };
 
@@ -237,11 +236,29 @@ let runningMorningChecks = false;
 // Covers the whole refresh, which can take seconds with no hash change, so
 // the background poll does not start its own extraction mid-wait.
 let refreshingLeads = false;
-// Filled by _runAllMorningChecks as each check completes. Empty means not run yet.
-let morningChecksResults = (function() {
-const lastRun = loadMorningChecksLastRun();
-return (lastRun && Array.isArray(lastRun.results)) ? lastRun.results : [];
-})();
+// Set while a flow has the tab on another Konnect page (Queue by Agent):
+// Clear Queue, the Queue check, the badge's queue scan and the scan after an
+// assign run.
+let navigating = false;
+// One guard for everything that scans, assigns or navigates, so two of them
+// never run over each other. Returns why the panel is busy, or null.
+function busyReason() {
+if (assigning) return 'an assign run is in progress';
+if (extracting) return 'the leads are still loading';
+if (runningMorningChecks) return 'the morning checks are running';
+if (refreshingLeads) return 'the leads are being refreshed';
+if (navigating) return 'the agent queues are being read';
+return null;
+}
+function refuseIfBusy() {
+const reason = busyReason();
+if (!reason) return false;
+showToast(`Not yet: ${reason}. Try again when it has finished.`);
+return true;
+}
+// Filled by _runAllMorningChecks as each check completes. Empty means not run
+// yet. Today's last run is put back further down, once its storage key exists.
+let morningChecksResults = [];
 const MORNING_CHECKS_ORDER = [
 { key: 'emailOnly', label: 'Email Only Count' },
 { key: 'sla', label: 'SLA Count' },
@@ -325,7 +342,7 @@ failures.push(`${c.name}: expected tier ${c.expectTier}, got tier ${result.tier}
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager categorizeTier self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info(`SLA Manager categorizeTier self-test passed (${cases.length}/${cases.length})`);
+console.info('SLA Manager categorizeTier self-test passed');
 }
 });
 
@@ -340,13 +357,21 @@ function sortByUrgency(customers) {
 return [...customers].sort((a, b) => computeDisplaySortKey(a) - computeDisplaySortKey(b));
 }
 
+// Pure. 45 reads "45m", 71 reads "1h 11m", 120 reads "2h".
+function formatMinutesAgo(minutes) {
+if (minutes < 60) return `${minutes}m`;
+const hours = Math.floor(minutes / 60);
+const rest = minutes % 60;
+return rest ? `${hours}h ${rest}m` : `${hours}h`;
+}
+
 // msUntil <= 0 counts as Missed in case the Status cell has not caught up.
 // Missed and due within 15 minutes are both emphasised.
 function slaUrgencyInfo(customer) {
 if (!customer.slaDate) return { label: null, color: null, emphasize: false };
 const minsUntil = Math.round((customer.slaDate.getTime() - Date.now()) / 60000);
 if (customer.status === 'Missed' || minsUntil <= 0) {
-return { label: `MISSED ${Math.abs(minsUntil)}m ago`, color: '#dc2626', emphasize: true };
+return { label: `MISSED ${formatMinutesAgo(Math.abs(minsUntil))} ago`, color: '#dc2626', emphasize: true };
 }
 if (minsUntil <= 15) return { label: `Due in ${minsUntil}m`, color: '#dc2626', emphasize: true };
 if (minsUntil <= 30) return { label: `Due in ${minsUntil}m`, color: '#d97706', emphasize: false };
@@ -360,54 +385,21 @@ function findDetailModal() {
 return document.querySelector('[role="alertdialog"]') || document.querySelector('.modal');
 }
 
-function waitForModal(timeout = 3000) {
-return new Promise((resolve) => {
-const existing = findDetailModal();
-if (existing) {
-resolve(existing);
-return;
+// Polls until test() gives something truthy, or gives up and returns null.
+async function waitUntil(test, timeout, interval = 60) {
+const deadline = Date.now() + timeout;
+for (;;) {
+const value = test();
+if (value) return value;
+if (Date.now() >= deadline) return null;
+await sleep(interval);
+}
 }
 
-const timer = setTimeout(() => {
-observer.disconnect();
-resolve(null);
-}, timeout);
-
-const observer = new MutationObserver(() => {
-const modal = findDetailModal();
-if (modal) {
-clearTimeout(timer);
-observer.disconnect();
-resolve(modal);
-}
-});
-observer.observe(document.body, { childList: true, subtree: true });
-});
-}
-
-// Waits for the open modal to leave the DOM, so the next row's click is not
-// matched to the closing one by waitForModal's fast path.
-function waitForModalGone(timeout = 500) {
-return new Promise((resolve) => {
-if (!findDetailModal()) {
-resolve();
-return;
-}
-
-const timer = setTimeout(() => {
-observer.disconnect();
-resolve();
-}, timeout);
-
-const observer = new MutationObserver(() => {
-if (!findDetailModal()) {
-clearTimeout(timer);
-observer.disconnect();
-resolve();
-}
-});
-observer.observe(document.body, { childList: true, subtree: true });
-});
+// Waits for the open pop-up to leave the page. Resolves false if it is
+// still there, so the next lead is not read from the last lead's pop-up.
+async function waitForModalGone(timeout = 4000) {
+return !!(await waitUntil(() => !findDetailModal(), timeout));
 }
 
 // For routes such as Queue by Agent that render after the hash change.
@@ -561,7 +553,7 @@ observer.observe(icon, { attributes: true, attributeFilter: ['class'] });
 // Clicking the panel title refreshes the leads list (via Konnect's own icon
 // when present), then re-scans so new leads are fully ingested.
 window._refreshLeadsAndPanel = async function() {
-if (extracting || assigning || runningMorningChecks || refreshingLeads) return;
+if (busyReason()) return;
 refreshingLeads = true;
 showPageFlashOverlay('Refreshing leads…');
 try {
@@ -622,14 +614,18 @@ observer.observe(document.body, { childList: true, subtree: true, characterData:
 }
 
 // Unassigns every lead via Konnect's Clear Queues action. No confirm prompt
-// and no undo. Konnect is a single-page app, so the visible tab navigates to
-// Queue by Agent and back.
+// and no undo, so it runs once however many times it is clicked. Konnect is
+// a single-page app, so the visible tab navigates to Queue by Agent and
+// back. The result is read back from the leads table before it is reported.
 window._clearWholeQueue = async function() {
+if (refuseIfBusy()) return;
+navigating = true;
 const originalHash = window.location.hash;
 // Captured first, since detectPageType() would then read Queue by Agent.
 const originatingPageType = detectPageType();
 showPageFlashOverlay('Clearing the queue…');
-let cleared = false;
+try {
+let pressed = false;
 try {
 window.location.hash = '#/Queue/QueueByAgent';
 const clearBtn = await waitForElement('button[ng-click="ClearQueues()"]');
@@ -643,38 +639,64 @@ alert('Could not confirm the Customer Hub module is selected, so nothing was cle
 return;
 }
 clearBtn.click();
+pressed = true;
 await sleep(800);
-// Clear Queues only changes assignment, so cached leads are updated in place.
 clearAgentQueueSnapshot();
-cleared = true;
 } finally {
 window.location.hash = originalHash;
 }
+if (!pressed) return;
 
-// Render only once the hash is restored and the table has rows again, since
-// the table is read synchronously.
-try {
-if (cleared) {
+const readLive = () => (originatingPageType === PAGE_PENDING ? collectPendingCustomers() : collectAssignableLeads());
+let live = [];
 try {
 await waitForLeadsTableReady();
-} catch (error) {
-console.warn('[SLA Manager] Wait for table after clearing the queue failed - showing the panel anyway:', error);
+live = readLive();
+// Leads still showing an agent may only be an old copy of the list:
+// refresh it once before believing them.
+if (live.some((l) => l.assigned)) {
+const icon = findNativeLeadsRefreshIcon();
+if (icon) {
+icon.click();
+await waitForRefreshIconSpinState(icon, true, 2000);
+await waitForRefreshIconSpinState(icon, false, 15000);
+await waitForLeadsTableReady();
+live = readLive();
 }
+}
+} catch (error) {
+console.warn('[SLA Manager] Could not read the list back after clearing the queue:', error && error.message);
+}
+
 try {
-patchCachedLeadsCleared();
+const stillAssigned = live.filter((l) => l.assigned).length;
+// The cards follow what the page shows now. If the list could not be
+// read at all, they are shown unassigned, as pressed.
+const liveByKey = new Map(live.map((l) => [l.key, l]));
+const applyLive = (c) => {
+const now = liveByKey.get(c.key);
+return live.length === 0 || !now ? { ...c, assigned: false, agentName: null } : { ...c, assigned: now.assigned, agentName: now.agentName };
+};
+if (live.length > 0) cachedLeadsSnapshot = { pageType: originatingPageType === PAGE_PENDING ? PAGE_PENDING : PAGE_SLA, leads: live, scannedAt: new Date() };
+else patchCachedLeadsCleared();
 if (originatingPageType === PAGE_PENDING) {
-currentPendingCustomers = currentPendingCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
+currentPendingCustomers = currentPendingCustomers.map(applyLive);
 displayPendingPanel(currentPendingCustomers, 0, 0, false);
 } else {
-currentCustomers = currentCustomers.map((c) => ({ ...c, assigned: false, agentName: null }));
+currentCustomers = currentCustomers.map(applyLive);
 displayPanel(currentCustomers, 0, 0, false);
 }
+showToast(live.length === 0
+? 'Clear Queues was pressed, but the list could not be read back to confirm it. Refresh to check.'
+: stillAssigned === 0
+? 'Queue cleared: no lead shows an agent now.'
+: `Clear Queues was pressed, but ${stillAssigned} lead${stillAssigned === 1 ? ' still shows' : 's still show'} an agent. Refresh and check before relying on it.`);
 } catch (error) {
 console.error('[SLA Manager] Panel failed to render after clearing the queue:', error);
-alert('SLA Manager: the queue was cleared, but the panel failed to reload.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
-}
+alert('SLA Manager: Clear Queues was pressed, but the panel failed to reload.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
 }
 } finally {
+navigating = false;
 hidePageFlashOverlay();
 }
 };
@@ -713,11 +735,7 @@ localStorage.setItem(AGENT_QUEUE_SNAPSHOT_KEY, JSON.stringify({ scannedAt: new D
 // Assigning or clearing changes queue positions, so the snapshot is wiped
 // rather than re-scanned.
 function clearAgentQueueSnapshot() {
-try {
-localStorage.removeItem(AGENT_QUEUE_SNAPSHOT_KEY);
-} catch (error) {
-// ignore
-}
+removeStoredKey(AGENT_QUEUE_SNAPSHOT_KEY);
 }
 
 function scrapeAgentQueuePositions() {
@@ -733,15 +751,15 @@ const queue = rows.map((row, index) => {
 const infoSpan = [...row.querySelectorAll('span[title]')].find((el) => (el.getAttribute('title') || '').includes('|'));
 const title = infoSpan ? infoSpan.getAttribute('title') || '' : '';
 const parts = title.split('|').map((s) => s.trim());
-const processed = /background-color:\s*rgb\(244,\s*244,\s*244\)/.test(row.getAttribute('style') || '');
-return { position: index + 1, name: parts[0] || '', email: parts[1] || '', phone: parts[2] || '', processed };
+// Only what matching a lead needs is kept: no name.
+return { position: index + 1, email: parts[1] || '', phone: parts[2] || '', done: /background-color:\s*rgb\(244,\s*244,\s*244\)/.test(row.getAttribute('style') || '') };
 });
 
 agents.push({
 agentName,
 totalShown: queue.length,
-notDoneCount: queue.filter((item) => !item.processed).length,
-queue
+notDoneCount: queue.filter((item) => !item.done).length,
+queue: queue.map(({ done, ...item }) => item)
 });
 });
 return agents;
@@ -767,10 +785,7 @@ return false;
 await sleep(500);
 const agents = scrapeAgentQueuePositions();
 if (isDebugLogging()) console.info(`[SLA Manager] Queue by Agent scan: ${agents.length} agent panel(s) found`, agents.map((a) => ({
-agent: a.agentName, notDone: a.notDoneCount, totalShown: a.totalShown,
-sample: isDebugLogging()
-? a.queue.slice(0, 3).map((q) => ({ position: q.position, name: q.name, email: q.email, phone: q.phone, processed: q.processed }))
-: `${a.queue.length} queued (set workBookmarklets:debug to see details)`
+agent: a.agentName, notDone: a.notDoneCount, totalShown: a.totalShown, sample: a.queue.slice(0, 3)
 })));
 saveAgentQueueSnapshot(agents);
 return true;
@@ -780,6 +795,8 @@ window.location.hash = originalHash;
 }
 
 window._checkAgentQueuePositions = async function(buttonEl) {
+if (refuseIfBusy()) return;
+navigating = true;
 const originatingPageType = detectPageType();
 const originalText = buttonEl ? buttonEl.textContent : null;
 if (buttonEl) buttonEl.textContent = 'Checking…';
@@ -805,6 +822,7 @@ console.error('[SLA Manager] Panel failed to render after queue check:', error);
 alert('SLA Manager: the panel failed to load after checking the queue.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
 }
 } finally {
+navigating = false;
 hidePageFlashOverlay();
 if (buttonEl) buttonEl.textContent = originalText;
 }
@@ -822,7 +840,7 @@ const itemEmailKey = normalizeEmailForLeadCheckerMatch(item.email);
 const itemPhoneKey = normalizePhoneForLeadCheckerMatch(item.phone);
 const matches = (emailKey && itemEmailKey && emailKey === itemEmailKey) || (phoneKey && itemPhoneKey && phoneKey === itemPhoneKey);
 if (matches) {
-return { agentName: agent.agentName, position: item.position, totalShown: agent.totalShown, processed: item.processed };
+return { agentName: agent.agentName, position: item.position, totalShown: agent.totalShown };
 }
 }
 }
@@ -1277,6 +1295,14 @@ return null;
 }
 }
 
+// Nothing restored can still be running: a check saved part-way (the
+// National file was still being made) is shown as not finished.
+morningChecksResults = (function() {
+const lastRun = loadMorningChecksLastRun();
+const results = (lastRun && Array.isArray(lastRun.results)) ? lastRun.results : [];
+return results.map((r) => (r.status === 'done' ? r : { ...r, status: 'done', ok: null, progress: '', summary: 'Not finished. Run the checks again.' }));
+})();
+
 function formatElapsed(ms) {
 return `${(ms / 1000).toFixed(1)}s`;
 }
@@ -1417,7 +1443,17 @@ window._toggleMorningChecks = function() {
 if (runningMorningChecks) return;
 if (currentPanelMode === 'morningChecks') {
 currentPanelMode = 'normal';
-if (currentPageType === PAGE_PENDING) {
+// The page showing now decides which panel comes back, not the page the
+// checks last read.
+const pageType = detectPageType();
+if (pageType === PAGE_PENDING && currentPageType === PAGE_PENDING) {
+displayPendingPanel(currentPendingCustomers);
+} else if (pageType === PAGE_SLA && currentPageType === PAGE_SLA) {
+displayPanel(currentCustomers);
+} else if (pageType) {
+lastKnownPageType = pageType;
+runExtraction();
+} else if (currentPageType === PAGE_PENDING) {
 displayPendingPanel(currentPendingCustomers);
 } else if (currentPageType === PAGE_SLA) {
 displayPanel(currentCustomers);
@@ -1455,8 +1491,12 @@ const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'Lea
 const RE_SETUP = 'Re setup';
 const NATIONAL_VERDICTS = [RE_SETUP, 'Check', 'Not found', 'OK'];
 const NATIONAL_RESULTS_KEY = '_slaNationalCheckResults';
+// Written by Lead Re setup on the agent desktop (same site), read here.
+const LEAD_RESET_PROGRESS_KEY = '_leadResetProgress';
+const LEAD_RESET_DESK_PROGRESS_KEY = '_leadResetDeskProgress';
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
+// Tabs and newlines would break the tab separated handoff.
 function tsvClean(value) {
 return String(value == null ? '' : value).replace(/[\t\r\n]+/g, ' ').trim();
 }
@@ -1802,14 +1842,15 @@ const countLine = NATIONAL_VERDICTS.map((v) => `${escapeHtml(v)}: ${counts[v] ||
 const flagged = results.filter((r) => r.Verdict === RE_SETUP || r.Verdict === 'Check' || r.Decision);
 const resetProgress = loadLeadResetProgress();
 const list = flagged.map((r) => {
-const index = results.indexOf(r);
+// Keyed by ActivityID, not position: results arriving in parts move rows.
+const activity = escapeHtml(r.ActivityID);
 const resetStatus = resetProgress[r.ActivityID];
-const decided = r.Decision ? `<div style="color: var(--wb-muted, #5b6577);">Checked by hand: ${escapeHtml(r.Decision)}${r.DecisionNote ? ` (${escapeHtml(r.DecisionNote)})` : ''} <button type="button" onclick="window._undoNationalDecision(${index})" style="${nationalButtonStyle(false)} padding: 1px 8px;">Undo</button></div>` : '';
+const decided = r.Decision ? `<div style="color: var(--wb-muted, #5b6577);">Checked by hand: ${escapeHtml(r.Decision)}${r.DecisionNote ? ` (${escapeHtml(r.DecisionNote)})` : ''} <button type="button" data-activity="${activity}" onclick="window._undoNationalDecision(this.dataset.activity)" style="${nationalButtonStyle(false)} padding: 1px 8px;">Undo</button></div>` : '';
 const decide = r.Verdict === 'Check' && !r.Decision ? `
 <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px;">
-<input type="text" id="_slaNatNote${index}" placeholder="Why (optional, helps me add a rule)" aria-label="Why" style="flex: 1; min-width: 140px; padding: 4px 8px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; font-size: 11.5px;">
-<button type="button" onclick="window._decideNational(${index}, 'Valid')" style="${nationalButtonStyle(false)}">Valid</button>
-<button type="button" onclick="window._decideNational(${index}, '${RE_SETUP}')" style="${nationalButtonStyle(true)}">Needs re setup</button>
+<input type="text" id="_slaNatNote_${activity}" data-national-note="${activity}" placeholder="Why (optional, helps me add a rule)" aria-label="Why" style="flex: 1; min-width: 140px; padding: 4px 8px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; font-size: 11.5px;">
+<button type="button" data-activity="${activity}" onclick="window._decideNational(this.dataset.activity, 'Valid')" style="${nationalButtonStyle(false)}">Valid</button>
+<button type="button" data-activity="${activity}" onclick="window._decideNational(this.dataset.activity, '${RE_SETUP}')" style="${nationalButtonStyle(true)}">Needs re setup</button>
 </div>` : '';
 const notes = r.FollowUpNotes ? `<div style="color: var(--wb-muted, #5b6577);">Notes: ${escapeHtml(r.FollowUpNotes.slice(0, 160))}${r.FollowUpNotes.length > 160 ? '…' : ''}</div>` : '';
 return `
@@ -1834,7 +1875,7 @@ ${decisions ? `<button type="button" onclick="window._copyNationalDecisions(this
 // Lead Re setup is on the same site and records what it did per lead.
 function loadLeadResetProgress() {
 try {
-const p = JSON.parse(localStorage.getItem('_leadResetProgress') || 'null');
+const p = JSON.parse(localStorage.getItem(LEAD_RESET_PROGRESS_KEY) || 'null');
 return p && p.byActivity && isStoredTimeFresh(p.savedAt) ? p.byActivity : {};
 } catch (error) { return {}; }
 }
@@ -1852,6 +1893,21 @@ delete next.Decision; delete next.DecisionNote; delete next.OriginalVerdict;
 return next;
 }
 
+// Pure. New results from the Lead Checker keep any hand decision already
+// made on the same lead (by ActivityID). keepMissing also keeps earlier rows
+// the new results do not mention, for results that arrive in parts.
+function mergeNationalResults(previous, incoming, keepMissing) {
+const previousById = new Map((previous || []).filter((r) => r && r.ActivityID).map((r) => [r.ActivityID, r]));
+const seen = new Set();
+const merged = (incoming || []).map((r) => {
+seen.add(r.ActivityID);
+const old = previousById.get(r.ActivityID);
+return old && old.Decision ? applyNationalDecision(r, old.Decision, old.DecisionNote) : r;
+});
+if (keepMissing) (previous || []).forEach((r) => { if (r && r.ActivityID && !seen.has(r.ActivityID)) merged.push(r); });
+return merged;
+}
+
 // No names: what the check saw and what was decided, for writing rules.
 function buildNationalDecisionsTsv(results) {
 const header = ['ActivityID', 'CheckerReason', 'FinalOutcome', 'Attempts', 'EnquiryMaxDealer', 'Decision', 'Why'];
@@ -1866,18 +1922,21 @@ btn.textContent = text;
 setTimeout(() => { btn.textContent = original; }, 1800);
 }
 
-window._decideNational = function(index, decision) {
+window._decideNational = function(activityId, decision) {
 const results = loadNationalResults() || [];
-if (!results[index]) return;
-const noteEl = document.getElementById(`_slaNatNote${index}`);
+const index = results.findIndex((r) => r.ActivityID === activityId);
+if (index < 0) return;
+const noteEl = Array.from(document.querySelectorAll('input[data-national-note]')).find((el) => el.dataset.nationalNote === activityId);
 results[index] = applyNationalDecision(results[index], decision, noteEl ? noteEl.value : '');
+if (noteEl) noteEl.value = '';
 saveNationalResults(results);
 displayMorningChecks();
 };
 
-window._undoNationalDecision = function(index) {
+window._undoNationalDecision = function(activityId) {
 const results = loadNationalResults() || [];
-if (!results[index]) return;
+const index = results.findIndex((r) => r.ActivityID === activityId);
+if (index < 0) return;
 results[index] = undoNationalDecision(results[index]);
 saveNationalResults(results);
 displayMorningChecks();
@@ -1912,7 +1971,8 @@ if (!parsed.ok) {
 flashNationalButton(btn, parsed.error);
 return;
 }
-saveNationalResults(parsed.results);
+// A fresh paste replaces the list, but hand decisions already made stay.
+saveNationalResults(mergeNationalResults(loadNationalResults() || [], parsed.results, false));
 displayMorningChecks();
 };
 
@@ -1987,6 +2047,13 @@ check('a valid decision closes it', applyNationalDecision(checkRow, 'Valid', '')
 check('undo restores the checker verdict', [undoNationalDecision(decided).Verdict, 'Decision' in undoNationalDecision(decided)], ['Check', false]);
 check('decisions export carries no names', buildNationalDecisionsTsv([{ ...decided, Customer: 'Alex Sample' }]).includes('Alex Sample'), false);
 check('an export missing a needed column is refused', parseNationalResultsTsv('NationalResult\tCustomer\nnational\tAlex').ok, false);
+const partOne = [decided, { ActivityID: '70000005', Verdict: 'OK', Reason: 'a' }];
+const partTwo = [{ ...checkRow, Reason: 'Misdirected (rechecked)' }, { ActivityID: '70000006', Verdict: 'Check', Reason: 'b' }];
+const mergedParts = mergeNationalResults(partOne, partTwo, true);
+check('a hand decision survives newer results for the same lead', [mergedParts[0].Verdict, mergedParts[0].Decision, mergedParts[0].DecisionNote, mergedParts[0].OriginalVerdict, mergedParts[0].Reason], [RE_SETUP, RE_SETUP, 'dealer never got it', 'Check', 'Misdirected (rechecked)']);
+check('results arriving in parts keep the earlier rows', mergedParts.map((r) => r.ActivityID), ['70000004', '70000006', '70000005']);
+check('a fresh paste replaces the list but keeps decisions', mergeNationalResults(partOne, partTwo, false).map((r) => [r.ActivityID, r.Decision || '']), [['70000004', RE_SETUP], ['70000006', '']]);
+check('a lead with no decision is taken as the checker gave it', mergeNationalResults(partOne, [{ ActivityID: '70000005', Verdict: 'Check' }], false)[0].Verdict, 'Check');
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager national-check self-test FAILED:\n' + failures.join('\n'));
 } else {
@@ -2004,6 +2071,7 @@ const MORNING_CHECKS_EXECUTION_ORDER = ['sla', 'routedTo', 'leadType', 'inProgre
 // Email Only Count is filled as a side effect of "sla".
 window._runAllMorningChecks = async function() {
 if (runningMorningChecks) return;
+if (refuseIfBusy()) return;
 runningMorningChecks = true;
 const originalHash = window.location.hash;
 const runStartedAt = Date.now();
@@ -2090,84 +2158,129 @@ function firstFromCommaList(raw) {
 return (raw || '').split(',').map(s => s.trim()).find(s => s.length > 0) || '';
 }
 
-async function extractCustomerDetails(customerElement) {
+function closeDetailModal(modal) {
+if (!modal) return;
+const closeBtn = modal.querySelector('.close, [aria-label*="close"], [aria-label*="Close"]') || modal.querySelector('button:last-child');
+if (closeBtn) { closeBtn.click(); return; }
+document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+}
+
+// Pure. True when every word of the row's customer name (title dropped)
+// appears in the text given.
+function nameAppearsIn(expectedName, text) {
+const words = stripTitle(String(expectedName || '')).toLowerCase().split(/\s+/).filter(Boolean);
+const hay = String(text || '').toLowerCase();
+return words.length > 0 && words.every((word) => hay.includes(word));
+}
+
+// What the pop-up shows now. labelled: the Customer tab's own rows are there.
+function readModalContact(modal) {
+const labels = Array.from(modal.querySelectorAll('.tab-pane.active table.table tr')).map((r) => r.querySelector('td')?.textContent?.trim() || '');
+const mobiles = readModalTabField(modal, 'Mobiles');
+const landlines = readModalTabField(modal, 'Landlines');
+const email = readModalTabField(modal, 'Email');
+const name = readModalTabField(modal, 'Name');
+return {
+labelled: ['Mobiles', 'Landlines', 'Email'].some((label) => labels.includes(label)),
+name,
+phone: (firstFromCommaList(mobiles) || firstFromCommaList(landlines)).replace(/\s+/g, ''),
+email,
+signature: [name, mobiles, landlines, email].join('|')
+};
+}
+
+const DETAIL_SETTLE_MS = 100;
+// How long a pop-up with its rows in place but no phone or email is given
+// to fill before the lead is taken to have neither.
+const DETAIL_BLANK_WAIT_MS = 1200;
+// How long to wait for the customer's name to show in the pop-up before
+// reading it anyway (the old pop-up is already known to have gone).
+const DETAIL_NAME_WAIT_MS = 2000;
+const DETAIL_MAX_WAIT_MS = 4000;
+
+// Opens the row's customer pop-up and reads the phone and email. read is
+// false when the details could not be trusted: such a lead is tried again
+// on the next scan and never counts as Email Only.
+async function extractCustomerDetails(customerElement, expectedName) {
+const unread = { phone: '', email: '', read: false };
 const nameLink = customerElement.querySelector('a');
-if (!nameLink) {
-return { phone: '', email: '' };
+if (!nameLink) return unread;
+
+// A pop-up left open, or still closing, belongs to another lead.
+if (findDetailModal() && !(await waitForModalGone(1500))) {
+closeDetailModal(findDetailModal());
+if (!(await waitForModalGone())) return unread;
 }
 
 nameLink.click();
-
-const modal = await waitForModal();
-if (!modal) {
-return { phone: '', email: '' };
-}
-
-// Give the modal's async content a brief moment to render after it mounts.
-await new Promise(resolve => setTimeout(resolve, 150));
+const modal = await waitUntil(findDetailModal, DETAIL_MAX_WAIT_MS);
+if (!modal) return unread;
 
 try {
-let phone = (firstFromCommaList(readModalTabField(modal, 'Mobiles')) || firstFromCommaList(readModalTabField(modal, 'Landlines'))).replace(/\s+/g, '');
-let email = readModalTabField(modal, 'Email');
-
-// Falls back to the whole-modal regex scrape only if the labelled lookup is empty.
-if (!phone || !email) {
-const modalText = modal.innerText || modal.textContent;
-if (!phone) {
-const phoneMatch = modalText.match(/\b(07\d{9}|0\d{3}\s?\d{3}\s?\d{3,4}|0\d{10})\b/);
-phone = phoneMatch ? phoneMatch[1].replace(/\s/g, '') : '';
+// The content arrives after the pop-up mounts: wait until the labelled
+// rows are there, have stopped changing, and the name is this row's.
+const started = Date.now();
+let contact = readModalContact(modal);
+let previous = null;
+let nameOk = false;
+while (Date.now() - started < DETAIL_MAX_WAIT_MS) {
+await sleep(DETAIL_SETTLE_MS);
+contact = readModalContact(modal);
+nameOk = nameAppearsIn(expectedName, contact.name || modal.textContent);
+const waited = Date.now() - started;
+const settled = contact.signature === previous;
+previous = contact.signature;
+if (!settled) continue;
+if (nameOk && contact.labelled && (contact.phone || contact.email)) break;
+if (nameOk && contact.labelled && waited >= DETAIL_BLANK_WAIT_MS) break;
+if (waited >= DETAIL_NAME_WAIT_MS && (contact.labelled || modal.textContent.trim())) break;
 }
-if (!email) {
+
+let { phone, email } = contact;
+// A Name row showing somebody else means this is not this lead's pop-up.
+const wrongCustomer = !!contact.name && !nameOk;
+let read = contact.labelled && !wrongCustomer;
+if (wrongCustomer) {
+phone = '';
+email = '';
+} else if (!contact.labelled) {
+// A layout without the labelled rows: fall back to reading the whole
+// pop-up, but do not treat a missing phone as known.
+const modalText = modal.innerText || modal.textContent;
+const phoneMatch = modalText.match(/\b(07\d{9}|0\d{3}\s?\d{3}\s?\d{3,4}|0\d{10})\b/);
 const emailMatch = modalText.match(/([\w\.-]+@[\w\.-]+\.\w+)/);
+phone = phoneMatch ? phoneMatch[1].replace(/\s/g, '') : '';
 email = emailMatch ? emailMatch[1] : '';
 }
-}
 
-const closeBtn = modal.querySelector('.close, [aria-label*="close"], [aria-label*="Close"]')
-|| modal.querySelector('button:last-child');
-if (closeBtn) {
-closeBtn.click();
-} else {
-const escEvent = new KeyboardEvent('keydown', {
-key: 'Escape',
-code: 'Escape',
-keyCode: 27,
-which: 27,
-bubbles: true
-});
-document.dispatchEvent(escEvent);
-}
-
+closeDetailModal(modal);
 await waitForModalGone();
-
-return { phone, email };
+return { phone, email, read };
 } catch (error) {
-console.warn('Detail extraction error:', error);
-return { phone: '', email: '' };
+console.warn('Detail extraction error:', error && error.message);
+return unread;
 }
 }
 
+// The chip's own text is kept on the element the first time, so a second
+// click while "Copied!" is showing does not save that as the original.
 function copyToClipboard(text, element) {
-const originalText = element.textContent;
-navigator.clipboard.writeText(text).then(() => {
-element.textContent = '✓ Copied!';
-element.style.background = '#059669';
+if (element.dataset.copyOriginal === undefined) element.dataset.copyOriginal = element.textContent;
+const flash = (label, background) => {
+clearTimeout(element._slaCopyTimer);
+element.textContent = label;
+element.style.background = background;
 element.style.color = 'white';
-setTimeout(() => {
-element.textContent = originalText;
+element._slaCopyTimer = setTimeout(() => {
+element.textContent = element.dataset.copyOriginal;
 element.style.background = '';
 element.style.color = '';
+delete element.dataset.copyOriginal;
 }, 1500);
-}).catch((error) => {
-console.warn('Copy failed:', error);
-element.textContent = '✗ Failed';
-element.style.background = '#dc2626';
-element.style.color = 'white';
-setTimeout(() => {
-element.textContent = originalText;
-element.style.background = '';
-element.style.color = '';
-}, 1500);
+};
+navigator.clipboard.writeText(text).then(() => flash('✓ Copied!', '#047857')).catch((error) => {
+console.warn('Copy failed:', error && error.message);
+flash('✗ Failed', '#dc2626');
 });
 }
 
@@ -2252,10 +2365,10 @@ return `<span class="sla-copyable" data-value="${display}" style="cursor: pointe
 // no natural unique id.
 function renderContactToggle(gridInnerHtml) {
 return `
-<div onclick="window._toggleCustomerContact(this)" style="cursor: pointer; display: flex; align-items: center; gap: 4px; font-size: 11px; color: #4f46e5; margin-bottom: 8px;">
+<div class="contact-toggle" onclick="window._toggleCustomerContact(this)" style="cursor: pointer; display: flex; align-items: center; gap: 4px; font-size: 11px; color: #4338ca; margin-bottom: 8px;">
 ${svgIcon('chevron', 12, ' transition: transform 0.15s ease; transform: rotate(-90deg);')} Contact details
 </div>
-<div style="display: none; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
+<div class="contact-details" style="display: none; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
 ${gridInnerHtml}
 </div>`;
 }
@@ -2289,8 +2402,9 @@ ${options}
 // ===================================================================
 
 function parseKonnectDate(text) {
-// Matches "Tue, 18 Aug 2026 09:15", ignoring the weekday. A lead with an
-// unparseable date is excluded from date filters rather than guessed at.
+// Matches "Tue, 18 Aug 2026 09:15", ignoring the weekday. Returns null for
+// anything else. A lead with no readable date is left out of every "due
+// within" count and run, and is only assigned when no time limit is set.
 const MONTHS = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
 const match = text.match(/(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\s+(\d{1,2}):(\d{2})/);
 if (!match) return null;
@@ -2422,7 +2536,7 @@ if (scrapeCount !== 2) failures.push(`invalidateLeadsCache: expected a fresh scr
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager leads-cache self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Manager leads-cache self-test passed (3/3)');
+console.info('SLA Manager leads-cache self-test passed');
 }
 } finally {
 document.querySelector = originalQuerySelector;
@@ -2441,7 +2555,8 @@ const table = document.querySelector('table');
 if (!table) return [];
 
 // Stays a fast synchronous scan: phone and email come from currentCustomers.
-// A lead not yet scanned is excluded from the Email only filter.
+// A lead not yet scanned, or whose details could not be read, is excluded
+// from the Email only filter.
 const cachedByKey = new Map(currentCustomers.map(c => [c.key, c]));
 
 const leads = [];
@@ -2469,7 +2584,7 @@ slaDate, status, tier: tierInfo.tier,
 assigned: assignState.assigned,
 agentName: assignState.agentName,
 isCustomerFirst: source.toLowerCase().includes('customer first'),
-isEmailOnly: !!cached && !cached.phone && !!cached.email
+isEmailOnly: !!cached && cached.detailsRead === true && !cached.phone && !!cached.email
 });
 });
 
@@ -2494,7 +2609,10 @@ if (!tiers.has(lead.tier)) return false;
 if (customerFirstOnly && !lead.isCustomerFirst) return false;
 if (emailOnly && !lead.isEmailOnly) return false;
 if (missedOnly && lead.status !== 'Missed') return false;
-if (windowMinutes != null && lead.slaDate) {
+if (windowMinutes != null) {
+// A "due within" run only takes leads whose SLA date could be read, the
+// same leads the due tiles count.
+if (!lead.slaDate) return false;
 const minutesUntilDue = (lead.slaDate.getTime() - now) / 60000;
 if (minutesUntilDue > windowMinutes) return false;
 }
@@ -2508,10 +2626,43 @@ function computeSlaTierCounts(leads, windowMinutes) {
 const now = Date.now();
 return [1, 2, 3, 4].map(t => leads.filter((l) => {
 if (l.assigned || l.tier !== t) return false;
-if (windowMinutes == null || !l.slaDate) return true;
-return (l.slaDate.getTime() - now) / 60000 <= windowMinutes;
+if (windowMinutes == null) return true;
+return !!l.slaDate && (l.slaDate.getTime() - now) / 60000 <= windowMinutes;
 }).length);
 }
+
+runSelfTest('dueFilterSelfTest', function dueFilterSelfTest() {
+const failures = [];
+const check = (label, actual, expected) => {
+const a = JSON.stringify(actual); const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+};
+const at = (mins) => new Date(Date.now() + mins * 60000);
+const lead = (name, slaDate, over) => ({ name, slaDate, tier: 2, assigned: false, status: 'Pending', isCustomerFirst: false, isEmailOnly: false, ...over });
+const leads = [
+lead('missed', at(-20), { status: 'Missed' }),
+lead('due in 10', at(10)),
+lead('due in 40', at(40)),
+lead('no readable date', null),
+lead('assigned', at(5), { assigned: true }),
+lead('tier 4', at(5), { tier: 4 })
+];
+const all = new Set([1, 2, 3, 4]);
+const names = (options) => filterAssignableLeads(leads, { tiers: all, windowMinutes: null, customerFirstOnly: false, emailOnly: false, ...options }).map((l) => l.name);
+check('a due within run leaves out a lead whose SLA date could not be read', names({ windowMinutes: 15 }), ['missed', 'due in 10', 'tier 4']);
+check('with no time limit that lead is still assigned', names({}), ['missed', 'due in 10', 'due in 40', 'no readable date', 'tier 4']);
+check('missed only', names({ missedOnly: true }), ['missed']);
+check('tier filter', names({ tiers: new Set([4]) }), ['tier 4']);
+check('tier counts in a window match the run', computeSlaTierCounts(leads, 15), [0, 2, 0, 1]);
+check('tier counts with no window count every unassigned lead', computeSlaTierCounts(leads, null), [0, 4, 0, 1]);
+check('time past in plain words', [45, 60, 71, 120].map(formatMinutesAgo), ['45m', '1h', '1h 11m', '2h']);
+check('an unreadable date is null, not a guess', [parseKonnectDate('soon'), parseKonnectDate('') === null, parseKonnectDate('Tue, 18 Aug 2026 09:15').getHours()], [null, true, 9]);
+if (failures.length > 0) {
+reportSelfTestFailure('SLA Manager due-filter self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Manager due-filter self-test passed');
+}
+});
 
 function computePendingCallbackCounts(leads, cutoffDate) {
 const counts = {};
@@ -2600,21 +2751,9 @@ if (key === lead.key) found.push(cells[COL_ASSIGN]);
 return found;
 }
 function locateAssignCell(lead) {
-const table = document.querySelector('table');
-if (!table) return null;
-const rows = table.querySelectorAll('tbody tr');
-for (const row of rows) {
-const cells = row.querySelectorAll('td');
-if (cells.length < 9) continue;
-const name = cells[COL_CUSTOMER]?.textContent?.trim();
-const registration = cells[COL_REGISTRATION]?.textContent?.trim();
-const source = cells[COL_SOURCE]?.textContent?.trim();
-const campaign = cells[COL_CAMPAIGN]?.textContent?.trim();
-const key = `${name}||${registration}||${source}||${campaign}`;
-if (key === lead.key) return cells[COL_ASSIGN];
+return findSlaAssignCells(lead)[0] || null;
 }
-return null;
-}
+locateAssignCell.findAll = findSlaAssignCells;
 
 // The visible text includes an icon and status, not the bare name, so the
 // agent is matched by position: ng-repeat renders the li elements in the same
@@ -2635,37 +2774,28 @@ return null;
 }
 }
 
-// ng-repeat can replace the cell or its whole row, which is a mutation on the
-// parent, so an observer on the node itself would miss its own replacement.
-function waitForAssignConfirmed(lead, locateCellFn, timeout = 6000) {
-return new Promise((resolve) => {
-const table = document.querySelector('table');
-if (!table) {
-resolve(false);
-return;
+// ng-repeat can replace the cell or its whole row, so the row is found
+// afresh on every look. Resolves 'confirmed' once the row shows an agent,
+// 'timeout' if it still offers the menu, or 'gone' if the row has left the
+// page: a missing row is not proof the assign went through.
+const ASSIGN_ROW_GONE_MS = 1500;
+async function waitForAssignConfirmed(lead, locateCellFn, timeout = 6000) {
+const started = Date.now();
+let missingSince = null;
+for (;;) {
+const cell = locateCellFn(lead);
+const now = Date.now();
+if (cell) {
+missingSince = null;
+if (!cell.querySelector('.dropdown')) return 'confirmed';
+} else {
+if (missingSince === null) missingSince = now;
+// A row being redrawn is back within a moment.
+if (now - missingSince >= ASSIGN_ROW_GONE_MS) return 'gone';
 }
-const stillPending = () => {
-const currentCell = locateCellFn(lead);
-if (!currentCell) return false;
-return !!currentCell.querySelector('.dropdown');
-};
-if (!stillPending()) {
-resolve(true);
-return;
+if (now - started >= timeout) return cell ? 'timeout' : 'gone';
+await sleep(100);
 }
-const timer = setTimeout(() => {
-observer.disconnect();
-resolve(false);
-}, timeout);
-const observer = new MutationObserver(() => {
-if (!stillPending()) {
-clearTimeout(timer);
-observer.disconnect();
-resolve(true);
-}
-});
-observer.observe(table, { childList: true, subtree: true, characterData: true });
-});
 }
 
 function sleep(ms) {
@@ -2732,9 +2862,8 @@ const { lead, agent } = plan[i];
 if (i > 0) await sleep(ASSIGN_CLICK_STAGGER_MS);
 await acquireSlot();
 try {
-const allCells = locateCellFn === locatePendingAssignCell ? findPendingAssignCells(lead)
-: locateCellFn === locateAssignCell ? findSlaAssignCells(lead) : null;
-if (allCells && allCells.length > 1) {
+const allCells = locateCellFn.findAll(lead);
+if (allCells.length > 1) {
 results[i] = { lead, agent, ok: false, reason: 'Skipped: more than one row matches this lead. Assign it by hand' };
 settled.push(results[i]);
 reportProgress();
@@ -2766,8 +2895,9 @@ continue;
 }
 const confirmPromise = waitForAssignConfirmed(lead, locateCellFn);
 menuItem.click();
-pending.push(confirmPromise.then((ok) => {
-results[i] = { lead, agent, ok, reason: ok ? null : 'Timed out waiting for confirmation' };
+pending.push(confirmPromise.then((outcome) => {
+const ok = outcome === 'confirmed';
+results[i] = { lead, agent, ok, unconfirmed: outcome === 'gone', reason: ok ? null : (outcome === 'gone' ? 'Not confirmed: the row left the page. Check it in Konnect' : 'Timed out waiting for confirmation') };
 settled.push(results[i]);
 reportProgress();
 releaseSlot();
@@ -2799,12 +2929,12 @@ const el = document.getElementById('assignResultsSummary');
 if (!el) return;
 if (!results || results.length === 0) { el.innerHTML = ''; return; }
 const succeeded = results.filter(r => r.ok).length;
-const failed = results.length - succeeded;
-const color = failed === 0 ? '#059669' : (succeeded === 0 ? '#dc2626' : '#d97706');
-const icon = failed === 0 ? '✓' : '⚠';
-const text = failed === 0
-? `${icon} ${succeeded} assigned`
-: `${icon} ${succeeded} assigned, ${failed} failed`;
+const unconfirmed = results.filter(r => !r.ok && r.unconfirmed).length;
+const failed = results.length - succeeded - unconfirmed;
+const problems = failed + unconfirmed;
+const color = problems === 0 ? '#047857' : (succeeded === 0 ? '#b91c1c' : '#b45309');
+const icon = problems === 0 ? '✓' : '⚠';
+const text = `${icon} ${[`${succeeded} assigned`, unconfirmed ? `${unconfirmed} not confirmed` : '', failed ? `${failed} failed` : ''].filter(Boolean).join(', ')}`;
 const retryLink = failed > 0
 ? ` <span onclick="window._retryFailedAssignments()" style="text-decoration: underline; cursor: pointer;">Retry Failed</span>`
 : '';
@@ -2853,6 +2983,8 @@ const EMAIL_ONLY_ASSIGNED_KEY = '_workToolsEmailOnlyAssigned';
 function emailOnlyAssignmentsFrom(results, cachedByKey) {
 return results.filter((r) => r.ok).map((r) => {
 const cached = cachedByKey.get(r.lead.key) || r.lead;
+// No phone only means Email Only when the lead's details were really read.
+if (cached.detailsRead === false) return { name: r.lead.name, email: '', phone: '' };
 const email = String(cached.email || r.lead.email || '').trim();
 const phone = String(cached.phone || r.lead.mobile || r.lead.landline || '').trim();
 return { name: r.lead.name, email, phone, campaign: r.lead.campaign || '', agent: r.agent.name };
@@ -2887,7 +3019,7 @@ const rows = Object.entries(tally).sort((a, b) => b[1] - a[1])
 .map(([name, count]) => `<div style="display:flex;justify-content:space-between;"><span>${escapeHtml(name)}</span><span style="font-weight:700;">${count}</span></div>`).join('');
 const last = entries[entries.length - 1];
 return `<div style="font-size:11px;color: var(--wb-muted, #5b6577);margin-bottom:4px;">Assigned counts (today's shift):</div>${rows}
-<div style="font-size:10px;color:#cbd5e1;margin-top:6px;">Last: ${escapeHtml(last.lead)} → ${escapeHtml(last.agent)} at ${new Date(last.time).toLocaleTimeString()}</div>`;
+<div style="font-size:11px;color: var(--wb-muted, #5b6577);margin-top:6px;">Last: ${last.lead ? `${escapeHtml(last.lead)} → ` : ''}${escapeHtml(last.agent)} at ${new Date(last.time).toLocaleTimeString()}</div>`;
 }
 
 window._toggleAssignHistory = function() {
@@ -2918,7 +3050,7 @@ style.id = '_slaWheelStyles';
 // Filter toggles are styled as chips via :has(), keeping a real checkbox
 // inside so every :checked query still works. The input is hidden with
 // opacity and size, not display:none, so it stays focusable.
-style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #4f46e5; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef2ff !important; } .chip-label { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 14px; border: 1px solid var(--wb-border, #cbd5e1); background: var(--wb-surface, white); color: var(--wb-muted, #5b6577); font-size: 12px; cursor: pointer; user-select: none; transition: background 0.15s, border-color 0.15s, color 0.15s; } .chip-label input { position: absolute; opacity: 0; width: 0; height: 0; } .chip-label:has(input:checked) { background: #eef2ff; border-color: #4f46e5; color: #4338ca; font-weight: 600; } .lead-row-card { background: var(--wb-surface, white); border-radius: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); overflow: hidden; } .avatar-circle:hover { filter: brightness(0.92); }';
+style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #4f46e5; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef2ff !important; border-color: #4338ca !important; } .stat-tile-clickable:active { transform: translateY(1px); box-shadow: none !important; } .chip-label { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 14px; border: 1px solid var(--wb-border, #cbd5e1); background: var(--wb-surface, white); color: var(--wb-muted, #5b6577); font-size: 12px; cursor: pointer; user-select: none; transition: background 0.15s, border-color 0.15s, color 0.15s; } .chip-label input { position: absolute; opacity: 0; width: 0; height: 0; } .chip-label:has(input:checked) { background: #eef2ff; border-color: #4f46e5; color: #4338ca; font-weight: 600; } .lead-row-card { background: var(--wb-surface, white); border-radius: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); overflow: hidden; } .avatar-circle:hover { filter: brightness(0.92); }';
 document.head.appendChild(style);
 ensurePanelThemeStyles();
 }
@@ -3229,14 +3361,21 @@ per agent
 
 // `accent` is true for the standard red or a hex colour for groups that are
 // not about lateness. `onclick` makes the tile assign exactly the leads it
-// counts.
+// counts, with no prompt, so a clickable tile is drawn as a button.
 function renderStatTile(label, value, accent, onclick) {
-const color = accent === true ? '#dc2626' : (typeof accent === 'string' ? accent : null);
+const color = accent === true ? '#b91c1c' : (typeof accent === 'string' ? accent : null);
 const clickable = typeof onclick === 'string' && onclick.length > 0;
-return `<div ${clickable ? `class="stat-tile-clickable" onclick="${onclick}" title="Click to assign these"` : ''} style="flex: 1; text-align: center; background: var(--wb-surface, white); border-radius: 6px; padding: 6px 2px; border: 1px solid ${color || '#e2e8f0'}; ${clickable ? 'cursor: pointer;' : ''}">
+return `<div ${clickable ? `class="stat-tile-clickable" onclick="${onclick}" title="Assign these ${value} now to the ticked agents" aria-label="${escapeHtml(label)}: ${value}. Assign these now"` : ''} style="flex: 1; text-align: center; background: var(--wb-surface, white); border-radius: 8px; padding: 6px 2px 5px; border: 1px solid ${color || 'var(--wb-border, #cbd5e1)'}; ${clickable ? 'cursor: pointer; box-shadow: 0 1px 0 rgba(15,23,42,0.12), 0 1px 3px rgba(15,23,42,0.08);' : ''}">
 <div style="font-size: 16px; font-weight: 700; color: ${color || '#1e293b'};">${value}</div>
-<div style="font-size: 9px; color: var(--wb-muted, #5b6577); text-transform: uppercase; letter-spacing: 0.3px;">${label}</div>
+<div style="font-size: 11px; color: var(--wb-muted, #5b6577);">${label}</div>
+${clickable ? `<div style="font-size: 11px; font-weight: 600; color: #4338ca;">Assign</div>` : ''}
 </div>`;
+}
+
+// Kept apart from Assign and drawn quietly: it unassigns everything and has
+// no prompt.
+function renderClearQueueButton() {
+return `<button onclick="window._clearWholeQueue()" title="Unassigns every lead (Konnect's Clear Queues). There is no undo" style="background: transparent; color: var(--wb-danger, #b91c1c); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; padding: 3px 8px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0;">Clear Queue</button>`;
 }
 
 const STAT_SUMMARY_COLLAPSED_KEY = '_slaStatSummaryCollapsed';
@@ -3265,8 +3404,8 @@ function isZenModeOn() {
 return localStorage.getItem(ZEN_MODE_KEY) === '1';
 }
 
-// Zen mode hides the whole assign and filters zone, and restores whichever
-// tab was active when turned off.
+// List only view (stored as "zen mode") hides the whole assign and filters
+// zone, and restores whichever tab was active when turned off.
 function enableZenMode() {
 try {
 localStorage.setItem(ZEN_SNAPSHOT_KEY, JSON.stringify({ statSummaryCollapsed: isStatSummaryCollapsed() }));
@@ -3309,16 +3448,16 @@ const notAssignedCount = leads.filter(l => !l.assigned).length;
 
 const tiles = [
 renderStatTile('Missed', missedCount, missedCount > 0, `window._quickAssignSlaTile(null, false, true)`),
-...SLA_DUE_BUCKET_MINUTES.map((m, i) => renderStatTile(`${m}m`, dueCounts[i], m === 15 && dueCounts[i] > 0, `window._quickAssignSlaTile(${m}, false, false)`))
+...SLA_DUE_BUCKET_MINUTES.map((m, i) => renderStatTile(`Due ${m}m`, dueCounts[i], m === 15 && dueCounts[i] > 0, `window._quickAssignSlaTile(${m}, false, false)`))
 ].join('');
 // Customer First gets its own tile row because prioritizeLeads treats it as
 // a distinct category. Purple, not red: it is not a lateness signal.
-const CUSTOMER_FIRST_ACCENT = '#7c3aed';
+const CUSTOMER_FIRST_ACCENT = '#6d28d9';
 const cfTiles = SLA_DUE_BUCKET_MINUTES.map((m, i) =>
-renderStatTile(`${m}m`, customerFirstDueCounts[i], customerFirstDueCounts[i] > 0 ? CUSTOMER_FIRST_ACCENT : null, `window._quickAssignSlaTile(${m}, true, false)`)
+renderStatTile(`Due ${m}m`, customerFirstDueCounts[i], customerFirstDueCounts[i] > 0 ? CUSTOMER_FIRST_ACCENT : null, `window._quickAssignSlaTile(${m}, true, false)`)
 ).join('');
 
-const oneLineSummary = `${missedCount} missed &middot; ${dueCounts[1]} due ≤30m &middot; ${notAssignedCount} unassigned`;
+const oneLineSummary = `${missedCount} missed · ${dueCounts[1]} due within 30m · ${notAssignedCount} unassigned`;
 const expandedBody = `
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
 <div style="font-size: 11px; font-weight: 600; color: ${CUSTOMER_FIRST_ACCENT}; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Customer First</div>
@@ -3329,7 +3468,7 @@ return `
 ${renderStatSummaryShell(oneLineSummary, expandedBody)}
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span style="font-size: 11px; color: var(--wb-muted, #5b6577);">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
-<button onclick="window._clearWholeQueue()" style="background: #dc2626; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('warning', 11)} Clear Queue</button>
+${renderClearQueueButton()}
 </div>
 </div>`;
 }
@@ -3370,11 +3509,6 @@ localStorage.setItem(LEAD_CHECKER_EXPORT_KEY, JSON.stringify(settings));
 }
 }
 
-// Tabs and newlines would break the TSV, and no field should contain them.
-function tsvSafe(value) {
-return String(value || '').replace(/[\t\r\n]+/g, ' ').trim();
-}
-
 // Built from currentCustomers, not a fresh scan. The title is stripped from
 // the name, which the Lead Checker only uses to confirm a match.
 function buildLeadCheckerTsv(tiers, customerFirstOnly) {
@@ -3390,7 +3524,7 @@ return true;
 // No Registration: it is often a placeholder, and Konnect Live cannot search by it.
 const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'].join('\t');
 const lines = rows.map((c) => [
-tsvSafe(stripTitle(c.name)), tsvSafe(c.phone), tsvSafe(c.email), tsvSafe(c.source), tsvSafe(c.campaign), tsvSafe(c.createdText)
+tsvClean(stripTitle(c.name)), tsvClean(c.phone), tsvClean(c.email), tsvClean(c.source), tsvClean(c.campaign), tsvClean(c.createdText)
 ].join('\t'));
 return { tsv: [header, ...lines].join('\n'), count: rows.length, excludedCount };
 }
@@ -3436,9 +3570,20 @@ const lines = rows.map((c) => [
 // Post Closure leads get Konnect's own Post Closure source label. Otherwise
 // the Lead Checker would see the original enquiry source and never detect
 // them.
-tsvSafe(stripTitle(c.name)), tsvSafe(c.mobile || c.landline), tsvSafe(c.email), c.callbackType === 'Post Closure' ? 'Post Closure Processing' : '', tsvSafe(c.campaign), tsvSafe(c.lastActionText)
+tsvClean(stripTitle(c.name)), tsvClean(c.mobile || c.landline), tsvClean(c.email), c.callbackType === 'Post Closure' ? 'Post Closure Processing' : '', tsvClean(c.campaign), tsvClean(c.lastActionText)
 ].join('\t'));
 return { tsv: [header, ...lines].join('\n'), count: rows.length, excludedCount };
+}
+
+// Send passes the leads straight to the Lead Checker; Copy is the by-hand
+// route. Open Konnect Live makes the link without sending anything.
+function renderLeadCheckerSendButtons() {
+const quiet = 'padding: 6px 10px; background: transparent; color: var(--wb-text, #1c1c1e); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;';
+return `<span style="display: flex; gap: 6px; flex-wrap: wrap;">
+<button onclick="window._sendToLeadChecker(this, 'leads')" title="Opens Konnect Live and sends these leads to the Lead Checker; the results come back here" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Send</button>
+<button onclick="window._copyLeadCheckerExport(this)" title="Copies these leads to paste into the Lead Checker by hand" style="${quiet}">Copy</button>
+<button onclick="window._openKonnectLive(this)" title="Opens the Konnect Live tab, or brings it forward, without sending anything" style="${quiet}">Open Konnect Live</button>
+</span>`;
 }
 
 // One popover shell for both pages; only the checkboxes and TSV builder differ.
@@ -3455,10 +3600,10 @@ ${escapeHtml(t)}
 </label>`).join('');
 return `
 <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${typeCheckboxes}</div>
-<div style="font-size: 10.5px; color: var(--wb-muted, #5b6577); margin-bottom: 10px;">New (never-actioned) leads are excluded. Check the SLA queue for those.</div>
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-<span id="bookingExportRowCount" style="font-size: 11px; color: var(--wb-muted, #5b6577);">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}</span>
-<span style="display: flex; gap: 6px;"><button onclick="window._sendToLeadChecker(this, 'leads')" title="Opens Konnect Live and sends these leads to the Lead Checker; the results come back here" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Send</button><button onclick="window._copyLeadCheckerExport(this)" style="padding: 6px 12px; background: transparent; color: var(--wb-text, #1c1c1e); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button></span>
+<div style="font-size: 11px; color: var(--wb-muted, #5b6577); margin-bottom: 10px;">New leads nobody has worked yet are left out. Check the SLA queue for those.</div>
+<div style="display: flex; flex-direction: column; gap: 6px;">
+<span id="bookingExportRowCount" style="font-size: 11px; color: var(--wb-muted, #5b6577);">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already checked, left out)` : ''}</span>
+${renderLeadCheckerSendButtons()}
 </div>`;
 }
 const settings = loadLeadCheckerExportSettings();
@@ -3475,9 +3620,9 @@ return `
 <input type="checkbox" id="bookingExportCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateLeadCheckerExportPreview()">
 Customer First only
 </label>
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-<span id="bookingExportRowCount" style="font-size: 11px; color: var(--wb-muted, #5b6577);">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}</span>
-<span style="display: flex; gap: 6px;"><button onclick="window._sendToLeadChecker(this, 'leads')" title="Opens Konnect Live and sends these leads to the Lead Checker; the results come back here" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Send</button><button onclick="window._copyLeadCheckerExport(this)" style="padding: 6px 12px; background: transparent; color: var(--wb-text, #1c1c1e); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Copy</button></span>
+<div style="display: flex; flex-direction: column; gap: 6px;">
+<span id="bookingExportRowCount" style="font-size: 11px; color: var(--wb-muted, #5b6577);">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already checked, left out)` : ''}</span>
+${renderLeadCheckerSendButtons()}
 </div>`;
 })();
 
@@ -3493,19 +3638,19 @@ leadCheckerResultCandidatesIndexed(c, leadCheckerMatchIndex).forEach((r) => matc
 });
 const matchedCount = matchedResultsSet.size;
 const importSummary = importState.results.length === 0
-? `<div style="font-size: 12px; color: var(--wb-muted, #5b6577); padding: 8px 0 0;">Copy the results in Konnect Lead Checker, paste them here and press Classify. Each result shows as a badge on its lead card below.</div>`
-: `<div style="font-size: 12px; color: var(--wb-muted, #5b6577); padding: 8px 0 0;">${importState.results.length} classified, ${matchedCount} matched to a lead in the current list below.${importState.results.length !== matchedCount ? ' The rest aren\'t in the current SLA list (already assigned, expired, or a different queue).' : ''}</div>`;
+? `<div style="font-size: 12px; color: var(--wb-muted, #5b6577); padding: 8px 0 0;">Results sent back by the Lead Checker show by themselves. To bring them in by hand, copy the results in the Lead Checker, paste them here and press Add results. Each one shows as a label on its lead card below.</div>`
+: `<div style="font-size: 12px; color: var(--wb-muted, #5b6577); padding: 8px 0 0;">${importState.results.length} result${importState.results.length === 1 ? '' : 's'} held, ${matchedCount} matched to a lead in the list below.${importState.results.length !== matchedCount ? ' The rest are not in this list (already worked, expired, or in the other queue).' : ''}</div>`;
 
 return `
 <div id="leadCheckerPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 280px; background: var(--wb-surface, white); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
-<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 8px;">COPY LEADS TO LEAD CHECKER</div>
+<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 8px;">SEND LEADS TO THE LEAD CHECKER</div>
 ${exportSectionHtml}
 <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 14px 0;">
-<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 8px;">CLASSIFY RESULTS BACK IN</div>
-<div style="font-size: 10px; color: var(--wb-muted, #5b6577); margin-bottom: 6px;">Use the "Paste & Classify from Lead Checker" button above the list, or paste here by hand if clipboard access is blocked:</div>
-<textarea id="leadCheckerImportBox" placeholder="Paste TSV from Konnect Lead Checker" oninput="window._updateLeadCheckerImportInput(this.value)" style="width: 100%; height: 60px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px;">${escapeHtml(importState.rawInput)}</textarea>
+<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 8px;">BRING RESULTS BACK BY HAND</div>
+<div style="font-size: 11px; color: var(--wb-muted, #5b6577); margin-bottom: 6px;">Use the "Paste Lead Checker results" button above the list, or paste here if the browser blocks the clipboard:</div>
+<textarea id="leadCheckerImportBox" placeholder="Paste the results copied from the Lead Checker" oninput="window._updateLeadCheckerImportInput(this.value)" style="width: 100%; height: 60px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px;">${escapeHtml(importState.rawInput)}</textarea>
 <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
-<button onclick="window._classifyLeadCheckerImport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Classify</button>
+<button onclick="window._classifyLeadCheckerImport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Add results</button>
 </div>
 ${importSummary}
 </div>`;
@@ -3530,7 +3675,7 @@ const callbackTypes = Array.from(document.querySelectorAll('.booking-export-call
 savePendingLeadCheckerExportSettings({ callbackTypes });
 const { count, excludedCount } = buildPendingLeadCheckerTsv(callbackTypes);
 const countEl = document.getElementById('bookingExportRowCount');
-if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}`;
+if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already checked, left out)` : ''}`;
 return;
 }
 const tiers = Array.from(document.querySelectorAll('.booking-export-tier:checked')).map(el => Number(el.value));
@@ -3538,7 +3683,7 @@ const customerFirstOnly = document.getElementById('bookingExportCustomerFirstOnl
 saveLeadCheckerExportSettings({ tiers, customerFirstOnly });
 const { count, excludedCount } = buildLeadCheckerTsv(tiers, customerFirstOnly);
 const countEl = document.getElementById('bookingExportRowCount');
-if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already classified, hidden)` : ''}`;
+if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already checked, left out)` : ''}`;
 };
 
 // ===================================================================
@@ -3559,12 +3704,20 @@ const LIVE_WINDOW_NAME = 'workToolsKonnectLive';
 // Shared with Lead Re setup on the agent desktop.
 const LIVE_REQUEST_KEY = '_workToolsLiveRequest';
 const LIVE_STATUS_KEY = '_workToolsLiveStatus';
+const LIVE_LINK_KEY = '_workToolsLinkState';
 const DESK_RESULTS_KEY = '_workToolsDeskResults';
-// A batch that has gone quiet this long (cancelled, or the tab closed) no
-// longer holds up the next one.
-const LIVE_BATCH_STALE_MS = 5 * 60 * 1000;
-// A batch not acknowledged in this time is sent again.
-const LIVE_RESEND_MS = 15000;
+const DESK_REQUEST_MAX_AGE_MS = 10 * 60 * 1000;
+// resendMs: a batch not acknowledged in this time is sent again. downMs: no
+// "ready" for this long means the Live tab has gone. lostGraceMs: how long
+// after "received" an idle "ready" is taken to mean the batch was lost.
+// legacyBusyMs: how long to hold off after an older Lead Checker (which
+// does not report its state) said it was busy. A test may shorten these
+// through window.__workToolsLinkTiming.
+const LIVE_TIMING = { resendMs: 15000, downMs: 30000, tickMs: 1000, heartbeatMs: 10000, lostGraceMs: 2000, legacyBusyMs: 60000 };
+function liveTiming() {
+return { ...LIVE_TIMING, ...(window.__workToolsLinkTiming || {}) };
+}
+const LIVE_STATES = ['idle', 'running', 'paused', 'loggedOut'];
 
 function liveUrl() {
 let saved = '';
@@ -3574,9 +3727,21 @@ return `${base}#/search?redirectRoute=%2Fsearch`;
 }
 
 // One link per page, kept on window so clicking the bookmark again carries
-// on with the same Live tab and queue. queue: batches waiting to go;
-// current: the batch the Lead Checker is running.
-const liveLink = window.__workToolsLiveLink || (window.__workToolsLiveLink = { win: null, ready: false, queue: [], current: null, sentId: null, sentAt: 0, handledRequest: null });
+// on with the same Live tab and queue. queue: batches waiting to go. sent:
+// the batch posted but not yet acknowledged. running: the batch the Lead
+// Checker said it took. known: who each recent batch id belongs to.
+function newLiveLink(previous) {
+const old = previous || {};
+return {
+version: 2, win: old.win || null, state: 'none', lastReadyAt: 0, done: 0, total: 0,
+queue: Array.isArray(old.queue) ? old.queue.filter((b) => b && b.id && typeof b.tsv === 'string') : [],
+sent: null, running: null, known: {}, handledRequest: old.handledRequest || null, withdrawn: null,
+legacyBusyAt: 0, lastLinkWrite: 0, batchCount: 0
+};
+}
+const liveLink = (window.__workToolsLiveLink && window.__workToolsLiveLink.version === 2)
+? window.__workToolsLiveLink
+: (window.__workToolsLiveLink = newLiveLink(window.__workToolsLiveLink));
 
 function currentLeadCheckerExport() {
 return currentPageType === PAGE_PENDING
@@ -3584,7 +3749,8 @@ return currentPageType === PAGE_PENDING
 : (() => { const s = loadLeadCheckerExportSettings(); return buildLeadCheckerTsv(s.tiers, s.customerFirstOnly); })();
 }
 
-function showLinkToast(text) {
+// For one-off events only. What the link is doing now is on the status line.
+function showToast(text) {
 const previous = document.getElementById('_slaLinkToast');
 if (previous) previous.remove();
 const toast = document.createElement('div');
@@ -3596,44 +3762,124 @@ document.body.appendChild(toast);
 setTimeout(() => toast.remove(), 5000);
 }
 
-// Pure. What to send next, if anything: nothing while a batch runs (unless
-// it has gone quiet), and a batch already sent is only sent again once it
-// has had time to be acknowledged.
-function nextLiveBatch(link, now) {
-if (!link.queue.length) return null;
-if (link.current && now - link.current.lastHeard < LIVE_BATCH_STALE_MS) return null;
-const next = link.queue[0];
-if (link.sentId === next.id && now - link.sentAt < LIVE_RESEND_MS) return null;
-return next;
+// Pure. The same wording as the Lead Checker and Lead Re setup panels.
+function linkStatusText(state, done, total) {
+if (state === 'idle') return 'Konnect Live: linked, ready.';
+if (state === 'running') return total > 0 ? `Konnect Live: checking ${done || 0} of ${total}.` : 'Konnect Live: checking.';
+if (state === 'paused') return 'Konnect Live: paused.';
+if (state === 'loggedOut') return 'Konnect Live: logged out, logging back in.';
+return 'Konnect Live: not open. Press Open Konnect Live in SLA Manager.';
+}
+
+// Pure. A new batch replaces a waiting one only when it comes from the same
+// page and is the same kind.
+function addToLiveQueue(queue, batch) {
+return queue.filter((b) => !(b.from === batch.from && b.kind === batch.kind)).concat(batch);
+}
+
+// Pure. What to post next, if anything. A new batch goes only when the Lead
+// Checker last said it was idle and nothing of ours is sent or running; a
+// batch sent but not acknowledged is sent again after resendMs.
+function nextLiveAction(link, now, timing) {
+if (link.state === 'none') return null;
+if (link.sent) return now - link.sent.at >= timing.resendMs ? { type: 'resend', batch: link.sent.batch } : null;
+if (link.running) return null;
+if (link.state !== 'idle') return null;
+return link.queue.length ? { type: 'send', batch: link.queue[0] } : null;
+}
+
+// Pure. Whose batch an id is. Results are routed by id only: an id this page
+// sent is in known; the desk's own request id is the desk's; anything else
+// is treated as SLA Manager's own.
+function liveBatchOwner(id, known, deskIds) {
+if (id != null && known[id]) return { id, from: known[id].from, kind: known[id].kind };
+if (id != null && deskIds.includes(id)) return { id, from: 'desk', kind: 'leads' };
+return { id: id == null ? null : id, from: 'manager', kind: null };
+}
+
+function ownerOfLiveBatch(id) {
+const status = readStoredJson(LIVE_STATUS_KEY);
+const request = readStoredJson(LIVE_REQUEST_KEY);
+return liveBatchOwner(id, liveLink.known, [status && status.id, request && request.id].filter(Boolean));
+}
+
+function rememberLiveBatch(batch) {
+liveLink.known[batch.id] = { from: batch.from, kind: batch.kind };
+const ids = Object.keys(liveLink.known);
+if (ids.length > 30) ids.slice(0, ids.length - 30).forEach((id) => { delete liveLink.known[id]; });
 }
 
 function isLiveLinked() {
-return !!(liveLink.win && !liveLink.win.closed && liveLink.ready);
+return !!(liveLink.win && !liveLink.win.closed && liveLink.state !== 'none');
 }
 
-function sendNextLiveBatch() {
-if (!isLiveLinked()) return;
-const batch = nextLiveBatch(liveLink, Date.now());
-if (!batch) return;
-if (liveLink.current) liveLink.current = null;
-liveLink.sentId = batch.id;
-liveLink.sentAt = Date.now();
-liveLink.win.postMessage({ type: 'workTools:batch', kind: batch.kind, tsv: batch.tsv }, LIVE_ORIGIN);
-if (batch.from === 'desk') writeDeskStatus(batch.id, 'sent', 'Sent to the Lead Checker in Konnect Live.');
+function writeLinkState() {
+liveLink.lastLinkWrite = Date.now();
+try {
+localStorage.setItem(LIVE_LINK_KEY, JSON.stringify({
+state: liveLink.state, text: linkStatusText(liveLink.state, liveLink.done, liveLink.total),
+done: liveLink.done, total: liveLink.total, at: new Date().toISOString()
+}));
+} catch (error) { /* the desk then says SLA Manager is not running */ }
 }
 
-// A newer batch from the same page replaces one still waiting.
-function queueLiveBatch(batch) {
-liveLink.queue = liveLink.queue.filter((b) => b.from !== batch.from).concat(batch);
-sendNextLiveBatch();
+// The line at the foot of the panel: what the link is doing now.
+function renderLinkLine() {
+const state = liveLink.state;
+const color = state === 'idle' ? '#047857' : state === 'running' ? '#1d4ed8' : state === 'none' ? '#64748b' : '#b45309';
+const waiting = liveLink.queue.length + (liveLink.sent ? 1 : 0);
+const waitingText = waiting ? ` ${waiting} batch${waiting === 1 ? '' : 'es'} waiting to go.` : '';
+const openButton = state === 'none'
+? `<button type="button" onclick="window._openKonnectLive(this)" style="flex-shrink: 0; padding: 3px 8px; background: var(--wb-surface, white); color: var(--wb-text, #1c1c1e); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Open Konnect Live</button>`
+: '';
+return `<div id="_slaLinkLine" role="status" data-state="${state}" style="display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-top: 1px solid var(--wb-border, #cbd5e1); background: var(--wb-surface, white); font-size: 11.5px; color: var(--wb-text, #1c1c1e); flex-shrink: 0;">
+<span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: ${color}; flex-shrink: 0;"></span>
+<span style="flex: 1; min-width: 0;">${escapeHtml(linkStatusText(state, liveLink.done, liveLink.total) + waitingText)}</span>${openButton}
+</div>`;
+}
+
+function linkChanged() {
+writeLinkState();
+const line = document.getElementById('_slaLinkLine');
+if (line) line.outerHTML = renderLinkLine();
 }
 
 function writeDeskStatus(id, state, text) {
+if (id == null || id === liveLink.withdrawn) return;
 try { localStorage.setItem(LIVE_STATUS_KEY, JSON.stringify({ id, state, text, at: new Date().toISOString() })); } catch (error) { /* the desk says it was not picked up */ }
 }
 
 function readStoredJson(key) {
 try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch (error) { return null; }
+}
+
+function postLiveBatch(batch) {
+liveLink.win.postMessage({ type: 'workTools:batch', id: batch.id, kind: batch.kind, tsv: batch.tsv }, LIVE_ORIGIN);
+if (batch.from === 'desk') writeDeskStatus(batch.id, 'sent', 'Sent to the Lead Checker in Konnect Live.');
+}
+
+function pumpLiveQueue() {
+const now = Date.now();
+// A desk request is only good for 10 minutes.
+liveLink.queue = liveLink.queue.filter((b) => !(b.from === 'desk' && b.at && now - b.at > DESK_REQUEST_MAX_AGE_MS));
+if (!liveLink.win || liveLink.win.closed) return;
+const action = nextLiveAction(liveLink, now, liveTiming());
+if (!action) return;
+if (action.type === 'send') {
+liveLink.queue = liveLink.queue.filter((b) => b !== action.batch);
+liveLink.sent = { batch: action.batch, at: now };
+rememberLiveBatch(action.batch);
+} else {
+liveLink.sent.at = now;
+}
+postLiveBatch(action.batch);
+linkChanged();
+}
+
+function queueLiveBatch(batch) {
+liveLink.queue = addToLiveQueue(liveLink.queue, batch);
+pumpLiveQueue();
+linkChanged();
 }
 
 // Opens Konnect Live straight away (a blank tab steered afterwards was
@@ -3647,9 +3893,20 @@ return liveLink.win;
 const win = window.open(liveUrl(), LIVE_WINDOW_NAME);
 if (!win) return null;
 liveLink.win = win;
-liveLink.ready = false;
 return win;
 }
+
+// Opens or brings forward the Live tab with nothing to send, so the link
+// can be made before a batch (the desk's, say) needs it.
+window._openKonnectLive = function(btn) {
+const win = openLiveTab();
+if (!win) {
+if (btn) { const original = btn.textContent; btn.textContent = 'Allow pop-ups for this site'; setTimeout(() => { btn.textContent = original; }, 2200); }
+return false;
+}
+if (!isLiveLinked()) showToast('Konnect Live is opening. Click Work Tools there to start the Lead Checker; this panel shows when it is linked.');
+return true;
+};
 
 window._sendToLeadChecker = function(btn, kind) {
 const original = btn.textContent;
@@ -3668,110 +3925,316 @@ flash(sent ? 'Sent' : 'Allow pop-ups for this site');
 };
 
 function sendBatchToLeadChecker(kind, tsv) {
-const batch = { from: 'manager', id: `manager-${Date.now()}`, kind, tsv };
 const win = openLiveTab();
 if (!win) return false;
+liveLink.batchCount++;
+const batch = { from: 'manager', id: `manager-${Date.now()}-${liveLink.batchCount}`, kind, tsv };
 queueLiveBatch(batch);
-const linked = isLiveLinked();
-showLinkToast(linked
-? (liveLink.current ? 'The Lead Checker is finishing another batch; this one goes next.' : 'Sent to the Lead Checker.')
-: 'Konnect Live is opening. Click Work Tools there to start the Lead Checker; the batch is passed over and the results come back here.');
+const waiting = liveLink.queue.some((b) => b.id === batch.id);
+showToast(!isLiveLinked()
+? 'Konnect Live is opening. Click Work Tools there to start the Lead Checker; the batch is passed over and the results come back here.'
+: (waiting ? 'The Lead Checker is busy; this batch goes when it is free.' : 'Sent to the Lead Checker.'));
 // If the tabs never link up (a page that blocks it), say so instead of
 // leaving the batch waiting.
 setTimeout(() => {
-if (liveLink.queue.some((b) => b.id === batch.id) && !isLiveLinked()) showLinkToast('The Lead Checker has not picked the batch up. Click Work Tools in the Konnect Live tab; if nothing happens, use Copy instead.');
+if (liveLink.queue.some((b) => b.id === batch.id) && !isLiveLinked()) showToast('The Lead Checker has not picked the batch up. Click Work Tools in the Konnect Live tab; if nothing happens, use Copy instead.');
 }, 90000);
 return true;
 }
 window._sendBatchToLeadChecker = sendBatchToLeadChecker;
 
 // The agent desktop's request (its Parked Calls). Only a fresh request this
-// page has not taken yet is queued; nothing here opens a tab.
+// page has not taken yet is queued; nothing here opens a tab. A request the
+// desk has withdrawn is dropped if it has not gone yet.
 function takeDeskRequest(request) {
-if (!request || !request.id || request.id === liveLink.handledRequest || typeof request.tsv !== 'string') return;
-if (!(Date.now() - new Date(request.at).getTime() < 10 * 60 * 1000)) return;
+if (!request || !request.id) return;
+if (request.cancelled) {
+if (liveLink.withdrawn === request.id) return;
+liveLink.withdrawn = request.id;
+liveLink.handledRequest = request.id;
+const before = liveLink.queue.length;
+liveLink.queue = liveLink.queue.filter((b) => b.id !== request.id);
+if (liveLink.queue.length !== before) linkChanged();
+return;
+}
+if (request.id === liveLink.handledRequest || typeof request.tsv !== 'string') return;
+const at = new Date(request.at).getTime();
+if (!(Date.now() - at < DESK_REQUEST_MAX_AGE_MS)) return;
 const status = readStoredJson(LIVE_STATUS_KEY);
 if (status && status.id === request.id && status.state !== 'waiting') return;
 liveLink.handledRequest = request.id;
-queueLiveBatch({ from: 'desk', id: request.id, kind: 'leads', tsv: request.tsv });
-if (!isLiveLinked()) writeDeskStatus(request.id, 'waiting', 'SLA Manager has your Parked Calls, but Konnect Live is not linked yet: press Send in SLA Manager once (or click Work Tools in its Konnect Live tab).');
-else if (liveLink.current) writeDeskStatus(request.id, 'waiting', 'The Lead Checker is finishing another batch; yours goes next.');
+queueLiveBatch({ from: 'desk', id: request.id, kind: 'leads', tsv: request.tsv, at });
+if (!liveLink.queue.some((b) => b.id === request.id)) return;
+if (!isLiveLinked()) writeDeskStatus(request.id, 'waiting', 'SLA Manager has your Parked Calls, but Konnect Live is not linked yet: press Open Konnect Live in SLA Manager, then click Work Tools in the Konnect Live tab.');
+else writeDeskStatus(request.id, 'waiting', 'The Lead Checker is finishing another batch; yours goes next.');
 }
 
+// Pure. The Post Closure rows of a results import, in the shape the desk
+// reads.
+function postClosureRowsFrom(rows, nowIso) {
+return (rows || []).filter((r) => r && r.postClosureAction).map((r) => ({
+name: r.name || '', phone: r.phone || '', email: r.email || '', source: r.source || '',
+postClosureAction: r.postClosureAction, postClosureReason: r.postClosureReason || '', postClosureEvidence: r.postClosureEvidence || '',
+checkedAt: nowIso
+}));
+}
+
+// Pure. One row per customer: email, else the last 10 phone digits, else
+// the name. A newer row replaces the older one; rows past one shift go.
+function deskResultKey(r) {
+const email = String(r.email || '').trim().toLowerCase();
+if (email) return `e:${email}`;
+const digits = String(r.phone || '').replace(/\D+/g, '');
+if (digits) return `p:${digits.slice(-10)}`;
+return `n:${stripTitle(String(r.name || '')).toLowerCase().replace(/\s+/g, ' ').trim()}`;
+}
+function mergeDeskResults(existing, incoming, nowIso) {
+const cutoff = new Date(nowIso).getTime() - STORED_CUSTOMER_DATA_MAX_AGE_MS;
+const byKey = new Map();
+(existing || []).forEach((r) => {
+if (!r || !(new Date(r.checkedAt).getTime() >= cutoff)) return;
+byKey.set(deskResultKey(r), r);
+});
+(incoming || []).forEach((r) => {
+const key = deskResultKey(r);
+// Deleted first so a rechecked customer moves to the end, newest last.
+byKey.delete(key);
+byKey.set(key, r);
+});
+return Array.from(byKey.values());
+}
+
+// Every Post Closure row from any results that arrive (this page's batches,
+// the desk's, and results pasted by hand) goes into the one place the desk
+// reads them from. Returns false if they could not be saved.
+function savePostClosureForDesk(rows) {
+const nowIso = new Date().toISOString();
+const fresh = postClosureRowsFrom(rows, nowIso);
+if (!fresh.length) return true;
+const stored = readStoredJson(DESK_RESULTS_KEY);
+const existing = stored && Array.isArray(stored.results)
+? stored.results.map((r) => (r && !r.checkedAt ? { ...r, checkedAt: stored.savedAt } : r))
+: [];
+try {
+localStorage.setItem(DESK_RESULTS_KEY, JSON.stringify({ savedAt: nowIso, results: mergeDeskResults(existing, fresh, nowIso) }));
+return true;
+} catch (error) {
+console.warn('[SLA Manager] Could not save the Post Closure results for the agent desktop (browser storage full or blocked).');
+return false;
+}
+}
+
+// The desk's batch: its results never touch the lead cards.
 function saveDeskResults(id, tsv, progress) {
 const parsed = parseLeadCheckerImportTsv(tsv);
 if (!parsed.headerOk) { writeDeskStatus(id, 'failed', 'The Lead Checker results could not be read.'); return; }
-try { localStorage.setItem(DESK_RESULTS_KEY, JSON.stringify({ id, savedAt: new Date().toISOString(), results: parsed.rows })); } catch (error) { writeDeskStatus(id, 'failed', 'The results could not be saved (browser storage full).'); return; }
+if (!savePostClosureForDesk(parsed.rows)) { writeDeskStatus(id, 'failed', 'The results could not be saved (browser storage full).'); return; }
 writeDeskStatus(id, progress ? 'checking' : 'done', progress ? `Lead Checker: ${progress.done} of ${progress.total} checked.` : `Lead Checker done: ${parsed.rows.length} checked.`);
 }
 
 function importLinkedResults(kind, tsv, progress) {
 if (kind === 'national') {
 const parsed = parseNationalResultsTsv(tsv);
-if (!parsed.ok) { showLinkToast(`Lead Checker results could not be read: ${parsed.error}`); return; }
-saveNationalResults(parsed.results);
-showLinkToast(progress ? `Lead Checker: ${progress.done} of ${progress.total} checked so far.` : `National results back from the Lead Checker (${parsed.results.length}).`);
-if (currentPanelMode === 'morningChecks') displayMorningChecks();
+if (!parsed.ok) { showToast(`Lead Checker results could not be read: ${parsed.error}`); return; }
+saveNationalResults(mergeNationalResults(loadNationalResults() || [], parsed.results, true));
+if (!progress) showToast(`National results back from the Lead Checker (${parsed.results.length}).`);
+if (currentPanelMode === 'morningChecks') redrawWhenNotTyping(() => { if (currentPanelMode === 'morningChecks') displayMorningChecks(); });
+else renderTodaySummaryInPlace();
 return;
 }
 const parsed = parseLeadCheckerImportTsv(tsv);
-if (!parsed.headerOk || parsed.rows.length === 0) { showLinkToast('Lead Checker results could not be read.'); return; }
-saveLeadCheckerImportState({ rawInput: '', results: classifyLeadCheckerImportRows(parsed.rows) });
-showLinkToast(progress ? `Lead Checker: ${progress.done} of ${progress.total} checked so far, shown on the lead cards.` : `Lead Checker results back (${parsed.rows.length}) and shown on the lead cards.`);
-if (currentPanelMode === 'normal') {
-if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, lastPendingDiffCounts.newCount, lastPendingDiffCounts.removedCount, false);
-else if (currentPageType === PAGE_SLA) displayPanel(currentCustomers, lastSlaDiffCounts.newCount, lastSlaDiffCounts.removedCount, false);
+if (!parsed.headerOk || parsed.rows.length === 0) { showToast('Lead Checker results could not be read.'); return; }
+addLeadCheckerResults(parsed.rows);
+if (!progress) showToast(`Lead Checker results back (${parsed.rows.length}) and shown on the lead cards.`);
+if (currentPanelMode === 'normal') redrawWhenNotTyping(redrawLeadsPanel);
+}
+
+const LIVE_ENDED_TEXT = {
+cancelled: 'The check was cancelled in the Lead Checker.',
+cleared: 'The Lead Checker was cleared before the check finished.',
+empty: 'The Lead Checker found no leads to check in that batch.',
+unreadable: 'The Lead Checker could not read that batch.',
+lost: 'Konnect Live reloaded and the check stopped before it finished.'
+};
+
+// Tells whoever sent a batch how it ended. finalSeen: its full results
+// already arrived, which said so themselves.
+function notifyLiveBatchEnded(batch, reason, finalSeen) {
+const finished = reason === 'done' || !LIVE_ENDED_TEXT[reason];
+if (finished) {
+if (batch.from === 'desk' && !finalSeen) writeDeskStatus(batch.id, 'done', 'Lead Checker done.');
+} else if (batch.from === 'desk') {
+writeDeskStatus(batch.id, 'ended', `${LIVE_ENDED_TEXT[reason]} Results already checked are kept; ask again to check the rest.`);
+} else {
+showToast(`${LIVE_ENDED_TEXT[reason]} Press Send again if you still need it.`);
 }
 }
 
-// Results belong to the batch the Lead Checker said it took. After this page
-// reloads mid-batch, the desk's own status says whether it was the desk's.
-function currentLiveBatch() {
-if (liveLink.current) return liveLink.current;
-const status = readStoredJson(LIVE_STATUS_KEY);
-return status && ['sent', 'checking'].includes(status.state) ? { from: 'desk', id: status.id } : { from: 'manager' };
+// A batch has stopped for good, with or without results.
+function endLiveBatch(id, reason, finalSeen) {
+if (id == null && !liveLink.running) return;
+const running = liveLink.running && (id == null || liveLink.running.id === id) ? liveLink.running : null;
+const batch = running || ownerOfLiveBatch(id);
+if (running) liveLink.running = null;
+if (liveLink.sent && liveLink.sent.batch.id === batch.id) liveLink.sent = null;
+liveLink.queue = liveLink.queue.filter((b) => b.id !== batch.id);
+if (!liveLink.running) {
+if (liveLink.state !== 'none') liveLink.state = 'idle';
+liveLink.done = 0;
+liveLink.total = 0;
+}
+notifyLiveBatchEnded(batch, reason, !!finalSeen || !!(running && running.finalSeen));
+pumpLiveQueue();
+linkChanged();
+}
+
+// No "ready" for too long, or the tab has gone. Waiting batches are kept
+// for when the link comes back.
+function setLinkDown() {
+if (liveLink.state === 'none') return;
+liveLink.state = 'none';
+liveLink.done = 0;
+liveLink.total = 0;
+if (liveLink.sent) {
+liveLink.queue = [liveLink.sent.batch].concat(liveLink.queue.filter((b) => b.id !== liveLink.sent.batch.id));
+liveLink.sent = null;
+}
+const ours = liveLink.queue.concat(liveLink.running ? [liveLink.running] : []);
+const desk = ours.find((b) => b.from === 'desk');
+if (desk) writeDeskStatus(desk.id, 'waiting', 'Konnect Live has stopped answering (its tab was closed or moved on). Your Parked Calls are kept: press Open Konnect Live in SLA Manager.');
+if (ours.some((b) => b.from === 'manager')) showToast('Konnect Live has stopped answering. The batch is kept: press Open Konnect Live.');
+linkChanged();
+}
+
+function markLiveBatchReceived(batch, rows, now) {
+if (liveLink.sent && liveLink.sent.batch.id === batch.id) liveLink.sent = null;
+liveLink.queue = liveLink.queue.filter((b) => b.id !== batch.id);
+// The Lead Checker runs one batch at a time, so one still marked as
+// running here has ended without a message.
+const previous = liveLink.running && liveLink.running.id !== batch.id ? liveLink.running : null;
+rememberLiveBatch(batch);
+liveLink.running = { id: batch.id, from: batch.from, kind: batch.kind, receivedAt: now, finalSeen: false };
+if (previous) notifyLiveBatchEnded(previous, previous.finalSeen ? 'done' : 'lost', previous.finalSeen);
+liveLink.state = 'running';
+liveLink.done = 0;
+liveLink.total = rows || 0;
+}
+
+function onLiveReady(event, data, now) {
+const timing = liveTiming();
+liveLink.win = event.source;
+liveLink.lastReadyAt = now;
+if (typeof data.url === 'string' && /^https:\/\/carbot\.ai\/konnectlive\/[^#?]*$/i.test(data.url)) {
+try { localStorage.setItem(LIVE_URL_KEY, data.url); } catch (error) { /* the default still works */ }
+}
+if (typeof data.state !== 'string') {
+// An older Lead Checker does not say what it is doing: it is taken to be
+// idle unless a batch of ours is running or it just said it was busy.
+liveLink.state = (liveLink.running || now - liveLink.legacyBusyAt < timing.legacyBusyMs) ? 'running' : 'idle';
+} else {
+// A state this copy does not know is treated as busy, so nothing is sent.
+const state = LIVE_STATES.includes(data.state) ? data.state : 'running';
+const batchId = data.batchId == null ? null : String(data.batchId);
+if (batchId !== null) {
+if (liveLink.sent && liveLink.sent.batch.id === batchId) {
+// The "received" message was missed.
+markLiveBatchReceived(liveLink.sent.batch, data.total, now);
+} else if (!liveLink.running || liveLink.running.id !== batchId) {
+// A batch from before this page reloaded, restored by the Live tab.
+markLiveBatchReceived(ownerOfLiveBatch(batchId), data.total, now);
+}
+} else if (liveLink.running && state === 'idle' && now - liveLink.running.receivedAt >= timing.lostGraceMs) {
+// Idle with no batch while one of ours should be running: it ended
+// without a message (the Live tab reloaded).
+endLiveBatch(liveLink.running.id, liveLink.running.finalSeen ? 'done' : 'lost');
+}
+liveLink.state = state;
+liveLink.done = batchId !== null && Number.isFinite(data.done) ? data.done : 0;
+liveLink.total = batchId !== null && Number.isFinite(data.total) ? data.total : 0;
+}
+pumpLiveQueue();
+linkChanged();
 }
 
 function onLiveMessage(event) {
 if (event.origin !== LIVE_ORIGIN) return;
 const data = event.data;
 if (!data || typeof data.type !== 'string' || !data.type.startsWith('workTools:')) return;
+const now = Date.now();
+// An older Lead Checker sends no ids: its messages are about the batch
+// last sent or running.
+const id = data.id == null ? null : String(data.id);
 if (data.type === 'workTools:ready') {
-// The Lead Checker says this every few seconds, so a reloaded SLA
-// Manager links up again with the Live tab it opened before.
-liveLink.win = event.source;
-liveLink.ready = true;
-if (typeof data.url === 'string' && /^https:\/\/carbot\.ai\/konnectlive\/[^#?]*$/i.test(data.url)) {
-try { localStorage.setItem(LIVE_URL_KEY, data.url); } catch (error) { /* the default still works */ }
-}
-sendNextLiveBatch();
+onLiveReady(event, data, now);
 } else if (data.type === 'workTools:received') {
-const batch = liveLink.queue.find((b) => b.id === liveLink.sentId) || { from: 'manager', id: liveLink.sentId };
-liveLink.queue = liveLink.queue.filter((b) => b !== batch);
-liveLink.current = { ...batch, lastHeard: Date.now() };
+const batch = (liveLink.sent && (id === null || liveLink.sent.batch.id === id)) ? liveLink.sent.batch
+: (id !== null ? (liveLink.queue.find((b) => b.id === id) || ownerOfLiveBatch(id)) : null);
+if (!batch) return;
+markLiveBatchReceived(batch, data.rows, now);
 const rows = `${data.rows || 0} lead${data.rows === 1 ? '' : 's'}`;
 if (batch.from === 'desk') writeDeskStatus(batch.id, 'checking', `The Lead Checker is checking ${rows}.`);
-else showLinkToast(`The Lead Checker has the batch (${rows}) and is checking it.`);
+else showToast(`The Lead Checker has the batch (${rows}) and is checking it.`);
+linkChanged();
 } else if (data.type === 'workTools:busy') {
-const batch = liveLink.queue[0];
-if (batch && batch.from === 'desk') writeDeskStatus(batch.id, 'waiting', 'The Lead Checker is finishing another batch; yours goes next.');
-else showLinkToast('The Lead Checker is still running a batch. This one goes when it has finished.');
-liveLink.current = liveLink.current || { from: 'other', lastHeard: Date.now() };
+const refused = liveLink.sent && (id === null || liveLink.sent.batch.id === id) ? liveLink.sent.batch : null;
+if (!refused) return;
+if (data.runningId != null && String(data.runningId) === refused.id) {
+// Sent twice and the first copy is the one running.
+markLiveBatchReceived(refused, 0, now);
+} else {
+liveLink.sent = null;
+// Back to the front, unless a newer batch has taken its place.
+if (!liveLink.queue.some((b) => b.from === refused.from && b.kind === refused.kind)) liveLink.queue = [refused].concat(liveLink.queue);
+if (!('runningId' in data)) liveLink.legacyBusyAt = now;
+if (liveLink.state === 'idle') liveLink.state = 'running';
+if (refused.from === 'desk') writeDeskStatus(refused.id, 'waiting', 'The Lead Checker is finishing another batch; yours goes next.');
+else showToast('The Lead Checker is still running a batch. This one goes when it has finished.');
+}
+linkChanged();
 } else if (data.type === 'workTools:results' && typeof data.tsv === 'string') {
-const batch = currentLiveBatch();
+let batch;
+if (id !== null) batch = (liveLink.running && liveLink.running.id === id) ? liveLink.running : ownerOfLiveBatch(id);
+else if (liveLink.running) batch = liveLink.running;
+else {
+// No id and nothing known to be running (this page reloaded mid-batch
+// with an older Lead Checker): the desk's own status says if it was its.
+const status = readStoredJson(LIVE_STATUS_KEY);
+batch = status && ['sent', 'checking'].includes(status.state) ? { from: 'desk', id: status.id } : { from: 'manager', id: null };
+}
 const progress = data.partial ? { done: data.done, total: data.total } : null;
+if (liveLink.running && liveLink.running === batch) {
+if (progress) {
+if (Number.isFinite(data.done)) liveLink.done = data.done;
+if (Number.isFinite(data.total)) liveLink.total = data.total;
+} else liveLink.running.finalSeen = true;
+}
 if (data.kind === 'leads' && batch.from === 'desk') saveDeskResults(batch.id, data.tsv, progress);
 else importLinkedResults(data.kind, data.tsv, progress);
-if (progress) { if (liveLink.current) liveLink.current.lastHeard = Date.now(); }
-else { liveLink.current = null; sendNextLiveBatch(); }
+// An older Lead Checker sends no "ended": its final results are the end.
+if (!progress && id === null) { if (liveLink.running === batch) endLiveBatch(batch.id, 'done', true); }
+linkChanged();
+} else if (data.type === 'workTools:ended') {
+endLiveBatch(id, typeof data.reason === 'string' ? data.reason : 'done');
 }
 }
 
-// One listener of each kind per page; each calls the newest copy of the
-// handler, so clicking the bookmark again does not leave an old one
-// answering.
+function liveLinkTick() {
+const now = Date.now();
+const timing = liveTiming();
+if (liveLink.state !== 'none' && ((liveLink.win && liveLink.win.closed) || now - liveLink.lastReadyAt > timing.downMs)) setLinkDown();
+takeDeskRequest(readStoredJson(LIVE_REQUEST_KEY));
+pumpLiveQueue();
+// Rewritten in step even when nothing changes, so the desk can tell that
+// SLA Manager is still running.
+if (now - liveLink.lastLinkWrite >= timing.heartbeatMs) writeLinkState();
+}
+
+// One listener of each kind and one timer per page; each calls the newest
+// copy of the handler, so clicking the bookmark again does not leave an old
+// one answering.
 window.__workToolsOnLiveMessage = onLiveMessage;
 window.__workToolsOnDeskRequest = takeDeskRequest;
+window.__workToolsLinkTick = liveLinkTick;
 if (!window.__workToolsLinkListening && typeof window.addEventListener === 'function') {
 window.__workToolsLinkListening = true;
 window.addEventListener('message', (event) => { if (window.__workToolsOnLiveMessage) window.__workToolsOnLiveMessage(event); });
@@ -3779,8 +4242,63 @@ window.addEventListener('storage', (event) => {
 if (event.key === LIVE_REQUEST_KEY && window.__workToolsOnDeskRequest) window.__workToolsOnDeskRequest(readStoredJson(LIVE_REQUEST_KEY));
 });
 }
+if (window.__workToolsLinkTimer) clearInterval(window.__workToolsLinkTimer);
+window.__workToolsLinkTimer = setInterval(() => { if (window.__workToolsLinkTick) window.__workToolsLinkTick(); }, liveTiming().tickMs);
+writeLinkState();
 // A request the desk made before this page (or this copy) was running.
 takeDeskRequest(readStoredJson(LIVE_REQUEST_KEY));
+
+runSelfTest('liveLinkSelfTest', function liveLinkSelfTest() {
+const failures = [];
+const check = (label, actual, expected) => {
+const a = JSON.stringify(actual); const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+};
+const timing = { ...LIVE_TIMING };
+const t0 = 1000000;
+const desk = { from: 'desk', id: 'desk-1', kind: 'leads' };
+const own = { from: 'manager', id: 'manager-1', kind: 'leads' };
+const link = (over) => ({ state: 'idle', queue: [desk], sent: null, running: null, ...over });
+const typeOf = (action) => (action ? `${action.type}:${action.batch.id}` : null);
+check('a waiting batch goes when the Lead Checker is idle', typeOf(nextLiveAction(link({}), t0, timing)), 'send:desk-1');
+check('nothing goes while the link is down', nextLiveAction(link({ state: 'none' }), t0, timing), null);
+check('nothing goes while the Lead Checker is running, paused or logged out', ['running', 'paused', 'loggedOut'].map((state) => nextLiveAction(link({ state }), t0, timing)), [null, null, null]);
+check('nothing goes while a batch of ours is running, however long it takes', nextLiveAction(link({ running: { id: 'manager-1', receivedAt: t0 - 60 * 60 * 1000 } }), t0, timing), null);
+check('a batch just sent is not sent again straight away', nextLiveAction(link({ sent: { batch: own, at: t0 - 1000 } }), t0, timing), null);
+check('a batch not acknowledged in time is sent again', typeOf(nextLiveAction(link({ sent: { batch: own, at: t0 - timing.resendMs } }), t0, timing)), 'resend:manager-1');
+check('nothing to send with an empty queue', nextLiveAction(link({ queue: [] }), t0, timing), null);
+const national = { from: 'manager', id: 'manager-2', kind: 'national' };
+check('a newer batch replaces a waiting one from the same page of the same kind only',
+addToLiveQueue([desk, own, national], { from: 'manager', id: 'manager-3', kind: 'leads' }).map((b) => b.id), ['desk-1', 'manager-2', 'manager-3']);
+check('the desk batch does not replace SLA Manager\'s', addToLiveQueue([own], desk).map((b) => b.id), ['manager-1', 'desk-1']);
+const known = { 'manager-1': { from: 'manager', kind: 'leads' }, 'desk-1': { from: 'desk', kind: 'leads' } };
+check('results are routed by the id the batch was sent with', [liveBatchOwner('desk-1', known, []).from, liveBatchOwner('manager-1', known, []).from], ['desk', 'manager']);
+check('the desk request id is the desk\'s even after this page reloaded', liveBatchOwner('desk-9', {}, ['desk-9']).from, 'desk');
+check('an unknown id, or none, is SLA Manager\'s own', [liveBatchOwner('other-1', known, ['desk-9']).from, liveBatchOwner(null, known, []).from], ['manager', 'manager']);
+check('status line wording', ['none', 'idle', 'running', 'paused', 'loggedOut'].map((s) => linkStatusText(s, 12, 40)), [
+'Konnect Live: not open. Press Open Konnect Live in SLA Manager.', 'Konnect Live: linked, ready.', 'Konnect Live: checking 12 of 40.', 'Konnect Live: paused.', 'Konnect Live: logged out, logging back in.']);
+const now = '2026-11-11T12:00:00.000Z';
+const rows = [
+{ name: 'Jo Example', phone: '', email: 'Jo.Example@example.com', source: 'Post Closure Processing', postClosureAction: 'send back through', postClosureReason: 'Email only', postClosureEvidence: 'x', tier: null },
+{ name: 'Sam Buyer', phone: '07700 900102', email: '', source: 'Customer First', postClosureAction: '', tier: 2 }
+];
+const pc = postClosureRowsFrom(rows, now);
+check('only Post Closure rows are kept for the desk', pc.map((r) => [r.name, r.postClosureAction, r.checkedAt]), [['Jo Example', 'send back through', now]]);
+const stored = [
+{ name: 'Jo Example', email: 'jo.example@example.com', phone: '', postClosureAction: 'check: needs contact?', checkedAt: '2026-11-11T09:00:00.000Z' },
+{ name: 'Al Sample', email: '', phone: '+44 7700 900103', postClosureAction: 'send back through', checkedAt: '2026-11-11T09:00:00.000Z' },
+{ name: 'Old Example', email: 'old@example.com', phone: '', postClosureAction: 'send back through', checkedAt: '2026-11-10T20:00:00.000Z' }
+];
+const merged = mergeDeskResults(stored, pc.concat([{ name: 'Al Sample', email: '', phone: '07700 900103', postClosureAction: 'check: needs contact?', checkedAt: now }]), now);
+check('desk results merge by email, else the last 10 phone digits; newer wins; a shift old is dropped',
+merged.map((r) => [r.name, r.postClosureAction]), [['Jo Example', 'send back through'], ['Al Sample', 'check: needs contact?']]);
+check('with no email or phone the name is the key, title ignored', deskResultKey({ name: 'Mr  Jo Example' }) === deskResultKey({ name: 'jo example' }), true);
+if (failures.length > 0) {
+reportSelfTestFailure('SLA Manager live-link self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Manager live-link self-test passed');
+}
+});
 
 window._copyLeadCheckerExport = function(buttonEl) {
 const original = buttonEl.textContent;
@@ -3833,7 +4351,13 @@ if (!isStoredTimeFresh(raw.savedAt) || !(new Date(raw.savedAt) >= new Date(LEAD_
 removeStoredKey(LEAD_CHECKER_IMPORT_KEY);
 return { rawInput: '', results: [] };
 }
-return { rawInput: raw.rawInput || '', results: Array.isArray(raw.results) ? raw.results : [] };
+// Each result carries when it was checked, so merged results still expire
+// after one shift. Results saved before that was recorded take the time
+// they were saved.
+const results = (Array.isArray(raw.results) ? raw.results : [])
+.map((r) => (r && !r.checkedAt ? { ...r, checkedAt: raw.savedAt } : r))
+.filter((r) => r && isStoredTimeFresh(r.checkedAt));
+return { rawInput: raw.rawInput || '', results };
 }
 } catch (error) {
 // ignore
@@ -3902,6 +4426,38 @@ function classifyLeadCheckerImportRows(rows) {
 return [...rows].sort((a, b) => a.priorityRank - b.priorityRank);
 }
 
+// Pure. One result per contact: the customer (email, else phone, else name)
+// and that lead's Created time.
+function leadCheckerResultKey(r) {
+const who = normalizeEmailForLeadCheckerMatch(r.email) || normalizePhoneForLeadCheckerMatch(r.phone) || `name:${String(r.name || '').trim().toLowerCase()}`;
+return `${who}||${r.created || ''}`;
+}
+
+// Pure. New results are added to the ones already held rather than
+// replacing them, so a second batch does not wipe the first. A newer result
+// for the same contact wins, except that a row the Lead Checker did not
+// finish (no tier, no Post Closure action) never replaces a finished one.
+function mergeLeadCheckerResults(existing, incoming, nowIso) {
+const byKey = new Map((existing || []).map((r) => [leadCheckerResultKey(r), r]));
+(incoming || []).forEach((r) => {
+const key = leadCheckerResultKey(r);
+const old = byKey.get(key);
+const unfinished = r.tier == null && !r.postClosureAction;
+if (old && unfinished && (old.tier != null || old.postClosureAction)) return;
+byKey.set(key, { ...r, checkedAt: nowIso });
+});
+return classifyLeadCheckerImportRows(Array.from(byKey.values()));
+}
+
+// Results from a paste or from the link, added to the lead cards' results.
+// Post Closure rows also go to the agent desktop's list.
+function addLeadCheckerResults(rows) {
+const merged = mergeLeadCheckerResults(loadLeadCheckerImportState().results, rows, new Date().toISOString());
+saveLeadCheckerImportState({ rawInput: '', results: merged });
+savePostClosureForDesk(rows);
+return merged;
+}
+
 // Confirms the header contract and the trust-not-reclassify behavior.
 runSelfTest('leadCheckerImportSelfTest', function leadCheckerImportSelfTest() {
 const failures = [];
@@ -3939,14 +4495,24 @@ const eoAssigned = emailOnlyAssignmentsFrom([
 { ok: true, lead: { key: 'k4', name: 'Eve Evans', campaign: 'Y', email: 'eve@example.com', mobile: '' }, agent: { name: 'Agent B' } }
 ], new Map([['k1', { email: 'dan@example.com', phone: '' }], ['k2', { email: 'gus@example.com', phone: '07700900001' }], ['k3', { email: 'fay@example.com', phone: '' }]]));
 if (JSON.stringify(eoAssigned.map((e) => e.email)) !== JSON.stringify(['dan@example.com', 'eve@example.com'])) failures.push(`Expected only assigned Email Only leads to be recorded, got ${JSON.stringify(eoAssigned)}`);
-const desk = { from: 'desk', id: 'desk-1' };
-const t0 = 1000000;
-const link = (over) => ({ queue: [desk], current: null, sentId: null, sentAt: 0, ...over });
-if (nextLiveBatch(link({}), t0) !== desk) failures.push('Expected a waiting batch to be sent when nothing is running');
-if (nextLiveBatch(link({ current: { lastHeard: t0 - 1000 } }), t0) !== null) failures.push('Expected nothing to be sent while another batch is running');
-if (nextLiveBatch(link({ current: { lastHeard: t0 - LIVE_BATCH_STALE_MS - 1 } }), t0) !== desk) failures.push('Expected a batch that has gone quiet to stop holding up the next');
-if (nextLiveBatch(link({ sentId: 'desk-1', sentAt: t0 - 1000 }), t0) !== null) failures.push('Expected a batch just sent not to be sent again straight away');
-if (nextLiveBatch(link({ sentId: 'desk-1', sentAt: t0 - LIVE_RESEND_MS - 1 }), t0) !== desk) failures.push('Expected a batch never acknowledged to be sent again');
+const eoUnread = emailOnlyAssignmentsFrom([{ ok: true, lead: { key: 'k5', name: 'Hal Hughes', campaign: 'X' }, agent: { name: 'Agent A' } }], new Map([['k5', { email: 'hal@example.com', phone: '', detailsRead: false }]]));
+if (eoUnread.length !== 0) failures.push('Expected a lead whose details could not be read never to be recorded as Email Only');
+if (!nameAppearsIn('Mr Alex Sample', 'Name ALEX  SAMPLE') || nameAppearsIn('Mr Alex Sample', 'Sam Buyer') || nameAppearsIn('', 'anything')) failures.push('Expected the pop-up name check to match on the name words, title dropped');
+const first = parseLeadCheckerImportTsv(sampleTsv).rows;
+const second = [
+{ ...first[0], tier: 4, tierName: 'WARM ENQUIRY', priorityRank: 409 },
+{ ...first[1], tier: null, tierName: '', priorityRank: 700 },
+{ name: 'Dee Dixon', phone: '07700 900004', email: '', created: '04/09/2026', tier: 2, tierName: 'DATE ONLY', priorityRank: 203 },
+{ ...first[2], created: '05/09/2026', tier: 5, tierName: 'NURTURE', priorityRank: 509 }
+];
+const mergedResults = mergeLeadCheckerResults(first, second, '2026-11-11T12:00:00.000Z');
+const tierOf = (name, created) => { const r = mergedResults.find((x) => x.name === name && x.created === created); return r ? r.tierName : '(missing)'; };
+if (mergedResults.length !== 5) failures.push(`Expected a second import to add to the first (5 results), got ${mergedResults.length}`);
+if (tierOf('Amy Adams', '01/09/2026') !== 'WARM ENQUIRY') failures.push('Expected a newer result for the same contact to replace the older one');
+if (tierOf('Ben Brown', '02/09/2026') !== 'CONFIRMED DATE & TIME') failures.push('Expected an unfinished row not to wipe a finished result');
+if (tierOf('Cara Chen', '03/09/2026') !== 'WARM ENQUIRY' || tierOf('Cara Chen', '05/09/2026') !== 'NURTURE') failures.push('Expected a new contact from the same customer to be kept beside the earlier one');
+if (mergedResults[0].name !== 'Ben Brown') failures.push('Expected merged results to stay in priority order');
+if (leadCheckerResultKey({ email: '', phone: '+44 7700 900004', created: 'x' }) !== leadCheckerResultKey({ email: '', phone: '07700900004', created: 'x' })) failures.push('Expected phone formats to give the same result key');
 const olderExport = parseLeadCheckerImportTsv(sampleTsv.split('\n').map((l) => l.split('\t').slice(0, 17).join('\t')).join('\n'));
 if (!olderExport.headerOk) failures.push('Expected an export without the reason column to still be accepted');
 
@@ -3962,7 +4528,7 @@ if (!(missingRank.rows[0] && missingRank.rows[0].priorityRank === 700)) failures
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager lead-checker-import self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Manager lead-checker-import self-test passed (9/9)');
+console.info('SLA Manager lead-checker-import self-test passed');
 }
 });
 
@@ -3976,7 +4542,7 @@ check('the uncertain "check" bucket gets the warning colour', postClosureActionC
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager postClosureActionColor self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Manager postClosureActionColor self-test passed (2/2)');
+console.info('SLA Manager postClosureActionColor self-test passed');
 }
 });
 
@@ -4018,7 +4584,7 @@ currentPendingCustomers = originalPendingCustomers;
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager pending-lead-checker-export self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Manager pending-lead-checker-export self-test passed (10/10)');
+console.info('SLA Manager pending-lead-checker-export self-test passed');
 }
 });
 
@@ -4077,7 +4643,7 @@ else localStorage.setItem(LEAD_CHECKER_IMPORT_KEY, originalImportState);
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager lead-checker-export-dedupe self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Manager lead-checker-export-dedupe self-test passed (5/5)');
+console.info('SLA Manager lead-checker-export-dedupe self-test passed');
 }
 });
 
@@ -4107,8 +4673,9 @@ return digits;
 }
 
 // Matched by email (preferred) or phone, since the export has no Registration
-// or key; Created breaks ties between two leads from one customer. Pending
-// rows have mobile and landline instead of phone.
+// or key, and then only when Created is the card's own time. Pending rows
+// have mobile and landline instead of phone. The card loops use the indexed
+// version below; this one checks a single lead before an export.
 function findLeadCheckerResultForCustomer(c, results) {
 if (!results || results.length === 0) return null;
 const emailKey = normalizeEmailForLeadCheckerMatch(c.email);
@@ -4179,57 +4746,46 @@ const candidates = leadCheckerResultCandidatesIndexed(c, index);
 return pickLeadCheckerResultForCard(c, candidates);
 }
 
-// The indexed lookup must return exactly what the linear scan does.
+// The indexed lookup must return exactly what the linear scan does, and
+// both must pick the result named here.
 runSelfTest('leadCheckerResultIndexEquivalenceSelfTest', function leadCheckerResultIndexEquivalenceSelfTest() {
 const failures = [];
-function check(label, actual, expected) {
-if (actual !== expected) failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
-}
-
 const results = [
 { name: 'Email Match', email: 'alice@example.com', phone: '', created: 'A' },
-{ name: 'Phone Only', email: '', phone: '07000000001', created: 'B' },
-{ name: 'Email+Phone, different email', email: 'carol@example.com', phone: '07000000002', created: 'C' },
-{ name: 'Dup Email 1', email: 'dup@example.com', phone: '', created: '2026-01-01' },
-{ name: 'Dup Email 2', email: 'dup@example.com', phone: '', created: '2026-01-02' },
+{ name: 'Phone Only', email: '', phone: '07700 900001', created: 'B' },
+{ name: 'Email And Phone', email: 'carol@example.com', phone: '07700900002', created: 'C' },
+{ name: 'Dup Email 1', email: 'dup@example.com', phone: '', created: 'D1' },
+{ name: 'Dup Email 2', email: 'dup@example.com', phone: '', created: 'D2' }
 ];
 const index = buildLeadCheckerResultIndex(results);
-
 const cases = [
-// Simple email match.
-{ c: { email: 'alice@example.com', phone: '' }, label: 'simple email match' },
-// Simple phone match - neither side has email.
-{ c: { email: '', phone: '07000000001' }, label: 'simple phone match, no email either side' },
-// Customer has no email, result has email and a matching phone: phone fallback.
-{ c: { email: '', phone: '07000000002' }, label: 'customer has no email, result has email+matching phone - must still match via phone' },
-// Both have email but they differ, phones match: must NOT fall back to phone.
-{ c: { email: 'notcarol@example.com', phone: '07000000002' }, label: 'both sides have email (different) - phone must not override a failed email match' },
-// Duplicate-email candidates, exact createdText tie-break.
-{ c: { email: 'dup@example.com', phone: '', createdText: '2026-01-02' }, label: 'duplicate email, exact created tie-break' },
-// No exact tie-break: falls to the first candidate, so both versions must agree on order.
-{ c: { email: 'dup@example.com', phone: '', createdText: 'nonexistent' }, label: 'duplicate email, no exact created match' },
-// No match at all.
-{ c: { email: 'nobody@example.com', phone: '00000000000' }, label: 'no match' },
-// Customer has neither email nor phone.
-{ c: { email: '', phone: '' }, label: 'customer has neither email nor phone' },
+{ label: 'email match, case ignored', c: { email: 'Alice@Example.com', phone: '', createdText: 'A' }, expect: 'Email Match' },
+{ label: 'phone match when neither side has an email, +44 form', c: { email: '', phone: '+447700900001', createdText: 'B' }, expect: 'Phone Only' },
+{ label: 'a Pending row matches on its mobile and Last Actioned time', c: { email: '', mobile: '07700900001', lastActionText: 'B' }, expect: 'Phone Only' },
+{ label: 'customer with no email still matches a result that has one, by phone', c: { email: '', phone: '07700900002', createdText: 'C' }, expect: 'Email And Phone' },
+{ label: 'different emails never match on phone', c: { email: 'notcarol@example.com', phone: '07700900002', createdText: 'C' }, expect: null },
+{ label: 'two results for one customer: the card\'s own Created picks', c: { email: 'dup@example.com', phone: '', createdText: 'D2' }, expect: 'Dup Email 2' },
+{ label: 'a result for an older lead is not shown on a new one', c: { email: 'dup@example.com', phone: '', createdText: 'D3' }, expect: null },
+{ label: 'a card with no time shows nothing', c: { email: 'alice@example.com', phone: '' }, expect: null },
+{ label: 'no match', c: { email: 'nobody@example.com', phone: '07700900009', createdText: 'A' }, expect: null },
+{ label: 'customer with neither email nor phone', c: { email: '', phone: '', createdText: 'A' }, expect: null }
 ];
-
-cases.forEach(({ c, label }) => {
-const viaLinearScan = findLeadCheckerResultForCustomer(c, results);
-const viaIndex = findLeadCheckerResultForCustomerIndexed(c, index);
-check(label, viaIndex, viaLinearScan);
+cases.forEach(({ c, label, expect }) => {
+const linear = findLeadCheckerResultForCustomer(c, results);
+const indexed = findLeadCheckerResultForCustomerIndexed(c, index);
+if (indexed !== linear) failures.push(`${label}: the indexed and linear lookups disagree`);
+if ((linear ? linear.name : null) !== expect) failures.push(`${label}: expected ${JSON.stringify(expect)}, got ${JSON.stringify(linear ? linear.name : null)}`);
 });
-
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager leadCheckerResultIndexEquivalence self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info(`SLA Manager leadCheckerResultIndexEquivalence self-test passed (${cases.length}/${cases.length})`);
+console.info('SLA Manager leadCheckerResultIndexEquivalence self-test passed');
 }
 });
 
 // Repeat contacts (autos often reach the same person several times) should
-// not be re-sent to the Lead Checker. Only an exact Created match counts as
-// already classified; the looser fallback match means a new contact.
+// not be re-sent to the Lead Checker. A result only counts for the contact
+// with the same Created time; a different time is a new contact.
 function isAlreadyClassifiedForContact(c, importResults) {
 if (!importResults || importResults.length === 0) return false;
 // Only a row that was actually classified counts. A failed or cancelled
@@ -4238,25 +4794,18 @@ const match = findLeadCheckerResultForCustomer(c, importResults);
 return !!match && match.tier != null && match.created === c.createdText;
 }
 
-// Results show as a badge on each matching lead card, and the panel redraws
-// straight after classifying.
-
 window._updateLeadCheckerImportInput = function(value) {
 const state = loadLeadCheckerImportState();
 saveLeadCheckerImportState({ rawInput: value, results: state.results });
 };
 
-// Shared by the textarea Classify button and the one-click paste button.
+// Shared by the box's Add results button and the one-click paste button.
 // originalLabel restores each button's own idle state.
 function runLeadCheckerClassification(rawInput, buttonEl, originalLabel) {
-// Captured before the rebuild below replaces it, so the popover is only
-// reopened if it was open.
-const popoverBeforeEl = document.getElementById('leadCheckerPopover');
-const popoverWasOpen = !!popoverBeforeEl && popoverBeforeEl.style.display !== 'none';
 const parsed = parseLeadCheckerImportTsv(rawInput);
 if (!parsed.headerOk) {
-buttonEl.textContent = 'Bad header';
-setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 1500);
+buttonEl.textContent = 'Not Lead Checker results';
+setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 2200);
 return false;
 }
 if (parsed.rows.length === 0) {
@@ -4264,17 +4813,12 @@ buttonEl.textContent = 'No rows';
 setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 1200);
 return false;
 }
-const results = classifyLeadCheckerImportRows(parsed.rows);
-// Cleared once classified: the results are on the cards, and old text in the
-// box reads as unhandled.
-saveLeadCheckerImportState({ rawInput: '', results });
-// A full panel redraw for the current page. buttonEl is replaced with it.
-if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, lastPendingDiffCounts.newCount, lastPendingDiffCounts.removedCount, false);
-else displayPanel(currentCustomers, lastSlaDiffCounts.newCount, lastSlaDiffCounts.removedCount, false);
-if (popoverWasOpen) {
-const reopened = document.getElementById('leadCheckerPopover');
-if (reopened) reopened.style.display = 'block';
-}
+// The pasted text is cleared once read: the results are on the cards, and
+// old text in the box reads as unhandled.
+addLeadCheckerResults(parsed.rows);
+// A full panel redraw for the current page. buttonEl is replaced with it;
+// the redraw keeps the popover open if it was.
+redrawLeadsPanel();
 return true;
 }
 
@@ -4289,7 +4833,7 @@ runLeadCheckerClassification(rawInput, buttonEl, buttonEl.textContent);
 window._pasteAndClassifyLeadChecker = async function(buttonEl) {
 const originalLabel = buttonEl.innerHTML;
 if (!navigator.clipboard || !navigator.clipboard.readText) {
-buttonEl.textContent = 'Paste manually below';
+buttonEl.textContent = 'Paste by hand in the Lead Checker box';
 setTimeout(() => { buttonEl.innerHTML = originalLabel; }, 1800);
 return;
 }
@@ -4416,7 +4960,7 @@ try { localStorage.setItem(LEAD_CHECKER_PRIORITY_SORT_KEY, savedPrioritySort); }
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager sortByLeadCheckerPriority self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Manager sortByLeadCheckerPriority self-test passed (7/7)');
+console.info('SLA Manager sortByLeadCheckerPriority self-test passed');
 }
 });
 
@@ -4449,7 +4993,7 @@ check('Not yet classified comes last', sorted[2], 'Not Yet Classified');
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager leadCheckerPriorityRank-postClosure self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Manager leadCheckerPriorityRank-postClosure self-test passed (3/3)');
+console.info('SLA Manager leadCheckerPriorityRank-postClosure self-test passed');
 }
 });
 
@@ -4480,7 +5024,7 @@ else localStorage.setItem(LEAD_CHECKER_IMPORT_KEY, originalImportState);
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager postClosureBadgeReplacement self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Manager postClosureBadgeReplacement self-test passed (2/2)');
+console.info('SLA Manager postClosureBadgeReplacement self-test passed');
 }
 });
 
@@ -4524,7 +5068,7 @@ check('Pending keeps the due hour first, category within it', sortByLeadCheckerP
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager sortByLeadCheckerPriority-category self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('SLA Manager sortByLeadCheckerPriority-category self-test passed (3/3)');
+console.info('SLA Manager sortByLeadCheckerPriority-category self-test passed');
 }
 });
 
@@ -4784,22 +5328,9 @@ if (key === lead.key) found.push(cells[PC_COL_ASSIGN]);
 return found;
 }
 function locatePendingAssignCell(lead) {
-const table = document.querySelector('table');
-if (!table) return null;
-const rows = table.querySelectorAll('tbody tr');
-for (const row of rows) {
-const cells = row.querySelectorAll('td');
-if (cells.length < 12) continue;
-const name = cells[PC_COL_CUSTOMER]?.textContent?.trim();
-const reg = cells[PC_COL_REG]?.textContent?.trim();
-const campaign = cells[PC_COL_CAMPAIGN]?.textContent?.trim();
-const callbackType = cells[PC_COL_CALLBACK_TYPE]?.textContent?.trim();
-const nextActionText = cells[PC_COL_NEXT_ACTION]?.textContent?.trim() || '';
-const key = `${name}||${reg}||${campaign}||${callbackType}||${nextActionText}`;
-if (key === lead.key) return cells[PC_COL_ASSIGN];
+return findPendingAssignCells(lead)[0] || null;
 }
-return null;
-}
+locatePendingAssignCell.findAll = findPendingAssignCells;
 
 function slugify(value) {
 return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
@@ -4827,7 +5358,7 @@ renderStatTile('This hour', dueThisHour, dueThisHour > 0, `window._quickAssignPe
 renderStatTile('Next hour', dueNextHour, false, `window._quickAssignPendingTile(1)`)
 ].join('');
 
-const oneLineSummary = `${dueThisHour} due this hour &middot; ${dueNextHour} due next hour &middot; ${notAssignedCount} unassigned`;
+const oneLineSummary = `${dueThisHour} due this hour · ${dueNextHour} due next hour · ${notAssignedCount} unassigned`;
 const expandedBody = `
 <div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
 <div style="font-size: 11px; color: var(--wb-muted, #5b6577); margin-bottom: 6px;">${callbackLine}</div>`;
@@ -4837,7 +5368,7 @@ return `
 ${renderStatSummaryShell(oneLineSummary, expandedBody)}
 <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
 <span style="font-size: 11px; color: var(--wb-muted, #5b6577);">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
-<button onclick="window._clearWholeQueue()" style="background: #dc2626; color: white; border: none; border-radius: 6px; padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px;">${svgIcon('warning', 11)} Clear Queue</button>
+${renderClearQueueButton()}
 </div>
 </div>`;
 }
@@ -4950,8 +5481,8 @@ const urgencyBadge = pickUrgencyBadge(null, queuePosition, c.assigned);
 const secondaryLine = buildSecondaryLine(urgencyBadge, null, queuePosition, c.assigned);
 const urgencyBadgeTitle = urgencyBadge?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown), so assigning it may be rejected.` : '';
 const nextActionLabel = c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown';
-// Zen mode shrinks the rows themselves, which take most of the space, so
-// more leads fit on screen.
+// List only view shrinks the rows themselves, which take most of the space,
+// so more leads fit on screen.
 const zenCompact = isZenModeOn();
 const cardPadding = zenCompact ? '8px 14px' : '12px 14px';
 const avatarSize = zenCompact ? 30 : 38;
@@ -4963,14 +5494,12 @@ ${renderAvatarCircle(c.name, avatarColor, avatarSize)}
 <div style="flex: 1; min-width: 0;">
 <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: var(--wb-text, #1c1c1e); font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${escapeHtml(c.name)}</span>
-${leadCheckerBadge ? `<span title="${escapeHtml(leadCheckerTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${leadCheckerBadge.color}18; color: ${leadCheckerBadge.color}; white-space: nowrap;">${escapeHtml(leadCheckerBadge.label)}</span>` : ''}
-${urgencyBadge ? `<span title="${escapeHtml(urgencyBadgeTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${urgencyBadge.color}18; color: ${urgencyBadge.color}; white-space: nowrap;">${escapeHtml(urgencyBadge.label)}</span>` : ''}
+${leadCheckerBadge ? `<span title="${escapeHtml(leadCheckerTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: ${leadCheckerBadge.color}18; color: ${leadCheckerBadge.color}; white-space: nowrap;">${escapeHtml(leadCheckerBadge.label)}</span>` : ''}
+${urgencyBadge ? `<span title="${escapeHtml(urgencyBadgeTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: ${urgencyBadge.color}18; color: ${urgencyBadge.color}; white-space: nowrap;">${escapeHtml(urgencyBadge.label)}</span>` : ''}
 </div>
 <div style="font-size: 12.5px; color: var(--wb-muted, #5b6577); margin-top: 2px;">${secondaryLine || `Next action: ${nextActionLabel}`}</div>
 </div>
-${c.assigned
-? `<span title="${escapeHtml(c.agentName || 'Assigned')}" style="flex-shrink: 0;">${svgIcon('check', 18, ' color: #34c759;')}</span>`
-: `<span style="flex-shrink: 0; color: #c7c7cc;">${svgIcon('chevronRight', 16)}</span>`}
+${c.assigned ? `<span title="Assigned to ${escapeHtml(c.agentName || 'an agent')}" style="flex-shrink: 0;">${svgIcon('check', 18, ' color: #047857;')}</span>` : ''}
 </div>
 ${secondaryLine ? `<div style="font-size: 12.5px; color: var(--wb-muted, #5b6577); margin-bottom: ${zenCompact ? '4px' : '9px'}; margin-left: 50px;">Next action: ${nextActionLabel}</div>` : ''}
 ${zenCompact ? '' : renderContactToggle(`
@@ -4989,7 +5518,7 @@ ${renderCopyableField(c.landline)}
 `)}
 ${zenCompact ? '' : `<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-left: 50px;">
 <span style="color: var(--wb-muted, #5b6577);">${escapeHtml(c.brand || '')}</span>
-<span style="color: #34c759;">${escapeHtml(c.campaign || '')}</span>
+<span style="color: #047857;">${escapeHtml(c.campaign || '')}</span>
 </div>`}
 </div>`;
 }
@@ -5019,8 +5548,8 @@ const leadCheckerBadge = pickLeadCheckerBadge(leadChecker);
 const urgencyBadge = pickUrgencyBadge(urgency, queuePosition, c.assigned);
 const secondaryLine = buildSecondaryLine(urgencyBadge, urgency, queuePosition, c.assigned);
 const urgencyBadgeTitle = urgencyBadge?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown), so assigning it may be rejected.` : '';
-// Zen mode shrinks the rows themselves, which take most of the space, so
-// more leads fit on screen.
+// List only view shrinks the rows themselves, which take most of the space,
+// so more leads fit on screen.
 const zenCompact = isZenModeOn();
 const cardPadding = zenCompact ? '8px 14px' : '12px 14px';
 const avatarSize = zenCompact ? 30 : 38;
@@ -5032,14 +5561,12 @@ ${renderAvatarCircle(c.name, avatarColor, avatarSize)}
 <div style="flex: 1; min-width: 0;">
 <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
 <span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: var(--wb-text, #1c1c1e); font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${escapeHtml(c.name)}</span>
-${leadCheckerBadge ? `<span title="${escapeHtml(leadCheckerTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${leadCheckerBadge.color}18; color: ${leadCheckerBadge.color}; white-space: nowrap;">${escapeHtml(leadCheckerBadge.label)}</span>` : ''}
-${urgencyBadge ? `<span title="${escapeHtml(urgencyBadgeTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: 700; background: ${urgencyBadge.color}18; color: ${urgencyBadge.color}; white-space: nowrap;">${escapeHtml(urgencyBadge.label)}</span>` : ''}
+${leadCheckerBadge ? `<span title="${escapeHtml(leadCheckerTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: ${leadCheckerBadge.color}18; color: ${leadCheckerBadge.color}; white-space: nowrap;">${escapeHtml(leadCheckerBadge.label)}</span>` : ''}
+${urgencyBadge ? `<span title="${escapeHtml(urgencyBadgeTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: ${urgencyBadge.color}18; color: ${urgencyBadge.color}; white-space: nowrap;">${escapeHtml(urgencyBadge.label)}</span>` : ''}
 </div>
 ${secondaryLine ? `<div style="font-size: 12.5px; color: var(--wb-muted, #5b6577); margin-top: 2px;">${secondaryLine}</div>` : ''}
 </div>
-${c.assigned
-? `<span title="${escapeHtml(c.agentName || 'Assigned')}" style="flex-shrink: 0;">${svgIcon('check', 18, ' color: #34c759;')}</span>`
-: `<span style="flex-shrink: 0; color: #c7c7cc;">${svgIcon('chevronRight', 16)}</span>`}
+${c.assigned ? `<span title="Assigned to ${escapeHtml(c.agentName || 'an agent')}" style="flex-shrink: 0;">${svgIcon('check', 18, ' color: #047857;')}</span>` : ''}
 </div>
 ${zenCompact ? '' : renderContactToggle(`
 <div>
@@ -5053,7 +5580,7 @@ ${renderCopyableField(c.email)}
 `)}
 ${zenCompact ? '' : `<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-left: 50px;">
 <span style="color: var(--wb-muted, #5b6577);">${escapeHtml(c.source)}</span>
-<span style="color: #34c759;">${escapeHtml(c.campaign)}</span>
+<span style="color: #047857;">${escapeHtml(c.campaign)}</span>
 </div>`}
 </div>`;
 }
@@ -5063,6 +5590,111 @@ ${zenCompact ? '' : `<div style="display: flex; gap: 6px; flex-wrap: wrap; font-
 // ===================================================================
 // PANEL MOUNTING & DISPLAY
 // ===================================================================
+
+// ---- Today: what has been checked and worked so far, across the tools ----
+
+// Pure. The same customer key Lead Re setup files its progress under.
+function deskPersonKey(r) {
+const clean = (value) => String(value == null ? '' : value).toLowerCase().replace(/\s+/g, ' ').trim();
+return clean(r.email) || String(r.phone || '').replace(/\D/g, '').slice(-10) || clean(stripTitle(String(r.name || '').trim()));
+}
+
+// Pure. Counts from what SLA Manager and Lead Re setup have stored.
+function computeTodayCounts({ national, resetProgress, deskResults, deskProgress, emailOnly }) {
+const reSetup = (national || []).filter((r) => r.Verdict === RE_SETUP);
+const progress = resetProgress || {};
+const pc = (deskProgress && deskProgress.pc) || {};
+const eo = (deskProgress && deskProgress.eo) || {};
+const sendBack = (deskResults || []).filter((r) => r.postClosureAction === 'send back through');
+const emailLeads = emailOnly || [];
+return {
+nationalChecked: (national || []).length,
+reSetupToDo: reSetup.filter((r) => !progress[r.ActivityID]).length,
+reSetupDone: reSetup.filter((r) => progress[r.ActivityID] === 'Done').length,
+sendBack: sendBack.length,
+sendBackDone: sendBack.filter((r) => pc[deskPersonKey(r)] === 'Done').length,
+toCheck: (deskResults || []).filter((r) => r.postClosureAction === 'check: needs contact?').length,
+emailOnly: emailLeads.length,
+emailOnlyDone: emailLeads.filter((l) => eo[deskPersonKey({ email: l.email })] === 'Done').length
+};
+}
+
+function loadTodayCounts() {
+const fresh = (stored, timeField) => (stored && isStoredTimeFresh(stored[timeField || 'savedAt']) ? stored : null);
+const national = fresh(readStoredJson(NATIONAL_RESULTS_KEY));
+const reset = fresh(readStoredJson(LEAD_RESET_PROGRESS_KEY));
+const desk = fresh(readStoredJson(DESK_RESULTS_KEY));
+const deskProgress = fresh(readStoredJson(LEAD_RESET_DESK_PROGRESS_KEY));
+const emailOnly = fresh(readStoredJson(EMAIL_ONLY_ASSIGNED_KEY));
+const today = new Date().toDateString();
+return computeTodayCounts({
+national: national && Array.isArray(national.results) ? national.results : [],
+resetProgress: reset && reset.byActivity,
+deskResults: desk && Array.isArray(desk.results) ? desk.results.filter((r) => r && isStoredTimeFresh(r.checkedAt || desk.savedAt)) : [],
+deskProgress,
+emailOnly: emailOnly && Array.isArray(emailOnly.leads) && new Date(emailOnly.savedAt).toDateString() === today ? emailOnly.leads : []
+});
+}
+
+// Pure. One short line per kind of work, only for kinds with something in.
+function todaySummaryLines(c) {
+const lines = [];
+if (c.nationalChecked) lines.push(`National: ${c.nationalChecked} checked, Re setup ${c.reSetupToDo} to do, ${c.reSetupDone} done`);
+if (c.sendBack || c.toCheck) lines.push(`Post Closure: ${c.sendBack} to send back (${c.sendBackDone} done), ${c.toCheck} to check`);
+if (c.emailOnly) lines.push(`Email Only: ${c.emailOnly} assigned, ${c.emailOnlyDone} done`);
+return lines;
+}
+
+function renderTodaySummary() {
+let lines = [];
+try { lines = todaySummaryLines(loadTodayCounts()); } catch (error) { lines = []; }
+if (!lines.length) return '<div id="_slaTodaySummary"></div>';
+return `<div id="_slaTodaySummary" style="margin: 0 0 10px; padding: 6px 10px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 8px; background: var(--wb-surface, white); font-size: 11.5px; line-height: 1.5; color: var(--wb-text, #1c1c1e);">
+<div style="font-size: 11px; font-weight: 700; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px;">TODAY</div>
+${lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('')}
+</div>`;
+}
+
+function renderTodaySummaryInPlace() {
+const el = document.getElementById('_slaTodaySummary');
+if (el) el.outerHTML = renderTodaySummary();
+}
+
+// Lead Re setup works in another tab, so its progress arrives as storage
+// events. One listener per page, calling the newest copy of the tool.
+const TODAY_KEYS = [NATIONAL_RESULTS_KEY, LEAD_RESET_PROGRESS_KEY, DESK_RESULTS_KEY, LEAD_RESET_DESK_PROGRESS_KEY, EMAIL_ONLY_ASSIGNED_KEY];
+window.__slaOnTodayStorage = (key) => { if (TODAY_KEYS.includes(key)) renderTodaySummaryInPlace(); };
+if (!window.__slaTodayListening && typeof window.addEventListener === 'function') {
+window.__slaTodayListening = true;
+window.addEventListener('storage', (event) => { if (window.__slaOnTodayStorage) window.__slaOnTodayStorage(event.key); });
+}
+
+runSelfTest('todaySummarySelfTest', function todaySummarySelfTest() {
+const failures = [];
+const check = (label, actual, expected) => {
+const a = JSON.stringify(actual); const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+};
+const counts = computeTodayCounts({
+national: [{ ActivityID: '1', Verdict: RE_SETUP }, { ActivityID: '2', Verdict: RE_SETUP }, { ActivityID: '3', Verdict: RE_SETUP }, { ActivityID: '4', Verdict: 'OK' }],
+resetProgress: { 1: 'Done', 2: 'Skipped' },
+deskResults: [
+{ name: 'Jo Example', email: 'Jo.Example@example.com', phone: '', postClosureAction: 'send back through' },
+{ name: 'Al Sample', email: '', phone: '07700 900103', postClosureAction: 'send back through' },
+{ name: 'Sam Buyer', email: 'sam@example.com', phone: '', postClosureAction: 'check: needs contact?' }
+],
+deskProgress: { pc: { 'jo.example@example.com': 'Done', '7700900103': 'Skipped' }, eo: { 'eve@example.com': 'Done' } },
+emailOnly: [{ email: 'Eve@example.com' }, { email: 'dan@example.com' }]
+});
+check('counts', counts, { nationalChecked: 4, reSetupToDo: 1, reSetupDone: 1, sendBack: 2, sendBackDone: 1, toCheck: 1, emailOnly: 2, emailOnlyDone: 1 });
+check('lines', todaySummaryLines(counts), ['National: 4 checked, Re setup 1 to do, 1 done', 'Post Closure: 2 to send back (1 done), 1 to check', 'Email Only: 2 assigned, 1 done']);
+check('nothing stored gives no lines', todaySummaryLines(computeTodayCounts({})), []);
+if (failures.length > 0) {
+reportSelfTestFailure('SLA Manager today-summary self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Manager today-summary self-test passed');
+}
+});
 
 // Shared chrome for both pages; only the title, counts, assign section and
 // body differ.
@@ -5078,7 +5710,7 @@ const positionStyle = isFull
 const isMinimized = localStorage.getItem(PANEL_STATE_KEY) === 'hidden';
 
 return `
-<div id="${PANEL_BOX_ID}" style="position: fixed; ${positionStyle}
+<div id="${PANEL_BOX_ID}" data-view="${escapeHtml(title)}" style="position: fixed; ${positionStyle}
 background: var(--wb-bg, #f2f2f7); box-shadow: 0 20px 50px -12px rgba(0,0,0,0.25);
 z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 display: flex; flex-direction: column; transition: transform 0.3s ease; ${isMinimized ? 'transform: translateX(150%);' : ''}">
@@ -5096,7 +5728,7 @@ ${removedCount > 0 ? `<span style="color: #cbd5e1; font-size: 13px; font-weight:
 ${showLeadChecker ? `<button onclick="window._toggleLeadCheckerPopover();"
 style="background: transparent; border: none; color: #cbd5e1; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#cbd5e1';"
-title="Lead Checker: copy leads out, classify results back in">${svgIcon('inbox', 14)}</button>` : ''}
+title="Lead Checker: send leads over, bring results back" aria-label="Lead Checker: send leads over, bring results back">${svgIcon('inbox', 14)}</button>` : ''}
 <button onclick="window._toggleMorningChecks();"
 style="background: ${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)'}; border: none; color: ${currentPanelMode === 'morningChecks' ? '#fbbf24' : '#cbd5e1'}; cursor: pointer; padding: 5px 9px 5px 7px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center; gap: 4px; margin: 0 4px;"
 onmouseover="this.style.background='rgba(255,255,255,0.18)';" onmouseout="this.style.background='${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)'}';"
@@ -5104,23 +5736,25 @@ title="${currentPanelMode === 'morningChecks' ? 'Back to queue view' : 'Switch t
 ${showLeadChecker ? `<button onclick="window._toggleLeadCheckerPrioritySort();"
 style="background: ${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#cbd5e1'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#cbd5e1'}';"
-title="${isLeadCheckerPrioritySortEnabled() ? 'Lead Checker priority sort is on. Click to turn it off' : 'Lead Checker priority sort is off. Click to group each section by Lead Checker category (Confirmed, Date only, Warm, Nurture), most urgent first within each'}">${svgIcon('bolt', 14)}</button>` : ''}
+aria-pressed="${isLeadCheckerPrioritySortEnabled() ? 'true' : 'false'}" aria-label="Sort by Lead Checker category"
+title="${isLeadCheckerPrioritySortEnabled() ? 'Sorting by Lead Checker category is on. Click to turn it off' : 'Sort by Lead Checker category: groups each section by category (Confirmed, Date only, Warm, Nurture), most urgent first within each'}">${svgIcon('bolt', 14)}</button>` : ''}
 <button onclick="window._toggleZenMode();"
 style="background: ${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isZenModeOn() ? '#38bdf8' : '#cbd5e1'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isZenModeOn() ? '#38bdf8' : '#cbd5e1'}';"
-title="${isZenModeOn() ? 'Zen mode is on. Click to restore the full view' : 'Zen mode: hide Overview, Assign and Filters and shrink each card so more leads fit on screen'}">${svgIcon('focus', 14)}</button>
+aria-pressed="${isZenModeOn() ? 'true' : 'false'}" aria-label="List only view"
+title="${isZenModeOn() ? 'List only view is on. Click to show Overview, Assign and Filters again' : 'List only view: hides Overview, Assign and Filters and shrinks each card so more leads fit on screen'}">${svgIcon('focus', 14)}</button>
 <button id="_slaSizeBtn" onclick="window._togglePanelSize();"
 style="background: transparent; border: none; color: #cbd5e1; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#cbd5e1';"
-title="${isFull ? 'Shrink to box' : 'Expand to full height'}">${svgIcon(isFull ? 'shrink' : 'expand', 14)}</button>
+title="${isFull ? 'Shrink to box' : 'Expand to full height'}" aria-label="${isFull ? 'Shrink to box' : 'Expand to full height'}">${svgIcon(isFull ? 'shrink' : 'expand', 14)}</button>
 <button onclick="document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0;"
 style="background: transparent; border: none; color: #cbd5e1; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#cbd5e1';"
-title="Top">${svgIcon('arrowUp', 14)}</button>
+title="Back to the top of the list" aria-label="Back to the top of the list">${svgIcon('arrowUp', 14)}</button>
 <button id="_slaMinimizeBtn" onclick="window._toggleMinimizePanel();"
 style="background: transparent; border: none; color: #cbd5e1; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
 onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#cbd5e1';"
-title="Minimize">${svgIcon(isMinimized ? 'restore' : 'minimize', 14)}</button>
+title="Hide the panel (click the badge in the top bar to bring it back)" aria-label="Hide the panel">${svgIcon(isMinimized ? 'restore' : 'minimize', 14)}</button>
 </div>
 </div>
 
@@ -5131,8 +5765,9 @@ ${assignSectionHtml}
 <div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
 ${renderSelfTestBanner()}
 ${renderVersionLine()}
+${renderTodaySummary()}
 ${hideSearch ? '' : `
-${showLeadChecker ? `<button onclick="window._pasteAndClassifyLeadChecker(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 10px;" title="Reads the results copied from Konnect Lead Checker off the clipboard and classifies them">${svgIcon('copy', 13)}Paste & Classify from Lead Checker</button>` : ''}
+${showLeadChecker ? `<button onclick="window._pasteAndClassifyLeadChecker(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 10px;" title="Reads the results copied from the Lead Checker off the clipboard and shows them on the lead cards">${svgIcon('copy', 13)}Paste Lead Checker results</button>` : ''}
 <div style="position: sticky; top: 0; z-index: 2; background: var(--wb-bg, #f2f2f7); padding-bottom: 10px; margin-bottom: 10px;">
 <input type="text" id="customerSearchInput" placeholder="Search by name…" oninput="window._filterCustomerSearch(this.value)"
 style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; font-size: 13px; color: var(--wb-text, #1c1c1e); background: var(--wb-surface, white);">
@@ -5140,7 +5775,8 @@ style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid
 ${bodyHtml}
 </div>
 
-<div style="border-top: 1px solid var(--wb-border, #cbd5e1); padding: 8px 14px; background: var(--wb-surface, white); flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 -2px 8px rgba(15,23,42,0.05);">
+${renderLinkLine()}
+<div style="border-top: 1px solid var(--wb-border, #cbd5e1); padding: 8px 14px; background: var(--wb-surface, white); flex-shrink: 0; display: flex; justify-content: space-between; align-items: center;">
 <button onclick="window._slaReportProblem();" style="padding: 6px 12px; background: transparent; color: var(--wb-muted, #64748b); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Report a problem</button>
 <button onclick="window._slaResetBookmarklet();"
 style="padding: 6px 12px; background: transparent; color: var(--wb-danger, #dc2626); border: 1px solid var(--wb-danger, #dc2626); border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
@@ -5179,9 +5815,94 @@ if (!el.hasAttribute('aria-label') && !el.textContent.trim() && el.getAttribute(
 });
 }
 
+// What the user had open or typed, read before a redraw and put back after
+// it, so results arriving in the background do not reset the panel.
+function capturePanelViewState() {
+if (!panelElement) return null;
+const q = (selector) => panelElement.querySelector(selector);
+const box = q(`#${PANEL_BOX_ID}`);
+const shown = (el) => !!el && el.style.display !== 'none';
+const active = panelElement.contains(document.activeElement) ? document.activeElement : null;
+let caret = null;
+try { if (active && typeof active.selectionStart === 'number') caret = [active.selectionStart, active.selectionEnd]; } catch (error) { caret = null; }
+const notes = {};
+panelElement.querySelectorAll('input[data-national-note]').forEach((el) => { if (el.value) notes[el.dataset.nationalNote] = el.value; });
+return {
+view: box ? box.dataset.view : '',
+focusedId: active ? active.id : '',
+caret,
+scrollTop: q('.panelContent') ? q('.panelContent').scrollTop : 0,
+assignScrollTop: q('#assignSectionBody') ? q('#assignSectionBody').scrollTop : 0,
+search: q('#customerSearchInput') ? q('#customerSearchInput').value : '',
+popoverOpen: shown(q('#leadCheckerPopover')),
+historyOpen: shown(q('#assignHistoryPanel')),
+openContacts: Array.from(panelElement.querySelectorAll('.customer-card')).filter((card) => shown(card.querySelector('.contact-details'))).map((card) => card.dataset.leadKey),
+openCheckDetails: Array.from(panelElement.querySelectorAll('[id^="_mcDetails_"]')).filter(shown).map((el) => el.id.replace('_mcDetails_', '')),
+notes
+};
+}
+
+function restorePanelViewState(state) {
+if (!state || !panelElement) return;
+const q = (selector) => panelElement.querySelector(selector);
+const box = q(`#${PANEL_BOX_ID}`);
+if (state.focusedId && document.getElementById(state.focusedId)) {
+const el = document.getElementById(state.focusedId);
+el.focus({ preventScroll: true });
+try { if (state.caret && typeof el.setSelectionRange === 'function') el.setSelectionRange(state.caret[0], state.caret[1]); } catch (error) { /* not a text field */ }
+}
+// The rest only applies when the same view is drawn again.
+if (!box || box.dataset.view !== state.view) return;
+if (state.popoverOpen && q('#leadCheckerPopover')) q('#leadCheckerPopover').style.display = 'block';
+if (state.historyOpen && q('#assignHistoryPanel')) window._toggleAssignHistory();
+if (state.openContacts.length) {
+const open = new Set(state.openContacts);
+panelElement.querySelectorAll('.customer-card').forEach((card) => {
+const toggle = card.querySelector('.contact-toggle');
+if (toggle && open.has(card.dataset.leadKey)) window._toggleCustomerContact(toggle);
+});
+}
+state.openCheckDetails.forEach((key) => window._toggleMorningCheckDetails(key));
+panelElement.querySelectorAll('input[data-national-note]').forEach((el) => { if (state.notes[el.dataset.nationalNote]) el.value = state.notes[el.dataset.nationalNote]; });
+if (state.search && q('#customerSearchInput')) {
+q('#customerSearchInput').value = state.search;
+window._filterCustomerSearch(state.search);
+}
+if (q('#assignSectionBody')) q('#assignSectionBody').scrollTop = state.assignScrollTop;
+if (q('.panelContent')) q('.panelContent').scrollTop = state.scrollTop;
+}
+
+// A redraw that results arriving in the background ask for. It waits while
+// the user is in a drop-down or typing a reason, or an assign run is using
+// the panel, so their input is not wiped; the caller's own redraw follows.
+let deferredRedraw = null;
+function isHoldingPanelInput() {
+const active = document.activeElement;
+return !!(panelElement && active && panelElement.contains(active) && typeof active.matches === 'function' && active.matches('select, input[data-national-note]'));
+}
+function redrawWhenNotTyping(redraw) {
+if (assigning || isHoldingPanelInput()) { deferredRedraw = redraw; return; }
+deferredRedraw = null;
+redraw();
+}
+function flushDeferredRedraw() {
+if (!deferredRedraw || assigning || isHoldingPanelInput()) return;
+const redraw = deferredRedraw;
+deferredRedraw = null;
+redraw();
+}
+
+// Redraws the leads view for the page being shown, from what is already held.
+function redrawLeadsPanel() {
+if (currentPanelMode !== 'normal') return;
+if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, lastPendingDiffCounts.newCount, lastPendingDiffCounts.removedCount, false);
+else if (currentPageType === PAGE_SLA) displayPanel(currentCustomers, lastSlaDiffCounts.newCount, lastSlaDiffCounts.removedCount, false);
+}
+
 function mountPanel(panelHTML) {
 const isFirstOpen = !panelElement;
-const focusedId = panelElement && panelElement.contains(document.activeElement) ? document.activeElement.id : '';
+const viewState = capturePanelViewState();
+deferredRedraw = null;
 if (panelElement) panelElement.remove();
 panelElement = document.createElement('div');
 panelElement.id = PANEL_ID;
@@ -5205,19 +5926,12 @@ event.preventDefault();
 el.click();
 });
 const panelBox = panelElement.querySelector(`#${PANEL_BOX_ID}`);
-if (focusedId && document.getElementById(focusedId)) {
-document.getElementById(focusedId).focus();
-} else if (isFirstOpen && panelBox) {
+if (isFirstOpen && panelBox) {
 panelBox.setAttribute('tabindex', '-1');
 panelBox.focus({ preventScroll: true });
 }
-
-const contentArea = panelElement.querySelector('.panelContent');
-if (contentArea) {
-contentArea.addEventListener('scroll', () => {
-localStorage.setItem('_slaPanelScroll', contentArea.scrollTop);
-});
-}
+// A redraw held back while a drop-down or reason box had focus.
+panelElement.addEventListener('focusout', () => setTimeout(flushDeferredRedraw, 0));
 
 panelElement.querySelectorAll('.sla-copyable').forEach(el => {
 el.addEventListener('click', function() {
@@ -5276,6 +5990,7 @@ if (!event.target.closest('#_slaAvatarAssignPopover') && !event.target.closest('
 });
 
 initAssignSectionWheels();
+restorePanelViewState(viewState);
 }
 
 // Pass invalidateCache false for re-renders that only change Queue by Agent
@@ -5343,11 +6058,13 @@ showLeadChecker: true
 // EXTRACTION & EXPORT
 // ===================================================================
 
+const DETAIL_MAX_TRIES = 3;
+
 // options.quiet: called from the morning checks. Loads the leads into the
 // cache without switching the panel away from the morning checks.
 async function extractAndExportSla(options = {}) {
 const quiet = !!options.quiet;
-if (extracting || assigning || (runningMorningChecks && !quiet)) return;
+if (extracting || assigning || navigating || (runningMorningChecks && !quiet)) return;
 extracting = true;
 
 try {
@@ -5390,7 +6107,13 @@ const createdText = cells[COL_CREATED]?.textContent?.trim() || '';
 rowDescriptors.push({ cells, name, registration, source, campaign, key, assigned: assignState.assigned, agentName: assignState.agentName, slaDate, status, createdText });
 }
 
-const pendingCount = rowDescriptors.filter(d => !previousByKey.has(d.key)).length;
+// A lead read with neither phone nor email is read again (a few times at
+// most), in case its pop-up had not filled in.
+const needsDetails = (d) => {
+const existing = previousByKey.get(d.key);
+return !existing || (!existing.phone && !existing.email && (existing.detailTries || 0) < DETAIL_MAX_TRIES);
+};
+const pendingCount = rowDescriptors.filter(needsDetails).length;
 let remaining = pendingCount;
 setBadgeProgress(remaining);
 // Only new leads open a detail modal, which flashes the screen, so the
@@ -5399,7 +6122,7 @@ if (pendingCount > 0) showPageFlashOverlay(`Loading new leads… (${remaining} l
 
 for (const d of rowDescriptors) {
 const existing = previousByKey.get(d.key);
-if (existing) {
+if (existing && !needsDetails(d)) {
 // Keeps cached phone and email only; everything else is taken fresh from d.
 customers.push({ ...existing, registration: d.registration, assigned: d.assigned, agentName: d.agentName, slaDate: d.slaDate, status: d.status, createdText: d.createdText });
 continue;
@@ -5408,7 +6131,7 @@ continue;
 try {
 await waitForTabVisible();
 const tierInfo = categorizeTier(d.campaign, d.source);
-const details = await extractCustomerDetails(d.cells[0]);
+const details = await extractCustomerDetails(d.cells[0], d.name);
 
 customers.push({
 key: d.key,
@@ -5420,15 +6143,17 @@ tier: tierInfo.tier,
 reason: tierInfo.reason,
 phone: details.phone,
 email: details.email,
+detailsRead: details.read,
+detailTries: ((existing && existing.detailTries) || 0) + 1,
 assigned: d.assigned,
 agentName: d.agentName,
 slaDate: d.slaDate,
 status: d.status,
 createdText: d.createdText
 });
-addedCount++;
+if (!existing) addedCount++;
 } catch (error) {
-console.warn('Error processing row:', error);
+console.warn('Error processing row:', error && error.message);
 } finally {
 remaining--;
 setBadgeProgress(remaining);
@@ -5440,8 +6165,9 @@ const removedCount = currentCustomers.filter(c => !seenKeys.has(c.key)).length;
 lastSlaDiffCounts = { newCount: addedCount, removedCount };
 
 if (quiet) {
+// Only the lead data is loaded. The page the panel belongs to is left
+// alone: the checks may have been started from Pending.
 currentCustomers = customers;
-currentPageType = PAGE_SLA;
 invalidateLeadsCache();
 return;
 }
@@ -5460,7 +6186,7 @@ if (quiet) showPageFlashOverlay('Running morning checks…'); else hidePageFlash
 
 // Email, Mobile and Landline are plain text, so no modal is needed here.
 async function extractAndExportPending() {
-if (extracting || assigning || runningMorningChecks) return;
+if (extracting || assigning || navigating || runningMorningChecks) return;
 extracting = true;
 
 try {
@@ -5533,10 +6259,15 @@ if (currentPanelMode === 'morningChecks') {
 displayMorningChecks();
 return;
 }
+// A click while a scan or an assign run is going must not navigate away
+// under it.
+if (refuseIfBusy()) return;
 // Forces Konnect's own refresh too, so the panel shown is current.
 await window._refreshLeadsAndPanel();
+if (busyReason()) return;
 // Also scans Queue by Agent for positions. Run after the refresh, not
 // alongside it, since both navigate.
+navigating = true;
 showPageFlashOverlay('Checking agent queues…');
 try {
 try {
@@ -5555,6 +6286,7 @@ else displayPanel(currentCustomers, 0, 0, false);
 console.error('[SLA Manager] Panel failed to render after badge activation:', error);
 alert('SLA Manager: the panel failed to load after activating.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
 } finally {
+navigating = false;
 hidePageFlashOverlay();
 }
 }
@@ -5625,16 +6357,43 @@ navItem.appendChild(badge);
 targetUl.appendChild(navItem); // last item in the left nav = immediately after "Client Config"
 }
 
+// Clear & Stop: stops every timer and listener this tool runs and clears
+// its own data. What belongs to Lead Re setup, or is shared with it (the
+// National results, the Email Only list, the Post Closure results), stays.
 function resetBookmarklet() {
 currentCustomers = [];
 currentPendingCustomers = [];
 currentPageType = null;
 extracting = false;
+cancelRequested = true;
+deferredRedraw = null;
+invalidateLeadsCache();
 
-// The Lead Checker import is stored separately, so clear it too or the next
-// open shows the last scan's classifications.
-try { localStorage.removeItem(LEAD_CHECKER_IMPORT_KEY); } catch (error) { /* ignore */ }
+clearInterval(window._slaAutoDetectInterval);
+window._slaAutoDetectInterval = null;
+if (slaVersionState && slaVersionState.timer) clearInterval(slaVersionState.timer);
+// The link: no more answers, heartbeats or sends from this page until the
+// bookmark is clicked again. The desk's waiting batch is kept for then.
+clearInterval(window.__workToolsLinkTimer);
+window.__workToolsLinkTimer = null;
+window.__workToolsLinkTick = null;
+window.__workToolsOnLiveMessage = null;
+window.__workToolsOnDeskRequest = null;
+window.__slaOnTodayStorage = null;
+liveLink.queue = liveLink.queue.filter((b) => b.from !== 'manager');
+if (liveLink.sent && liveLink.sent.batch.from === 'manager') liveLink.sent = null;
 
+// The lead card results and the queue snapshot go. The assignment log keeps
+// its per-agent counts for the day but loses the customer names.
+removeStoredKey(LEAD_CHECKER_IMPORT_KEY);
+removeStoredKey(AGENT_QUEUE_SNAPSHOT_KEY);
+try {
+const log = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]');
+if (Array.isArray(log)) localStorage.setItem(ASSIGN_LOG_KEY, JSON.stringify(log.map((e) => ({ time: e.time, agent: e.agent }))));
+} catch (error) { removeStoredKey(ASSIGN_LOG_KEY); }
+
+document.getElementById('_slaLinkToast')?.remove();
+hidePageFlashOverlay();
 if (panelElement) {
 panelElement.remove();
 panelElement = null;
@@ -5649,6 +6408,39 @@ badge = null;
 }
 
 console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
+}
+
+// Customer data past one shift is removed when the tool loads, whether or
+// not the part of the panel that reads it is ever opened. Each loader drops
+// its own key when it is too old.
+function purgeExpiredStoredData() {
+loadAgentQueueSnapshot();
+loadNationalResults();
+loadMorningChecksLastRun();
+const importState = loadLeadCheckerImportState();
+try {
+const raw = JSON.parse(localStorage.getItem(LEAD_CHECKER_IMPORT_KEY) || 'null');
+if (raw && Array.isArray(raw.results) && raw.results.length !== importState.results.length) saveLeadCheckerImportState(importState);
+} catch (error) { removeStoredKey(LEAD_CHECKER_IMPORT_KEY); }
+try {
+const log = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || 'null');
+if (log !== null) {
+const kept = Array.isArray(log) ? log.filter((e) => e && isStoredTimeFresh(e.time)) : [];
+if (!kept.length) removeStoredKey(ASSIGN_LOG_KEY);
+else if (kept.length !== log.length) localStorage.setItem(ASSIGN_LOG_KEY, JSON.stringify(kept));
+}
+} catch (error) { removeStoredKey(ASSIGN_LOG_KEY); }
+const emailOnly = readStoredJson(EMAIL_ONLY_ASSIGNED_KEY);
+if (emailOnly && !isStoredTimeFresh(emailOnly.savedAt)) removeStoredKey(EMAIL_ONLY_ASSIGNED_KEY);
+// This tool writes the Post Closure results the desk reads.
+const desk = readStoredJson(DESK_RESULTS_KEY);
+if (desk && Array.isArray(desk.results)) {
+const kept = desk.results.filter((r) => r && isStoredTimeFresh(r.checkedAt || desk.savedAt));
+try {
+if (!kept.length) removeStoredKey(DESK_RESULTS_KEY);
+else if (kept.length !== desk.results.length) localStorage.setItem(DESK_RESULTS_KEY, JSON.stringify({ ...desk, results: kept }));
+} catch (error) { /* left for the next load */ }
+}
 }
 
 window._slaResetBookmarklet = resetBookmarklet;
@@ -5686,6 +6478,7 @@ borderRadius: isFull ? '0' : '20px'
 if (btn) {
 btn.innerHTML = svgIcon(isFull ? 'shrink' : 'expand', 14);
 btn.title = isFull ? 'Shrink to box' : 'Expand to full height';
+btn.setAttribute('aria-label', btn.title);
 }
 };
 
@@ -5771,7 +6564,7 @@ assignPill.style.boxShadow = showAssign ? ASSIGN_PILL_ACTIVE_SHADOW : ASSIGN_PIL
 filtersPill.style.background = showAssign ? ASSIGN_PILL_INACTIVE_BG : ASSIGN_PILL_ACTIVE_BG;
 filtersPill.style.color = showAssign ? ASSIGN_PILL_INACTIVE_COLOR : ASSIGN_PILL_ACTIVE_COLOR;
 filtersPill.style.boxShadow = showAssign ? ASSIGN_PILL_INACTIVE_SHADOW : ASSIGN_PILL_ACTIVE_SHADOW;
-saveAssignSettings({ assignOpen: showAssign, filtersOpen: !showAssign });
+saveAssignSettings({ filtersOpen: !showAssign });
 if (!showAssign) syncAllWheelPositions();
 }
 
@@ -5867,6 +6660,12 @@ const button = document.getElementById('assignRunButton');
 const log = document.getElementById('assignResultsLog');
 if (!button || !log) return null;
 
+const busy = busyReason();
+if (busy) {
+log.textContent = `Not yet: ${busy}. Try again when it has finished.`;
+return null;
+}
+
 if (plan.length === 0) {
 log.textContent = 'No unassigned leads match.';
 return null;
@@ -5909,7 +6708,8 @@ button.disabled = false;
 button.style.background = '#059669';
 button.style.cursor = 'pointer';
 button.textContent = 'Assign Unassigned Leads';
-const failedEntries = results.filter(r => !r.ok).map(r => ({ lead: r.lead, agent: r.agent }));
+// A lead that may have gone through is not offered for a retry.
+const failedEntries = results.filter(r => !r.ok && !r.unconfirmed).map(r => ({ lead: r.lead, agent: r.agent }));
 lastFailedAssignmentPlan = failedEntries.length > 0 ? failedEntries : null;
 lastFailedLocateCellFn = failedEntries.length > 0 ? locateCellFn : null;
 lastFailedPageType = failedEntries.length > 0 ? pageType : null;
@@ -5920,6 +6720,7 @@ console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
 // redraw. The results summary is rendered after, or the redraw would wipe it.
 if (succeeded > 0) {
 // New assignments change queue positions.
+navigating = true;
 showPageFlashOverlay('Checking agent queues…');
 try {
 await refreshAgentQueueSnapshot();
@@ -5931,6 +6732,7 @@ await waitForLeadsTableReady();
 // already succeeded.
 console.warn('[SLA Manager] Queue check failed after assign run - showing results anyway:', error);
 } finally {
+navigating = false;
 hidePageFlashOverlay();
 }
 // Guarded so a render error still lets the results summary and return value
@@ -5950,6 +6752,9 @@ console.error('[SLA Manager] Panel failed to render after assign run:', error);
 alert('SLA Manager: leads were assigned, but the panel failed to reload.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
 }
 }
+// Results that arrived during the run were held back so its progress
+// stayed on screen.
+flushDeferredRedraw();
 renderAssignResultsSummary(results);
 return results;
 }
@@ -6050,8 +6855,9 @@ const agent = getAgentRoster().find(a => a.id === agentId);
 const wrapper = selectEl.parentElement;
 if (!agent || !wrapper) return;
 
-if (assigning) {
+if (busyReason()) {
 selectEl.value = '';
+refuseIfBusy();
 return;
 }
 
@@ -6093,6 +6899,7 @@ wrapper.innerHTML = `<div style="display: flex; flex-direction: column; align-it
 <span style="font-size: 11px; color: #dc2626;">${escapeHtml(result.reason || 'Failed')}</span>
 ${renderManualAssignPicker(leadKey, pageType)}
 </div>`;
+flushDeferredRedraw();
 }
 };
 
@@ -6247,7 +7054,8 @@ initAssignSectionWheels();
 // ===================================================================
 
 // Polls detectPageType() rather than listening for hashchange, which the
-// customer modal also fires. The interval is stored on window so a re-run of
+// customer modal also fires. Re-scans on a change of lead page and on coming
+// back to one after being elsewhere. The interval is stored on window so a re-run of
 // the bookmarklet can clear the previous instance's poll; zombie polls each
 // rebuilt the panel with their own stale state.
 if (window._slaAutoDetectInterval) {
@@ -6260,10 +7068,20 @@ let lastKnownPageType = detectPageType();
 // A new page type must be seen on two consecutive ticks before acting, since
 // a stale table left during an Angular re-render can be misread once.
 let pendingPageType = null;
+let ticksOffLeadPages = 0;
 window._slaAutoDetectInterval = setInterval(() => {
-if (extracting || assigning || runningMorningChecks || refreshingLeads || currentPanelMode === 'morningChecks') return;
+if (busyReason() || currentPanelMode === 'morningChecks') return;
 const pageType = detectPageType();
-if (!pageType || pageType === lastKnownPageType) { pendingPageType = null; return; }
+if (!pageType) {
+// Away from both lead pages for a few ticks (not just a table redrawing):
+// coming back is then a page change, so the list is scanned again. Only
+// once the panel has been opened, so nothing pops up unasked.
+pendingPageType = null;
+if (++ticksOffLeadPages >= 3 && panelElement) lastKnownPageType = null;
+return;
+}
+ticksOffLeadPages = 0;
+if (pageType === lastKnownPageType) { pendingPageType = null; return; }
 if (pageType === pendingPageType) {
 lastKnownPageType = pageType;
 pendingPageType = null;
@@ -6273,6 +7091,7 @@ pendingPageType = pageType;
 }
 }, 600);
 
+purgeExpiredStoredData();
 ensureWheelStyles();
 createBadge();
 console.info('✅ SLA Manager ready');

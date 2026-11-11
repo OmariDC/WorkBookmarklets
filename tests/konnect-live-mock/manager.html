@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Konnect Manager (mock)</title></head>
+<body>
+<!-- A stand-in for the SLA Manager tab: it opens Konnect Live and records
+     every message that comes back. -->
+<script>
+window.msgs = [];
+window.addEventListener('message', (event) => {
+  window.msgs.push(Object.assign({ origin: event.origin, at: Date.now() }, event.data));
+});
+window.send = (message) => window.live.postMessage(message, 'https://carbot.ai');
+</script>
+</body>
+</html>

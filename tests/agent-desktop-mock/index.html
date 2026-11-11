@@ -1,4 +1,7 @@
 <!doctype html><html><head><meta charset="utf-8"><title>Mock agent desktop</title></head><body>
+<!-- Mock of the agent desktop for the Re setup batch run in Lead-Reset.js.
+     The Call Notes box sits where Konnect Notes looks for it: under a Call
+     Notes label, in footer.text-primary, as textarea.form-control. -->
 <div id="idle">
  <button class="btn dropdown-toggle" data-toggle="dropdown" id="statusBtn">Available</button>
  <ul><li><a ng-click="setMakeBusy(mbc.Id)">Available</a></li><li><a ng-click="setMakeBusy(mbc.Id)">Shift Start</a></li></ul>
@@ -26,6 +29,10 @@
 <div id="diary" class="modal" style="display:none">Manage Appointments diary <ul style="display:none"><li><button ng-click="close(false)" id="dpClose">Close</button></li></ul><button class="close" ng-click="cancel()">&times;</button> <button ng-click="cancel()" id="diaryClose">Close</button></div>
 <script>
 window.events = [];
+// Slow page stand-ins, from the address: ?leads=3000 draws the customer's
+// leads that long after the customer opens, ?save=3000 keeps the Create
+// Activity window open that long after Save.
+const DELAYS = { leads: Number(new URLSearchParams(location.search).get('leads')) || 0, save: Number(new URLSearchParams(location.search).get('save')) || 0 };
 const $ = (id) => document.getElementById(id);
 const show = (id, on) => { $(id).style.display = on ? 'block' : 'none'; if ($(id).classList.contains('modal')) $(id).classList.toggle('in', on); };
 // tiny fake of angular.element().scope() and $parse
@@ -48,7 +55,8 @@ $('btnSearchCustomers').onclick = () => {
  setTimeout(() => {
   const data = [['Sam Buyerson', '70000009SALES', '9001'], ['Sam Buyer', '70000011SALES, 70000002SALES', ''], ['Sam Buyer', '70000003SALES, -', '']];
   $('rows').innerHTML = data.map((d) => `<tr><td></td><td>${d[0]}</td><td></td><td>${d[1]}</td><td>${d[2]}</td><td></td><td></td><td></td><td></td><td></td><td></td><td><button class="confirm" ng-click="eventHandler({customer: customer})" data-m="${d[1]}">Select</button></td></tr>`).join('');
-  document.querySelectorAll('.confirm').forEach((b) => b.onclick = () => { events.push('confirm:' + b.dataset.m); show('search', 0); show('call', 1); location.hash = '#!/call/outbound/customer/1/customerIntervention/1/queue/1'; });
+  document.querySelectorAll('.confirm').forEach((b) => b.onclick = () => { events.push('confirm:' + b.dataset.m); show('search', 0); show('call', 1); location.hash = '#!/call/outbound/customer/1/customerIntervention/1/queue/1';
+   if (DELAYS.leads) { const lead = $('existing'); lead.remove(); setTimeout(() => $('acts').prepend(lead), DELAYS.leads); } });
  }, 400);
 };
 document.querySelector('[ng-model="selected.CallOutcome"]').addEventListener('change', (e) => { events.push('outcome:' + e.target.selectedOptions[0].textContent); $('addLead').style.display = /Update/.test(e.target.value) ? 'inline' : 'none'; });
@@ -56,7 +64,7 @@ document.querySelector('[ng-model="selected.NextAgentStatus"]').addEventListener
 $('addLead').onclick = () => { show('createModal', 1); $('camp').innerHTML = ''; };
 document.querySelector('input[value=true]').addEventListener('click', () => setTimeout(() => { $('camp').innerHTML = '<option>(Select a Campaign)</option><option>Vauxhall - Offer Request - New</option><option>Vauxhall - Offer Request - Used</option>'; }, 300));
 $('camp').addEventListener('change', (e) => events.push('campaign:' + e.target.value));
-$('save').onclick = () => { show('createModal', 0); setTimeout(() => {
+$('save').onclick = () => { events.push('save'); setTimeout(() => { show('createModal', 0); setTimeout(() => {
  const div = document.createElement('div'); div.setAttribute('ng-repeat', 'theActivity in liveActivities');
  div.__scope = { theActivity: { CampaignName: $('camp').value, SalesLead: { ID: 0, LeadDetails: {} } }, $root: {} };
  const content = document.createElement('div'); content.__scope = div.__scope; $('tabcontent').appendChild(content); div.textContent = 'tab';
@@ -66,12 +74,12 @@ $('save').onclick = () => { show('createModal', 0); setTimeout(() => {
   <select ng-model="theActivity.SalesLead.LeadDetails.SourceOfEnquiryID"><option value="">(Select a Source)</option><option value="3">Web</option></select>
   <input ng-model="theActivity.SalesLead.LeadDetails.VehicleOfInterestModel">
   <div class="toggle btn off" ng-click="onSwitch($event)">Has Part ExchangeNo Part Exchange</div>
-  <textarea ng-model="theActivity.SalesLead.LeadDetails.Notes" class="leadCallNotes"></textarea>
+  <div class="form-group"><label>Call Notes</label><footer class="text-primary"><textarea ng-model="theActivity.SalesLead.LeadDetails.Notes" class="form-control leadCallNotes"></textarea></footer></div>
   <button ng-click="manageSalesEventBookings(theActivity)">Manage Appointments</button></div></div>`;
  content.querySelector('.toggle').addEventListener('click', (e) => { e.currentTarget.classList.toggle('off'); events.push('px'); });
  content.querySelector('[ng-click^=manage]').onclick = () => { events.push('diary with notes:' + JSON.stringify(content.querySelector('.leadCallNotes').value) + ' internal:' + JSON.stringify(document.querySelector('#section-call-notes textarea').value)); show('diary', 1); };
  $('acts').appendChild(div); events.push('newLead');
-}, 300); };
+}, 300); }, DELAYS.save); };
 document.getElementById('diaryClose').onclick = () => { events.push('diaryClosed'); window.afterClose = () => (document.querySelector('.leadCallNotes') || {}).value; show('diary', 0); };
 $('finished').onclick = () => events.push('FINISHED-PRESSED');
 $('park').onclick = () => { events.push('park'); show('call', 0); show('idle', 1); location.hash = '#!/idle'; };

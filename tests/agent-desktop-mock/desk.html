@@ -22,6 +22,7 @@
  </div>
 </div>
 <div id="call" class="hide">
+ <div class="row"><b>Email</b> <span class="ng-scope" id="custEmail"></span></div>
  <select ng-model="selected.CallOutcome" id="callOutcome"><option>(Select a Call Outcome)</option><option>Spoke to Customer</option><option>Update Outcomes (No Call Made)</option><option>Manual Reschedule</option><option>Reject</option></select>
  <ul class="nav nav-tabs" id="tabs"></ul>
  <div id="acts"></div>
@@ -55,14 +56,23 @@ const LOAD_DELAY = 400;
 let customers = [];
 let queue = [];
 let current = null;
+// Slow page stand-ins: how long after the page shows the Parked Calls rows
+// and a customer's leads are drawn. The rows come in two halves.
+let delays = { parked: 0, leads: 0 };
 
 const fill = (select, list) => { select.innerHTML = list.map((t) => `<option>${t}</option>`).join(''); };
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
 window.mock = {
- // customers: [{ id, name, email, phone, parked, call, leads: [{ ID, CampaignName, OutcomeFullHierarchy, SourceName, notes, pcNotes }] }]
+ // customers: [{ id, name, email, topEmail, phone, parked, call, leads: [{ ID, CampaignName, OutcomeFullHierarchy, SourceName, initial, notes, pcNotes }] }]
  // queue: customer ids presented in turn while the agent is Available.
+ // delays: { parked, leads } in ms. topEmail: the email shown at the top of
+ // the page (the one Konnect Notes writes) when it is not the lead's.
+ // notes: 'tidy-only' makes the stand-in Konnect Notes take a Catch All
+ // word and tidy Call Notes without writing the note.
  setup(data) {
+  delays = { parked: 0, leads: 0, ...(data.delays || {}) };
+  mock.notesMode = data.notes || '';
   customers = data.customers.map((c) => ({ ...c, leads: c.leads.map((l) => ({ ...l, activity: {
    ID: l.ID, CampaignName: l.CampaignName, OutcomeFullHierarchy: l.OutcomeFullHierarchy || 'None',
    SalesLead: { SourceName: l.SourceName, EmailAddress: c.email, CustomerName: c.name, LeadDetails: { Notes: l.notes || '' }, PostClosureNotes: l.pcNotes || '' }
@@ -107,7 +117,15 @@ $('reject').addEventListener('click', () => {
 $('accept').addEventListener('click', () => events.push('ACCEPT:' + current.id));
 
 function renderParked() {
- const rows = customers.filter((c) => c.parked);
+ const all = customers.filter((c) => c.parked);
+ $('parkedRows').innerHTML = '';
+ if (!delays.parked) { drawParked(all); return; }
+ const half = Math.ceil(all.length / 2);
+ setTimeout(() => drawParked(all.slice(0, half)), delays.parked);
+ setTimeout(() => drawParked(all), delays.parked + 700);
+}
+function drawParked(rows) {
+ if (!/search\/parked/.test(location.hash)) return;
  $('parkedRows').innerHTML = rows.map((c) => `<tr><td></td><td>${esc(c.name)}</td><td></td><td>${esc(c.vehicles || '')}</td><td>${esc(c.magic || '')}</td><td>Preston</td><td>Vauxhall</td><td>${esc(c.leads[0].CampaignName)}</td><td>${esc(c.phone || '')}</td><td>${esc(c.email || '')}</td><td>1 Example Street</td><td><button class="btn btn-success" ng-click="eventHandler({customer: customer})" data-id="${esc(c.id)}">Open</button></td></tr>`).join('');
  $('parkedRows').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => {
   current = mock.customer(b.dataset.id);
@@ -123,6 +141,12 @@ function buildCall(c, outcome) {
  $('nextStatus').value = $('statusBtn').textContent;
  $('finishError').classList.add('hide');
  $('tabs').innerHTML = ''; $('acts').innerHTML = ''; $('panes').innerHTML = '';
+ $('custEmail').textContent = 'topEmail' in c ? c.topEmail : (c.email || '');
+ if (delays.leads) setTimeout(() => { if (current === c) drawLeads(c, callScope); }, delays.leads);
+ else drawLeads(c, callScope);
+}
+
+function drawLeads(c, callScope) {
  c.leads.forEach((l, i) => {
   const scope = { theActivity: l.activity, $parent: callScope };
   const li = document.createElement('li'); li.setAttribute('ng-repeat', 'tab in tabs');
@@ -132,12 +156,15 @@ function buildCall(c, outcome) {
   const marker = document.createElement('div'); marker.setAttribute('ng-repeat', 'theActivity in liveActivities'); marker.__scope = scope;
   $('acts').appendChild(marker);
   const pane = document.createElement('div'); pane.className = 'tab-pane'; pane.__scope = scope; pane.dataset.lead = l.ID;
-  pane.innerHTML = `<div class="form-group"><label>Call Notes</label><div><textarea ng-model="theActivity.SalesLead.LeadDetails.Notes" class="callNotes"></textarea></div></div>`
-   + (l.SourceName === 'Post Closure Processing' ? `<div class="form-group"><label>Post Closure Notes</label><textarea ng-model="theActivity.SalesLead.PostClosureNotes" class="pcNotes"></textarea></div>` : '')
+  // Laid out as Konnect Notes expects: Call Notes in footer.text-primary.
+  pane.innerHTML = `<div class="form-group"><label>Initial Notes</label><div><textarea readonly class="initialNotes"></textarea></div></div>`
+   + `<div class="form-group"><label>Call Notes</label><footer class="text-primary"><textarea ng-model="theActivity.SalesLead.LeadDetails.Notes" class="form-control callNotes"></textarea></footer></div>`
+   + (l.SourceName === 'Post Closure Processing' ? `<div class="form-group"><label>Post Closure Notes</label><div><textarea ng-model="theActivity.SalesLead.PostClosureNotes" class="form-control pcNotes"></textarea></div></div>` : '')
    + `<div class="outcomes"><select ng-model="theActivity.SelectedOutcomeLevel1"></select><select ng-model="theActivity.SelectedOutcomeLevel2"></select><select ng-model="theActivity.SelectedOutcomeLevel3"></select></div>`;
+  pane.querySelector('.initialNotes').value = l.initial || '';
   pane.querySelector('.callNotes').value = l.activity.SalesLead.LeadDetails.Notes;
   if (pane.querySelector('.pcNotes')) pane.querySelector('.pcNotes').value = l.activity.SalesLead.PostClosureNotes;
-  pane.querySelectorAll('textarea').forEach((t) => t.addEventListener('input', () => {
+  pane.querySelectorAll('textarea:not(.initialNotes)').forEach((t) => t.addEventListener('input', () => {
    if (t.classList.contains('pcNotes')) l.activity.SalesLead.PostClosureNotes = t.value; else l.activity.SalesLead.LeadDetails.Notes = t.value;
   }));
   const levels = Array.from(pane.querySelectorAll('.outcomes select'));
@@ -224,20 +251,29 @@ function route() {
 window.addEventListener('hashchange', route);
 route();
 
-// Stand-in for Konnect Notes: a space after cad, cah or eo writes the
-// phrase, as Konnect-Notes-Phrases.json does.
-window.KonnectNotes = { version: 'mock' };
+// Stand-in for Konnect Notes: a space after cad, cah or eo alone on its
+// line writes the phrase, as Konnect-Notes-Phrases.json does, with the
+// email from the top of the page. ?realNotes=1 leaves it out so a test can
+// load the real Konnect-Notes.js.
+if (!new URLSearchParams(location.search).get('realNotes')) window.KonnectNotes = { version: 'mock' };
 document.addEventListener('keydown', (e) => {
  const t = e.target;
+ if (!window.KonnectNotes || window.KonnectNotes.version !== 'mock') return;
  if (e.key !== ' ' || !t || t.tagName !== 'TEXTAREA') return;
- const m = t.value.slice(0, t.selectionStart).match(/(^|\s)(cad|cah|eo)$/);
+ const m = t.value.slice(0, t.selectionStart).match(/(^|\n)[ \t]*(cad|cah|eo)$/);
  if (!m) return;
- const scope = window.angular.element(t).scope();
- const email = scope && scope.theActivity ? scope.theActivity.SalesLead.EmailAddress : '';
+ const email = $('custEmail').textContent;
+ if (mock.notesMode === 'tidy-only' && m[2] !== 'eo') {
+  const call = t.closest('.tab-pane').querySelector('.callNotes');
+  call.value = 'TIDIED'; call.dispatchEvent(new Event('input', { bubbles: true }));
+  events.push('konnect-notes-refused:' + m[2]);
+  e.preventDefault();
+  return;
+ }
  const phrase = {
   cad: '**** Catch All Return Lead **** Lead has been **actioned by dealer**',
   cah: '**** Catch All Return Lead **** **Customer Hub will not contact this lead type** - please contact and update Emax',
-  eo: 'EMAIL ONLY LEAD: ' + email
+  eo: 'EMAIL ONLY LEAD:' + (email ? ' ' + email : '')
  }[m[2]];
  const end = t.selectionStart;
  t.value = t.value.slice(0, end - m[2].length) + phrase + t.value.slice(end);

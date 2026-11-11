@@ -10,6 +10,20 @@
 // both press Finished. When a step cannot be done safely it stops and says
 // what to do by hand.
 
+// One copy per page. A second click of the bookmark shows the panel that is
+// already there: a second copy would share the page but not the paused run,
+// so its buttons would do nothing. A newer version only takes over when no
+// run is going.
+const INSTANCE_KEY = '_leadResetInstance';
+const earlier = window[INSTANCE_KEY];
+if (earlier && typeof earlier.show === 'function') {
+if (!earlier.replaceable()) { earlier.show(); return; }
+earlier.unload();
+} else if (window._leadResetState && window._leadResetState.running) {
+// A copy from before this rule is mid-run: leave it alone.
+return;
+}
+
 const PANEL_ID = '_leadResetPanel';
 const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'Reg'];
 const NATIONAL_RESULTS_KEY = '_slaNationalCheckResults';
@@ -49,7 +63,7 @@ return state;
 }
 
 function versionLineText(state) {
-if (state.newer) return 'A newer version is out. Close this panel and click the bookmarklet again.';
+if (state.newer) return 'A newer version is out. Click the bookmark again to load it.';
 if (!state.publishedAt) return '';
 const d = state.publishedAt;
 const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -97,33 +111,16 @@ function escapeHtml(value) {
 return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function parseResetFields(result) {
-try {
-const fields = JSON.parse((result && result.ResetFields) || '{}');
-return fields && typeof fields === 'object' && !Array.isArray(fields) ? fields : {};
-} catch (error) {
-return {};
-}
-}
-
-// The exact notes travel inside ResetFields; the plain column has its line
-// breaks flattened and is only a fallback.
-function resetNotesOf(result) {
-const fields = parseResetFields(result);
-return typeof fields.InitialNotes === 'string' ? fields.InitialNotes : String((result && result.ResetInitialNotes) || '');
-}
-
 function resetLeadsFrom(results) {
-// "Reset" is how older exports named Re setup.
+// "Reset" is how older exports named Re setup. The notes and dropdowns
+// are read from the closed lead on the page, not from the export.
 return (results || []).filter((r) => r && (r.Verdict === 'Re setup' || r.Verdict === 'Reset') && r.Customer).map((r) => ({
 activityId: r.ActivityID || '',
 name: r.Customer,
 reg: r.Reg || '',
 campaign: r.ResetCampaign || '',
-notes: resetNotesOf(r),
-voi: r.ResetVoi || '',
-px: r.ResetPx || '',
-fields: parseResetFields(r)
+notes: '',
+fields: {}
 }));
 }
 
@@ -171,9 +168,6 @@ if (hits.length === 1 || sameCustomer(hits)) return { index: hits[0], reason: ex
 return { index: -1, reason: exact.length > 1 ? 'several' : 'none' };
 }
 
-// The customer's lead list holds closed leads too, so a lead only counts
-// as an earlier reset when staff created it by hand on the same campaign
-// after the closed lead. Each lead's ID is the export's ActivityID.
 // Pure. Whether a lead on the page is the National check's lead. The
 // check's number (the "...SALESLEAD" reference) is held on the page as the
 // lead's RegistrationNumber, not its ID, so both are compared.
@@ -183,6 +177,9 @@ if (!activity || !id) return false;
 return String(activity.ID) === id || String(activity.RegistrationNumber || '').replace(/\D/g, '') === id;
 }
 
+// Pure. The customer's lead list holds closed leads too, so a lead only
+// counts as an earlier reset when staff created it by hand on the same
+// campaign after the closed lead.
 function findEarlierReset(activities, lead) {
 const closed = activities.find((a) => isLeadNumber(a, lead.activityId));
 const closedAt = closed ? new Date(closed.CreatedDate).getTime() : NaN;
@@ -231,21 +228,18 @@ function isPlaceholderOption(text) {
 return /^\s*\(select\b/i.test(String(text || '')) || /^\s*$/.test(String(text || ''));
 }
 
-// "Has Part Exchange" -> true, "No Part Exchange" -> false, else null.
+// true or false as the closed lead had it, else null (leave the switch alone).
 function wantedPartExchange(lead) {
-if (typeof lead.fields.HasPartExchange === 'boolean') return lead.fields.HasPartExchange;
-if (/^has part exchange$/i.test(lead.px.trim())) return true;
-if (/^no part exchange$/i.test(lead.px.trim())) return false;
-return null;
+return typeof lead.fields.HasPartExchange === 'boolean' ? lead.fields.HasPartExchange : null;
 }
 
 // ===================================================================
 // POST CLOSURE SEND BACK AND EMAIL ONLY (pure parts)
 // ===================================================================
 
-// Both runs read what SLA Manager saved on this site: the Lead Checker
-// results it imported, and the Email Only leads it assigned today.
-const LEAD_CHECKER_RESULTS_KEY = '_slaLeadCheckerImportState';
+// Both runs read what SLA Manager saved on this site for the desk: the Post
+// Closure results from the Lead Checker, and the Email Only leads it
+// assigned today.
 const EMAIL_ONLY_ASSIGNED_KEY = '_workToolsEmailOnlyAssigned';
 const DESK_PROGRESS_KEY = '_leadResetDeskProgress';
 // Per send back reason: the Konnect Notes shorthand typed in Post Closure
@@ -266,9 +260,40 @@ const STATUS_AVAILABLE = 'Available';
 const LIVE_REQUEST_KEY = '_workToolsLiveRequest';
 const LIVE_STATUS_KEY = '_workToolsLiveStatus';
 const DESK_RESULTS_KEY = '_workToolsDeskResults';
+const LIVE_LINK_KEY = '_workToolsLinkState';
 // How long SLA Manager has to say it took a request before the panel says
 // it is not answering.
 const HUB_ANSWER_MS = 6000;
+// A request is good for this long on both sides.
+const REQUEST_MAX_AGE_MS = 10 * 60 * 1000;
+// SLA Manager rewrites the link state at least every 10 seconds, so one
+// older than this means SLA Manager is not running.
+const LINK_STALE_MS = 30 * 1000;
+const LINK_TEXT = {
+none: 'Konnect Live: not open. Press Open Konnect Live in SLA Manager.',
+idle: 'Konnect Live: linked, ready.',
+paused: 'Konnect Live: paused.',
+loggedOut: 'Konnect Live: logged out, logging back in.'
+};
+const HUB_NOT_RUNNING = 'SLA Manager is not running. Click Work Tools on the Konnect Manager tab.';
+
+// Pure. The link status line for what SLA Manager last saved.
+function linkLineText(link, now) {
+const at = link && link.at ? new Date(link.at).getTime() : NaN;
+if (!Number.isFinite(at) || now - at > LINK_STALE_MS) return HUB_NOT_RUNNING;
+if (link.text) return String(link.text);
+if (link.state === 'running') return `Konnect Live: checking ${Number(link.done) || 0} of ${Number(link.total) || 0}.`;
+return LINK_TEXT[link.state] || LINK_TEXT.none;
+}
+
+// Pure. "just now", "5 min ago", "2 h 10 min ago".
+function ageText(isoTime, now) {
+const minutes = Math.floor((now - new Date(isoTime).getTime()) / 60000);
+if (!Number.isFinite(minutes)) return '';
+if (minutes < 1) return 'just now';
+if (minutes < 60) return `${minutes} min ago`;
+return `${Math.floor(minutes / 60)} h ${minutes % 60} min ago`;
+}
 // The Lead Checker reads a customer search table with this header.
 const PARKED_BATCH_HEADER = ['Name', 'Details', 'Vehicles', 'Magic Num', 'Dealer', 'Brand', 'Campaign', 'Best Number', 'Email', 'Address', 'Confirm'];
 
@@ -276,20 +301,6 @@ const PARKED_BATCH_HEADER = ['Name', 'Details', 'Vehicles', 'Magic Num', 'Dealer
 function parkedBatchTsv(rows) {
 const clean = (v) => String(v || '').replace(/[\t\r\n]+/g, ' ').trim();
 return [PARKED_BATCH_HEADER.join('\t')].concat(rows.map((r) => PARKED_BATCH_HEADER.map((h) => (h === 'Confirm' || h === 'Details' ? '' : clean((r.cells || {})[h.toLowerCase()]))).join('\t'))).join('\n');
-}
-
-// Pure. One Post Closure result per customer, the newest source first.
-function latestPostClosureResults(sources) {
-const seen = new Set();
-const out = [];
-sources.forEach((source) => (source.results || []).forEach((r) => {
-if (!r || !r.postClosureAction) return;
-const key = personKey(r);
-if (!key || seen.has(key)) return;
-seen.add(key);
-out.push(r);
-}));
-return out;
 }
 
 function digitsOf(value) {
@@ -304,7 +315,7 @@ return normalise(person.email) || digitsOf(person.phone) || normalise(stripNameT
 function sendBackLeadsFrom(results) {
 return (results || [])
 .filter((r) => r && normalise(r.postClosureAction) === 'send back through' && SEND_BACK_STEPS[r.postClosureReason])
-.map((r) => ({ key: personKey(r), name: r.name || '', email: r.email || '', phone: r.phone || '', reason: r.postClosureReason, ...SEND_BACK_STEPS[r.postClosureReason] }));
+.map((r) => ({ key: personKey(r), name: r.name || '', email: r.email || '', phone: r.phone || '', reason: r.postClosureReason, checkedAt: r.checkedAt || '', ...SEND_BACK_STEPS[r.postClosureReason] }));
 }
 
 // Pure. The entry for a person: by email, then phone, then a name only
@@ -336,10 +347,38 @@ const named = name ? list.filter((x) => normalise(stripNameTitle(x.name)) === na
 return named.length === 1 ? named[0] : null;
 }
 
-// Pure. Text to add after a box's contents so a shorthand starts its own
-// word (Konnect Notes only expands a word after a space or line break).
+// Pure. Text to add after a box's contents so a shorthand sits on a line
+// of its own (Konnect Notes only expands a word that is alone on its line).
 function shorthandInsertion(value, word) {
-return (String(value || '') && !/\s$/.test(String(value)) ? '\n' : '') + word;
+return (String(value || '') && !/\n$/.test(String(value)) ? '\n' : '') + word;
+}
+
+// Pure. The open lead that is the assigned Email Only one, as an index
+// into open ([{email, campaign}]), or -1 when that is unclear. The lead's
+// email narrows it first; among several, only one on the assigned campaign
+// counts.
+function chooseEmailOnlyLead(open, lead) {
+const email = normalise(lead.email);
+const mine = email ? open.filter((a) => normalise(a.email) === email) : [];
+const pool = mine.length ? mine : open;
+if (pool.length === 1) return open.indexOf(pool[0]);
+const campaign = normalise(lead.campaign);
+const onCampaign = campaign ? pool.filter((a) => normalise(a.campaign) === campaign) : [];
+return onCampaign.length === 1 ? open.indexOf(onCampaign[0]) : -1;
+}
+
+const EMAIL_PATTERN = /[^\s@<>"'(),;:]+@[^\s@<>"'(),;:]+\.[a-z]{2,}/gi;
+
+// Pure. How the EO note in Call Notes stands against the assigned lead's
+// email: 'none' (no EO line), 'ok', 'missing' (a line with no email) or
+// 'other' with the email found. accepted is an email the agent confirmed.
+function emailOnlyNoteState(value, email, accepted) {
+const lines = String(value || '').split(/\n/).filter((l) => SHORTHAND_MARKERS.eo.test(l));
+if (!lines.length) return { state: 'none' };
+const found = lines.flatMap((l) => l.match(EMAIL_PATTERN) || []).map(normalise);
+const wanted = [normalise(email), normalise(accepted)].filter(Boolean);
+if (wanted.length ? found.some((e) => wanted.includes(e)) : found.length) return { state: 'ok' };
+return found.length ? { state: 'other', found: found[found.length - 1] } : { state: 'missing' };
 }
 
 // Pure. Stay Available while more assigned Email Only leads are to come;
@@ -368,7 +407,7 @@ check('accepts the Lead Checker export', parsed.ok, true);
 check('rejects another header', parseResultsTsv('Name\tPhone\nx\ty').ok, false);
 const leads = resetLeadsFrom(parsed.results);
 check('only Re setup leads are kept', leads.map((l) => [l.activityId, l.campaign, l.reg]), [['70000002', 'Vauxhall - Offer Request - New', 'AB12 CDE']]);
-check('an older export saying Reset still counts', resetLeadsFrom([{ Verdict: 'Reset', Customer: 'Jo Example', ResetFields: JSON.stringify({ InitialNotes: 'A\nB' }) }]).map((l) => l.notes), ['A\nB']);
+check('an older export saying Reset still counts', resetLeadsFrom([{ Verdict: 'Reset', Customer: 'Jo Example' }]).map((l) => l.name), ['Jo Example']);
 check('no notes in the export means none until the page supplies them', leads[0].notes, '');
 check('summary counts', leadSummaryText([{ activityId: '1', name: 'A' }, { activityId: '2', name: 'B' }, { activityId: '3', name: 'C' }], { byActivity: { 1: 'Done', 2: 'Skipped' } }), '1 done, 1 skipped, 1 left');
 check('title stripped', stripNameTitle('Mrs Jo Example'), 'Jo Example');
@@ -394,9 +433,8 @@ check('campaign exact match', chooseOptionIndex(options, 'vauxhall - offer reque
 check('campaign single contains match', chooseOptionIndex(options, 'Peugeot'), 3);
 check('campaign ambiguous contains match', chooseOptionIndex(options, 'Offer Request'), -1);
 check('placeholder option spotted', [isPlaceholderOption('(Select a Lead Type)'), isPlaceholderOption('New')], [true, false]);
-check('part exchange from fields first', wantedPartExchange({ fields: { HasPartExchange: true }, px: 'No Part Exchange' }), true);
-check('part exchange from text', wantedPartExchange({ fields: {}, px: 'No Part Exchange' }), false);
-check('part exchange unknown', wantedPartExchange({ fields: {}, px: '' }), null);
+check('part exchange as the closed lead had it', [wantedPartExchange({ fields: { HasPartExchange: true } }), wantedPartExchange({ fields: { HasPartExchange: false } })], [true, false]);
+check('part exchange unknown', wantedPartExchange({ fields: {} }), null);
 const history = [
 { ID: 77000001, CampaignName: 'Peugeot - PX Valuation - New', ManuallyCreated: false, CreatedDate: '2026-10-02T07:10:35+01:00' },
 { ID: 77000002, CampaignName: 'Peugeot - PX Valuation - New', ManuallyCreated: false, CreatedDate: '2026-10-03T18:45:32+01:00' },
@@ -432,20 +470,36 @@ const assigned = [{ name: 'Dan Davis', email: 'dan@example.com' }, { name: 'Eve 
 check('presented lead matched by email', matchEmailOnly(assigned, { name: 'Someone', emails: ['EVE@example.com'] }), assigned[1]);
 check('a lead whose email is not assigned is not worked', matchEmailOnly(assigned, { name: 'Dan Davis', emails: ['dan.other@example.com'] }), null);
 check('name only when no email was read', matchEmailOnly(assigned, { name: 'Mr Dan Davis', emails: [] }), assigned[0]);
-check('shorthand starts a new line after text', [shorthandInsertion('', 'cad'), shorthandInsertion('Notes', 'cad'), shorthandInsertion('Notes\n', 'eo')], ['cad', '\ncad', 'eo']);
+check('shorthand goes on a line of its own', [shorthandInsertion('', 'cad'), shorthandInsertion('Notes', 'cad'), shorthandInsertion('Notes ', 'cad'), shorthandInsertion('Notes\n', 'eo')], ['cad', '\ncad', '\ncad', 'eo']);
 const batch = parkedBatchTsv([{ cells: { name: 'Jo Example', vehicles: 'AB12CDE', 'magic num': '9', dealer: 'Preston', brand: 'Peugeot', campaign: 'Enquiry - Used', 'best number': '07700900123', email: 'jo@example.com', address: 'AB1 2CD', confirm: 'Open', details: 'ViewHide' } }]).split('\n');
 check('parked calls batch header', batch[0].split('\t')[0] === 'Name' && batch[0].includes('Magic Num') && batch[0].includes('Best Number'), true);
 check('parked calls batch row', batch[1].split('\t'), ['Jo Example', '', 'AB12CDE', '9', 'Preston', 'Peugeot', 'Enquiry - Used', '07700900123', 'jo@example.com', 'AB1 2CD', '']);
-check('newest Post Closure result per customer wins', latestPostClosureResults([{ results: [{ email: 'jo@example.com', postClosureAction: 'check: needs contact?' }] }, { results: [{ email: 'JO@example.com', postClosureAction: 'send back through', postClosureReason: 'Email only' }, { email: 'sam@example.com', postClosureAction: '' }] }]).map((r) => r.postClosureAction), ['check: needs contact?']);
+const openLeads = [{ email: 'dan@example.com', campaign: 'Peugeot - Enquiry' }, { email: 'dan@example.com', campaign: 'Vauxhall - Email Only' }];
+check('one open lead is the Email Only one', chooseEmailOnlyLead(openLeads.slice(0, 1), { email: 'dan@example.com', campaign: 'Other' }), 0);
+check('two open leads are split by the assigned campaign', chooseEmailOnlyLead(openLeads, { email: 'dan@example.com', campaign: 'vauxhall - email only' }), 1);
+check('two open leads and no campaign match is unclear', [chooseEmailOnlyLead(openLeads, { email: 'dan@example.com', campaign: 'Citroen' }), chooseEmailOnlyLead(openLeads.concat(openLeads[1]), { email: 'dan@example.com', campaign: 'Vauxhall - Email Only' })], [-1, -1]);
+check('EO note: none, right email, no email, another email', [
+emailOnlyNoteState('Called twice', 'dan@example.com').state,
+emailOnlyNoteState('Notes\nEMAIL ONLY LEAD: Dan@Example.com', 'dan@example.com').state,
+emailOnlyNoteState('EMAIL ONLY LEAD:', 'dan@example.com').state,
+emailOnlyNoteState('EMAIL ONLY LEAD: old@example.com', 'dan@example.com')
+], ['none', 'ok', 'missing', { state: 'other', found: 'old@example.com' }]);
+check('EO note: an email the agent confirmed passes', emailOnlyNoteState('EMAIL ONLY LEAD: old@example.com', 'dan@example.com', 'old@example.com').state, 'ok');
+check('EO note: an older line does not hide a right one', emailOnlyNoteState('EMAIL ONLY LEAD: old@example.com\nEMAIL ONLY LEAD: dan@example.com', 'dan@example.com').state, 'ok');
+const linkNow = new Date('2026-11-11T10:00:30Z').getTime();
+check('link line: no state or an old one means SLA Manager is not running', [linkLineText(null, linkNow), linkLineText({ state: 'idle', at: '2026-11-11T09:59:59Z' }, linkNow)], [HUB_NOT_RUNNING, HUB_NOT_RUNNING]);
+check('link line: wording per state', ['none', 'idle', 'paused', 'loggedOut'].map((state) => linkLineText({ state, at: '2026-11-11T10:00:20Z' }, linkNow)), ['Konnect Live: not open. Press Open Konnect Live in SLA Manager.', 'Konnect Live: linked, ready.', 'Konnect Live: paused.', 'Konnect Live: logged out, logging back in.']);
+check('link line: progress, and SLA Manager\'s own text first', [linkLineText({ state: 'running', done: 12, total: 40, at: '2026-11-11T10:00:20Z' }, linkNow), linkLineText({ state: 'running', text: 'Konnect Live: checking 3 of 9.', at: '2026-11-11T10:00:20Z' }, linkNow)], ['Konnect Live: checking 12 of 40.', 'Konnect Live: checking 3 of 9.']);
+check('age of a result', [ageText('2026-11-11T10:00:10Z', linkNow), ageText('2026-11-11T09:55:00Z', linkNow), ageText('2026-11-11T07:50:00Z', linkNow)], ['just now', '5 min ago', '2 h 10 min ago']);
 check('Available until the last Email Only lead', [statusAfterEmailOnly(2), statusAfterEmailOnly(0)], ['Available', 'Shift Start']);
 } catch (error) {
 failures.push('threw: ' + (error && error.message));
 }
 if (failures.length) {
 selfTestFailures.push(...failures);
-console.error('Lead Reset self-test FAILED:\n' + failures.join('\n'));
+console.error('Lead Re setup self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('Lead Reset self-test passed');
+console.info('Lead Re setup self-test passed');
 }
 })();
 
@@ -489,14 +543,40 @@ return { reviewBeforePark: s.reviewBeforePark !== false, reviewBeforeFinish: s.r
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function waitFor(fn, timeoutMs, intervalMs) {
+// Clear & Stop sets this: every wait in a run then ends at once, so nothing
+// more is pressed after the panel has gone.
+let halted = false;
+class Halted extends Error {}
+
+async function pollUntil(fn, timeoutMs, intervalMs, canHalt) {
 const end = Date.now() + timeoutMs;
 for (;;) {
+if (canHalt && halted) throw new Halted('Stopped');
 let value = null;
 try { value = fn(); } catch (error) { value = null; }
 if (value) return value;
 if (Date.now() > end) return null;
 await sleep(intervalMs || 250);
+}
+}
+
+const waitFor = (fn, timeoutMs, intervalMs) => pollUntil(fn, timeoutMs, intervalMs, true);
+
+// A list the page draws bit by bit (leads, Parked Calls rows): returned
+// once it has stopped changing for quietMs. An empty list is only believed
+// after emptyMs, as the page may simply not have drawn it yet.
+async function settledList(read, signature, emptyMs, quietMs) {
+const started = Date.now();
+let last = null;
+let changedAt = started;
+for (;;) {
+if (halted) throw new Halted('Stopped');
+const list = read();
+const now = signature(list);
+if (now !== last) { last = now; changedAt = Date.now(); }
+if (list.length ? Date.now() - changedAt >= quietMs : Date.now() - started >= emptyMs) return list;
+if (Date.now() - started > emptyMs + 20000) return list;
+await sleep(250);
 }
 }
 
@@ -602,6 +682,25 @@ const lead = activity && activity.SalesLead;
 return String((lead && (lead.ID || lead.ActivityGuid)) || activity.ID || '');
 }
 
+// The customer's leads once Konnect has finished drawing them.
+function settledLeads() {
+return settledList(liveActivities, (list) => list.map(({ activity }) => activityKey(activity)).join(','), 12000, 1000);
+}
+
+function statusButton() {
+return Array.from(document.querySelectorAll('button.dropdown-toggle')).find((b) => /\S/.test(b.textContent) && !/toggle dropdown/i.test(b.textContent)) || null;
+}
+
+// The agent's status as the page shows it, '' when it cannot be read.
+function currentStatus() {
+const button = statusButton();
+return button ? button.textContent.replace(/\s+/g, ' ').trim() : '';
+}
+
+function isAvailable() {
+return normalise(currentStatus()) === normalise(STATUS_AVAILABLE);
+}
+
 // ===================================================================
 // THE STEPS
 // ===================================================================
@@ -621,23 +720,28 @@ return optionTexts.findIndex((t) => !isPlaceholderOption(t) && !/do not contact|
 class NeedsYou extends Error {
 constructor(message, options) {
 super(message);
-this.carryOnLabel = (options && options.carryOnLabel) || 'Done it, carry on';
+const o = options || {};
+this.carryOnLabel = o.carryOnLabel || 'Done it, carry on';
 // A pause that asks for a decision, not a step done by hand: carrying on
 // records the answer and runs the step again, so the step still does its
 // work. Try again asks the same question again.
-this.onConfirm = (options && options.onConfirm) || null;
+this.onConfirm = o.onConfirm || null;
+// No carry on: the step cannot safely be passed over, only tried again.
+this.noCarry = !!o.noCarry;
+// A check by eye before something is pressed: Try again has no meaning.
+this.review = !!o.review;
 }
 }
 
-async function ensureShiftStart(ctx) {
-const statusButton = Array.from(document.querySelectorAll('button.dropdown-toggle')).find((b) => /\S/.test(b.textContent) && !/toggle dropdown/i.test(b.textContent));
-if (statusButton && normalise(statusButton.textContent) === normalise(STATUS_WHILE_RESETTING)) return 'Status already Shift Start';
+// Not stopped by Clear & Stop, as its notice offers this too.
+async function ensureShiftStart() {
+const button = statusButton();
+if (button && normalise(button.textContent) === normalise(STATUS_WHILE_RESETTING)) return 'Status already Shift Start';
 const item = byText(document, '[ng-click^="setMakeBusy"]', /^shift start$/i)[0];
 if (!item) throw new NeedsYou('Could not find the Shift Start status. Set your status to Shift Start yourself.');
 item.click();
-const ok = await waitFor(() => !statusButton || normalise(statusButton.textContent) === normalise(STATUS_WHILE_RESETTING), 5000);
+const ok = await pollUntil(() => !button || normalise(button.textContent) === normalise(STATUS_WHILE_RESETTING), 5000);
 if (!ok) throw new NeedsYou('Your status did not change to Shift Start. Set it yourself.');
-ctx.log('Status set to Shift Start');
 return 'Status set to Shift Start';
 }
 
@@ -741,8 +845,10 @@ return '';
 }
 
 async function checkNotAlreadyReset(ctx, lead) {
-await sleep(500);
-const entries = liveActivities();
+const entries = await settledLeads();
+if (!entries.length) {
+throw new NeedsYou('This customer\'s leads have not shown on the page, so the wrong customer and already set up checks could not be made. Wait for the leads to show, then press Try again.', { noCarry: true });
+}
 const activities = entries.map(({ activity }) => activity);
 const closed = entries.find(({ activity }) => isLeadNumber(activity, lead.activityId));
 // The customer opens on its open lead; the closed one's tab is brought
@@ -759,7 +865,8 @@ if (earlier && !ctx.allowExisting) {
 throw new NeedsYou(`This customer already has a ${lead.campaign} lead added by hand after the closed one, so it may already be set up again. Press Skip lead to leave it, or carry on to add another.`, { carryOnLabel: 'Add another lead', onConfirm: () => { ctx.allowExisting = true; } });
 }
 if (earlier) return 'Adding another lead as asked';
-return closed ? `Closed ${lead.campaign} lead found on this customer, not set up again yet` : 'Closed lead not checked on this customer';
+if (closed) return `Closed ${lead.campaign} lead found on this customer, not set up again yet`;
+return lead.activityId ? 'The closed lead is not on this customer; carrying on as asked' : 'No lead number to check against this customer';
 }
 
 async function chooseUpdateOutcomes() {
@@ -781,13 +888,39 @@ if (!select || !chooseByText(select, OUTCOME_NONE)) throw new NeedsYou(`Set the 
 return 'Call outcome set back to (Select a Call Outcome)';
 }
 
+// Leads that were not on the customer when Add the new lead first ran.
+function freshLeads(ctx) {
+if (!ctx || !ctx.beforeKeys) return [];
+return liveActivities().filter(({ activity }) => !ctx.beforeObjects.has(activity) && !ctx.beforeKeys.has(activityKey(activity)));
+}
+
+const ALREADY_ADDED = 'A new lead has shown since the first try, so a second one was not added';
+
 async function addNewLead(ctx, lead) {
+const createWindow = () => openModal((m) => !!m.querySelector('input[name="salesOptions"]'));
+// The leads are noted once, so a second try can tell whether the first
+// one's lead (saved slowly, or by hand) has shown since.
+if (!ctx.beforeKeys) {
 ctx.beforeKeys = new Set(liveActivities().map(({ activity }) => activityKey(activity)));
 ctx.beforeObjects = new Set(liveActivities().map(({ activity }) => activity));
+} else {
+await waitFor(() => freshLeads(ctx).length > 0 || (ctx.savePressed && !createWindow()), ctx.savePressed ? 10000 : 4000);
+if (ctx.savePressed && !freshLeads(ctx).length && !createWindow()) await waitFor(() => freshLeads(ctx).length > 0, 10000);
+if (freshLeads(ctx).length) return ALREADY_ADDED;
+if (ctx.savePressed && createWindow()) {
+throw new NeedsYou('Save was pressed but the Create Activity window is still open. Check it, press Save yourself if it has not saved, then carry on once the new lead shows.');
+}
+if (ctx.savePressed) {
+throw new NeedsYou('Save was pressed but no new lead has shown. Look at the customer\'s leads: only add it again if there is no new one.', { carryOnLabel: 'No new lead there, add it again', onConfirm: () => { ctx.savePressed = false; } });
+}
+}
+let modal = createWindow();
+if (!modal) {
 const add = byClick(document, 'createNewSalesLead');
 if (!add) throw new NeedsYou('Press Add New Lead yourself, pick Regular Sales Lead and the campaign, then Save.');
 add.click();
-const modal = await waitFor(() => openModal((m) => !!m.querySelector('input[name="salesOptions"]')), 10000);
+modal = await waitFor(createWindow, 10000);
+}
 if (!modal) throw new NeedsYou('The Create Activity window did not open. Add the lead yourself and Save.');
 const regular = modal.querySelector('input[name="salesOptions"][value="true"]');
 if (regular && !regular.checked) regular.click();
@@ -802,6 +935,7 @@ throw new NeedsYou(`Pick the campaign "${lead.campaign}" in the window and press
 await sleep(300);
 const save = byClick(modal, 'ok(') || byText(modal, 'button', /^save$/i)[0];
 if (!save) throw new NeedsYou('Press Save in the Create Activity window yourself.');
+ctx.savePressed = true;
 save.click();
 if (!await waitFor(() => !document.body.contains(modal) || !isVisible(modal), 15000)) {
 throw new NeedsYou('The Create Activity window did not close. Check it and press Save yourself.');
@@ -811,7 +945,7 @@ return `New ${lead.campaign} lead added`;
 
 async function findNewLead(ctx, lead) {
 const found = await waitFor(() => {
-const fresh = liveActivities().filter(({ activity }) => !ctx.beforeObjects.has(activity) && !ctx.beforeKeys.has(activityKey(activity)));
+const fresh = freshLeads(ctx);
 const onCampaign = fresh.filter(({ activity }) => normalise(activity.CampaignName) === normalise(lead.campaign));
 return (onCampaign.length ? onCampaign : fresh).slice(-1)[0] || null;
 }, 15000);
@@ -838,13 +972,7 @@ function controlsOf(activity, selector) {
 // No lead means no controls: an unset lead would otherwise match every
 // control on the page.
 if (!activity) return [];
-return Array.from(document.querySelectorAll(selector)).filter((el) => {
-// Widgets with their own scope reach the lead through their parents.
-for (let scope = scopeOf(el), depth = 0; scope && depth < 8; scope = scope.$parent, depth++) {
-if (scope.theActivity === activity) return true;
-}
-return false;
-});
+return Array.from(document.querySelectorAll(selector)).filter((el) => belongsTo(el, activity));
 }
 
 // Opens the closed section around a control so the result can be seen.
@@ -935,7 +1063,10 @@ VehicleOfInterestFuelType: 'VOI fuel', VehicleOfInterestReg: 'VOI reg'
 const fieldLabel = (key) => FIELD_LABELS[key] || key.replace(/ID$/, '');
 
 async function fillLeadFields(ctx, lead) {
-if (!ctx.newLead) return 'No new lead found, dropdowns left alone';
+if (!ctx.newLead) {
+ctx.missedFields = ['Lead dropdowns (the new lead was not found)'];
+return 'No new lead found, dropdowns left alone';
+}
 const activity = ctx.newLead.activity;
 const missed = [];
 const done = [];
@@ -1007,18 +1138,21 @@ if (!await closeDiaries()) throw new NeedsYou('The diary did not close. Close it
 return 'Manage Appointments opened and closed';
 }
 
+// Anything that could not be filled is always put to the agent before the
+// call is parked, whatever the setting says.
 async function reviewBeforePark(ctx) {
-if (!ctx.settings.reviewBeforePark) return 'Review skipped (setting off)';
+const missed = ctx.missedFields && ctx.missedFields.length ? ctx.missedFields.join(', ') : '';
 if (ctx.reviewed) return 'Checked';
-const missed = ctx.missedFields && ctx.missedFields.length ? ` Check these by hand: ${ctx.missedFields.join(', ')}.` : '';
-throw new NeedsYou(`Check the new lead.${missed} Carry on to clear the call outcome, set Shift Start and park the call.`, { carryOnLabel: 'Looks right, park it', onConfirm: () => { ctx.reviewed = true; } });
+if (!ctx.settings.reviewBeforePark && !missed) return 'Review skipped (setting off)';
+const what = missed ? `These could not be filled: ${missed}. Set them on the new lead yourself and check it.` : 'Check the new lead.';
+throw new NeedsYou(`${what} Carry on to clear the call outcome, set Shift Start and park the call.`, { carryOnLabel: missed ? 'Done, park it' : 'Looks right, park it', review: true, onConfirm: () => { ctx.reviewed = true; } });
 }
 
 async function parkCall() {
 const outcome = visibleFirst(document.querySelectorAll('select[ng-model="selected.CallOutcome"]'));
 if (!outcome || !chooseByText(outcome, OUTCOME_NONE)) throw new NeedsYou(`Set the call outcome back to "${OUTCOME_NONE}" and park the call yourself.`);
 const next = visibleFirst(document.querySelectorAll('select[ng-model="selected.NextAgentStatus"]'));
-if (next && !chooseByText(next, STATUS_WHILE_RESETTING)) throw new NeedsYou('Set the next status to Shift Start and park the call yourself.');
+if (!next || !chooseByText(next, STATUS_WHILE_RESETTING)) throw new NeedsYou('Set the next status (by Park It) to Shift Start and park the call yourself.');
 await sleep(300);
 const park = byText(document, 'button[ng-click^="completeCall(true"]', /park it/i)[0];
 if (!park) throw new NeedsYou('Press Park It yourself.');
@@ -1053,7 +1187,7 @@ const HERE_STEPS = [
 { label: 'Match the dropdowns', run: fillLeadFields },
 { label: 'Copy the notes into Call Notes', run: fillNotes },
 { label: 'Manage Appointments', run: manageAppointments },
-{ label: 'Clear the call notes', run: clearCallNotes }
+{ label: 'Clear Call Notes', run: clearCallNotes }
 ];
 
 // ===================================================================
@@ -1081,18 +1215,26 @@ if (below.length) return below.sort((a, b) => a.getBoundingClientRect().top - b.
 return null;
 }
 
+// Work Tools loads Konnect Notes when it is missing and only shows this
+// panel again, so clicking it mid-run is safe.
 function needKonnectNotes() {
 if (!(window.KonnectNotes && window.KonnectNotes.version)) {
-throw new NeedsYou('Konnect Notes is not on this page, and it writes the notes. Click Work Tools once to load it, then press Try again.');
+throw new NeedsYou('Konnect Notes is not on this page, and it writes the notes. Click Work Tools once to load it, then press Try again.', { noCarry: true });
 }
+}
+
+function callNotesBoxOf(activity) {
+return visibleFirst(controlsOf(activity, CALL_NOTES_SELECTOR).filter(isVisible)) || findLabelledBox('call notes');
 }
 
 // Types a Konnect Notes shorthand at the end of a box and presses space,
 // so Konnect Notes writes the full note exactly as when typed by hand.
-// Puts the box back and returns false when Konnect Notes did not write
-// the note (it takes the word but writes nothing when it cannot read the
-// Initial Notes).
-async function typeShorthand(box, word) {
+// Returns false when Konnect Notes did not write the note (it takes the
+// word but writes nothing when it cannot read the Initial Notes), after
+// putting back the box and any others it may have rewritten: a Catch All
+// note can tidy Call Notes as well.
+async function typeShorthand(box, word, others) {
+const saved = [box].concat(others || []).filter(Boolean).map((b) => [b, b.value]);
 const before = box.value;
 const text = shorthandInsertion(before, word);
 box.focus({ preventScroll: true });
@@ -1105,7 +1247,7 @@ const space = new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: t
 box.dispatchEvent(space);
 await sleep(500);
 if (!space.defaultPrevented || !SHORTHAND_MARKERS[word].test(box.value)) {
-if (box.value !== before) setFieldValue(box, before);
+saved.forEach(([b, value]) => { if (b.value !== value) setFieldValue(b, value); });
 return false;
 }
 return true;
@@ -1154,7 +1296,7 @@ return `Next status: ${status}`;
 async function reviewBeforeFinish(ctx) {
 if (!ctx.settings.reviewBeforeFinish) return 'Check skipped (setting off)';
 if (ctx.reviewed) return 'Checked';
-throw new NeedsYou(`Check the notes and the lead outcome. Carry on to press Finished.`, { carryOnLabel: 'Looks right, press Finished', onConfirm: () => { ctx.reviewed = true; } });
+throw new NeedsYou('Check the notes and the lead outcome. Carry on to press Finished.', { carryOnLabel: 'Looks right, press Finished', review: true, onConfirm: () => { ctx.reviewed = true; } });
 }
 
 async function pressFinished() {
@@ -1182,18 +1324,26 @@ function onParkedPage() {
 return /\/search\/parked/i.test(location.hash) && readSearchRows().headers.includes('best number');
 }
 
+// The Parked Calls rows once the table has finished filling.
+function settledParkedRows() {
+return settledList(() => readSearchRows().rows, (rows) => rows.map((r) => r.tr.textContent).join('|'), 6000, 1200);
+}
+
 async function goToParked() {
-if (onParkedPage()) return 'On Parked Calls';
-if (onCallPage()) throw new NeedsYou('A call is open. Finish or park it yourself, then carry on.', { carryOnLabel: 'Done, carry on' });
+const already = onParkedPage();
+if (!already) {
+if (onCallPage()) throw new NeedsYou('A call is open. Finish or park it yourself, then carry on.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
 const nav = byText(document, '[ng-click]', /^parked( calls)?$/i).find(isVisible);
 if (nav) nav.click(); else location.hash = '#!/search/parked';
-if (!await waitFor(onParkedPage, 15000)) throw new NeedsYou('Parked Calls did not open. Open it yourself.', { carryOnLabel: 'Done, carry on' });
-await sleep(800);
-return 'Opened Parked Calls';
+if (!await waitFor(onParkedPage, 15000)) throw new NeedsYou('Parked Calls did not open. Open it yourself.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
+}
+await settledParkedRows();
+return already ? 'On Parked Calls' : 'Opened Parked Calls';
 }
 
 async function openParkedCustomer(ctx, lead) {
-const rows = readSearchRows().rows;
+if (onCallPage()) return 'Customer already open';
+const rows = await settledParkedRows();
 const row = matchPerson(rows, lead);
 if (!row) throw new NeedsYou(`${lead.name} is not in your Parked Calls. Skip them, or open them yourself and carry on.`, { carryOnLabel: 'Opened, carry on' });
 (row.confirm || row.tr).click();
@@ -1206,32 +1356,43 @@ function isOpenLead(activity) {
 return outcomeLabel(activity) === 'Open';
 }
 
+// When the tool cannot tell which of several open leads is meant, the
+// agent opens its tab and says so; the lead in view is then used.
+function leadPickedByAgent(ctx, candidates, what) {
+const inView = ctx.useLeadInView ? leadInView() : null;
+ctx.useLeadInView = false;
+if (inView && candidates.includes(inView)) return inView;
+throw new NeedsYou(`${what} Open the right lead's tab yourself and carry on, or skip this one.`, { carryOnLabel: 'Its tab is open, carry on', onConfirm: () => { ctx.useLeadInView = true; } });
+}
+
 async function findPostClosureLead(ctx, lead) {
+await settledLeads();
 const found = await waitFor(() => {
 const list = liveActivities().map(({ activity }) => activity)
 .filter((a) => /post closure processing/i.test(String((a.SalesLead && a.SalesLead.SourceName) || '')) && isOpenLead(a));
 return list.length ? list : null;
 }, 8000);
-if (!found) throw new NeedsYou('No open Post Closure lead on this customer. Skip them, or do this one yourself.');
-if (found.length > 1) throw new NeedsYou('This customer has more than one open Post Closure lead. Do this one yourself, or skip them.');
-const activity = found[0];
+if (!found) throw new NeedsYou('No open Post Closure lead on this customer. Skip them, or finish this one yourself and skip.', { noCarry: true });
+const activity = found.length === 1 ? found[0] : leadPickedByAgent(ctx, found, 'This customer has more than one open Post Closure lead.');
 const email = normalise(activity.SalesLead && activity.SalesLead.EmailAddress);
 if (lead.email && email && email !== normalise(lead.email) && !ctx.allowOtherEmail) {
 throw new NeedsYou(`This customer's email is not the one the Lead Checker checked, so this may be the wrong ${lead.name}. Skip them, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on', onConfirm: () => { ctx.allowOtherEmail = true; } });
 }
 ctx.activity = activity;
-if (!await bringLeadIntoView(activity)) throw new NeedsYou('Open the Post Closure lead\'s tab yourself, then carry on.', { carryOnLabel: 'Done, carry on' });
+if (!await bringLeadIntoView(activity)) throw new NeedsYou('Open the Post Closure lead\'s tab yourself, then carry on.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
 return 'Post Closure lead found';
 }
 
 async function writePostClosureNote(ctx, lead) {
 needKonnectNotes();
 const box = findLabelledBox('post closure notes');
-if (!box) throw new NeedsYou(`Could not find Post Closure Notes. Type ${lead.shorthand} there and press space yourself.`);
+const typeIt = { carryOnLabel: 'Typed it, check again', onConfirm: () => {} };
+if (!box) throw new NeedsYou(`Could not find Post Closure Notes. Type ${lead.shorthand} there and press space yourself.`, typeIt);
 if (SHORTHAND_MARKERS[lead.shorthand].test(box.value)) return `${lead.shorthand.toUpperCase()} note already in Post Closure Notes`;
-if (!await typeShorthand(box, lead.shorthand) || !SHORTHAND_MARKERS[lead.shorthand].test(box.value)) {
-throw new NeedsYou(`Konnect Notes did not write the note. Type ${lead.shorthand} in Post Closure Notes and press space yourself.`);
+if (!await typeShorthand(box, lead.shorthand, [callNotesBoxOf(ctx.activity)])) {
+throw new NeedsYou(`Konnect Notes did not write the note, so the notes were put back as they were. Type ${lead.shorthand} in Post Closure Notes and press space yourself.`, typeIt);
 }
+ctx.wrote = `the ${lead.shorthand.toUpperCase()} note`;
 return `${lead.shorthand.toUpperCase()} written in Post Closure Notes`;
 }
 
@@ -1274,53 +1435,65 @@ walk(call, 0);
 // The page's own text as well, in case the data sits elsewhere. Only an
 // assigned lead's email can match, so other emails on the page do no harm.
 const main = document.querySelector('[ng-view], .main-content, main') || document.body;
-(String(main.innerText || '').match(/[^\s@<>"'(),;:]+@[^\s@<>"'(),;:]+\.[a-z]{2,}/gi) || []).forEach((e) => emails.add(e));
+(String(main.innerText || '').match(EMAIL_PATTERN) || []).forEach((e) => emails.add(e));
 return { name: name.trim(), emails: Array.from(emails) };
 }
 
 async function ensureAvailable() {
 if (onPresentPage() || onCallPage()) return 'A lead is already open';
-const statusButton = Array.from(document.querySelectorAll('button.dropdown-toggle')).find((b) => /\S/.test(b.textContent) && !/toggle dropdown/i.test(b.textContent));
-if (statusButton && normalise(statusButton.textContent) === normalise(STATUS_AVAILABLE)) return 'Status already Available';
+if (isAvailable()) return 'Status already Available';
 const item = byText(document, '[ng-click^="setMakeBusy"], [ng-click^="setAvailable"], .dropdown-menu [ng-click]', /^available$/i)[0];
 if (!item) throw new NeedsYou('Set your status to Available yourself so your Email Only leads present.', { carryOnLabel: 'Done, wait for leads' });
 item.click();
-await sleep(1000);
+// A lead may present straight away, which also shows it worked.
+if (!statusButton()) { await sleep(1000); return 'Available pressed (your status could not be read from the page to confirm it)'; }
+if (!await waitFor(() => isAvailable() || onPresentPage() || onCallPage(), 5000)) {
+throw new NeedsYou('Your status did not change to Available. Set it yourself so your Email Only leads present.', { carryOnLabel: 'Done, wait for leads' });
+}
 return 'Status set to Available';
 }
 
 async function rejectPresented() {
 if (onCallPage()) return 'Lead already open';
 const button = byClick(document, 'rejectCall');
-if (!button) throw new NeedsYou('Press Reject yourself so the lead opens without dialling.', { carryOnLabel: 'Done, carry on' });
+if (!button) throw new NeedsYou('Press Reject yourself so the lead opens without dialling.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
 button.click();
-if (!await waitFor(onCallPage, 20000)) throw new NeedsYou('The lead did not open after Reject. Open it yourself.', { carryOnLabel: 'Done, carry on' });
+if (!await waitFor(onCallPage, 20000)) throw new NeedsYou('The lead did not open after Reject. Open it yourself.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
 await sleep(1000);
 return 'Rejected, so the lead opened without dialling';
 }
 
+// The presented customer may have other open leads: the assigned lead's
+// campaign picks between them, and the agent does when it cannot.
 async function findEmailOnlyLead(ctx, lead) {
-const open = liveActivities().map(({ activity }) => activity).filter(isOpenLead);
-const byEmail = open.filter((a) => normalise(a.SalesLead && a.SalesLead.EmailAddress) === normalise(lead.email));
-const activity = byEmail.length === 1 ? byEmail[0] : open.length === 1 ? open[0] : null;
-if (!activity) throw new NeedsYou('Could not tell which lead is the Email Only one. Do this one yourself, or skip it.');
+const open = (await settledLeads()).map(({ activity }) => activity).filter(isOpenLead);
+if (!open.length) throw new NeedsYou('No open lead was found on this customer. Do this one yourself and skip it.', { noCarry: true });
+const index = chooseEmailOnlyLead(open.map((a) => ({ email: a.SalesLead && a.SalesLead.EmailAddress, campaign: a.CampaignName })), lead);
+const activity = index >= 0 ? open[index] : leadPickedByAgent(ctx, open, `This customer has ${open.length} open leads and it is not clear which is the Email Only one${lead.campaign ? ` (assigned on ${lead.campaign})` : ''}.`);
 ctx.activity = activity;
-if (!await bringLeadIntoView(activity)) throw new NeedsYou('Open the Email Only lead\'s tab yourself, then carry on.', { carryOnLabel: 'Done, carry on' });
-return 'Email Only lead found';
+if (!await bringLeadIntoView(activity)) throw new NeedsYou('Open the Email Only lead\'s tab yourself, then carry on.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
+return open.length > 1 ? `Email Only lead found (${activity.CampaignName || 'picked by you'})` : 'Email Only lead found';
 }
 
-async function writeEmailOnlyNote(ctx) {
+// Konnect Notes writes the email shown at the top of the page, which is
+// not always the assigned lead's, so the note is checked against the lead.
+async function writeEmailOnlyNote(ctx, lead) {
 needKonnectNotes();
-const box = visibleFirst(controlsOf(ctx.activity, CALL_NOTES_SELECTOR).filter(isVisible)) || findLabelledBox('call notes');
-if (!box) throw new NeedsYou('Could not find Call Notes. Type eo there and press space yourself.');
-if (SHORTHAND_MARKERS.eo.test(box.value)) return 'EO note already in Call Notes';
-if (!await typeShorthand(box, 'eo') || !SHORTHAND_MARKERS.eo.test(box.value)) {
-throw new NeedsYou('Konnect Notes did not write the note. Type eo in Call Notes and press space yourself.');
+const box = callNotesBoxOf(ctx.activity);
+const typeIt = { carryOnLabel: 'Typed it, check again', onConfirm: () => {} };
+if (!box) throw new NeedsYou('Could not find Call Notes. Type eo there and press space yourself.', typeIt);
+let note = emailOnlyNoteState(box.value, lead.email, ctx.noteEmailAccepted);
+if (note.state === 'ok') return ctx.wrote ? 'EO note checked' : 'EO note with this lead\'s email already in Call Notes';
+if (note.state === 'none') {
+if (!await typeShorthand(box, 'eo')) throw new NeedsYou('Konnect Notes did not write the note. Type eo in Call Notes and press space yourself.', typeIt);
+ctx.wrote = 'the EO note';
+note = emailOnlyNoteState(box.value, lead.email, ctx.noteEmailAccepted);
+if (note.state === 'ok') return 'EO written in Call Notes with this lead\'s email';
 }
-if (!/@/.test(box.value.split(/\n/).filter((l) => SHORTHAND_MARKERS.eo.test(l)).pop() || '')) {
-throw new NeedsYou('The EO note has no email address in it. Add the email after "EMAIL ONLY LEAD:" yourself.');
+if (note.state === 'other') {
+throw new NeedsYou(`The EO note in Call Notes has ${note.found}, but the assigned lead's email is ${lead.email}. Check which is right and correct the note.`, { carryOnLabel: 'The note is right, carry on', onConfirm: () => { ctx.noteEmailAccepted = note.found; } });
 }
-return 'EO written in Call Notes';
+throw new NeedsYou(`The EO note in Call Notes has no email address. Add ${lead.email || 'the customer\'s email'} after "EMAIL ONLY LEAD:" yourself.`, { carryOnLabel: 'Added it, check again', onConfirm: () => {} });
 }
 
 const EMAIL_ONLY_RUN = [
@@ -1339,11 +1512,13 @@ const EMAIL_ONLY_RUN = [
 // RUNNER AND PANEL
 // ===================================================================
 
-const state = window._leadResetState || (window._leadResetState = {
-running: false, paused: null, stopRequested: false, currentIndex: -1, stepIndex: 0, ctx: null, log: []
-});
+const state = window._leadResetState = {
+running: false, paused: null, stopRequested: false, currentIndex: -1, stepIndex: 0, ctx: null, log: [], notice: null
+};
 let resolvePause = null;
 let versionState = null;
+let hubTimer = null;
+let ui = null; // The panel's elements and what is open in it.
 
 function leadsToDo() {
 const source = loadResults();
@@ -1357,8 +1532,12 @@ if (state.log.length > 40) state.log.shift();
 render();
 }
 
-function waitForUser(error) {
-state.paused = { message: error.message, carryOnLabel: error.carryOnLabel };
+// inLead: the pause is inside a lead's steps, so Try again and Skip lead
+// make sense.
+function waitForUser(error, inLead) {
+if (halted) return Promise.resolve('stop');
+state.paused = { message: error.message, carryOnLabel: error.carryOnLabel, noCarry: !!error.noCarry, review: !!error.review, inLead: !!inLead };
+showPanel();
 render();
 return new Promise((resolve) => { resolvePause = resolve; });
 }
@@ -1371,23 +1550,48 @@ state.paused = null;
 r(answer);
 }
 
+// What a skipped or stopped lead leaves on the page for the agent, in
+// words, '' when nothing.
+function leftAsIs(ctx) {
+const parts = [];
+if (onCallPage()) {
+parts.push('the call is still open');
+const outcome = visibleFirst(document.querySelectorAll('select[ng-model="selected.CallOutcome"]'));
+const chosen = outcome ? selectedText(outcome) : '';
+if (chosen && !isPlaceholderOption(chosen)) parts.push(`the call outcome is "${chosen}"`);
+if (ctx && freshLeads(ctx).length) parts.push('the new lead was added');
+if (ctx && ctx.notesBox && document.body.contains(ctx.notesBox) && ctx.notesBox.value) parts.push('the initial notes are still in Call Notes');
+if (ctx && ctx.wrote) parts.push(`${ctx.wrote} was written`);
+const levels = ctx && ctx.activity ? outcomeLevelSelects(ctx.activity).map(selectedText).filter((t) => !isPlaceholderOption(t)) : [];
+if (levels.length) parts.push(`the lead outcome is set to ${levels.join(' > ')}`);
+const next = visibleFirst(document.querySelectorAll('select[ng-model="selected.NextAgentStatus"]'));
+if (next && selectedText(next)) parts.push(`the next status is ${selectedText(next)}`);
+} else if (onPresentPage()) {
+parts.push('a lead is presenting');
+}
+return parts.length ? `Left as it is: ${parts.join('; ')}.` : '';
+}
+
 // Runs one lead through a list of steps. Returns 'Done', 'Skipped', or
 // null when stopped.
 async function runLeadSteps(lead, steps) {
 state.steps = steps;
 let outcome = 'Done';
 for (state.stepIndex = 0; state.stepIndex < steps.length;) {
+if (halted) return null;
 if (state.stopRequested) { outcome = null; break; }
 const step = steps[state.stepIndex];
 render();
 try {
 const message = await step.run(state.ctx, lead);
+if (halted) return null;
 if (message) addLog(message);
 state.stepIndex++;
 } catch (error) {
+if (halted || error instanceof Halted) return null;
 const needsYou = error instanceof NeedsYou ? error : new NeedsYou(`${step.label} went wrong: ${error && error.message}. Do this step yourself.`);
-addLog(step.run === reviewBeforePark ? 'Waiting for your check' : `Stopped at "${step.label}"`);
-const answer = await waitForUser(needsYou);
+addLog(needsYou.review ? 'Waiting for your check' : `Stopped at "${step.label}"`);
+const answer = await waitForUser(needsYou, true);
 if (answer === 'retry') continue;
 if (answer === 'carry') {
 if (needsYou.onConfirm) needsYou.onConfirm(); else state.stepIndex++;
@@ -1402,50 +1606,102 @@ break;
 return outcome;
 }
 
+function beginRun(mode) {
+state.running = true;
+state.mode = mode;
+state.stopRequested = false;
+state.notice = null;
+state.deskLead = null;
+state.deskCount = { done: 0, total: 0 };
+render();
+}
+
+// Every run ends here. A stop says what was left changed on the page, and
+// an agent left Available is told so: the status is never changed silently.
+function endRun() {
+if (halted) return;
+const stopped = state.stopRequested;
+const left = stopped ? leftAsIs(state.ctx) : '';
+const available = state.mode !== 'here' && isAvailable();
+const lines = [];
+if (stopped) lines.push(left ? `Stopped. ${left}` : 'Stopped.');
+if (available) lines.push(`${stopped ? 'You' : 'The run has ended and you'} are still Available, so leads can present.`);
+state.running = false;
+state.mode = null;
+state.currentIndex = -1;
+state.deskLead = null;
+state.paused = null;
+state.ctx = null;
+state.stopRequested = false;
+resolvePause = null;
+state.notice = left || available ? { text: lines.join(' '), shiftStart: available } : null;
+if (lines.length) addLog(lines.join(' ')); else render();
+}
+
+// Asks the agent and returns true to carry on, false to stop.
+async function askToCarryOn(message, carryOnLabel) {
+const answer = await waitForUser(new NeedsYou(message, { carryOnLabel }), false);
+if (answer === 'stop') { state.stopRequested = true; return false; }
+return true;
+}
+
+// A step outside any lead (getting to the right page or status). Returns
+// false when the run should end. again: carrying on runs it again instead
+// of taking the agent's word that it is done.
+async function outsideLead(fn, again) {
+for (;;) {
+try {
+const message = await fn();
+if (message) addLog(message);
+return true;
+} catch (error) {
+if (halted || error instanceof Halted) return false;
+if (!(error instanceof NeedsYou)) { addLog(`Stopped: ${error && error.message}`); return false; }
+if (!await askToCarryOn(error.message, error.carryOnLabel)) return false;
+if (!again) return true;
+}
+}
+}
+
+function skippedMessage(next) {
+const left = leftAsIs(state.ctx);
+return `Lead skipped.${left ? ' ' + left : ''} Park or finish the open call yourself so ${next}.`;
+}
+
+function logRunError(error) {
+if (!halted && !(error instanceof Halted)) addLog(`Stopped: ${error && error.message}`);
+}
+
 // Sets one of the open customer's leads up again and stops in the new lead.
 async function runHere(activityId) {
 if (state.running) return;
 const entry = liveActivities().find(({ activity }) => String(activity.ID) === String(activityId));
 if (!entry) { addLog('That lead is no longer on the page'); return; }
 const salesLead = entry.activity.SalesLead || {};
-const base = { activityId: String(entry.activity.ID), name: salesLead.CustomerName || 'This customer', reg: '', campaign: '', notes: '', voi: '', px: '', fields: {} };
+const base = { activityId: String(entry.activity.ID), name: salesLead.CustomerName || 'This customer', reg: '', campaign: '', notes: '', fields: {} };
 const adopted = adoptClosedLead(base, entry.activity, closedLeadPageNotes(entry.activity));
 const lead = adopted.lead;
-state.running = true;
-state.mode = 'here';
 state.hereLead = lead;
-state.stopRequested = false;
+beginRun('here');
 state.ctx = { log: addLog, settings: loadSettings(), notesFrom: adopted.notesFrom };
 addLog(`Setting up ${lead.campaign} again on this customer`);
 try {
 const outcome = await runLeadSteps(lead, HERE_STEPS);
-if (outcome === 'Done') addLog('Lead set up again. You are in the new lead.');
+const missed = state.ctx.missedFields && state.ctx.missedFields.length ? ` These could not be filled, so set them yourself: ${state.ctx.missedFields.join(', ')}.` : '';
+if (outcome === 'Done') addLog(`Lead set up again. You are in the new lead.${missed}`);
 } catch (error) {
-addLog(`Stopped: ${error && error.message}`);
+logRunError(error);
 } finally {
-state.running = false;
-state.mode = null;
-state.paused = null;
-resolvePause = null;
-render();
+endRun();
 }
 }
 
 async function runAll() {
 if (state.running) return;
 const settings = loadSettings();
-state.running = true;
-state.mode = 'batch';
-state.stopRequested = false;
-render();
+beginRun('batch');
 try {
-if (onIdlePage()) {
-try { await ensureShiftStart({ log: addLog }); } catch (error) {
-if (!(error instanceof NeedsYou)) throw error;
-const answer = await waitForUser(error);
-if (answer === 'stop') return;
-}
-}
+if (onIdlePage() && !await outsideLead(ensureShiftStart, false)) return;
 const progress = loadProgress();
 const leads = leadsToDo();
 for (let i = 0; i < leads.length && !state.stopRequested; i++) {
@@ -1455,25 +1711,19 @@ state.currentIndex = i;
 state.ctx = { log: addLog, settings };
 addLog(`Started ${lead.name}`);
 const outcome = await runLeadSteps(lead, STEPS);
-if (outcome) {
+if (!outcome) break;
 progress.byActivity[lead.activityId] = outcome;
 saveProgress(progress);
 addLog(`${outcome}: ${lead.name}`);
-if (outcome === 'Skipped' && !onIdlePage()) {
-const answer = await waitForUser(new NeedsYou('Lead skipped. Park or finish the open call yourself so the next lead can start.', { carryOnLabel: 'Done, next lead' }));
-if (answer === 'stop') state.stopRequested = true;
+if (outcome === 'Skipped' && onCallPage() && !await askToCarryOn(skippedMessage('the next lead can start'), 'Done, next lead')) break;
+// What this lead left is the agent's now; a later stop must not repeat it.
+state.ctx = null;
 }
-}
-}
-if (!state.stopRequested) addLog('All Re setup leads are done');
+if (!state.stopRequested && !halted) addLog('All Re setup leads are done');
 } catch (error) {
-addLog(`Stopped: ${error && error.message}`);
+logRunError(error);
 } finally {
-state.running = false;
-state.currentIndex = -1;
-state.paused = null;
-resolvePause = null;
-render();
+endRun();
 }
 }
 
@@ -1481,38 +1731,74 @@ render();
 // POST CLOSURE SEND BACK AND EMAIL ONLY (runs)
 // ===================================================================
 
-// Results the desk fetched itself and those SLA Manager imported, the
-// newest per customer.
+// The Post Closure results SLA Manager keeps for the desk: every Post
+// Closure row from any Lead Checker results it receives. Nothing else is
+// read for them.
+function postClosureSaved() {
+const saved = readJson(DESK_RESULTS_KEY);
+return saved && Array.isArray(saved.results) && isFresh(saved.savedAt) ? saved : null;
+}
+
 function postClosureResults() {
-const sources = [readJson(DESK_RESULTS_KEY), readJson(LEAD_CHECKER_RESULTS_KEY)]
-.filter((s) => s && isFresh(s.savedAt) && Array.isArray(s.results))
-.sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
-return latestPostClosureResults(sources);
+const saved = postClosureSaved();
+return saved ? saved.results.filter((r) => r && r.postClosureAction && isFresh(r.checkedAt || saved.savedAt)) : [];
 }
 
 function sendBackLeads() {
 return sendBackLeadsFrom(postClosureResults());
 }
 
+// "Lead Checker results from 5 min ago", by the newest result.
+function resultsAgeLine() {
+const saved = postClosureSaved();
+const results = postClosureResults();
+if (!saved || !results.length) return '';
+const newest = results.map((r) => r.checkedAt || saved.savedAt).sort().pop();
+return `Lead Checker results from ${ageText(newest, Date.now())}.`;
+}
+
+// The desk's request while it is still good, else null.
+function pendingRequest() {
+const request = readJson(LIVE_REQUEST_KEY);
+const at = request && request.at ? new Date(request.at).getTime() : NaN;
+return request && !request.cancelled && Number.isFinite(at) && Date.now() - at <= REQUEST_MAX_AGE_MS ? request : null;
+}
+
+// Tells SLA Manager the request is no longer wanted.
+function withdrawRequest() {
+const request = readJson(LIVE_REQUEST_KEY);
+if (!request || request.cancelled) return;
+if (pendingRequest()) writeJson(LIVE_REQUEST_KEY, { id: request.id, at: new Date().toISOString(), cancelled: true });
+else { try { localStorage.removeItem(LIVE_REQUEST_KEY); } catch (error) { /* ignore */ } }
+}
+
 // Asks SLA Manager (open in its own tab) to check the Parked Calls on the
 // Lead Checker. No Konnect Live tab is opened from here.
 async function checkParkedOnLive() {
-if (!onParkedPage()) {
-try { await goToParked(); } catch (error) { addLog(error.message); return; }
+let rows = [];
+// Nothing else starts while the rows are being read.
+state.checking = true;
+try {
+await goToParked();
+rows = readSearchRows().rows;
+} catch (error) {
+if (!halted && !(error instanceof Halted)) addLog(error.message);
+return;
+} finally {
+state.checking = false;
 }
-const rows = readSearchRows().rows;
 if (!rows.length) { addLog('No parked calls to check'); return; }
 const request = { id: `desk-${Date.now()}`, at: new Date().toISOString(), rows: rows.length, tsv: parkedBatchTsv(rows) };
 if (!writeJson(LIVE_REQUEST_KEY, request)) { addLog('Could not pass the Parked Calls to SLA Manager (browser storage full)'); return; }
 addLog(`Asked SLA Manager to check ${rows.length} parked call${rows.length === 1 ? '' : 's'}`);
-setTimeout(() => { if (ui && !state.running) render(); }, HUB_ANSWER_MS + 200);
-render();
+clearTimeout(hubTimer);
+hubTimer = setTimeout(() => { if (ui && !state.running) render(); }, HUB_ANSWER_MS + 200);
 }
 
 // What SLA Manager last said about this desk's request, for the panel.
 function hubStatusLine() {
-const request = readJson(LIVE_REQUEST_KEY);
-if (!request || !isFresh(request.at)) return '';
+const request = pendingRequest();
+if (!request) return '';
 const status = readJson(LIVE_STATUS_KEY);
 if (status && status.id === request.id) return status.text || '';
 return Date.now() - new Date(request.at).getTime() > HUB_ANSWER_MS
@@ -1520,19 +1806,21 @@ return Date.now() - new Date(request.at).getTime() > HUB_ANSWER_MS
 : 'Passing your Parked Calls to SLA Manager.';
 }
 
-function emailOnlyAgents() {
+function emailOnlySaved() {
 const saved = readJson(EMAIL_ONLY_ASSIGNED_KEY);
-const leads = saved && isFresh(saved.savedAt) && Array.isArray(saved.leads) ? saved.leads : [];
-return Array.from(new Set(leads.map((l) => l.agent).filter(Boolean)));
+return saved && isFresh(saved.savedAt) && Array.isArray(saved.leads) ? saved.leads : [];
+}
+
+function emailOnlyAgents() {
+return Array.from(new Set(emailOnlySaved().map((l) => l.agent).filter(Boolean)));
 }
 
 // Only the chosen agent's leads, as those are the ones that present here.
 function emailOnlyLeads() {
-const saved = readJson(EMAIL_ONLY_ASSIGNED_KEY);
-const leads = saved && isFresh(saved.savedAt) && Array.isArray(saved.leads) ? saved.leads : [];
 const agents = emailOnlyAgents();
-const agent = agents.includes(loadSettings().emailOnlyAgent) ? loadSettings().emailOnlyAgent : agents[0];
-return leads.filter((l) => !agent || l.agent === agent).map((l) => ({ ...l, key: normalise(l.email) }));
+const chosen = loadSettings().emailOnlyAgent;
+const agent = agents.includes(chosen) ? chosen : agents[0];
+return emailOnlySaved().filter((l) => !agent || l.agent === agent).map((l) => ({ ...l, key: normalise(l.email) }));
 }
 
 function loadDeskProgress() {
@@ -1544,42 +1832,13 @@ progress.savedAt = new Date().toISOString();
 writeJson(DESK_PROGRESS_KEY, progress);
 }
 
-function startDeskRun(mode) {
-state.running = true;
-state.mode = mode;
-state.stopRequested = false;
-state.deskLead = null;
-state.deskCount = { done: 0, total: 0 };
-render();
-}
-
-function endDeskRun() {
-state.running = false;
-state.mode = null;
-state.deskLead = null;
-state.paused = null;
-resolvePause = null;
-render();
-}
-
-// Asks the agent and returns true to carry on, false to stop.
-async function askToCarryOn(message, carryOnLabel) {
-const answer = await waitForUser(new NeedsYou(message, { carryOnLabel }));
-if (answer === 'stop') { state.stopRequested = true; return false; }
-return true;
-}
-
 async function runSendBack() {
 if (state.running) return;
-startDeskRun('pc');
+beginRun('pc');
 try {
 const settings = loadSettings();
 const progress = loadDeskProgress();
-for (;;) {
-try { addLog(await goToParked()); break; } catch (error) {
-if (!(error instanceof NeedsYou) || !await askToCarryOn(error.message, error.carryOnLabel)) return;
-}
-}
+if (!await outsideLead(goToParked, true)) return;
 const parked = readSearchRows().rows;
 const all = sendBackLeads().filter((l) => !progress.pc[l.key]);
 const todo = all.filter((l) => matchPerson(parked, l));
@@ -1596,13 +1855,14 @@ progress.pc[lead.key] = outcome;
 saveDeskProgress(progress);
 state.deskCount.done++;
 addLog(`${outcome}: ${lead.name}`);
-if (outcome === 'Skipped' && onCallPage() && !await askToCarryOn('Skipped. Park or finish the open call yourself so the next one can start.', 'Done, next one')) break;
+if (outcome === 'Skipped' && onCallPage() && !await askToCarryOn(skippedMessage('the next one can start'), 'Done, next one')) break;
+state.ctx = null;
 }
-if (!state.stopRequested) addLog('All Post Closure send backs are done');
+if (!state.stopRequested && !halted) addLog('All Post Closure send backs are done');
 } catch (error) {
-addLog(`Stopped: ${error && error.message}`);
+logRunError(error);
 } finally {
-endDeskRun();
+endRun();
 }
 }
 
@@ -1612,27 +1872,20 @@ for (;;) {
 const presented = await waitFor(() => state.stopRequested || onPresentPage() || onCallPage(), 180000, 500);
 if (state.stopRequested) return false;
 if (presented) return true;
-if (!await askToCarryOn('No lead has presented for 3 minutes. Check your status is Available.', 'Keep waiting')) return false;
+if (!await askToCarryOn(`No lead has presented for 3 minutes. Your status is ${currentStatus() || 'not readable from the page'}; it needs to be Available.`, 'Keep waiting')) return false;
 }
 }
 
 async function runEmailOnly() {
 if (state.running) return;
-startDeskRun('eo');
+beginRun('eo');
 try {
 const settings = loadSettings();
 const progress = loadDeskProgress();
 const left = () => emailOnlyLeads().filter((l) => !progress.eo[l.key]);
 state.deskCount = { done: 0, total: left().length };
 if (!left().length) { addLog('No Email Only leads left to do'); return; }
-if (!onPresentPage() && !onCallPage()) {
-for (;;) {
-try { addLog(await ensureAvailable()); break; } catch (error) {
-if (!(error instanceof NeedsYou) || !await askToCarryOn(error.message, error.carryOnLabel)) return;
-break;
-}
-}
-}
+if (!onPresentPage() && !onCallPage() && !await outsideLead(ensureAvailable, false)) return;
 while (left().length && !state.stopRequested) {
 state.deskLead = null;
 render();
@@ -1651,6 +1904,7 @@ try {
 await rejectPresented();
 await chooseCallOutcome(OUTCOME_NONE);
 } catch (error) {
+if (halted || error instanceof Halted) return;
 opened = false;
 }
 addLog(`A lead that is not one of your Email Only leads presented; ${opened ? 'rejected so it does not dial, and' : ''} left to you`);
@@ -1669,34 +1923,49 @@ progress.eo[lead.key] = outcome;
 saveDeskProgress(progress);
 state.deskCount.done++;
 addLog(`${outcome}: ${lead.name}`);
-if (outcome === 'Skipped' && onCallPage() && !await askToCarryOn('Skipped. Finish the open lead yourself so the next one can present.', 'Done, wait for the next')) break;
+if (outcome === 'Skipped' && onCallPage() && !await askToCarryOn(skippedMessage('the next one can present'), 'Done, wait for the next')) break;
+state.ctx = null;
 }
-if (!state.stopRequested && !left().length) addLog('All your Email Only leads are done; status is Shift Start');
+// The status is read from the page: a skipped last lead leaves it Available.
+if (!state.stopRequested && !halted && !left().length) addLog(`All your Email Only leads are done; your status is ${currentStatus() || 'not readable from the page'}`);
 } catch (error) {
-addLog(`Stopped: ${error && error.message}`);
+logRunError(error);
 } finally {
-endDeskRun();
+endRun();
 }
 }
 
+// ===================================================================
+// PANEL
+// ===================================================================
+
+// The launcher sits above Konnect Notes' own launcher (left 20px, bottom
+// 20px), and the panel opens above that too.
 const STYLE = `
 :host { all: initial; }
 * { box-sizing: border-box; }
-.panel { position: fixed; bottom: 16px; left: 16px; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); display: flex; flex-direction: column; z-index: 2147483000;
-  --bg: #f2f2f7; --surface: #ffffff; --text: #1c1c1e; --text-2: #334155; --muted: #64748b; --border: #e2e8f0; --accent: #C2CB42; --head: #1c1c1e;
-  --green: #047857; --amber: #b45309; --red: #d70015;
+.panel { position: fixed; bottom: 68px; left: 20px; width: 340px; max-width: calc(100vw - 32px); max-height: calc(100vh - 88px); display: flex; flex-direction: column; z-index: 2147483000;
+  --bg: #f2f2f7; --surface: #ffffff; --text: #1c1c1e; --text-2: #334155; --muted: #5b6577; --border: #e2e8f0; --accent: #C2CB42; --head: #1c1c1e; --ring: #1c1c1e;
+  --green: #047857; --amber: #b45309; --red: #c40013;
   background: var(--bg); color: var(--text); border-radius: 16px; box-shadow: 0 18px 40px rgba(15, 23, 42, .22), 0 2px 6px rgba(15, 23, 42, .08); overflow: hidden;
   font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
-.head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--head); color: #fff; cursor: move; user-select: none; }
+.panel.paused { width: 300px; }
+.head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--head); color: #fff; cursor: move; user-select: none; flex-shrink: 0; }
+.panel.paused .head { background: var(--amber); }
 .head .title { font-weight: 700; font-size: 13.5px; flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
-.head .mini-status { font-weight: 500; color: #cbd5e1; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.icon-btn { background: transparent; border: 0; color: #cbd5e1; width: 28px; height: 28px; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font: inherit; font-size: 16px; }
-.icon-btn:hover { background: rgba(255,255,255,.12); color: #fff; }
+.head .mini-status { font-weight: 600; color: #e2e8f0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.panel.paused .mini-status { color: #fff; }
+.icon-btn { background: transparent; border: 0; color: #e2e8f0; width: 28px; height: 28px; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font: inherit; font-size: 16px; }
+.icon-btn:hover { background: rgba(255,255,255,.16); color: #fff; }
+.link { flex-shrink: 0; padding: 5px 12px; font-size: 11.5px; color: var(--text-2); background: #e9e9ef; border-bottom: 1px solid var(--border); }
+.link.down { color: #78350f; background: #fffbeb; }
 .body { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-.panel.minimised .body, .panel.minimised .foot { display: none; }
-.launcher { position: fixed; bottom: 16px; left: 16px; z-index: 2147483000; align-items: center; gap: 6px; padding: 8px 14px; border: 0; border-radius: 999px; background: #1c1c1e; color: #fff; font: 600 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; box-shadow: 0 6px 16px rgba(15, 23, 42, .25); cursor: pointer; }
+.panel.minimised .body, .panel.minimised .foot, .panel.minimised .link, .panel.paused .foot, .panel.paused .link { display: none; }
+.launcher { position: fixed; bottom: 68px; left: 20px; z-index: 2147483000; align-items: center; gap: 6px; padding: 8px 14px; border: 0; border-radius: 999px; background: #1c1c1e; color: #fff; font: 600 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; box-shadow: 0 6px 16px rgba(15, 23, 42, .25); cursor: pointer; }
 .launcher:hover { background: #2c2c2e; }
-.launcher:focus-visible { outline: 2px solid #C2CB42; outline-offset: 2px; }
+.launcher.needs { background: #b45309; animation: nudge 1.2s ease-in-out infinite; }
+.launcher:focus-visible { outline: 2px solid #fff; outline-offset: 0; box-shadow: 0 0 0 4px #1c1c1e; }
+@keyframes nudge { 50% { box-shadow: 0 0 0 6px rgba(180, 83, 9, .35); } }
 .foot { flex-shrink: 0; padding: 8px 12px; background: var(--surface); display: flex; justify-content: space-between; border-top: 1px solid var(--border); }
 .stop-clear { font: inherit; font-size: 12.5px; font-weight: 600; color: var(--red); background: transparent; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 .stop-clear:hover { background: #fef2f2; }
@@ -1705,11 +1974,12 @@ const STYLE = `
 .card { background: var(--surface); border-radius: 12px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05), 0 1px 1px rgba(0,0,0,.03); }
 .muted { color: var(--muted); }
 .small { font-size: 11.5px; }
-.version { font-size: 11px; color: var(--muted); }
+.version { font-size: 11px; color: var(--text-2); }
 .version.newer { color: var(--red); font-weight: 700; font-size: 12px; }
 .alert { border-radius: 10px; padding: 9px 11px; font-size: 12.5px; }
 .alert.red { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
 .alert.amber { background: #fffbeb; color: #78350f; border: 1px solid #fde68a; }
+.alert .row { margin-top: 8px; }
 .big-count { display: flex; align-items: baseline; gap: 8px; }
 .big-count strong { font-size: 30px; line-height: 1; letter-spacing: -.5px; }
 .btn { font: inherit; font-weight: 600; font-size: 12.5px; border-radius: 999px; padding: 8px 14px; cursor: pointer; border: 1px solid transparent; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
@@ -1717,15 +1987,18 @@ const STYLE = `
 .btn.primary:hover { filter: brightness(.95); }
 .btn.secondary { background: #e5e5ea; color: var(--text); }
 .btn.secondary:hover { background: #d9d9de; }
-.btn.ghost { background: transparent; color: var(--muted); border-color: var(--border); }
-.btn.danger { background: transparent; color: var(--red); border-color: #fecaca; }
+.btn.ghost { background: transparent; color: var(--text-2); border-color: #cbd5e1; }
+.btn.ghost:hover { background: var(--bg); }
+.btn.danger { background: transparent; color: var(--red); border-color: transparent; }
+.btn.danger:hover { background: #fef2f2; }
 .btn.wide { width: 100%; padding: 10px 14px; font-size: 13.5px; }
-.btn:focus-visible, .icon-btn:focus-visible, summary:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.row { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn.small { padding: 5px 11px; font-size: 12px; }
+.btn:focus-visible, .tab:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible, .report:focus-visible, .stop-clear:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.icon-btn:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .tabs { display: flex; gap: 4px; background: #e5e5ea; border-radius: 10px; padding: 3px; }
 .tab { flex: 1; font: inherit; font-size: 12px; font-weight: 600; color: var(--text-2); background: transparent; border: 0; border-radius: 8px; padding: 6px 4px; cursor: pointer; }
 .tab.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
-.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
 .toggle input { width: 16px; height: 16px; accent-color: #1c1c1e; margin: 0; }
 .progress-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--muted); }
@@ -1747,13 +2020,19 @@ const STYLE = `
 .done-steps { background: none; box-shadow: none; border-radius: 0; }
 .done-steps > summary { padding: 2px 0; font-weight: 500; font-size: 12.5px; justify-content: flex-start; cursor: pointer; }
 .steps.inner { margin: 2px 0 4px 26px; }
-.needs-card { border: 1.5px solid #fbbf24; background: #fffbeb; }
-.needs-card h3 { margin: 0 0 4px; font-size: 13px; color: #92400e; }
-.needs-card p { margin: 0 0 10px; color: #78350f; font-size: 12.5px; }
+.needs-card { border: 2px solid #f59e0b; background: #fffbeb; }
+.needs-card .who { font-size: 11.5px; color: #78350f; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.needs-card h3 { margin: 0 0 4px; font-size: 14px; color: #7c2d12; }
+.needs-card p { margin: 0 0 10px; color: #451a03; font-size: 13px; }
+.needs-card .others { margin-top: 8px; justify-content: space-between; }
 details { background: var(--surface); border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
-summary { cursor: pointer; padding: 10px 12px; font-weight: 600; font-size: 12.5px; display: flex; justify-content: space-between; align-items: center; list-style: none; }
+summary { cursor: pointer; padding: 10px 12px; font-weight: 600; font-size: 12.5px; display: flex; justify-content: space-between; align-items: center; list-style: none; border-radius: 12px; }
 summary::-webkit-details-marker { display: none; }
 summary .count { background: var(--bg); color: var(--muted); border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; }
+details.how { background: none; box-shadow: none; margin: 4px 0 10px; }
+details.how > summary { display: inline-block; padding: 0; font-size: 11.5px; font-weight: 600; color: var(--text-2); text-decoration: underline; border-radius: 4px; }
+details.how > div { margin-top: 4px; font-size: 11.5px; color: var(--muted); }
+.fold { padding: 0 12px 10px; }
 .list { padding: 0 12px 8px; max-height: 220px; overflow-y: auto; }
 .list-row { display: flex; align-items: center; gap: 9px; padding: 7px 0; border-top: 1px solid var(--border); }
 .avatar { width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
@@ -1772,10 +2051,10 @@ summary .count { background: var(--bg); color: var(--muted); border-radius: 999p
 .empty strong { display: block; font-size: 14px; margin-bottom: 4px; }
 `;
 
-const CHIP_COLORS = { Done: '#047857', Skipped: '#64748b', Waiting: '#64748b', Working: '#5b6300', 'Needs you': '#b45309' };
+const CHIP_COLORS = { Done: '#047857', Skipped: '#5b6577', Waiting: '#5b6577', Working: '#5b6300', 'Needs you': '#b45309' };
 
 function chip(text) {
-const color = CHIP_COLORS[text] || '#64748b';
+const color = CHIP_COLORS[text] || '#5b6577';
 return `<span class="chip" style="background:${color}1a;color:${color};">${escapeHtml(text)}</span>`;
 }
 
@@ -1787,7 +2066,10 @@ function btn(action, label, kind, extraClass) {
 return `<button type="button" class="btn ${kind || 'secondary'}${extraClass ? ' ' + extraClass : ''}" data-action="${action}">${escapeHtml(label)}</button>`;
 }
 
-let ui = null; // { host, root, panel, minimised }
+// A one line summary with the detail behind a fold.
+function howItWorks(detail) {
+return `<details class="how" data-section="how"${ui.howOpen ? ' open' : ''}><summary>How it works</summary><div>${detail}</div></details>`;
+}
 
 // "3 done, 1 skipped, 2 left" plus the names under each heading.
 function leadSummaryText(leads, progress) {
@@ -1873,7 +2155,7 @@ return `<label class="pick"><input type="radio" name="hereLead" value="${escapeH
 }).join('');
 return `<div class="card">
 <strong>This customer</strong>
-<div class="muted small" style="margin:2px 0 6px;">The lead in view is ticked; tick another to set that one up again instead. Only the ticked lead is copied, and it stops in the new lead.</div>
+<div class="muted small" style="margin:2px 0 6px;">The lead in view is ticked; tick another to set that one up again instead. It stops in the new lead.</div>
 ${rows}
 <div style="margin-top:10px;">${chosen ? btn('here', 'Set up the ticked lead again', 'primary', 'wide') : '<div class="muted small">Tick the lead to set up again.</div>'}</div>
 </div>`;
@@ -1885,38 +2167,47 @@ const tab = (key, label) => `<button type="button" class="tab${view === key ? ' 
 return `<div class="tabs" role="group" aria-label="Choose a run">${tab('re', 'Re setup')}${tab('pc', 'Post Closure')}${tab('eo', 'Email Only')}</div>`;
 }
 
-function deskList(leads, done, describe) {
-return `<div class="list">${leads.map((l) => {
-const status = done[l.key] || 'Waiting';
-const color = CHIP_COLORS[status] || '#64748b';
-return `<div class="list-row"><span class="avatar" style="background:${color}1a;color:${color};">${escapeHtml(initials(l.name))}</span><div class="who"><div><strong>${escapeHtml(l.name)}</strong></div><div class="muted small">${escapeHtml(describe(l))}</div></div>${chip(status)}</div>`;
-}).join('')}</div>`;
+function listRow(name, detail, status) {
+const color = CHIP_COLORS[status] || '#5b6577';
+return `<div class="list-row"><span class="avatar" style="background:${color}1a;color:${color};">${escapeHtml(initials(name))}</span><div class="who"><div><strong>${escapeHtml(name)}</strong></div><div class="muted small">${escapeHtml(detail)}</div></div>${chip(status)}</div>`;
+}
+
+function listFold(title, doneCount, rows) {
+return `<details data-section="list"${ui.listOpen ? ' open' : ''}><summary>${title} <span class="count">${doneCount}/${rows.length}</span></summary><div class="list">${rows.join('')}</div></details>`;
 }
 
 function finishToggle(settings) {
 return `<label class="toggle"><input type="checkbox" data-action="reviewFinish" ${settings.reviewBeforeFinish ? 'checked' : ''}> Stop before Finished so I can check each one</label>`;
 }
 
+const SEND_BACK_HOW = 'Each one is opened from your Parked Calls: CAD or CAH in Post Closure Notes, call outcome Update Outcomes, lead outcome Customer Hub Team &gt; No Opportunity &gt; the Catch All reason, next status Shift Start, then Finished. Ones not in your Parked Calls are left alone. To check your Parked Calls, SLA Manager passes them to its Konnect Live tab.';
+const EMAIL_ONLY_HOW = 'Sets you Available. Each assigned lead that presents is rejected (so it does not dial), set to Update Outcomes, given EO in Call Notes and Customer Hub Team &gt; Ongoing &gt; Email Only Lead, then Finished. You stay Available until the last one, then Shift Start.';
+
 function renderSendBackView(settings) {
 const leads = sendBackLeads();
 const done = loadDeskProgress().pc;
 const left = leads.filter((l) => !done[l.key]).length;
 const checks = postClosureResults().filter((r) => normalise(r.postClosureAction) !== 'send back through').length;
+const needContact = checks ? `${checks} ${checks === 1 ? 'needs contact, so it is' : 'need contact, so they are'} left for you to call.` : '';
 const hubLine = hubStatusLine();
-const linkLine = hubLine ? `<div class="muted small hub-status" role="status" style="margin-top:6px;">${escapeHtml(hubLine)}</div>` : '';
-const checkButton = btn('checkParked', 'Check my Parked Calls on the Lead Checker', leads.length ? 'secondary' : 'primary', 'wide');
+const requestLine = hubLine ? `<div class="muted small hub-status" role="status" style="margin-top:6px;">${escapeHtml(hubLine)}</div>` : '';
+const age = resultsAgeLine();
+const ageLine = age ? `<div class="muted small results-age">${escapeHtml(age)}</div>` : '';
+const checkButton = btn('checkParked', 'Check my Parked Calls', leads.length ? 'secondary' : 'primary', 'wide');
 if (!leads.length) {
-return [`<div class="card empty"><strong>No send backs yet</strong><div class="muted small" style="margin-bottom:10px;">Check your Parked Calls on the Lead Checker from here (SLA Manager passes them to its Konnect Live tab), or send them from SLA Manager. The ones marked "send back through" show here by themselves.${checks ? ` ${checks} checked so far need contact.` : ''}</div>${checkButton}${linkLine}</div>`];
+return [`<div class="card empty"><strong>No send backs yet</strong><div class="muted small">Check your Parked Calls on the Lead Checker. The ones marked "send back through" show here.${needContact ? ' ' + needContact : ''}</div>${ageLine}${howItWorks(SEND_BACK_HOW)}${checkButton}${requestLine}</div>`];
 }
-return [`<div class="card">${linkLine}
+const now = Date.now();
+const rows = leads.map((l) => listRow(l.name, `${l.shorthand.toUpperCase()} · ${l.reason}${l.checkedAt ? ' · checked ' + ageText(l.checkedAt, now) : ''}`, done[l.key] || 'Waiting'));
+return [`<div class="card">
 <div class="big-count"><strong>${left}</strong><span>to send back through</span></div>
-<div class="muted small" style="margin:4px 0 12px;">Each one is opened from your Parked Calls: CAD or CAH in Post Closure Notes, call outcome Update Outcomes, lead outcome Customer Hub Team &gt; No Opportunity &gt; the Catch All reason, next status Shift Start, then Finished. Ones not in your Parked Calls are left alone.</div>
+<div class="muted small" style="margin-top:4px;">Opens each one from your Parked Calls, writes CAD or CAH, sets the outcomes and presses Finished.</div>
+${ageLine}${howItWorks(SEND_BACK_HOW)}
 ${left ? btn('startPc', `Start (${left})`, 'primary', 'wide') : '<div class="muted small">All done.</div>'}
-${checks ? `<div class="muted small" style="margin-top:6px;">${checks} need contact (check), so they are left for you to call.</div>` : ''}
-<div style="margin-top:8px;">${checkButton}</div>
-<div class="row" style="margin-top:8px;">${Object.keys(done).length ? btn('clearDesk', 'Clear progress') : ''}</div>
-</div>`, finishToggle(settings),
-`<details data-section="list"${ui.listOpen ? ' open' : ''}><summary>Send backs <span class="count">${leads.length - left}/${leads.length}</span></summary>${deskList(leads, done, (l) => `${l.shorthand.toUpperCase()} · ${l.reason}`)}</details>`];
+${needContact ? `<div class="muted small" style="margin-top:6px;">${needContact}</div>` : ''}
+<div style="margin-top:8px;">${checkButton}</div>${requestLine}
+${Object.keys(done).length ? `<div class="row" style="margin-top:8px;">${btn('clearPc', 'Clear progress', 'ghost', 'small')}</div>` : ''}
+</div>`, finishToggle(settings), listFold('Send backs', leads.length - left, rows)];
 }
 
 function renderEmailOnlyView(settings) {
@@ -1925,102 +2216,29 @@ const leads = emailOnlyLeads();
 const done = loadDeskProgress().eo;
 const left = leads.filter((l) => !done[l.key]).length;
 if (!leads.length) {
-return [`<div class="card empty"><strong>No Email Only leads assigned today</strong><div class="muted small">Assign your Email Only leads in SLA Manager first; they show here. Only those leads are worked, so anything else that presents is left to you.</div></div>`];
+return [`<div class="card empty"><strong>No Email Only leads assigned today</strong><div class="muted small">Assign your Email Only leads in SLA Manager first; they show here. Anything else that presents is left to you.</div></div>`];
 }
 const chosen = agents.includes(settings.emailOnlyAgent) ? settings.emailOnlyAgent : agents[0];
 const picker = agents.length > 1 ? `<label class="small muted" style="display:block;margin-bottom:8px;">Assigned to <select data-action="eoAgent">${agents.map((a) => `<option${a === chosen ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('')}</select></label>` : '';
+const rows = leads.map((l) => listRow(l.name, l.campaign || 'Email Only', done[l.key] || 'Waiting'));
 return [`<div class="card">
 ${picker}
 <div class="big-count"><strong>${left}</strong><span>Email Only lead${left === 1 ? '' : 's'} to do</span></div>
-<div class="muted small" style="margin:4px 0 12px;">Sets you Available. Each of these that presents is rejected (so it does not dial), set to Update Outcomes, given EO in Call Notes and Customer Hub Team &gt; Ongoing &gt; Email Only Lead, then Finished. You stay Available until the last one, then Shift Start. Any other lead that presents is left to you.</div>
+<div class="muted small" style="margin-top:4px;">Sets you Available and works each of these as it presents. Any other lead is left to you.</div>
+${howItWorks(EMAIL_ONLY_HOW)}
 ${left ? btn('startEo', `Start (${left})`, 'primary', 'wide') : '<div class="muted small">All done.</div>'}
-<div class="row" style="margin-top:8px;">${Object.keys(done).length ? btn('clearDesk', 'Clear progress') : ''}</div>
-</div>`, finishToggle(settings),
-`<details data-section="list"${ui.listOpen ? ' open' : ''}><summary>Email Only leads <span class="count">${leads.length - left}/${leads.length}</span></summary>${deskList(leads, done, (l) => l.campaign || 'Email Only')}</details>`];
+${Object.keys(done).length ? `<div class="row" style="margin-top:8px;">${btn('clearEo', 'Clear progress', 'ghost', 'small')}</div>` : ''}
+</div>`, finishToggle(settings), listFold('Email Only leads', leads.length - left, rows)];
 }
 
-function renderDeskRun() {
-const lead = state.deskLead;
-const count = state.deskCount || { done: 0, total: 0 };
-const percent = count.total ? Math.round((100 * count.done) / count.total) : 0;
-const title = state.mode === 'pc' ? 'Post Closure send back' : 'Email Only';
-const parts = [`<div class="card">
-<div class="progress-top"><span>${title}</span><span>${count.done} of ${count.total} done</span></div>
-<div class="track"><div class="fill" style="width:${percent}%"></div></div>
-${lead ? `<div class="lead-name">${escapeHtml(lead.name)}</div><div class="lead-meta">${escapeHtml(state.mode === 'pc' ? `${lead.shorthand.toUpperCase()} · ${lead.reason}` : (lead.email || ''))}</div>${renderSteps()}` : `<div class="lead-name">${state.mode === 'eo' ? 'Waiting for your next Email Only lead' : 'Getting ready'}</div>`}
-</div>`];
-if (state.paused) {
-parts.push(`<div class="card needs-card" role="alert">
-<h3>Needs you</h3><p>${escapeHtml(state.paused.message)}</p>
-<div class="row">${btn('carry', state.paused.carryOnLabel, 'primary')}${lead ? btn('retry', 'Try again') + btn('skip', 'Skip') : ''}${btn('stop', 'Stop', 'danger')}</div>
-</div>`);
-} else {
-parts.push(`<div class="row">${btn('stop', 'Stop after this step', 'ghost')}</div>`);
-}
-return parts;
-}
-
-function render() {
-if (!ui) return;
-const source = loadResults();
-const leads = source ? resetLeadsFrom(source.results) : [];
-const progress = loadProgress();
-const settings = loadSettings();
-const savedAt = source ? new Date(source.savedAt).toTimeString().slice(0, 5) : '';
-const onDesktop = /agent-desktop/i.test(location.pathname || '');
+function renderReSetupView(settings, source, leads, progress) {
+const parts = [];
 const doneCount = leads.filter((l) => progress.byActivity[l.activityId]).length;
 const remaining = leads.length - doneCount;
-if (!versionState) versionState = startVersionWatch('Lead-Reset.js', () => render());
-
-const parts = [];
-const versionText = versionLineText(versionState);
-if (versionText) parts.push(`<div class="version${versionState.newer ? ' newer' : ''}" role="status">${escapeHtml(versionText)}</div>`);
-if (selfTestFailures.length) parts.push(`<div class="alert red" role="alert"><strong>Self-test failed.</strong> Please send this on: ${escapeHtml(selfTestFailures[0])}</div>`);
-if (!onDesktop) parts.push(`<div class="alert amber">Open this on the agent desktop to set leads up again.</div>`);
-
-const deskRun = state.running && (state.mode === 'pc' || state.mode === 'eo');
-if (!state.running) parts.push(renderTabs());
-if (deskRun) parts.push(...renderDeskRun());
-else if (!state.running && ui.view === 'pc') parts.push(...renderSendBackView(settings));
-else if (!state.running && ui.view === 'eo') parts.push(...renderEmailOnlyView(settings));
-else {
-if (state.running && state.mode === 'here') {
-const lead = state.hereLead;
-parts.push(`<div class="card">
-<div class="progress-top"><span>This customer</span><span>Stops in the new lead</span></div>
-<div class="lead-name">${escapeHtml(lead.name)}</div><div class="lead-meta">${escapeHtml(lead.campaign || '')}</div>
-${renderSteps()}
-</div>`);
-if (state.paused) {
-parts.push(`<div class="card needs-card" role="alert">
-<h3>Needs you</h3><p>${escapeHtml(state.paused.message)}</p>
-<div class="row">${btn('carry', state.paused.carryOnLabel, 'primary')}${btn('retry', 'Try again')}${btn('stop', 'Stop', 'danger')}</div>
-</div>`);
-} else {
-parts.push(`<div class="row">${btn('stop', 'Stop after this step', 'ghost')}</div>`);
-}
-} else if (state.running) {
-const lead = leads[state.currentIndex];
-const position = leads.slice(0, state.currentIndex + 1).length;
-const percent = leads.length ? Math.round((100 * doneCount) / leads.length) : 0;
-parts.push(`<div class="card">
-<div class="progress-top"><span>Lead ${position} of ${leads.length}</span><span>${doneCount} done</span></div>
-<div class="track"><div class="fill" style="width:${percent}%"></div></div>
-${lead ? `<div class="lead-name">${escapeHtml(lead.name)}</div><div class="lead-meta">${escapeHtml([lead.campaign || 'Campaign read from the closed lead', lead.reg].filter(Boolean).join(' · '))}</div>` : '<div class="lead-name">Getting ready</div>'}
-${lead ? renderSteps() : ''}
-</div>`);
-if (state.paused) {
-parts.push(`<div class="card needs-card" role="alert">
-<h3>Needs you</h3><p>${escapeHtml(state.paused.message)}</p>
-<div class="row">${btn('carry', state.paused.carryOnLabel, 'primary')}${btn('retry', 'Try again')}${btn('skip', 'Skip lead')}${btn('stop', 'Stop', 'danger')}</div>
-</div>`);
-} else {
-parts.push(`<div class="row">${btn('stop', 'Stop after this step', 'ghost')}</div>`);
-}
-} else if (onCallPage() && liveActivities().length) {
-parts.push(renderHereCard());
-}
-if (!state.running && !source) {
+const pasted = !!readJson(PASTED_RESULTS_KEY);
+const tidy = `${doneCount ? btn('clearRe', 'Clear progress', 'ghost', 'small') : ''}${pasted ? btn('clearPasted', 'Remove pasted results', 'ghost', 'small') : ''}`;
+if (onCallPage() && liveActivities().length) parts.push(renderHereCard());
+if (!source) {
 // Nothing from the National check: the This customer card (if any) is enough.
 if (!onCallPage()) parts.push(`<div class="card empty">
 <strong>No National results yet</strong>
@@ -2028,50 +2246,237 @@ if (!onCallPage()) parts.push(`<div class="card empty">
 <div class="row" style="justify-content:center;margin-top:10px;">${btn('paste', 'Paste results', 'primary')}</div>
 </div>`);
 else parts.push(`<div class="row">${btn('paste', 'Paste National results')}</div>`);
-} else if (state.running) {
-// Running cards are above.
 } else if (leads.length === 0) {
 parts.push(`<div class="card empty">
-<strong>${source ? 'No leads need setting up again' : 'No National results yet'}</strong>
-<div class="muted small">${source ? 'The last National check found nothing to set up again.' : 'Import the National results in SLA Manager, or copy them from the Lead Checker and paste them here.'}</div>
-<div class="row" style="justify-content:center;margin-top:10px;">${btn('paste', 'Paste results', source ? 'secondary' : 'primary')}</div>
+<strong>No leads need setting up again</strong>
+<div class="muted small">The last National check found nothing to set up again.</div>
+<div class="row" style="justify-content:center;margin-top:10px;">${btn('paste', 'Paste results')}${tidy}</div>
 </div>`);
 } else if (remaining === 0) {
 parts.push(`<div class="card">
 <strong>All done</strong>
-<div class="tiles">${[['Done', 'Done'], ['Skipped', 'Skipped']].map(([key, label]) => `<div class="tile"><strong>${leads.filter((l) => progress.byActivity[l.activityId] === key).length}</strong><span>${label}</span></div>`).join('')}<div class="tile"><strong>0</strong><span>Left</span></div></div>
-<div class="row">${btn('copySummary', 'Copy summary', 'primary')}${btn('clear', 'Clear')}</div>
+<div class="tiles">${['Done', 'Skipped'].map((key) => `<div class="tile"><strong>${leads.filter((l) => progress.byActivity[l.activityId] === key).length}</strong><span>${key}</span></div>`).join('')}<div class="tile"><strong>0</strong><span>Left</span></div></div>
+<div class="row">${btn('copySummary', 'Copy summary', 'primary')}${tidy}</div>
 </div>`);
 } else {
+const savedAt = new Date(source.savedAt).toTimeString().slice(0, 5);
 parts.push(`<div class="card">
 <div class="big-count"><strong>${remaining}</strong><span>lead${remaining === 1 ? '' : 's'} to set up again</span></div>
 <div class="muted small" style="margin:4px 0 12px;">From the National check at ${escapeHtml(savedAt)}${doneCount ? ` &middot; ${doneCount} already done` : ''}</div>
 ${btn('start', doneCount ? `Continue (${remaining} left)` : 'Start', 'primary', 'wide')}
-<div class="row" style="margin-top:8px;">${btn('paste', 'Paste results')}${doneCount || readJson(PASTED_RESULTS_KEY) ? btn('clear', 'Clear') : ''}${doneCount ? btn('copySummary', 'Copy summary') : ''}</div>
+<div class="row" style="margin-top:8px;">${btn('paste', 'Paste results', 'ghost', 'small')}${doneCount ? btn('copySummary', 'Copy summary', 'ghost', 'small') : ''}${tidy}</div>
 </div>`);
 }
-
-if (leads.length && state.mode !== 'here') parts.push(`<label class="toggle"><input type="checkbox" data-action="review" ${settings.reviewBeforePark ? 'checked' : ''}> Stop before parking so I can check each lead</label>`);
-
 if (leads.length) {
-const open = ui.listOpen ? ' open' : '';
-parts.push(`<details data-section="list"${open}><summary>Leads <span class="count">${doneCount}/${leads.length}</span></summary><div class="list">${leads.map((l, i) => {
-const status = leadStatus(l, i, progress);
-const color = CHIP_COLORS[status] || '#64748b';
-return `<div class="list-row"><span class="avatar" style="background:${color}1a;color:${color};">${escapeHtml(initials(l.name))}</span><div class="who"><div><strong>${escapeHtml(l.name)}</strong></div><div class="muted small">${escapeHtml(l.campaign || 'Campaign read from the closed lead')}</div></div>${chip(status)}</div>`;
-}).join('')}</div></details>`);
+parts.push(`<label class="toggle"><input type="checkbox" data-action="review" ${settings.reviewBeforePark ? 'checked' : ''}> Stop before parking so I can check each lead</label>`);
+parts.push(listFold('Leads', doneCount, leads.map((l, i) => listRow(l.name, l.campaign || 'Campaign read from the closed lead', leadStatus(l, i, progress)))));
 }
-}
-if (state.log.length) {
-const open = ui.logOpen ? ' open' : '';
-parts.push(`<details data-section="log"${open}><summary>Activity <span class="count">${state.log.length}</span></summary><div class="log">${state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div></details>`);
+return parts;
 }
 
-ui.root.querySelector('.body').innerHTML = parts.join('');
-const status = state.running
-? (state.paused ? 'Needs you' : state.mode === 'here' ? 'This customer' : state.deskCount && (state.mode === 'pc' || state.mode === 'eo') ? `${state.deskCount.done}/${state.deskCount.total} done` : `${doneCount}/${leads.length} done`)
-: (leads.length ? `${remaining} to do` : '');
+// What the running card shows for the run in hand.
+function runInfo(leads, progress) {
+if (state.mode === 'here') {
+const lead = state.hereLead;
+return { left: 'This customer', right: 'Stops in the new lead', percent: null, name: lead.name, meta: lead.campaign || '', steps: true };
+}
+if (state.mode === 'pc' || state.mode === 'eo') {
+const lead = state.deskLead;
+const count = state.deskCount || { done: 0, total: 0 };
+return {
+left: state.mode === 'pc' ? 'Post Closure send back' : 'Email Only',
+right: `${count.done} of ${count.total} done`,
+percent: count.total ? Math.round((100 * count.done) / count.total) : 0,
+name: lead ? lead.name : (state.mode === 'eo' ? 'Waiting for your next Email Only lead' : 'Getting ready'),
+meta: lead ? (state.mode === 'pc' ? `${lead.shorthand.toUpperCase()} · ${lead.reason}` : (lead.email || '')) : '',
+steps: !!lead
+};
+}
+const lead = leads[state.currentIndex];
+const doneCount = leads.filter((l) => progress.byActivity[l.activityId]).length;
+return {
+left: `Lead ${state.currentIndex + 1} of ${leads.length}`,
+right: `${doneCount} done`,
+percent: leads.length ? Math.round((100 * doneCount) / leads.length) : 0,
+name: lead ? lead.name : 'Getting ready',
+meta: lead ? [lead.campaign || 'Campaign read from the closed lead', lead.reg].filter(Boolean).join(' · ') : '',
+steps: !!lead
+};
+}
+
+function activityFold() {
+if (!state.log.length) return '';
+return `<details data-section="log"${ui.logOpen ? ' open' : ''}><summary>Activity <span class="count">${state.log.length}</span></summary><div class="log">${state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div></details>`;
+}
+
+// Paused: only the message and its buttons, so the panel covers as little
+// as it can of the page the agent is asked to look at. The main answer is
+// the one wide button; the rest are small and apart from it.
+function renderPaused(info) {
+const paused = state.paused;
+const step = paused.inLead && state.steps ? state.steps[state.stepIndex] : null;
+const who = [info.steps ? info.name : '', step ? step.label : ''].filter(Boolean).join(' · ');
+const others = [];
+if (paused.inLead && !paused.review) others.push(btn('retry', 'Try again', 'ghost', 'small'));
+if (paused.inLead && state.mode !== 'here') others.push(btn('skip', 'Skip lead', 'ghost', 'small'));
+return [`<div class="card needs-card">
+<div role="alert">${who ? `<div class="who">${escapeHtml(who)}</div>` : ''}<h3>Needs you</h3><p>${escapeHtml(paused.message)}</p></div>
+${paused.noCarry ? '' : btn('carry', paused.carryOnLabel, 'primary', 'wide')}
+<div class="row others"><span class="row">${others.join('')}</span>${btn('stop', 'Stop', 'danger', 'small')}</div>
+</div>`,
+`<details data-section="more"${ui.moreOpen ? ' open' : ''}><summary>Steps and activity</summary><div class="fold">${info.steps ? renderSteps() : ''}</div><div class="log">${state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div></details>`];
+}
+
+function renderRunning(info) {
+return [`<div class="card">
+<div class="progress-top"><span>${escapeHtml(info.left)}</span><span>${escapeHtml(info.right)}</span></div>
+${info.percent == null ? '' : `<div class="track"><div class="fill" style="width:${info.percent}%"></div></div>`}
+<div class="lead-name">${escapeHtml(info.name)}</div>${info.meta ? `<div class="lead-meta">${escapeHtml(info.meta)}</div>` : ''}
+${info.steps ? renderSteps() : ''}
+</div>`, `<div class="row">${btn('stop', 'Stop after this step', 'ghost')}</div>`, activityFold()];
+}
+
+function focusKey(el) {
+const action = el && el.getAttribute && el.getAttribute('data-action');
+if (!action) return null;
+return { action, view: el.getAttribute('data-view') || '', value: el.name === 'hereLead' ? el.value : '', label: action === 'carry' ? el.textContent : '' };
+}
+
+// The link status line: its own strip, so SLA Manager's regular updates
+// change one line of text and not the whole panel.
+function renderLinkLine() {
+if (!ui) return;
+const link = readJson(LIVE_LINK_KEY);
+const text = linkLineText(link, Date.now());
+if (text === ui.linkText) return;
+ui.linkText = text;
+const line = ui.root.querySelector('.link');
+line.textContent = text;
+line.classList.toggle('down', text === HUB_NOT_RUNNING || !link || link.state === 'none');
+}
+
+function render() {
+if (!ui) return;
+// A redraw between mouse down and mouse up would swap the button under
+// the pointer and lose the click, so it waits for the mouse to come up.
+if (ui.pointerDownAt && Date.now() - ui.pointerDownAt < 3000) { ui.renderPending = true; return; }
+ui.renderPending = false;
+const source = loadResults();
+const leads = source ? resetLeadsFrom(source.results) : [];
+const progress = loadProgress();
+const settings = loadSettings();
+const onDesktop = /agent-desktop/i.test(location.pathname || '');
+if (!versionState) versionState = startVersionWatch('Lead-Reset.js', () => render());
+
+const parts = [];
+const info = state.running ? runInfo(leads, progress) : null;
+if (state.paused) parts.push(...renderPaused(info));
+else {
+const versionText = versionLineText(versionState);
+if (versionText) parts.push(`<div class="version${versionState.newer ? ' newer' : ''}">${escapeHtml(versionText)}</div>`);
+if (selfTestFailures.length) parts.push(`<div class="alert red" role="alert"><strong>Self-test failed.</strong> Please send this on: ${escapeHtml(selfTestFailures[0])}</div>`);
+if (!onDesktop) parts.push(`<div class="alert amber">Open this on the agent desktop: Re setup, Post Closure and Email Only only work there.</div>`);
+if (state.running) parts.push(...renderRunning(info));
+else {
+if (state.notice) {
+parts.push(`<div class="alert amber notice" role="alert">${escapeHtml(state.notice.text)}<div class="row">${state.notice.shiftStart ? btn('shiftStart', 'Set Shift Start', 'primary', 'small') : ''}${btn('dismissNotice', 'OK', 'ghost', 'small')}</div></div>`);
+}
+parts.push(renderTabs());
+if (ui.view === 'pc') parts.push(...renderSendBackView(settings));
+else if (ui.view === 'eo') parts.push(...renderEmailOnlyView(settings));
+else parts.push(...renderReSetupView(settings, source, leads, progress));
+parts.push(activityFold());
+}
+}
+
+const html = parts.join('');
+if (html !== ui.html) {
+const body = ui.root.querySelector('.body');
+const active = ui.root.activeElement;
+const key = active && body.contains(active) ? focusKey(active) : null;
+const scroll = body.scrollTop;
+body.innerHTML = html;
+ui.html = html;
+body.scrollTop = scroll;
+// Keyboard focus stays on the same control when it is still there. A
+// carry on button with another label is another question, so it does
+// not get the focus by itself.
+if (key) {
+const again = Array.from(body.querySelectorAll(`[data-action="${key.action}"]`)).find((el) => {
+const k = focusKey(el);
+return k.view === key.view && k.value === key.value && k.label === key.label;
+});
+if (again) again.focus({ preventScroll: true });
+}
+}
+
+const doneCount = leads.filter((l) => progress.byActivity[l.activityId]).length;
+const status = state.paused ? 'Needs you'
+: state.running ? (state.mode === 'here' ? 'This customer' : state.mode === 'batch' ? `${doneCount}/${leads.length} done` : `${state.deskCount.done}/${state.deskCount.total} done`)
+: (leads.length ? `${leads.length - doneCount} to do` : '');
 ui.root.querySelector('.mini-status').textContent = ui.minimised && status ? status : '';
+ui.panel.classList.toggle('paused', !!state.paused);
+ui.launcher.classList.toggle('needs', !!state.paused);
+ui.launcher.textContent = state.paused ? '! Needs you' : state.running ? '↻ Re setup: running' : '↻ Re setup';
+renderLinkLine();
+keepClear();
+}
+
+// ===================================================================
+// WHERE THE PANEL SITS
+// ===================================================================
+
+const POSITION_KEY = '_leadResetPanelPos';
+// Tried in turn until the panel covers none of Konnect's own Finished and
+// Park It buttons, nor the Konnect Notes launcher.
+const CORNERS = [{ left: 20, bottom: 68 }, { right: 20, bottom: 20 }, { right: 20, top: 20 }, { left: 20, top: 20 }];
+
+function loadPosition() {
+try {
+const p = JSON.parse(sessionStorage.getItem(POSITION_KEY) || 'null');
+return p && Number.isFinite(p.left) && Number.isFinite(p.top) ? p : null;
+} catch (error) { return null; }
+}
+
+function placeAt(spot) {
+['left', 'right', 'top', 'bottom'].forEach((side) => { ui.panel.style[side] = spot[side] == null ? 'auto' : `${spot[side]}px`; });
+}
+
+function overlaps(a, b) {
+return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
+
+// A place the agent dragged the panel to is kept for the session.
+// Otherwise the panel stays in its corner unless it would cover one of
+// Konnect's buttons there, and then moves to the next corner that is clear.
+function keepClear() {
+if (!ui || ui.panel.style.display === 'none' || (ui.pointerDownAt && Date.now() - ui.pointerDownAt < 3000)) return;
+if (ui.position) {
+placeAt({ left: Math.max(0, Math.min(window.innerWidth - 80, ui.position.left)), top: Math.max(0, Math.min(window.innerHeight - 40, ui.position.top)) });
+return;
+}
+const avoid = Array.from(document.querySelectorAll('button[ng-click^="completeCall("], #kn-inbound-launcher')).filter(isVisible).map((el) => el.getBoundingClientRect());
+for (let i = 0; i < CORNERS.length; i++) {
+const corner = (ui.corner + i) % CORNERS.length;
+placeAt(CORNERS[corner]);
+const rect = ui.panel.getBoundingClientRect();
+if (!avoid.some((a) => overlaps(rect, a))) { ui.corner = corner; return; }
+}
+placeAt(CORNERS[ui.corner]);
+}
+
+// Brings the panel back in full: from the launcher, or from minimised.
+function showPanel() {
+if (!ui) return;
+ui.launcher.style.display = 'none';
+ui.panel.style.display = '';
+if (ui.minimised) {
+ui.minimised = false;
+ui.panel.classList.remove('minimised');
+const toggle = ui.root.querySelector('[data-action="minimise"]');
+toggle.textContent = '–';
+toggle.setAttribute('aria-label', 'Minimise');
+}
 }
 
 async function pasteResults() {
@@ -2086,21 +2491,98 @@ writeJson(PASTED_RESULTS_KEY, { savedAt: new Date().toISOString(), results: pars
 addLog(`Pasted ${resetLeadsFrom(parsed.results).length} Re setup leads`);
 }
 
-// Same as SLA Manager's Clear & Stop: ends any run after its current step,
-// wipes everything this tool keeps and removes the panel, so the next
-// click of the bookmarklet starts from scratch.
-function clearAndStop() {
-state.stopRequested = true;
-if (resolvePause) answerPause('stop');
-try { [PROGRESS_KEY, PASTED_RESULTS_KEY, DESK_PROGRESS_KEY, DESK_RESULTS_KEY, LIVE_REQUEST_KEY].forEach((key) => localStorage.removeItem(key)); } catch (error) { /* ignore */ }
+// ===================================================================
+// STOPPING AND CLEARING
+// ===================================================================
+
+// Customer data is kept for one shift: anything of this tool's own that is
+// older goes when the tool loads.
+function purgeExpired() {
+try {
+[PROGRESS_KEY, PASTED_RESULTS_KEY, DESK_PROGRESS_KEY, DESK_RESULTS_KEY].forEach((key) => {
+const saved = readJson(key);
+if (saved && !isFresh(saved.savedAt)) localStorage.removeItem(key);
+});
+// A withdrawn request stays its ten minutes, so SLA Manager sees it.
+const request = readJson(LIVE_REQUEST_KEY);
+if (request && !(Date.now() - new Date(request.at).getTime() <= REQUEST_MAX_AGE_MS)) localStorage.removeItem(LIVE_REQUEST_KEY);
+} catch (error) { /* storage blocked: nothing to purge */ }
+}
+
+// Takes this copy off the page: its panel, timers and listeners. What it
+// keeps in storage stays.
+function unload() {
 if (versionState && versionState.timer) clearInterval(versionState.timer);
+clearTimeout(hubTimer);
 if (ui) {
 clearInterval(ui.pageTimer);
+clearInterval(ui.linkTimer);
+if (typeof window.removeEventListener === 'function') {
+window.removeEventListener('storage', ui.onStorage);
+window.removeEventListener('mouseup', ui.onMouseUp, true);
+}
 ui.host.remove();
 ui = null;
 }
+if (window[INSTANCE_KEY] === instance) window[INSTANCE_KEY] = null;
+}
+
+// Shown in place of the panel after Clear & Stop ends a run part way: what
+// was left on the page, and Shift Start on offer when still Available.
+const NOTICE_ID = '_leadResetNotice';
+function showStoppedNotice(text, offerShiftStart) {
+const old = document.getElementById(NOTICE_ID);
+if (old) old.remove();
+const host = document.createElement('div');
+host.id = NOTICE_ID;
+const root = host.attachShadow({ mode: 'open' });
+root.innerHTML = `<style>
+:host { all: initial; }
+.note { position: fixed; left: 20px; bottom: 68px; width: 300px; max-width: calc(100vw - 40px); z-index: 2147483000; background: #fffbeb; color: #451a03; border: 2px solid #f59e0b; border-radius: 12px; padding: 12px; box-shadow: 0 12px 30px rgba(15, 23, 42, .25); font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+p { margin: 0 0 10px; }
+button { font: inherit; font-weight: 600; font-size: 12.5px; border-radius: 999px; padding: 6px 12px; cursor: pointer; border: 1px solid #cbd5e1; background: #fff; color: #1c1c1e; margin-right: 6px; }
+button.main { background: #C2CB42; border-color: #C2CB42; }
+button:focus-visible { outline: 2px solid #1c1c1e; outline-offset: 2px; }
+</style><div class="note" role="alert"><p></p>${offerShiftStart ? '<button type="button" class="main" data-act="shift">Set Shift Start</button>' : ''}<button type="button" data-act="close">OK</button></div>`;
+const message = root.querySelector('p');
+message.textContent = text;
+const timer = setTimeout(() => host.remove(), offerShiftStart ? 120000 : 20000);
+root.addEventListener('click', (event) => {
+const act = event.target.getAttribute && event.target.getAttribute('data-act');
+if (act === 'close') { clearTimeout(timer); host.remove(); }
+if (act === 'shift') {
+ensureShiftStart().then((done) => { message.textContent = `${done}.`; event.target.remove(); }, (error) => { message.textContent = error.message; });
+}
+});
+document.body.appendChild(host);
+}
+
+// Same as SLA Manager's Clear & Stop: ends any run at once, wipes what
+// this tool keeps (and nothing of SLA Manager's), withdraws its request
+// and removes the panel, so the next click of the bookmark starts from
+// scratch.
+function clearAndStop() {
+const wasRunning = state.running;
+const left = wasRunning ? leftAsIs(state.ctx) : '';
+const available = wasRunning && isAvailable();
+halted = true;
+state.stopRequested = true;
+if (resolvePause) answerPause('stop');
+try { [PROGRESS_KEY, PASTED_RESULTS_KEY, DESK_PROGRESS_KEY, DESK_RESULTS_KEY].forEach((key) => localStorage.removeItem(key)); } catch (error) { /* ignore */ }
+withdrawRequest();
+unload();
 window._leadResetState = null;
-console.info('Lead Re setup stopped and cleared. Click the bookmarklet again to start fresh.');
+if (left || available) {
+showStoppedNotice(`Lead Re setup stopped and cleared.${left ? ' ' + left : ''}${available ? ' You are still Available, so leads can present.' : ''}`, available);
+}
+console.info('Lead Re setup stopped and cleared. Click the bookmark again to start fresh.');
+}
+
+function clearDeskProgress(run) {
+const progress = loadDeskProgress();
+progress[run] = {};
+saveDeskProgress(progress);
+render();
 }
 
 function onPanelClick(event) {
@@ -2123,12 +2605,7 @@ ui.panel.style.display = 'none';
 ui.launcher.style.display = 'inline-flex';
 return;
 }
-if (action === 'reopen') {
-ui.launcher.style.display = 'none';
-ui.panel.style.display = '';
-render();
-return;
-}
+if (action === 'reopen') { showPanel(); render(); return; }
 if (action === 'minimise') {
 ui.minimised = !ui.minimised;
 ui.panel.classList.toggle('minimised', ui.minimised);
@@ -2137,28 +2614,31 @@ target.setAttribute('aria-label', ui.minimised ? 'Expand' : 'Minimise');
 render();
 return;
 }
-if (action === 'review') {
-writeJson(SETTINGS_KEY, { ...(readJson(SETTINGS_KEY) || {}), reviewBeforePark: target.checked });
-if (state.ctx) state.ctx.settings = loadSettings();
-return;
-}
-if (action === 'start') { runAll(); return; }
-if (action === 'view') { ui.view = target.getAttribute('data-view'); ui.listOpen = false; render(); return; }
-if (action === 'startPc') { runSendBack(); return; }
-if (action === 'checkParked') { if (!state.running) checkParkedOnLive(); return; }
-if (action === 'startEo') { runEmailOnly(); return; }
-if (action === 'reviewFinish') {
-writeJson(SETTINGS_KEY, { ...(readJson(SETTINGS_KEY) || {}), reviewBeforeFinish: target.checked });
+if (action === 'review' || action === 'reviewFinish') {
+writeJson(SETTINGS_KEY, { ...(readJson(SETTINGS_KEY) || {}), [action === 'review' ? 'reviewBeforePark' : 'reviewBeforeFinish']: target.checked });
 if (state.ctx) state.ctx.settings = loadSettings();
 return;
 }
 if (action === 'eoAgent') return;
-if (action === 'clearDesk') {
-try { localStorage.removeItem(DESK_PROGRESS_KEY); } catch (error) { /* ignore */ }
-render();
+if (action === 'view') { ui.view = target.getAttribute('data-view'); ui.listOpen = false; ui.howOpen = false; render(); return; }
+if (action === 'pickHere') { ui.herePicked = target.value; render(); return; }
+if (action === 'dismissNotice') { state.notice = null; render(); return; }
+if (action === 'shiftStart') {
+ensureShiftStart().then((done) => { state.notice = null; addLog(done); }, (error) => { state.notice = { text: error.message, shiftStart: isAvailable() }; render(); });
 return;
 }
-if (action === 'pickHere') { ui.herePicked = target.value; render(); return; }
+if (action === 'stop') {
+if (state.paused) answerPause('stop');
+else if (state.running && !state.stopRequested) { state.stopRequested = true; addLog('Stopping after this step'); }
+return;
+}
+if (action === 'carry' || action === 'retry' || action === 'skip') { answerPause(action); return; }
+// Everything below starts something, so it waits for any run to end.
+if (state.running || state.checking) return;
+if (action === 'start') { runAll(); return; }
+if (action === 'startPc') { runSendBack(); return; }
+if (action === 'startEo') { runEmailOnly(); return; }
+if (action === 'checkParked') { checkParkedOnLive(); return; }
 if (action === 'here') {
 const chosen = hereChoice();
 if (!chosen) { addLog('Tick the lead to set up again first'); return; }
@@ -2167,47 +2647,40 @@ return;
 }
 if (action === 'paste') { pasteResults(); return; }
 if (action === 'copySummary') {
-const source = loadResults();
-const text = summaryForClipboard(source ? resetLeadsFrom(source.results) : [], loadProgress());
-navigator.clipboard.writeText(text).then(() => addLog('Summary copied'), () => addLog('Could not copy the summary'));
+navigator.clipboard.writeText(summaryForClipboard(leadsToDo(), loadProgress())).then(() => addLog('Summary copied'), () => addLog('Could not copy the summary'));
 return;
 }
-if (action === 'clear') {
-// Wipes everything this tool keeps, so the next start is from scratch.
-try { localStorage.removeItem(PROGRESS_KEY); localStorage.removeItem(PASTED_RESULTS_KEY); } catch (error) { /* ignore */ }
-state.log = [];
-render();
-return;
-}
-if (action === 'stop' && !state.paused) { state.stopRequested = true; addLog('Stopping after this step'); return; }
-answerPause(action);
+if (action === 'clearRe') { try { localStorage.removeItem(PROGRESS_KEY); } catch (error) { /* ignore */ } render(); return; }
+if (action === 'clearPasted') { try { localStorage.removeItem(PASTED_RESULTS_KEY); } catch (error) { /* ignore */ } render(); return; }
+if (action === 'clearPc') { clearDeskProgress('pc'); return; }
+if (action === 'clearEo') { clearDeskProgress('eo'); }
 }
 
 // The panel lives in its own shadow root: Konnect's styles cannot reach
 // it, and the steps' page searches cannot mistake its buttons for Konnect's.
 function buildPanel() {
-const existing = document.getElementById(PANEL_ID);
-if (existing && ui) { ui.panel.classList.remove('minimised'); ui.minimised = false; ui.panel.style.display = ''; ui.launcher.style.display = 'none'; render(); return; }
-if (existing) existing.remove();
-if (!document.body || typeof document.body.appendChild !== 'function') return;
+const stale = document.getElementById(PANEL_ID);
+if (stale) stale.remove();
+if (!document.body || typeof document.body.appendChild !== 'function') return false;
 const host = document.createElement('div');
 host.id = PANEL_ID;
-if (typeof host.attachShadow !== 'function') return;
+if (typeof host.attachShadow !== 'function') return false;
 const root = host.attachShadow({ mode: 'open' });
 root.innerHTML = `<style>${STYLE}</style>
 <div class="panel" role="dialog" aria-label="Lead Re setup">
-<div class="head"><div class="title"><span aria-hidden="true">&#8635;</span><span>Lead Re setup</span><span class="mini-status"></span></div>
+<div class="head"><div class="title"><span aria-hidden="true">&#8635;</span><span>Lead Re setup</span><span class="mini-status" role="status"></span></div>
 <button type="button" class="icon-btn" data-action="minimise" aria-label="Minimise">&ndash;</button>
 <button type="button" class="icon-btn" data-action="close" aria-label="Hide" title="Hide (the Re setup button brings it back)">&times;</button></div>
-<div class="body" aria-live="polite"></div>
-<div class="foot"><button type="button" class="report" data-action="report">Report a problem</button><button type="button" class="stop-clear" data-action="clearStop">Clear &amp; Stop</button></div>
+<div class="link" role="status"></div>
+<div class="body"></div>
+<div class="foot"><button type="button" class="report" data-action="report">Report a problem</button><button type="button" class="stop-clear" data-action="clearStop" title="Stops any run, clears this tool's data and closes it">Clear &amp; Stop</button></div>
 </div>
 <button type="button" class="launcher" data-action="reopen" style="display:none;" title="Show Lead Re setup">&#8635; Re setup</button>`;
 document.body.appendChild(host);
 const panel = root.querySelector('.panel');
 const head = root.querySelector('.head');
-if (!panel || !head) return;
-ui = { host, root, panel, launcher: root.querySelector('.launcher'), minimised: false, listOpen: false, logOpen: false, stepsOpen: false };
+if (!panel || !head) return false;
+ui = { host, root, panel, launcher: root.querySelector('.launcher'), minimised: false, listOpen: false, logOpen: false, stepsOpen: false, moreOpen: false, howOpen: false, corner: 0, position: loadPosition(), html: null, linkText: null };
 root.addEventListener('click', onPanelClick);
 root.addEventListener('change', (event) => {
 if (event.target.getAttribute && event.target.getAttribute('data-action') === 'eoAgent') {
@@ -2217,45 +2690,82 @@ render();
 });
 root.addEventListener('toggle', (event) => {
 const section = event.target.getAttribute && event.target.getAttribute('data-section');
-if (section === 'list') ui.listOpen = event.target.open;
-if (section === 'log') ui.logOpen = event.target.open;
-if (section === 'steps') ui.stepsOpen = event.target.open;
+const key = { list: 'listOpen', log: 'logOpen', steps: 'stepsOpen', more: 'moreOpen', how: 'howOpen' }[section];
+if (key) ui[key] = event.target.open;
 }, true);
-// Redraw when SLA Manager, in another tab on this site, saves new results
-// or Email Only assignments, so the lists update without a refresh.
-// One listener per page; it calls whichever copy of the tool loaded last.
-window.__leadResetOnStorage = (key) => {
-if (ui && !state.running && [LEAD_CHECKER_RESULTS_KEY, EMAIL_ONLY_ASSIGNED_KEY, NATIONAL_RESULTS_KEY, DESK_RESULTS_KEY, LIVE_STATUS_KEY].includes(key)) render();
+root.addEventListener('mousedown', () => { ui.pointerDownAt = Date.now(); });
+ui.onMouseUp = () => {
+if (!ui) return;
+ui.pointerDownAt = 0;
+// After the click that this mouse up belongs to has been handled.
+if (ui.renderPending) setTimeout(render, 0);
 };
-if (typeof window.addEventListener === 'function' && !window.__leadResetStorageWatch) {
-window.__leadResetStorageWatch = true;
-window.addEventListener('storage', (event) => { if (window.__leadResetOnStorage) window.__leadResetOnStorage(event.key); });
+// Redraw when SLA Manager, in another tab on this site, saves new results,
+// Email Only assignments or progress on the desk's request.
+ui.onStorage = (event) => {
+if (!ui) return;
+if (event.key === LIVE_LINK_KEY) renderLinkLine();
+else if (!state.running && [EMAIL_ONLY_ASSIGNED_KEY, NATIONAL_RESULTS_KEY, DESK_RESULTS_KEY, LIVE_STATUS_KEY].includes(event.key)) render();
+};
+if (typeof window.addEventListener === 'function') {
+window.addEventListener('storage', ui.onStorage);
+window.addEventListener('mouseup', ui.onMouseUp, true);
 }
-// Redraw when the agent moves to another page or customer.
+// Redraw when the agent moves to another page or customer, and as the
+// results on show get older.
 ui.pageTimer = setInterval(() => {
-if (!ui || state.running) return;
+if (!ui) return;
+// A redraw held back by a mouse press whose release was never seen.
+if (ui.renderPending) { render(); return; }
+if (state.running) { keepClear(); return; }
 const inView = onCallPage() ? leadInView() : null;
-const signature = `${onCallPage()}|${liveActivities().map(({ activity }) => activity.ID).join(',')}|${inView ? inView.ID : ''}`;
-if (signature !== ui.pageSignature) { ui.pageSignature = signature; render(); }
+const signature = `${onCallPage()}|${liveActivities().map(({ activity }) => activity.ID).join(',')}|${inView ? inView.ID : ''}|${ui.view === 'pc' ? resultsAgeLine() + hubStatusLine() : ''}`;
+if (signature !== ui.pageSignature) { ui.pageSignature = signature; render(); } else keepClear();
 }, 2000);
-// Drag by the header so the panel can be moved off Konnect's buttons.
+// The link line goes stale by the clock, with no storage event to say so.
+ui.linkTimer = setInterval(renderLinkLine, 5000);
+// Drag by the header to move the panel; where it is left is kept for the
+// session.
 head.addEventListener('mousedown', (event) => {
 if (event.target.closest('button')) return;
 const rect = panel.getBoundingClientRect();
 const dx = event.clientX - rect.left;
 const dy = event.clientY - rect.top;
+let moved = null;
 const move = (e) => {
-panel.style.left = `${Math.max(0, Math.min(window.innerWidth - 80, e.clientX - dx))}px`;
-panel.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, e.clientY - dy))}px`;
-panel.style.bottom = 'auto';
+moved = { left: Math.max(0, Math.min(window.innerWidth - 80, e.clientX - dx)), top: Math.max(0, Math.min(window.innerHeight - 40, e.clientY - dy)) };
+placeAt(moved);
 };
-const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); };
+const up = () => {
+window.removeEventListener('mousemove', move);
+window.removeEventListener('mouseup', up);
+if (!moved) return;
+ui.position = moved;
+try { sessionStorage.setItem(POSITION_KEY, JSON.stringify(moved)); } catch (error) { /* kept until the panel closes */ }
+};
 window.addEventListener('mousemove', move);
 window.addEventListener('mouseup', up);
 event.preventDefault();
 });
 render();
+return true;
 }
 
-buildPanel();
+// What a second click of the bookmark reaches: it shows this panel again
+// and puts the keyboard on it. replaceable: a newer version may take over,
+// which is only so when no run is going.
+const instance = {
+show() {
+if (!ui) return;
+showPanel();
+render();
+const first = ui.root.querySelector('.body [data-action]') || ui.root.querySelector('[data-action="minimise"]');
+if (first && !state.paused) first.focus({ preventScroll: true });
+},
+replaceable: () => !ui || (!state.running && !!(versionState && versionState.newer)),
+unload
+};
+
+purgeExpired();
+if (buildPanel()) window[INSTANCE_KEY] = instance;
 })();

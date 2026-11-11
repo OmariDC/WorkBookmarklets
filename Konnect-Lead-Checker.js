@@ -25,12 +25,13 @@ const date = list && list[0] && list[0].commit && list[0].commit.committer && li
 if (date) { state.publishedAt = new Date(date); onChange(state); }
 }).catch(() => {});
 fileText().then((text) => { if (text) baseline = fingerprint(text); }).catch(() => {});
-setInterval(() => {
+const timer = setInterval(() => {
 if (state.newer || baseline == null) return;
 fileText().then((text) => {
 if (text && fingerprint(text) !== baseline) { state.newer = true; onChange(state); }
 }).catch(() => {});
 }, 20 * 60 * 1000);
+state.stop = () => clearInterval(timer);
 return state;
 }
 
@@ -87,7 +88,101 @@ return;
 
 // Problems the panel must show the user, not just the console. Self-tests
 // set these before the panel exists; the notice bar shows them on render.
-const lcNotices = { saveFailed: false, otherTab: false, selfTestFailures: [], stopped: null, onChange: null };
+const lcNotices = { saveFailed: false, otherTab: false, selfTestFailures: [], stopped: null, loggedOut: false, hiddenWait: false, onChange: null };
+
+// One per page, shared by every copy of this tool that loads on it: the
+// timer worker, the message listener and the mark that a lead is being
+// checked. A second copy (after Clear & Stop) takes these over, so two
+// copies never answer SLA Manager or drive the page together.
+const klcShared = window.__klcShared || (window.__klcShared = { timers: null, onMessage: null, onTick: null, listening: false, tickTimer: null, stepBusy: false });
+
+// Browsers slow a hidden tab's own timers to one a second, then to one a
+// minute, but not a worker's. A small worker keeps the time; the page timer
+// set beside it is only the backstop for a worker that dies. Where the
+// worker cannot start (a content security policy), ordinary timers are used
+// and the run waits while the tab is hidden.
+function createHiddenSafeTimers() {
+const pageTimers = {
+mode: 'page',
+setTimeout: (fn, ms) => window.setTimeout(fn, ms),
+clearTimeout: (id) => window.clearTimeout(id),
+setInterval: (fn, ms) => window.setInterval(fn, ms),
+clearInterval: (id) => window.clearInterval(id)
+};
+let worker = null;
+try {
+if (window.__klcNoWorkerTimers || typeof Worker !== 'function' || typeof Blob !== 'function') throw new Error('no worker');
+const source = 'var t={};onmessage=function(e){var d=e.data;if(d[0]===1){t[d[1]]=setTimeout(function(){delete t[d[1]];postMessage(d[1]);},d[2]);}else if(d[0]===2){t[d[1]]=setInterval(function(){postMessage(d[1]);},d[2]);}else{clearTimeout(t[d[1]]);clearInterval(t[d[1]]);delete t[d[1]];}};';
+worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
+} catch (error) {
+return pageTimers;
+}
+const pending = new Map();
+let nextId = 1;
+const api = { mode: 'worker' };
+function fire(id) {
+const entry = pending.get(id);
+if (!entry) return;
+if (!entry.repeat) { pending.delete(id); window.clearTimeout(entry.backstop); }
+try { entry.fn(); } catch (error) { window.setTimeout(() => { throw error; }, 0); }
+}
+// A blocked worker reports its error after it is made, so timers already
+// set move to page timers here.
+function usePageTimers() {
+if (api.mode !== 'worker') return;
+api.mode = 'page';
+try { worker.terminate(); } catch (error) { /* already gone */ }
+pending.forEach((entry, id) => { if (entry.repeat) entry.backstop = window.setInterval(() => fire(id), entry.ms); });
+}
+worker.onmessage = (event) => fire(event.data);
+worker.onerror = usePageTimers;
+function add(fn, ms, repeat) {
+if (typeof fn !== 'function') return 0;
+const id = nextId++;
+const delay = Math.max(0, Number(ms) || 0);
+const entry = { fn, ms: delay, repeat, backstop: null };
+pending.set(id, entry);
+if (api.mode === 'worker') {
+try { worker.postMessage([repeat ? 2 : 1, id, delay]); } catch (error) { usePageTimers(); }
+}
+if (repeat) { if (api.mode !== 'worker' && entry.backstop == null) entry.backstop = window.setInterval(() => fire(id), delay); }
+else entry.backstop = window.setTimeout(() => fire(id), api.mode === 'worker' ? delay + 2000 : delay);
+return id;
+}
+function clear(id) {
+const entry = pending.get(id);
+if (!entry) return;
+pending.delete(id);
+if (entry.repeat) window.clearInterval(entry.backstop); else window.clearTimeout(entry.backstop);
+if (api.mode === 'worker') { try { worker.postMessage([0, id]); } catch (error) { /* worker gone */ } }
+}
+api.setTimeout = (fn, ms) => add(fn, ms, false);
+api.setInterval = (fn, ms) => add(fn, ms, true);
+api.clearTimeout = clear;
+api.clearInterval = clear;
+return api;
+}
+if (!klcShared.timers) klcShared.timers = createHiddenSafeTimers();
+const klcTimers = klcShared.timers;
+// Every timer below this line goes through the worker.
+const setTimeout = (fn, ms) => klcTimers.setTimeout(fn, ms);
+const clearTimeout = (id) => klcTimers.clearTimeout(id);
+const setInterval = (fn, ms) => klcTimers.setInterval(fn, ms);
+const clearInterval = (id) => klcTimers.clearInterval(id);
+
+// While hidden, Konnect's own timers still fire only once a second. Fixed
+// pauses that give the page time to react are stretched past that, and time
+// limits are widened. A wait still ends the moment its result shows.
+function pagePause(ms) {
+return document.hidden ? Math.max(ms, 1200) : ms;
+}
+function pageLimit(ms) {
+return document.hidden ? ms * 3 + 3000 : ms;
+}
+// True when the tab is hidden and nothing can keep the timers on time.
+function hiddenAndSlowed() {
+return !!document.hidden && klcTimers.mode !== 'worker';
+}
 function notifyNoticesChanged() {
 if (typeof lcNotices.onChange === 'function') { try { lcNotices.onChange(); } catch (error) { /* panel not ready */ } }
 }
@@ -151,8 +246,9 @@ return new RegExp(name + '\\s*:?\\s*£?[\\d,]+', 'i').test(String(text || ''));
 
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 // Abbreviated weekdays ("sat afternoon"). Word boundaries matter: these
-// collide with real words otherwise ("mon" in "money", "sat" in "satisfied").
-const WEEKDAY_ABBR_RE = /\b(sun|mon|tue|tues|wed|thu|thur|thurs|fri|sat)\b/i;
+// collide with real words otherwise ("mon" in "money", "sat" in "satisfied"),
+// and so do the words after them ("sat nav", "sun roof", "sat in").
+const WEEKDAY_ABBR_RE = /\b(sun(?![\s-]*(roof|visor|blind|shade))|mon|tue|tues|wed|thu|thur|thurs|fri|sat(?![\s-]*nav)(?!\s+(in|on|down|there|here|with)\b))\b/i;
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
 const WRITTEN = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12 };
 const WRITTEN_KEYS = Object.keys(WRITTEN).join('|');
@@ -166,7 +262,10 @@ return lowerText.replace(/\b00:00\b/g, ' ');
 }
 
 const CLOCK_RE = new RegExp(
-'\\b([01]?\\d|2[0-3])[:.][0-5]\\d(\\s*hrs)?\\b' +
+'\\b([01]?\\d|2[0-3]):[0-5]\\d(\\s*hrs)?\\b' +
+// A dotted time ("9.30") can also be a price or a size, so it does not
+// count after a pound sign or before a rate or a unit ("12.50 a day").
+'|(?<![£$\\d.,])\\b([01]?\\d|2[0-3])\\.[0-5]\\d(\\s*hrs)?\\b(?!\\s*(?:%|a\\s+(?:day|week|month|year)|per\\s|each\\b|p\\/?[wm]\\b|pw\\b|pcm\\b|litres?\\b|ltr\\b|mpg\\b|miles\\b|k\\b))' +
 '|\\b\\d{1,2}\\s*[-\u2013]\\s*\\d{1,2}\\s*(am|pm)\\b' +
 '|\\b\\d{1,2}[:.]\\d{2}\\s*/\\s*\\d{1,2}\\s*(am|pm)\\b' +
 '|\\b\\d{4}\\s*-\\s*\\d{4}\\b' +
@@ -199,7 +298,10 @@ if (WEEKDAYS.some((d) => lowered.includes(d))) return true;
 if (WEEKDAY_ABBR_RE.test(lowered)) return true;
 if (/\btoday\b|\btonight\b|\btomorrow\b|\bthis morning\b|\bthis afternoon\b|\bthis weekend\b|\bnext week\b/i.test(lowered)) return true;
 if (new RegExp('\\b\\d{1,2}(st|nd|rd|th)?\\s+(of\\s+)?(' + MONTHS.join('|') + ')\\b', 'i').test(lowered)) return true;
-if (/\b\d{1,2}\/\d{1,2}\b/.test(lowered)) return true;
+// A numeric date needs a real day and month: "50/50 finance" and "24/7"
+// are not dates.
+const numeric = lowered.match(/\b\d{1,2}\/\d{1,2}\b/g) || [];
+if (numeric.some((d) => { const [day, month] = d.split('/').map(Number); return day >= 1 && day <= 31 && month >= 1 && month <= 12 && d !== '24/7'; })) return true;
 return false;
 }
 
@@ -212,9 +314,8 @@ const lowered = low(text);
 const src = low(source);
 const flags = [];
 
-if (/\bpx\b|part\s*exchange|partex\s*=\s*yes|partex\s*=\s*possibly|enhancedpartexchangeoffer|partexreg|\(i have a part exchange\)|px derivative|desc1/i.test(lowered) && !ctx.noPx) flags.push('PX');
+if (/\bpx\b|part\s*exchange|partex\s*=\s*yes|partex\s*=\s*possibly|enhancedpartexchangeoffer|partexreg|\(i have a part exchange\)|px derivative|desc1/i.test(lowered)) flags.push('PX');
 if (/negative equity|\bneg eq\b|\bnegs\b|equity:\s*£?-\s*\d/i.test(lowered)) flags.push('Negative Equity');
-if (ctx.highEquity) flags.push('High Equity');
 if (ctx.noValuationGiven) flags.push('No Valuation Given');
 if (/outright cash|cash purchase|cash buyer|paying in cash|cleared funds|self finance full amount|arranged my own finance/i.test(lowered)) flags.push('Cash Buyer');
 if (ctx.finance) flags.push('Finance');
@@ -223,10 +324,9 @@ if (/\bvan\b|commercial vehicle|\blcv\b/i.test(lowered)) flags.push('Van / Comme
 if (/\bltd\b|\bvat\b|business lease|\bbch\b|business_enquiry|limited company/i.test(lowered)) flags.push('Business');
 if (ctx.model) flags.push('Model');
 if (/email only|no calls|do not call|prefer email|can'?t take calls|email reply is preferred/i.test(lowered) || /^email only -/i.test(lowered)) flags.push('Email Only');
-if (/can you deliver|delivery to [a-z0-9]|move.{0,20}(this car|it) to|transfer.{0,20} to |too far to travel/i.test(lowered) && !ctx.systemTransferField) flags.push('Delivery / Transfer');
-if (/second request|third chaser/i.test(lowered) || ctx.repeatRequest) flags.push('Repeat Request');
-if (ctx.duplicate) flags.push('Duplicate');
-if (/call today|close a deal today/i.test(lowered) || ctx.urgentToday) flags.push('Urgent Today');
+if (/can you deliver|delivery to [a-z0-9]|move.{0,20}(this car|it) to|transfer.{0,20} to |too far to travel/i.test(lowered)) flags.push('Delivery / Transfer');
+if (/second request|third chaser/i.test(lowered)) flags.push('Repeat Request');
+if (/call today|close a deal today/i.test(lowered)) flags.push('Urgent Today');
 if (ctx.reschedule) flags.push('Reschedule');
 if (ctx.staleIncomplete) flags.push('Stale / Incomplete');
 if (/walk\s*around video|walkaround video|send a video|video walkthrough|personalised video|cold start video/i.test(lowered)) flags.push('Remote / Video');
@@ -262,16 +362,33 @@ const COMPLAINT_RE = /formal complaint|\bcomplaint\b|escalate|small claims|solic
 // Section 7.7: cancellation / reschedule / withdrawal.
 const CANCEL_RE = /\bcancel\b|no longer able to attend|will not be attending|won'?t be able to make it|can no longer make/i;
 const ORDER_CONTEXT_RE = /cancel my order|cancel the reservation|order number|order id|\bdeposit\b|\brefund\b/i;
-const WITHDRAWN_RE = /found a car( locally)?|may now be sorted|decided to stick with|changed our minds|going to go for that/i;
+const WITHDRAWN_RE = /found (a|another|one)\b[^.|]{0,30}?\b(elsewhere|somewhere else|locally|at another (dealer|dealership|garage)|closer to (home|me)|nearer)\b|\balready (bought|purchased)\b|\bbought (a car|a vehicle|one|another( car)?) (elsewhere|somewhere else)\b|may now be sorted|decided to stick with|changed our minds|going to go for that/i;
 const RESCHEDULE_RE = /\breschedule\b|alternative time|another date|move my (appointment|test drive)|make a new date|\brearrange\b|\brebook\b|rather than \d|change my appointment to/i;
 
+// Recall, MOT and warranty count as aftersales only with aftersales intent:
+// a recall notice or certificate, an MOT to book or due on their own car, a
+// warranty claim or their own warranty. "Does it come with a warranty?",
+// "how long is the MOT" and "I recall seeing this car" are sales questions.
+const AFTERSALES_INTENT_RE = new RegExp([
+'recall[_ ](notice|letter|work|campaign|appointment|certificate)', 'safety recall', 'takata', '\\brecalls? (on|for) my\\b', '\\bbeen recalled\\b', '\\bmy (car|vehicle|van)\\b[^.|?]{0,40}\\brecall',
+'\\b(book|booking|booked|need|needs|arrange)\\b[^.|?]{0,25}\\bmot\\b', '\\bmot\\b[^.|?]{0,20}\\b(due|booking|appointment|expired|expires|reminder)\\b', '\\bmy mot\\b', '\\bmot (on|for) my\\b',
+'warranty (claim|repair|work|issue|problem|department)', '\\bclaim\\b[^.|?]{0,20}\\bwarranty', '\\bmy warranty\\b', 'warranty (on|for) my\\b', '\\bmy (car|vehicle|van)\\b[^.|?]{0,40}\\bwarranty'
+].join('|'), 'i');
+
 // Section 7.12: agent note markers.
-const AGENT_NOTE_RE = /\*\*\* priority acceptance required \*\*\*|please confirm provisional appointment with customer|customer requires further communication|customer is booked in|customer has been booked in|customer booked in for|provisionally booked in|customer is booked in|customer called in|\bvm left\b|rec customer to|explained online store process|please call customer|please can \w+ confirm|\bhot lead\b|customer said|i have advised|i had advised|i couldn'?t locate vehicle|^-\s*customer\b|contact centre sales event lead from inbound call|contact centre sales event lead from api|customer has called to confirm appointment|warm transferred|came through on live chat|email sent -|called cx\b|no answer\b|\bcx\b|fao\s+[a-z]/i;
+const AGENT_NOTE_RE = /\*\*\* priority acceptance required \*\*\*|please confirm provisional appointment with customer|customer requires further communication|customer is booked in|customer has been booked in|customer booked in for|provisionally booked in|customer is booked in|customer called in|\bvm left\b|rec customer to|explained online store process|please call customer|please can \w+ confirm|\bhot lead\b|customer said|i have advised|i had advised|i couldn'?t locate vehicle|^-\s*customer\b|contact centre sales event lead from inbound call|contact centre sales event lead from api|customer has called to confirm appointment|warm transferred|came through on live chat|email sent -|called cx\b|fao\s+[a-z]/i;
 const AGENT_NOTE_THIRDPERSON_RE = /^customer (wants|has|is looking|is interested|interested)|they have a budget of/i;
-const AGENT_INITIALS_RE = /-\s*[A-Z]{2}\s*$|with\s+[A-Z]{2}\s*$/;
+// The hub's own shorthand, matched only in the form the hub writes it.
+// "cx" for customer is lower case and a word of its own (a Mazda CX-5 or a
+// Citroen CX is not); "no answer" opens the note or sits beside a call or a
+// voicemail; initials close the note after a dash or "with", and are not a
+// trim or body code ("Peugeot 208 - GT").
+const AGENT_CX_RE = /\b[cC]x\b(?![-\s]?\d)|\bCX\s+(?:is|was|has|had|wants?|would|called|said|advised|asked|requested|will|booked|needs?|looking)\b/;
+const AGENT_NO_ANSWER_RE = /^\s*no answer\b|\bcalled (the )?(cx|customer)\b[^.|]{0,30}\bno answer\b|\bno answer\b[\s,;:-]*(vm|voicemail|message left|no message|left (a )?(vm|voicemail|message)|x\s?\d)\b/i;
+const AGENT_INITIALS_RE = /(?:\s-\s*|\bwith\s+)(?!(?:GT|GS|DS|EV|SE|SX|ST|RS|SR|GL|LX|EX|XL|XS|VR|PX|HP|UK|NI|TV|OK)\b)[A-Z]{2}\s*$/;
 
 function looksLikeAgentNote(text) {
-return AGENT_NOTE_RE.test(text) || AGENT_NOTE_THIRDPERSON_RE.test(text) || AGENT_INITIALS_RE.test(text);
+return AGENT_NOTE_RE.test(text) || AGENT_NOTE_THIRDPERSON_RE.test(text) || AGENT_CX_RE.test(text) || AGENT_NO_ANSWER_RE.test(text) || AGENT_INITIALS_RE.test(text);
 }
 
 // Section 8.1: source inference (only when Source is blank).
@@ -293,11 +410,16 @@ if (/pop-in-instant-voucher-qa/i.test(text)) return true;
 const partExVal = field(text, 'PartExReg') || '';
 const partExMil = field(text, 'PartExMileage') || '';
 const anythingElse = field(text, 'AnythingElse') || '';
-if (/test/i.test(partExVal) || /test/i.test(partExMil) || /test/i.test(anythingElse) || /no reg/i.test(partExVal) && /test/i.test(text)) return true;
+// A reg or mileage box holding the word "test" is a test lead. Free text
+// only counts when "test" is all it says: "I would like a test drive" is a
+// customer.
+const testWord = /\btest(ing)?\b(?!\s*-?\s*drive)|\bretest\b/i;
+const onlyTest = /^\W*(this is (a|only a) )?test(ing)?( lead| enquiry| only| test)?\W*$/i;
+if (testWord.test(partExVal) || testWord.test(partExMil) || onlyTest.test(anythingElse) || (/no reg/i.test(partExVal) && testWord.test(text))) return true;
 const commentsOnly = (field(text, 'Customer Comments') || '').toLowerCase();
 if (/^(qwerty|asdf|zxcv)$/i.test(lowered) || /^(.)\1{3,}$/.test(lowered.replace(/\s/g, ''))
 || /^(qwerty|asdf|zxcv)$/i.test(commentsOnly) || (commentsOnly && /^(.)\1{3,}$/.test(commentsOnly.replace(/\s/g, '')))) return true;
-if (/\breviews\b|\bseo\b|google maps.{0,20}marketing|whatsapp:\s*\+|noticed a few opportunities|\bsponsor\b|training offers|\btender\b|collaboration opportunities/i.test(lowered)) return true;
+if (/\bseo\b|google maps.{0,20}marketing|whatsapp:\s*\+|noticed a few opportunities|\bsponsor\b|training offers|\btender\b|collaboration opportunities/i.test(lowered)) return true;
 return false;
 }
 
@@ -335,8 +457,7 @@ return /\bfinance\b|\bpcp\b|\bhp\b|\bquote\b|\bquotes\b|\bleasing\b|\b0%\b|\bbes
 // either returns a result (stop) or null (continue to the next step).
 function classifyLead(initialNotesRaw, opts) {
 opts = opts || {};
-let { campaign, source, created, referenceDate, hasAlreadyEngagedCallEntry } = opts;
-referenceDate = referenceDate || new Date();
+let { campaign, source, hasAlreadyEngagedCallEntry } = opts;
 
 source = inferSource(initialNotesRaw, source);
 const text0 = stripSystemSuffixes(initialNotesRaw);
@@ -367,21 +488,36 @@ if (/\[make model\]|00:00/i.test(text0)) flagCtx.staleIncomplete = true;
 result = R(6, 'Cancelled / Withdrawn', 1, 'high', 'Agent note recording a cancellation (Section 7.12).');
 } else {
 result = R(6, 'Inbound: Already Handled', 3, 'high', 'Our own agent note, not a fresh enquiry (Section 7.12).');
-if (/video/i.test(lowered)) flagCtx.systemTransferField = false;
 }
 }
 
 // Step 6: customer redirect/reschedule checks, in order.
 if (!result) result = customerRedirectChecks(text0, lowered, camp, src, flagCtx);
 
+// Mixed notes: a "no call" match on notes that also ask to visit or give
+// a day or time is not filed as tier 6 by itself. The visit tier is put
+// forward at low confidence, so a person decides in Needs Review.
+if (result && result.tier === 6 && MIXED_REVIEW_CATEGORIES.has(result.subCategory)) {
+const preferred = visitOrTimeResult(text0, lowered, camp, src, opts.leadRequest);
+if (preferred) {
+result = Object.assign({}, preferred, {
+confidence: 'low',
+reason: `${preferred.says} but also reads as ${result.subCategory}${result.matched ? ` ("${result.matched}")` : ''}: check which applies.`,
+alternative: { tier: 6, subCategory: result.subCategory }
+});
+delete result.says;
+}
+}
+if (result) delete result.matched;
+
 // Step 7: system note templates.
-if (!result) result = systemTemplates(text0, lowered, camp, src, referenceDate, flagCtx);
+if (!result) result = systemTemplates(text0, lowered, camp, src, flagCtx);
 
 // Step 8: Customer First marketing codes.
 if (!result) result = customerFirstMarketingCode(text0, lowered, camp, src, flagCtx);
 
 // Step 9: free-text date/time.
-if (!result) result = freeTextDateTime(text0, lowered, referenceDate, flagCtx);
+if (!result) result = freeTextDateTime(text0);
 
 // Step 10: campaign rules.
 if (!result) result = campaignRules(text0, lowered, camp, src, flagCtx, opts.leadRequest);
@@ -400,6 +536,95 @@ const postClosureAction = src === 'post closure processing'
 return Object.assign({}, result, { flags, dedupeKey: computeDedupeKey(text0, campaign, source), postClosureAction, source });
 }
 
+// The tier 6 results that are about a topic, not about the visit itself. A
+// booking or cancellation note names a day by its nature, and spam markers
+// are exact, so those are never treated as mixed.
+const MIXED_REVIEW_CATEGORIES = new Set(['Aftersales', 'Send to Dealer (named exec)', 'Complaint', 'Existing Order', 'Fleet', 'Agreement Hand-back', 'Non-Customer / Admin']);
+const VISIT_INTENT_RE = /\btest[\s-]?drive\b|\bcome (in|and|to|down|over|by)\b|\bpop (in|down|over)\b|\bview(ing)? (the|this|it|a|your)\b|\b(see|look at) (the|this) (car|vehicle|van)\b|\bbook (an? )?(appointment|viewing|visit)\b|\bvisit (you|the|your)\b|\barrange (a|an) (viewing|appointment|visit)\b/i;
+
+// Pure. What the notes would be without the tier 6 match, when they ask to
+// visit or give a day or time; null when they do neither. "says" is the
+// start of the reason shown to the reviewer.
+function visitOrTimeResult(text, lowered, camp, src, leadRequest) {
+const scratch = {};
+const rest = systemTemplates(text, lowered, camp, src, scratch) || customerFirstMarketingCode(text, lowered, camp, src, scratch)
+|| freeTextDateTime(text) || campaignRules(text, lowered, camp, src, scratch, leadRequest);
+const day = (lowered.match(new RegExp('\\b(' + WEEKDAYS.join('|') + '|today|tonight|tomorrow|this weekend|next week)\\b', 'i')) || [])[0];
+if (rest && rest.tier <= 2) {
+return Object.assign({}, rest, { says: rest.tier === 1 ? `Gives a day and time${day ? ` (${day})` : ''}` : `Gives a day${day ? ` (${day})` : ''}` });
+}
+const message = text.replace(/Message from Consumer at[^:]*\d{1,2}:\d{2}\s*[AP]M:/i, ' ');
+const visit = VISIT_INTENT_RE.test(lowered);
+if (!visit && !hasClockTime(message)) return null;
+const base = rest && rest.tier === 3 ? rest : R(3, 'Visit or Time Mentioned', 10, 'low', '');
+return Object.assign({}, base, { says: visit ? 'Asks to visit or test drive' : 'Gives a time' });
+}
+
+// False matches found in the 11 Nov 2026 audit: words that read as a day or
+// time, tier 6 rules that caught sales questions, and mixed notes.
+runSelfTest('tierSixAndDayTimeSelfTest', function tierSixAndDayTimeSelfTest() {
+const failures = [];
+let count = 0;
+const check = (label, actual, expected) => { count++; if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`); };
+const website = (comment, campaign) => classifyLead(`Comment Line #1: ${comment}`, { campaign: campaign || 'Enquiry - Used', source: 'Robins & Day Website' });
+const sub = (comment) => website(comment).subCategory;
+
+check('"sat nav" is not a day', hasDayMention('Does this car have sat nav and parking sensors?'), false);
+check('"sat-nav" is not a day', hasDayMention('Has it got sat-nav'), false);
+check('"sun roof" is not a day', hasDayMention('Is there a sun roof on this one'), false);
+check('"I sat in one" is not a day', hasDayMention('I sat in one last year and liked it'), false);
+check('"sat afternoon" is still a day', hasDayMention('could do sat afternoon'), true);
+check('"sun morning" is still a day', hasDayMention('sun morning is best'), true);
+check('"50/50 finance" is not a date', hasDayMention('Do you offer 50/50 finance?'), false);
+check('"24/7" is not a date', hasDayMention('I am available 24/7 by email'), false);
+check('"12/11" is still a date', hasDayMention('I can come on 12/11'), true);
+check('"12.50 a day" is not a time', hasClockTime('It works out at 12.50 a day, can I pop in tomorrow'), false);
+check('a price after a pound sign is not a time', hasClockTime('Is the 208 still £12.50 a week'), false);
+check('"9.30" is still a time', hasClockTime('tomorrow at 9.30 please'), true);
+check('"10:30" is still a time', hasClockTime('I could do 10:30'), true);
+check('a sat nav question is not a booking', website('Does this car have sat nav and parking sensors?').tier > 2, true);
+check('a rate with "tomorrow" is a day, not a day and time', website('It works out at 12.50 a day on finance, can someone ring me tomorrow').tier, 2);
+
+check('"could someone call me" names nobody', sub('Could someone call me about this car please') === 'Send to Dealer (named exec)', false);
+check('"can you call me" names nobody', sub('Can you call me about the 208') === 'Send to Dealer (named exec)', false);
+check('"can Dave call me" names an exec', sub('Can Dave call me back about the 208'), 'Send to Dealer (named exec)');
+check('a car found on our website is not a withdrawal', sub("I have found a car on your website I'd like to know more about") === 'Cancelled / Withdrawn', false);
+check('a car found elsewhere is a withdrawal', sub('Thanks but we have found a car elsewhere'), 'Cancelled / Withdrawn');
+check('a car found at another dealer is a withdrawal', sub('No longer needed, found one at another dealer'), 'Cancelled / Withdrawn');
+check('already bought is a withdrawal', sub('Please stop the emails, I have already bought one'), 'Cancelled / Withdrawn');
+check('"does it come with a warranty" is a sales question', sub('Is this car still available and does it come with a warranty?') === 'Aftersales', false);
+check('"how long is the MOT" is a sales question', sub('How long is the MOT on this one') === 'Aftersales', false);
+check('"I recall seeing this car" is not a recall', sub('I recall seeing this car last month, has the price changed') === 'Aftersales', false);
+check('an MOT to book on their own car is aftersales', sub('I need to book an MOT for my Corsa'), 'Aftersales');
+check('a warranty claim is aftersales', sub('I want to make a warranty claim on the gearbox'), 'Aftersales');
+check('a recall notice is aftersales', sub('I have had a recall notice through the post'), 'Aftersales');
+check('"good reviews" is not spam', sub('You have good reviews so I thought I would ask about the 2008') === 'Spam / Test', false);
+const mbMail = (anythingElse, extra) => classifyLead(`Misc: The following information was present in the lead: | Enquiry = Availability | Purchase = Within 3 Months | Part = No${extra || ''} | AnythingElse = ${anythingElse}`, { campaign: 'Peugeot - Enquiry - New', source: 'MB Mail' }).subCategory;
+check('"I would like a test drive" is not a test lead', mbMail('I would like a test drive') === 'Spam / Test', false);
+check('"test" by itself is a test lead', mbMail('test'), 'Spam / Test');
+check('a reg box saying test is a test lead', mbMail('-', ' | PartExReg = TEST | PartExMileage = 1'), 'Spam / Test');
+const phone = (notes) => classifyLead(notes, { campaign: 'Peugeot - Enquiry - New', source: 'Phone call' }).subCategory;
+check('a trim after a dash is not agent initials', phone('Peugeot 208 - GT') === 'Inbound: Already Handled', false);
+check('agent initials after a dash still are', phone('Peugeot 2008 GT new - TD'), 'Inbound: Already Handled');
+check('a CX model is not the hub shorthand', [phone('Interested in the Mazda CX-5 you have') === 'Inbound: Already Handled', phone('Do you have a Citroen CX in stock') === 'Inbound: Already Handled'], [false, false]);
+check('"cx" as the hub writes it still is', phone('cx wants a call back about the 3008'), 'Inbound: Already Handled');
+check('a customer saying they got no answer is not a hub note', phone('I rang the showroom twice and there was no answer') === 'Inbound: Already Handled', false);
+check('"No answer, vm left" is a hub note', phone('No answer, vm left'), 'Inbound: Already Handled');
+
+const mixedWarranty = website('Can I come in on Saturday at 10am to see it? Also I need to ask about my warranty on the old car');
+check('a day and time with a warranty mention goes to review at the visit tier', [mixedWarranty.tier, mixedWarranty.confidence, mixedWarranty.alternative], [1, 'low', { tier: 6, subCategory: 'Aftersales' }]);
+check('the reason says both were found', /day and time \(saturday\) but also reads as Aftersales \("my warranty"\): check which applies\./.test(mixedWarranty.reason), true);
+const mixedExec = website('Could Dave call me, I would like to test drive the 208');
+check('visit intent with a named exec goes to review', [mixedExec.tier, mixedExec.confidence, mixedExec.alternative && mixedExec.alternative.subCategory], [3, 'low', 'Send to Dealer (named exec)']);
+const onlyAftersales = website('I need to book an MOT for my Corsa');
+check('notes with only the tier 6 match stay tier 6', [onlyAftersales.tier, onlyAftersales.confidence, onlyAftersales.alternative], [6, 'high', undefined]);
+const cancelled = website('I booked a test drive for Tuesday at 9.30 am but I need to cancel');
+check('a cancellation that names its day is not mixed', [cancelled.tier, cancelled.subCategory], [6, 'Cancelled / Withdrawn']);
+
+if (failures.length) console.error('KonnectLeadChecker tier-six-and-day-time self-test FAILED:\n' + failures.join('\n'));
+else console.info(`KonnectLeadChecker tier-six-and-day-time self-test passed (${count}/${count})`);
+});
+
 // Leads reviewed by hand on 10 Nov 2026 (fictional details).
 runSelfTest('reviewedLeadsNov10SelfTest', function reviewedLeadsNov10SelfTest() {
 const failures = [];
@@ -415,7 +640,7 @@ const cases = [
 ['blank brand site quote', 'Lead ID: 00Qa200000EXAMPLE | Marketing Code: BrandSite-Quote | Customer Comments: -', 'Peugeot - Offer Request - New', 'Customer First', '', 5]
 ];
 cases.forEach(([label, notes, campaign, source, leadRequest, want]) => {
-const r = classifyLead(notes, { campaign, source, leadRequest, referenceDate: new Date(2026, 10, 10, 9, 0) });
+const r = classifyLead(notes, { campaign, source, leadRequest });
 if (r.tier !== want) failures.push(`${label}: expected tier ${want}, got ${r.tier} (${r.subCategory})`);
 });
 if (failures.length) console.error('KonnectLeadChecker reviewed-leads-10-Nov self-test FAILED:\n' + failures.join('\n'));
@@ -438,7 +663,7 @@ return R(6, 'Cancelled / Withdrawn', 1, 'high', 'Customer withdrew interest (Sec
 // 6.2: reschedule of a view/discuss/test drive.
 if (RESCHEDULE_RE.test(lowered) || (CANCEL_RE.test(lowered) && /will be in touch to set up an alternative time|will call next week to rearrange|will rebook at some point next week|need to cancel/i.test(lowered))) {
 const noNewSlotYet = /will be in touch to set up an alternative time|will call next week to rearrange|will rebook at some point next week/i.test(lowered);
-const dayTime = noNewSlotYet ? null : freeTextDateTime(text, lowered, new Date(), flagCtx, true);
+const dayTime = noNewSlotYet ? null : freeTextDateTime(text);
 if (dayTime) {
 flagCtx.reschedule = true;
 return Object.assign({}, dayTime, { reason: dayTime.reason + ' (customer reschedule with a new day/time).' });
@@ -458,7 +683,6 @@ if (/(on pcp with yourselves|finance with (us|stellantis)|voluntarily terminate)
 || /(want|wanting|looking|requiring) (about |to )?chang(e|ing) my (vehicle|car).{0,60}(reduce|payments)/i.test(lowered)
 || /voluntarily terminate my current pcp/i.test(lowered)
 || (/purchased from yourselves|from yourselves/i.test(lowered) && /chang(e|ing)/i.test(lowered))) {
-flagCtx.noPx = false;
 return R(4, 'Existing Customer: Upgrade', 1, 'medium', 'Existing customer with car/finance with us wanting to change (Section 3.6.4).');
 }
 
@@ -469,7 +693,7 @@ return R(6, 'Agreement Hand-back', 8, 'medium', 'Customer asking to hand back/re
 }
 
 // 6.5: named exec contact, not a rebooking.
-if (/(can|could)\s+[a-z]+\s+[a-z]*\s*call me|following up on discussion with|i have spoken to\s+[a-z]+ and|as discussed with|\bi met\s+[a-z]+\b/i.test(lowered) && !/reservation made for viewing|as discussed by phone, reservation/i.test(lowered)) {
+if (/(can|could)\s+(?!(?:someone|somebody|somone|anyone|anybody|you|u|one|i|we|they|he|she|it|a|an|the|your|my|this|that|please|pls|whoever|staff|sales)\b)[a-z]+\s+[a-z]*\s*call me|following up on discussion with|i have spoken to\s+[a-z]+ and|as discussed with|\bi met\s+[a-z]+\b/i.test(lowered) && !/reservation made for viewing|as discussed by phone, reservation/i.test(lowered)) {
 flagCtx.execRequested = true;
 return R(6, 'Send to Dealer (named exec)', 4, 'medium', 'Customer references an exec/prior conversation, not a rebooking (Section 3.6.5).');
 }
@@ -481,7 +705,7 @@ return R(6, 'Fleet', 5, 'high', 'Fleet/multi-vehicle language (Section 7.17).');
 
 // 6.7: complaint.
 if (COMPLAINT_RE.test(lowered)) {
-return R(6, 'Complaint', 6, 'high', 'Complaint keyword matched (Section 7.8).');
+return Object.assign(R(6, 'Complaint', 6, 'high', 'Complaint keyword matched (Section 7.8).'), { matched: lowered.match(COMPLAINT_RE)[0] });
 }
 
 // 6.8: existing order.
@@ -490,10 +714,12 @@ return R(6, 'Existing Order', 7, 'high', 'Order/reservation cancellation or admi
 }
 
 // Narrow phrasing on purpose: "full service history" on a used-car
-// enquiry must NOT match.
-if (/recall|\bmot\b|service plan|warranty|spare key|gap policy|courtesy car|rental car|direct debit|account login|\bpassword\b|record of (the|my) ['"]?service|certificates? of conformity|copies of (the )?soc\b|request a soc\b|\biva test|parts? department|part number|door mirror|wing mirror|autodimming/i.test(lowered)) {
+// enquiry must NOT match, nor a question about the advertised car's
+// warranty or MOT (see AFTERSALES_INTENT_RE).
+const aftersalesMatch = lowered.match(AFTERSALES_INTENT_RE) || lowered.match(/service plan|spare key|gap policy|courtesy car|rental car|direct debit|account login|\bpassword\b|record of (the|my) ['"]?service|certificates? of conformity|copies of (the )?soc\b|request a soc\b|\biva test|parts? department|part number|door mirror|wing mirror|autodimming/i);
+if (aftersalesMatch) {
 if (isMotabilityHandback(lowered) && !/next car|newer|replace/i.test(lowered)) flagCtx.motab = true;
-return R(6, 'Aftersales', 8, 'high', 'Aftersales/recall/warranty/admin wording (Section 3.6.9).');
+return Object.assign(R(6, 'Aftersales', 8, 'high', 'Aftersales/recall/warranty/admin wording (Section 3.6.9).'), { matched: aftersalesMatch[0] });
 }
 // A day+time still wins over a plain Motability handback: a scheduled
 // visit is a real appointment.
@@ -511,7 +737,7 @@ return null;
 
 // Step 9: free-text date/time. Also used by the reschedule check to see
 // if the request itself carries a new day/time.
-function freeTextDateTime(text, lowered, referenceDate, flagCtx, forReschedule) {
+function freeTextDateTime(text) {
 const hasTime = hasClockTime(text);
 const hasDay = hasDayMention(text);
 if (hasDay && hasTime) {
@@ -524,7 +750,7 @@ return null;
 }
 
 // Step 7: system note templates (Section 7.1-7.9, 7.13-7.15, 7.17).
-function systemTemplates(text, lowered, camp, src, referenceDate, flagCtx) {
+function systemTemplates(text, lowered, camp, src, flagCtx) {
 // 7.1: website test drive.
 if (/Preferred Date\/Time:\s*\d{4}-\d{2}-\d{2},\s*\d{1,2}:\d{2}\s*[AP]M/i.test(text)) {
 return R(1, 'Website Test Drive', 1, 'high', 'Structured new-car form with Preferred Date/Time (Section 7.1).');
@@ -563,7 +789,7 @@ if (valMatch) return classifyValuationUrl(valMatch[1], flagCtx);
 // 7.3: valuation (Customer First and others).
 if (/px derivative:/i.test(text)) return R(5, 'Valuation Only / Sell Only', 6, 'high', 'PX Derivative field present (Section 7.3).');
 if (/owned vehicle price:/i.test(text)) return R(5, 'Valuation Only / Sell Only', 6, 'high', 'Owned Vehicle Price field present (Section 7.3).');
-if (/ds certified-trade in-(ads|generic)|bonus reprise/i.test(text)) { flagCtx.noPx = false; return R(5, 'Valuation Only / Sell Only', 6, 'high', 'DS Certified trade-in template (Section 7.3).'); }
+if (/ds certified-trade in-(ads|generic)|bonus reprise/i.test(text)) { return R(5, 'Valuation Only / Sell Only', 6, 'high', 'DS Certified trade-in template (Section 7.3).'); }
 if (/spoticar-trade in-(ads|generic)/i.test(text)) return R(5, 'Valuation Only / Sell Only', 6, 'high', 'Spoticar trade-in template (Section 7.3/7.15).');
 if (/customer submitted a vehicle valuation for registration/i.test(text)) return R(5, 'Valuation Only / Sell Only', 6, 'high', 'Customer submitted a vehicle valuation template (Section 7.3).');
 
@@ -605,7 +831,7 @@ return R(3, 'Motability: Information Only', 6, 'medium', 'Motability wording, qu
 }
 
 // 7.13: marketplace templates.
-const marketplaceResult = marketplaceTemplates(text, lowered, camp, src, referenceDate, flagCtx);
+const marketplaceResult = marketplaceTemplates(text, lowered, camp, src, flagCtx);
 if (marketplaceResult) return marketplaceResult;
 
 // 7.14: live chat templates (Source = Live chat only; the same wording on
@@ -684,13 +910,11 @@ const comment = commentMatch ? commentMatch[1].trim() : '';
 const commentLower = comment.toLowerCase();
 if (!comment || comment === '-') return R(3, 'Vehicle URL / Video Request', 10, 'high', 'Vehicle URL with a specific stock car, blank comment (Section 7.5).');
 if (/i have a viewing booked|i have a test drive already booked/i.test(commentLower)) {
-if (/video|picture/i.test(commentLower)) flagCtx.systemTransferField = false;
 return R(6, 'Already Booked', 2, 'high', 'Vehicle URL comment references an existing booking (Section 5, Tier 3 rank 10).');
 }
 if (hasDayMention(comment) && hasClockTime(comment)) return R(1, 'Customer-Stated Slot', 3, 'high', 'Vehicle URL comment with day + time (Section 5, Tier 1 rank 3).');
 if (hasDayMention(comment)) return R(2, 'Customer-Stated Day', 3, 'medium', 'Vehicle URL comment with a day only (Section 5, Tier 2 rank 3).');
 if (/on pcp with yourselves|finance with (us|stellantis)|voluntarily terminate.{0,60}(change|reduce|newer|replace)/i.test(commentLower)) {
-flagCtx.noPx = false;
 return R(4, 'Existing Customer: Upgrade', 1, 'medium', 'Vehicle URL comment: existing customer with car/finance with us (Section 3.6.4).');
 }
 if (/currently have|owe just under|wanting a.*pcp/i.test(commentLower) && hasFinanceWording(commentLower)) {
@@ -701,20 +925,17 @@ return R(3, 'Vehicle URL / Video Request', 10, 'medium', 'Vehicle URL with spec/
 }
 
 function autofunnelResult(text, lowered, flagCtx) {
-if (field(text, 'Desc1')) flagCtx.noPx = false;
 return R(5, 'Email Campaign (Autofunnel)', 10, 'medium', 'Autofunnel template (Section 7.6).');
 }
 
 function mbMailResult(text, lowered, flagCtx) {
 const findOutMore = (field(text, 'FindOutMore') || '').toLowerCase();
-if (field(text, 'PartExReg')) flagCtx.noPx = false;
 // Reviewers tiered on Purchase timeframe: ASAP / Within 3 Months = Warm
 // Enquiry, Just Browsing = Nurture.
 const enquiry = field(text, 'Enquiry');
 if (!findOutMore && enquiry !== null) {
 const purchase = (field(text, 'Purchase') || '').toLowerCase();
 const part = (field(text, 'Part') || '').toLowerCase();
-if (/^(yes|possibly)$/.test(part) || field(text, 'Reg')) flagCtx.noPx = false;
 if (/finance/i.test(enquiry)) flagCtx.finance = true;
 if (/^(asap|within 3 months)$/.test(purchase)) {
 return R(4, 'MB Mail Enquiry: Near-term Purchase', 12, 'high', `MB Mail form, Purchase = ${field(text, 'Purchase')} (manual review).`);
@@ -732,7 +953,7 @@ if (/test drive/i.test(findOutMore)) return R(5, 'MB Mail Enquiry Form', 11, 'me
 return R(5, 'MB Mail Enquiry Form', 11, 'low', 'MB Mail form (Section 7.6, bottom of group).');
 }
 
-function marketplaceTemplates(text, lowered, camp, src, referenceDate, flagCtx) {
+function marketplaceTemplates(text, lowered, camp, src, flagCtx) {
 if (src === 'autotrader' || src.startsWith('autotrader')) {
 const tsMatch = text.match(/Message from Consumer at \w{3}, \w{3} \d{1,2}, \d{4} \d{1,2}:\d{2}\s*[AP]M:/i);
 if (tsMatch) {
@@ -763,7 +984,7 @@ return R(4, 'Marketplace Enquiry (non-Autotrader)', 8, 'medium', 'CarGurus trans
 if (msgMatch) {
 const msg = msgMatch[1];
 const msgLower = msg.toLowerCase();
-if (/are you able to transfer this to|transfer this to/i.test(msgLower)) { flagCtx.systemTransferField = false; return R(3, 'Used Enquiry: Specific Car', 7, 'medium', 'CarGurus transfer + view request (Section 5, Tier 3 rank 7).'); }
+if (/are you able to transfer this to|transfer this to/i.test(msgLower)) { return R(3, 'Used Enquiry: Specific Car', 7, 'medium', 'CarGurus transfer + view request (Section 5, Tier 3 rank 7).'); }
 if (/i'?m interested in this.*and i'?d like to know if it'?s still available|i am interested in your.*you can reach me by/i.test(msgLower)) {
 return R(4, 'Marketplace Enquiry (non-Autotrader)', 8, 'low', 'CarGurus bare enquiry template (Section 7.13, bottom).');
 }
@@ -844,9 +1065,9 @@ const commentLower = comment.toLowerCase();
 if (!comment || comment === '-') return R(3, 'Vehicle URL / Video Request', 10, 'high', 'Spoticar form, blank comment (Section 7.15).');
 if (hasDayMention(comment) && hasClockTime(comment)) return R(1, 'Customer-Stated Slot', 3, 'high', 'Spoticar form with day+time (Section 7.15).');
 if (/test drive|view|come to see/i.test(commentLower)) return R(3, 'Test Drive Request (no date)', 2, 'high', 'Spoticar form, test drive/view (Section 7.15).');
-if (/transfer|move.*to/i.test(commentLower)) { flagCtx.systemTransferField = false; return R(3, 'Used Enquiry: Specific Car', 7, 'medium', 'Spoticar form, transfer request (Section 7.15).'); }
+if (/transfer|move.*to/i.test(commentLower)) { return R(3, 'Used Enquiry: Specific Car', 7, 'medium', 'Spoticar form, transfer request (Section 7.15).'); }
 if (hasFinanceWording(commentLower) && !/no finance owned/i.test(commentLower)) { flagCtx.finance = true; return R(3, 'Finance Quote Request: Specific Car', 9, 'medium', 'Spoticar form, finance terms (Section 7.15).'); }
-if (/part ?ex|\bpx\b|trade ?in/i.test(commentLower) && !/purchase|\bbuy\b|straight swap|go ahead|ready to/i.test(commentLower)) { flagCtx.noPx = false; return R(4, 'Valuation + VOI Stated', 9, 'medium', 'Spoticar form, interest in the car with a part exchange (manual review).'); }
+if (/part ?ex|\bpx\b|trade ?in/i.test(commentLower) && !/purchase|\bbuy\b|straight swap|go ahead|ready to/i.test(commentLower)) { return R(4, 'Valuation + VOI Stated', 9, 'medium', 'Spoticar form, interest in the car with a part exchange (manual review).'); }
 return R(3, 'Vehicle URL / Video Request', 10, 'medium', 'Spoticar form comment (Section 7.15).');
 }
 if (/Marketing Code:\s*SP-SPOTICAR-FINANCE/i.test(text)) {
@@ -1116,28 +1337,11 @@ function isSearchSpinnerActive(icon) {
 return !!icon && !icon.classList.contains('ng-hide');
 }
 
-function waitForSpinnerState(active, timeout) {
-return new Promise((resolve) => {
-const icon = findSearchSpinnerIcon();
-if (!icon) { resolve(false); return; }
-if (isSearchSpinnerActive(icon) === active) { resolve(true); return; }
-const timer = setTimeout(() => { observer.disconnect(); resolve(false); }, timeout);
-const observer = new MutationObserver(() => {
-if (isSearchSpinnerActive(icon) === active) {
-clearTimeout(timer);
-observer.disconnect();
-resolve(true);
-}
-});
-observer.observe(icon, { attributes: true, attributeFilter: ['class'] });
-});
-}
-
 function waitForElement(selector, timeout = 8000) {
 return new Promise((resolve) => {
 const existing = document.querySelector(selector);
 if (existing) { resolve(existing); return; }
-const timer = setTimeout(() => { observer.disconnect(); resolve(null); }, timeout);
+const timer = setTimeout(() => { observer.disconnect(); resolve(null); }, pageLimit(timeout));
 const observer = new MutationObserver(() => {
 const el = document.querySelector(selector);
 if (el) { clearTimeout(timer); observer.disconnect(); resolve(el); }
@@ -1168,7 +1372,7 @@ input.dispatchEvent(new Event('change', { bubbles: true }));
 await sleep(20);
 setNativeValue(input, value);
 input.dispatchEvent(new Event('change', { bubbles: true }));
-await sleep(150);
+await sleep(pagePause(150));
 return input.value === value;
 }
 
@@ -1236,33 +1440,37 @@ function findTimelineRoot() {
 return document.querySelector(TIMELINE_ROOT_SELECTOR) || document.querySelector(TIMELINE_ROOT_FALLBACK_SELECTOR);
 }
 
+// Pure. The readiness decision from what the page shows.
+function timelineReadyStateFrom(seen) {
+if (!seen.routeActive) return { state: 'NOT_READY', reason: 'Connected-customer route not active' };
+if (!seen.hasRoots) return { state: 'NOT_READY', reason: 'Customer or timeline root absent' };
+if (seen.loading || !seen.refreshReady) {
+return { state: 'LOADING', reason: seen.loading ? 'Refreshing indicator is visibly rendered' : 'Refresh control is not yet visibly rendered' };
+}
+if (seen.pinkEntries > 0) {
+return { state: 'READY_WITH_SALES_LEADS', reason: 'Loading indicator hidden, Refresh visible, eligible pink entries present', eligiblePinkEntries: seen.pinkEntries };
+}
+return { state: 'READY_WITH_ZERO_ELIGIBLE_SALES_LEADS', reason: 'Loading indicator hidden and Refresh visible; no eligible pink entries present', eligiblePinkEntries: 0 };
+}
+
 function getTimelineReadyState() {
-if (!CONNECTED_CUSTOMER_ROUTE_PATTERN.test(window.location.hash)) {
-return { state: 'NOT_READY', reason: 'Connected-customer route not active' };
-}
-
-const customerRoot = findCustomerRoot();
-const timelineRoot = findTimelineRoot();
-if (!customerRoot || !timelineRoot) {
-return { state: 'NOT_READY', reason: 'Customer or timeline root absent' };
-}
-
-const loading = isRendered(document.querySelector(TIMELINE_LOADING_SELECTOR));
-const refreshReady = isRendered(document.querySelector(TIMELINE_REFRESH_READY_SELECTOR));
-if (loading || !refreshReady) {
-return { state: 'LOADING', reason: loading ? 'Refreshing indicator is visibly rendered' : 'Refresh control is not yet visibly rendered' };
-}
-
-const eligiblePinkEntries = timelineRoot.querySelectorAll('a.connected-customer-timeline-centre-pink').length;
-if (eligiblePinkEntries > 0) {
-return { state: 'READY_WITH_SALES_LEADS', reason: 'Loading indicator hidden, Refresh visible, eligible pink entries present', timelineRoot, eligiblePinkEntries };
-}
-return { state: 'READY_WITH_ZERO_ELIGIBLE_SALES_LEADS', reason: 'Loading indicator hidden and Refresh visible; no eligible pink entries present', timelineRoot, eligiblePinkEntries: 0 };
+const routeActive = CONNECTED_CUSTOMER_ROUTE_PATTERN.test(window.location.hash);
+const timelineRoot = routeActive ? findTimelineRoot() : null;
+const hasRoots = !!(routeActive && findCustomerRoot() && timelineRoot);
+const state = timelineReadyStateFrom({
+routeActive, hasRoots,
+loading: hasRoots && isRendered(document.querySelector(TIMELINE_LOADING_SELECTOR)),
+refreshReady: hasRoots && isRendered(document.querySelector(TIMELINE_REFRESH_READY_SELECTOR)),
+pinkEntries: hasRoots ? timelineRoot.querySelectorAll('a.connected-customer-timeline-centre-pink').length : 0
+});
+if (state.eligiblePinkEntries !== undefined) state.timelineRoot = timelineRoot;
+return state;
 }
 
 function waitForTimelineReady(timeout = 10000) {
 return new Promise((resolve) => {
 const startedAt = Date.now();
+const limit = pageLimit(timeout);
 let settled = false;
 let settleTimer = null;
 let lastEntryCount = -1;
@@ -1286,7 +1494,7 @@ if (stillReady && recheck.eligiblePinkEntries === lastEntryCount) {
 finish(recheck);
 }
 // Otherwise the next mutation/poll tick re-drives check() itself.
-}, 300);
+}, pagePause(300));
 }
 
 function check() {
@@ -1296,7 +1504,7 @@ if (state.state === 'READY_WITH_SALES_LEADS' || state.state === 'READY_WITH_ZERO
 if (!settleTimer || state.eligiblePinkEntries !== lastEntryCount) scheduleSettleCheck(state);
 return false;
 }
-if (Date.now() - startedAt >= timeout) {
+if (Date.now() - startedAt >= limit) {
 finish({ state: 'FAILED', reason: `Timed out waiting for timeline readiness (last state: ${state.state} - ${state.reason})` });
 return true;
 }
@@ -1332,11 +1540,20 @@ if (actual !== expected) failures.push(`${label}: expected ${expected}, got ${ac
 check('connected customer route matches', CONNECTED_CUSTOMER_ROUTE_PATTERN.test('#/connectedCustomer/3487237?redirectRoute=%2Fsearch'), true);
 check('connected customer route matches with no query', CONNECTED_CUSTOMER_ROUTE_PATTERN.test('#/connectedCustomer/3487237'), true);
 check('search route does not match', CONNECTED_CUSTOMER_ROUTE_PATTERN.test('#/search?redirectRoute=%2Fsearch'), false);
+const seen = { routeActive: true, hasRoots: true, loading: false, refreshReady: true, pinkEntries: 2 };
+const stateOf = (patch) => timelineReadyStateFrom({ ...seen, ...patch }).state;
+check('ready with sales leads', stateOf({}), 'READY_WITH_SALES_LEADS');
+check('ready with no sales leads is still ready', stateOf({ pinkEntries: 0 }), 'READY_WITH_ZERO_ELIGIBLE_SALES_LEADS');
+check('the route alone is not ready', stateOf({ hasRoots: false }), 'NOT_READY');
+check('another route is not ready', stateOf({ routeActive: false }), 'NOT_READY');
+check('the refreshing icon means loading, whatever else shows', stateOf({ loading: true }), 'LOADING');
+check('no Refresh control yet means loading', stateOf({ refreshReady: false }), 'LOADING');
+check('entries are only counted once ready', timelineReadyStateFrom({ ...seen, loading: true }).eligiblePinkEntries, undefined);
 
 if (failures.length > 0) {
 console.error('KonnectLeadChecker timeline-readiness self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectLeadChecker timeline-readiness self-test passed (3/3)');
+console.info('KonnectLeadChecker timeline-readiness self-test passed (10/10)');
 }
 });
 
@@ -1585,10 +1802,6 @@ if (postClosureEntries.length !== 1) return null;
 return extractVisibleLeadId(postClosureEntries[0]);
 }
 
-function isPostClosureLeadAlreadyEngaged(targetLeadId) {
-return !!postClosureSendBackReason(targetLeadId).reason;
-}
-
 // Why a Post Closure lead goes back through. Returns { reason, evidence };
 // an empty reason means it needs contact. notes is { sent, team }: what
 // was sent through to Enquiry Max (Follow Up tab) and the team's own notes.
@@ -1607,6 +1820,22 @@ const SEND_BACK_SHORTHAND = { 'Actioned by dealership': 'CAD', 'Email only': 'CA
 // a conversation, so they never mean in market.
 const NO_CONTACT_NOTES = /no answer|voicemail|\bvm\b|max(imum)? attempts|unable to (reach|contact|get hold)|not answering|no response/i;
 const SPOKE_NOTES = /spoke|spoken|in market|won'?t commit|wont commit/i;
+// The line Konnect itself writes for a send. It says nothing about the
+// customer, so it never decides anything.
+const BARE_SEND_LINE = /^\s*lead sent to enquiry ?max\.?\s*$/i;
+
+// Pure. True when the text says email only and does not say it is not
+// ("not email only", "isn't an email only lead").
+function saysEmailOnly(text) {
+const source = String(text || '');
+const re = /email only/gi;
+let m;
+while ((m = re.exec(source))) {
+const before = source.slice(Math.max(0, m.index - 24), m.index);
+if (!/\b(not|isn'?t|is not|wasn'?t|was not|no longer|never)\s+(an?\s+|strictly\s+|just\s+)?$/i.test(before)) return true;
+}
+return false;
+}
 
 function describeTimelineEntry(item) {
 const when = item.AboveLineTitleDate || String(item.EventTime || '').slice(0, 16).replace('T', ' ');
@@ -1639,14 +1868,14 @@ if (onLead) return decide(SEND_BACK_REASONS.dealer, describeTimelineEntry(onLead
 const afterSend = dealerActionAfterSend(items, allSends);
 if (afterSend) return decide(SEND_BACK_REASONS.dealer, describeTimelineEntry(afterSend));
 if (engagedOnLead) return decide(SEND_BACK_REASONS.dealer, 'Scheduled call, Spoke To Customer or Lead Rejected on this lead');
-const sent = String((notes && notes.sent) || '').trim();
+const sent = String((notes && notes.sent) || '').split(' | ').filter((part) => part.trim() && !BARE_SEND_LINE.test(part)).join(' | ').trim();
 if (sent) {
-if (/email only/i.test(sent)) return decide(SEND_BACK_REASONS.emailOnly, `Sent through: ${notesSnippet(sent)}`);
+if (saysEmailOnly(sent)) return decide(SEND_BACK_REASONS.emailOnly, `Sent through: ${notesSnippet(sent)}`);
 if (SPOKE_NOTES.test(sent) || !NO_CONTACT_NOTES.test(sent)) return decide(SEND_BACK_REASONS.inMarket, `Sent through: ${notesSnippet(sent)}`);
 }
 if (allSends.length === 0) return decide('');
 const team = String((notes && notes.team) || '');
-if (/email only/i.test(team)) return decide(SEND_BACK_REASONS.emailOnly, `Team notes: ${notesSnippet(team)}`);
+if (saysEmailOnly(team)) return decide(SEND_BACK_REASONS.emailOnly, `Team notes: ${notesSnippet(team)}`);
 if (!match || match.sends.length === 0) return decide('');
 const lastSend = Math.max(...match.sends.map((x) => x.at));
 const hubCalls = items.filter((i) => Number(i.TimelineItemType) === 3 && String(i.LeadID) === String(match.source.LeadID)
@@ -1659,9 +1888,6 @@ if (spokeCall) return decide(SEND_BACK_REASONS.inMarket, describeTimelineEntry(s
 return decide('');
 }
 
-// Pure. What was sent through to Enquiry Max, from the lead window's
-// Follow Up tab: the newest entry naming Enquiry Max plus any comments
-// made in the same minute (the agent's notes sit beside the system line).
 function parseFollowUpDate(text) {
 const m = String(text || '').match(/(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3})[a-z]*\s+(\d{4})\s+(\d{1,2}):(\d{2})/);
 if (!m) return null;
@@ -1669,14 +1895,21 @@ const month = MONTH_NAMES[m[2].toLowerCase()];
 return month == null ? null : new Date(+m[3], month, +m[1], +m[4], +m[5]).getTime();
 }
 
+// Pure. What the agent said when the lead was sent through to Enquiry Max,
+// from the lead window's Follow Up tab: the comments made within a few
+// minutes of the newest send (the agent's notes sit beside the system
+// line, often a minute before it). The system line itself is left out.
+const SENT_NOTES_WINDOW_MS = 5 * 60 * 1000;
 function sentThroughNotes(followUp) {
 const list = (followUp || []).map((c) => ({ ...c, at: parseFollowUpDate(c.CreatedDate) }));
 // The hub's own Post Closure note to Enquiry Max is not a send.
 const sends = list.filter((c) => /enquiry ?max/i.test(String(c.Comment || '')) && !/post closure/i.test(String(c.Comment || '')));
 if (sends.length === 0) return '';
 const newest = sends.reduce((a, b) => ((b.at || 0) > (a.at || 0) ? b : a));
-return list.filter((c) => c === newest || (c.at != null && c.at === newest.at))
-.map((c) => String(c.Comment || '').trim()).filter(Boolean).join(' | ');
+return list.filter((c) => c !== newest && c.at != null && newest.at != null && Math.abs(c.at - newest.at) <= SENT_NOTES_WINDOW_MS)
+.concat(BARE_SEND_LINE.test(String(newest.Comment || '')) ? [] : [newest])
+.map((c) => String(c.Comment || '').trim())
+.filter((text) => text && !BARE_SEND_LINE.test(text) && !/post closure/i.test(text)).join(' | ');
 }
 
 // Pure. The lead the Post Closure lead was made from is the latest earlier
@@ -1708,11 +1941,14 @@ const sends = items.filter((i) => Number(i.TimelineItemType) === 2 && String(i.L
 return { source, sends };
 }
 
-// Pure. The dealership a timeline entry names: "... at Preston" or
-// "Offer Sent by X for Preston". The last such phrase wins.
-function dealerNamedIn(item) {
-const m = String(item.Description || '').match(/^.*\b(?:at|for)\s+(.+?)\s*\.?\s*$/i);
+// Pure. The dealerships a timeline entry names: "... at Preston" or
+// "Offer Sent by X for Preston". A Description can run over several lines,
+// so each line gives its last such phrase and any of them can match.
+function dealersNamedIn(item) {
+return String(item.Description || '').split(/[\r\n]+/).map((line) => {
+const m = line.match(/^.*\b(?:at|for)\s+(.+?)\s*\.?\s*$/i);
 return m ? m[1].trim().toLowerCase() : '';
+}).filter(Boolean);
 }
 
 // Pure. Entries only a dealership creates: an offer sent, an advisor
@@ -1732,18 +1968,13 @@ return false;
 
 // A dealer action from the dealership a send went to, after that send,
 // on any lead (dealers often log against a walk-in lead they create).
-function dealerActionAfterSend(items, sends, actionTest) {
-const test = actionTest || isDealerAction;
+function dealerActionAfterSend(items, sends) {
 return items.find((i) => {
-if (!test(i)) return false;
+if (!isDealerAction(i)) return false;
 const at = eventTimeMs(i.EventTime);
-return at != null && sends.some((x) => x.dealer === dealerNamedIn(i) && at >= x.at);
+const named = dealersNamedIn(i);
+return at != null && sends.some((x) => named.includes(x.dealer) && at >= x.at);
 }) || null;
-}
-
-function dealerScheduledCallAfterSend(items, postClosureLeadId) {
-const match = postClosureSourceLead(items, postClosureLeadId);
-return !!match && !!dealerActionAfterSend(items, match.sends, (i) => Number(i.TimelineItemType) === 3 && /\bscheduled a call\b/i.test(String(i.BelowLineTitle || '')));
 }
 
 // ===================================================================
@@ -1983,7 +2214,7 @@ function waitForActiveLeadModal(timeout = 3000) {
 return new Promise((resolve) => {
 const existing = findActiveLeadModalState();
 if (existing) { resolve(existing); return; }
-const timer = setTimeout(() => { observer.disconnect(); resolve(null); }, timeout);
+const timer = setTimeout(() => { observer.disconnect(); resolve(null); }, pageLimit(timeout));
 const observer = new MutationObserver(() => {
 const state = findActiveLeadModalState();
 if (state) { clearTimeout(timer); observer.disconnect(); resolve(state); }
@@ -2120,7 +2351,7 @@ return Array.from(document.querySelectorAll('.modal[role="dialog"].in')).some(is
 function waitForLeadModalGone(timeout = 750) {
 return new Promise((resolve) => {
 if (!isAnyLeadModalVisible()) { resolve(true); return; }
-const timer = setTimeout(() => { observer.disconnect(); resolve(!isAnyLeadModalVisible()); }, timeout);
+const timer = setTimeout(() => { observer.disconnect(); resolve(!isAnyLeadModalVisible()); }, pageLimit(timeout));
 const observer = new MutationObserver(() => {
 if (!isAnyLeadModalVisible()) { clearTimeout(timer); observer.disconnect(); resolve(true); }
 });
@@ -2166,7 +2397,7 @@ window.scrollTo(window.scrollX, Math.max(0, before - window.innerHeight));
 if (window.scrollY === before) break;
 }
 
-await sleep(settleMs);
+await sleep(pagePause(settleMs));
 const afterKeys = getLoadedLeadEntries().map(timelineEntryKey);
 if (afterKeys.some((key) => !beforeKeys.has(key))) {
 return { status: 'OK', loadedNewEntries: true, scrollContainer: scrollTarget ? 'internal' : 'window' };
@@ -2183,8 +2414,9 @@ return String(value || '').trim().toLowerCase();
 }
 
 function normalizePhone(value) {
-const digits = String(value || '').replace(/\D+/g, '');
-if (digits.startsWith('44')) return '0' + digits.slice(2);
+// "+44 (0)7700 900123": the bracketed 0 is dropped with the country code.
+const digits = String(value || '').replace(/\(0\)/g, '').replace(/\D+/g, '').replace(/^00(?=44)/, '');
+if (digits.startsWith('44')) return '0' + digits.slice(2).replace(/^0/, '');
 return digits;
 }
 
@@ -2406,35 +2638,20 @@ if (!button || button.disabled) return null;
 const before = searchGridSignature();
 button.click();
 const startedAt = Date.now();
+const limit = pageLimit(timeout);
 let sawSpinner = false;
-while (Date.now() - startedAt < timeout) {
+while (Date.now() - startedAt < limit) {
 await sleep(200);
 if (isSearchSpinnerActive(findSearchSpinnerIcon())) { sawSpinner = true; continue; }
 const elapsed = Date.now() - startedAt;
 const changed = searchGridSignature() !== before;
-if (sawSpinner || (changed && elapsed > 1000) || elapsed > 6000) {
+if (sawSpinner || (changed && elapsed > pagePause(1000)) || elapsed > pageLimit(6000)) {
 const raw = findRecordsFoundValue();
 if (raw !== null && raw !== '' && !isNaN(Number(raw))) return Number(raw);
 return readSearchResultRows().length;
 }
 }
 return null;
-}
-
-async function runNationalSearch(type, value, session) {
-for (let attempt = 0; attempt < 2; attempt++) {
-const opened = await openSearchPage();
-if (isCancelled(session)) return { status: 'CANCELLED' };
-if (!opened) continue;
-if (!(await selectSearchType(type))) continue;
-if (!(await enterSearchIdentifier(value))) continue;
-const count = await submitSearchAndSettle();
-if (isCancelled(session)) return { status: 'CANCELLED' };
-if (count === null) continue;
-if (count === 0) return { status: 'SEARCH_NO_RESULTS' };
-return { status: 'OK', rows: readSearchResultRows() };
-}
-return { status: 'SEARCH_TIMEOUT' };
 }
 
 // Opens one search result the way a person does: by clicking its row.
@@ -2455,12 +2672,13 @@ return state;
 // the number of entries has stopped changing.
 async function waitForTimelineItemsSettled(maxMs = 6000) {
 const startedAt = Date.now();
+const limit = pageLimit(maxMs);
 let last = -1;
 let stableSince = Date.now();
-while (Date.now() - startedAt < maxMs) {
+while (Date.now() - startedAt < limit) {
 const n = getAllTimelineRows().length;
 if (n !== last) { last = n; stableSince = Date.now(); }
-else if (n > 0 && Date.now() - stableSince > 800) return n;
+else if (n > 0 && Date.now() - stableSince > pagePause(800)) return n;
 await sleep(200);
 }
 return last;
@@ -2511,13 +2729,13 @@ const sample = group.rows[0];
 let search = { status: 'SEARCH_NO_RESULTS' };
 const name = stripNameTitle(sample.name);
 if (name) {
-search = await runNationalSearch('name', name, session);
+search = await runCustomerSearch('name', name, session);
 if (search.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
 }
 // Nothing by name: the reg (or lead reference) is the other way in.
 if (search.status !== 'OK') {
 for (const reg of group.rows.map((r) => r.reg).filter(Boolean)) {
-const byReg = await runNationalSearch('reg', reg, session);
+const byReg = await runCustomerSearch('reg', reg, session);
 if (byReg.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
 if (byReg.status === 'OK') { search = Object.assign(byReg, { spec: { type: 'reg', value: reg } }); break; }
 }
@@ -2537,17 +2755,17 @@ return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
 }
 
 // More than one record: keep the one whose timeline holds these leads.
-const byName = (id) => openSearchResultById(runNationalSearch, search.spec || { type: 'name', value: name }, id, session);
+const byName = (id) => openSearchResultById(runCustomerSearch, search.spec || { type: 'name', value: name }, id, session);
 let chosen = await openRecordHoldingLeads(ids, group, session, undefined, byName);
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 // None of the name matches holds them: the reg points straight at the record.
 for (const reg of chosen ? [] : regs) {
-const byReg = await runNationalSearch('reg', reg, session);
+const byReg = await runCustomerSearch('reg', reg, session);
 if (byReg.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
 if (byReg.status !== 'OK') continue;
 const regIds = nationalCandidateIds(byReg.rows, sample.name, [reg]).filter((id) => !ids.includes(id));
 if (regIds.length === 0) continue;
-chosen = await openRecordHoldingLeads(regIds, group, session, undefined, (id) => openSearchResultById(runNationalSearch, { type: 'reg', value: reg }, id, session));
+chosen = await openRecordHoldingLeads(regIds, group, session, undefined, (id) => openSearchResultById(runCustomerSearch, { type: 'reg', value: reg }, id, session));
 if (chosen) break;
 }
 if (!chosen) return { status: 'FAILED', exception: 'LEAD_NOT_ON_MATCHING_CUSTOMERS' };
@@ -2773,7 +2991,7 @@ function waitForRepeat(container, expr, timeout) {
 return new Promise((resolve) => {
 const find = () => container.querySelectorAll(`[ng-repeat^="${expr}"]`);
 if (find().length) { resolve(true); return; }
-const timer = setTimeout(() => { observer.disconnect(); resolve(find().length > 0); }, timeout);
+const timer = setTimeout(() => { observer.disconnect(); resolve(find().length > 0); }, pageLimit(timeout));
 const observer = new MutationObserver(() => { if (find().length) { clearTimeout(timer); observer.disconnect(); resolve(true); } });
 observer.observe(container, { childList: true, subtree: true });
 });
@@ -2789,7 +3007,7 @@ async function clickModalTab(modal, label) {
 const tab = Array.from(modal.querySelectorAll('a.nav-link')).find((a) => a.textContent.replace(/\s+/g, ' ').trim() === label);
 if (!tab) return false;
 tab.click();
-await sleep(250);
+await sleep(pagePause(250));
 return true;
 }
 
@@ -2981,6 +3199,7 @@ if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
 
 check('normalizeEmail trims+lowercases', normalizeEmail(' Foo@Bar.COM '), 'foo@bar.com');
 check('normalizePhone +44 form', normalizePhone('+44 7700 900123'), '07700900123');
+check('normalizePhone +44 (0) and 0044 forms', [normalizePhone('+44 (0)7700 900123'), normalizePhone('0044 7700 900123'), normalizePhone('+4407700900123')], ['07700900123', '07700900123', '07700900123']);
 check('normalizePhone leading-0 form matches +44 form', normalizePhone('07700900123'), normalizePhone('+44 7700 900123'));
 
 const goodBatch = [
@@ -3002,7 +3221,7 @@ check('parseBatchInput rejects the old 7-column Registration header', parseBatch
 if (failures.length > 0) {
 console.error('KonnectLeadChecker batch-input self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectLeadChecker batch-input self-test passed (6/6)');
+console.info('KonnectLeadChecker batch-input self-test passed (7/7)');
 }
 });
 
@@ -3222,7 +3441,7 @@ const failures = [];
 // An optional 6th element pins the confidence too, since confidence
 // decides whether a lead goes to Needs Review.
 cases.forEach(([id, notes, campaign, source, expectedTier, expectedConfidence]) => {
-const result = classifyLead(notes, { campaign, source, created: 'Sun, 27 Sep 2026 12:00' });
+const result = classifyLead(notes, { campaign, source });
 if (result.tier !== expectedTier) {
 failures.push(`${id}: expected tier ${expectedTier}, got tier ${result.tier} (${result.subCategory}) - reason: ${result.reason}`);
 }
@@ -3352,7 +3571,7 @@ const SESSION_STORAGE_KEY = 'konnectLeadChecker:session:v1';
 // Bump CLASSIFIER_VERSION whenever classifyLead's rules change: results
 // from an older version are re-checked rather than carried into a new
 // paste. SESSION_SCHEMA changes when the stored session shape changes.
-const CLASSIFIER_VERSION = '2026-11-10b';
+const CLASSIFIER_VERSION = '2026-11-11a';
 const SESSION_SCHEMA = 2;
 // The stored batch holds customer details, so it is dropped after a shift.
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
@@ -3457,10 +3676,6 @@ function finalizeResult(result, patch) {
 return postClosureOnly(Object.assign({}, result, patch, { processingTimestamp: new Date().toISOString(), classifierVersion: CLASSIFIER_VERSION }));
 }
 
-// Pure. A Post Closure lead is only ever "send back through" or "check:
-// needs contact?", everywhere: its notes are not given a tier, and a low
-// confidence tier guess is not a reason to review it. Real exceptions (lead
-// not found, cancelled) stay as they are.
 // Pure. Whether the lead being checked is a Post Closure lead: by the
 // batch's source, the lead's own Source, or its timeline heading.
 function isPostClosureEntry(row, panelFields, entryRow) {
@@ -3470,6 +3685,10 @@ const heading = entryRow && typeof entryRow.querySelector === 'function' ? entry
 return !!heading && /post closure processing/i.test(heading.textContent || '');
 }
 
+// Pure. A Post Closure lead is only ever "send back through" or "check:
+// needs contact?", everywhere: its notes are not given a tier, and a low
+// confidence tier guess is not a reason to review it. Real exceptions (lead
+// not found, cancelled) stay as they are.
 function postClosureOnly(r) {
 const isPostClosure = !!r.postClosureAction || /^post closure processing$/i.test(String(r.source || '').trim());
 if (!isPostClosure) return r;
@@ -3509,7 +3728,7 @@ if (previousSession && previousSession.mode !== 'national' && parsed.mode !== 'n
 previousSession.rows.forEach((prevRow) => {
 const prevResult = previousSession.results[prevRow.inputIndex];
 // A result from an older classifier is re-checked, not carried over.
-if (prevResult && prevResult.classifierVersion === CLASSIFIER_VERSION) carriedResultsByIdentity.set(rowIdentityKey(prevRow), prevResult);
+if (prevResult && prevResult.classifierVersion === CLASSIFIER_VERSION && prevResult.exception !== 'CANCELLED') carriedResultsByIdentity.set(rowIdentityKey(prevRow), prevResult);
 });
 }
 
@@ -3535,14 +3754,12 @@ done: !parsed.headerOk || groupIndex >= groups.length
 };
 }
 
-// Email first; phone only with no email, or once after email finds no
-// records. A non-unique or unlinked result is terminal for that attempt.
-// session is optional and checked between every awaited sub-step.
 function isCancelled(session) {
 return !!(session && session.cancelled);
 }
 
-// Runs one search (with one retry) and returns {status, rows}.
+// Runs one search (with one retry) and returns {status, rows}. Used for
+// every kind of batch.
 async function runCustomerSearch(type, value, session) {
 for (let attempt = 0; attempt < 2; attempt++) {
 const opened = await openSearchPage();
@@ -3565,6 +3782,10 @@ if (row.mode === 'postClosureList') return findNewestPostClosureCandidates(new D
 return findMatchingLeadCandidates(row.created, new Date()).candidates.length > 0;
 }
 
+// Email first, then phone, then the name as a last resort. An attempt that
+// finds no records moves on to the next; one that finds records without
+// the lead ends the search. session is optional and checked between every
+// awaited sub-step.
 async function searchAndOpenCustomer(group, session) {
 const sample = group.rows[0];
 if (sample.mode === 'national') return searchAndOpenNationalCustomer(group, session);
@@ -3802,10 +4023,11 @@ const decision = isPostClosureLead
 ? postClosureSendBackReason(candidate.leadId, { sent: sentThroughNotes(followUp), team: initialNotes })
 : { reason: '', evidence: '' };
 const alreadyEngagedCallEntry = !!decision.reason;
-const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, created: row.created, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry, leadRequest: panelFields.campaign && panelFields.campaign.parenthetical });
+const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry, leadRequest: panelFields.campaign && panelFields.campaign.parenthetical });
 if (classification.confidence === 'low') {
 // Tentative tier and reasoning are kept on an EXCEPTION so a reviewer can
-// see them; it is never auto-applied.
+// see them; it is never auto-applied, and the export leaves the tier blank
+// until it is reviewed.
 return finalizeResult(result, {
 status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', initialNotes,
 source: classification.source,
@@ -3813,7 +4035,7 @@ tier: classification.tier, tierName: classification.tierName, subCategory: class
 flags: classification.flags, dedupeKey: classification.dedupeKey, postClosureAction: classification.postClosureAction,
 postClosureReason: classification.postClosureAction === 'send back through' ? decision.reason : '',
 postClosureEvidence: classification.postClosureAction === 'send back through' ? decision.evidence : '',
-reason: classification.reason, confidence: classification.confidence, ...auditPatch
+reason: classification.reason, confidence: classification.confidence, alternative: classification.alternative || null, ...auditPatch
 });
 }
 
@@ -3860,6 +4082,18 @@ if (pendingLike === 0) return { ...scenario, label: 'Normal check: SLA', detail:
 return scenario;
 }
 
+// Pure. What the time beside each lead is: SLA rows carry the created
+// time, Pending rows the last actioned time, and the customer search table
+// carries none.
+function leadTimeLabel(mode, rows) {
+if (mode === 'postClosureList') return 'Lead';
+if (mode === 'national') return 'Lead created';
+const label = checkScenarioOf(mode, rows).label;
+if (/Pending$/.test(label)) return 'Last actioned';
+if (/SLA$/.test(label)) return 'Lead created';
+return 'Created or last actioned';
+}
+
 runSelfTest('postClosureSearchBatchSelfTest', function postClosureSearchBatchSelfTest() {
 const failures = [];
 const check = (label, actual, expected) => { if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`); };
@@ -3884,6 +4118,7 @@ t(1, 1400101, '08T14:18', '', 'Walk-in lead created in Enquiry Max at Preston', 
 t(1, 1400102, '09T15:15', 'Manually Created Sales Lead from Post Closure Processing', "New Sales Lead, 'Enquiry Request' for Preston Lead routed", false)
 ];
 const edit = (list, type, patch) => list.map((i) => (i.TimelineItemType === type ? { ...i, ...patch } : i));
+const dealerScheduledCallAfterSend = (items, leadId) => { const match = postClosureSourceLead(items, leadId); return !!match && !!dealerActionAfterSend(items, match.sends); };
 check('matching lead was sent to the dealership, which then scheduled a call on another lead', dealerScheduledCallAfterSend(walkIn, 1400102), true);
 check('a call scheduled by another dealership does not count', dealerScheduledCallAfterSend(edit(walkIn, 3, { Description: 'New Enquiry at Crawley' }), 1400102), false);
 check('a call scheduled before the send does not count', dealerScheduledCallAfterSend(edit(walkIn, 3, { EventTime: '2026-11-08T09:00:00+00:00' }), 1400102), false);
@@ -3920,7 +4155,7 @@ check('an older lead with another request is not the matching lead', postClosure
 check('the deciding entry is given as evidence', postClosureDecision(offered, 1400201, false).evidence, 'Offer Sent: Offer Sent by Dealer C for Preston (2026-11-06 10:20)');
 const sentOnly = walkIn.filter((i) => i.TimelineItemType !== 3);
 check('notes sent through saying email only', postClosureDecision(sentOnly, 1400102, false, { sent: 'Lead sent to Enquiry Max | Email only lead, no number given' }).reason, 'Email only');
-check('other notes sent through mean in market', postClosureDecision(sentOnly, 1400102, false, { sent: 'Lead sent to Enquiry Max | Booked test drive Saturday' }), { reason: "In market won't commit", evidence: 'Sent through: Lead sent to Enquiry Max | Booked test drive Saturday' });
+check('other notes sent through mean in market', postClosureDecision(sentOnly, 1400102, false, { sent: 'Lead sent to Enquiry Max | Booked test drive Saturday' }), { reason: "In market won't commit", evidence: 'Sent through: Booked test drive Saturday' });
 check('voicemail notes sent through are not in market', postClosureDecision(sentOnly, 1400102, false, { sent: 'Lead sent to Enquiry Max | No answer, voicemail left x3, max attempts' }).reason, '');
 check('spoke notes that mention a voicemail are in market', postClosureDecision(sentOnly, 1400102, false, { sent: 'Lead sent to Enquiry Max | Spoke to customer, left voicemail after' }).reason, "In market won't commit");
 check('team notes saying email only when nothing was sent with notes', postClosureDecision(sentOnly, 1400102, false, { sent: '', team: 'Customer Comments: -\nEmail only lead' }).reason, 'Email only');
@@ -3931,7 +4166,17 @@ const followUp = [
 { CreatedDate: 'Fri 6th Nov 2026 09:42', CreatedBy: 'Agent A', Comment: 'Tried calling, no answer' },
 { CreatedDate: 'Sat 7th Nov 2026 10:00', CreatedBy: 'Agent B', Comment: 'Post Closure note sent to Enquiry Max' }
 ];
-check('notes sent through are the newest send and its minute', sentThroughNotes(followUp), 'Lead sent to Enquiry Max | Email only lead');
+check('notes sent through are the comments within a few minutes of the newest send, without the system line', sentThroughNotes(followUp), 'Email only lead | Tried calling, no answer');
+check('a send with no agent comment gives no notes', sentThroughNotes(followUp.slice(0, 1)), '');
+check('a comment long before the send is not part of it', sentThroughNotes([followUp[0], { CreatedDate: 'Fri 6th Nov 2026 09:20', CreatedBy: 'Agent A', Comment: 'Spoke to customer' }]), '');
+check('an agent comment that itself records the send is kept', sentThroughNotes([{ CreatedDate: 'Fri 6th Nov 2026 09:43', CreatedBy: 'Agent A', Comment: 'Spoke to customer, sent to Enquiry Max' }]), 'Spoke to customer, sent to Enquiry Max');
+check('a bare send line alone decides nothing', postClosureDecision(sentOnly, 1400102, false, { sent: 'Lead sent to Enquiry Max' }).reason, '');
+check('a no answer note a minute before the send is not in market', postClosureDecision(sentOnly, 1400102, false, { sent: sentThroughNotes([followUp[0], { CreatedDate: 'Fri 6th Nov 2026 09:42', CreatedBy: 'Agent A', Comment: 'No answer, max attempts' }]) }).reason, '');
+check('"not email only" in the team notes is not email only', postClosureDecision(sentOnly, 1400102, false, { sent: '', team: 'Customer is not email only, please call' }).reason, '');
+check('"not email only" sent through is not email only', postClosureDecision(sentOnly, 1400102, false, { sent: 'Spoke to customer, this is not an email only lead' }).reason, "In market won't commit");
+check('email only wording', [saysEmailOnly('Email only lead'), saysEmailOnly('EMAIL ONLY - no number'), saysEmailOnly("isn't email only"), saysEmailOnly('Not email only. Later: email only please')], [true, true, false, true]);
+check('the dealerships named in a Description that runs over several lines', [dealersNamedIn({ Description: 'New Enquiry at Preston\r\nCustomer asked for a call back' }), dealersNamedIn({ Description: 'No Answer, Message Left.\r\nMax Attempts Reached\r\n' })], [['preston', 'a call back'], []]);
+check('a dealer action whose Description runs over several lines still matches the send', postClosureDecision(edit(walkIn, 3, { Description: 'New Enquiry at Preston\r\nCustomer asked for a call back' }), 1400102, false).reason, 'Actioned by dealership');
 check('no send in Follow Up means no sent notes', sentThroughNotes(followUp.slice(2)), '');
 check('Follow Up dates read', parseFollowUpDate('Fri 6th Nov 2026 09:43'), new Date(2026, 10, 6, 9, 43).getTime());
 check('dealer entries are recognised', [
@@ -3940,7 +4185,7 @@ isDealerAction(t(3, 1, '01T09:00', 'Dealer B Completed a call', 'Unknown reason 
 isDealerAction(t(3, 1, '01T09:00', 'Agent A called the customer with an outcome of No Answer', 'New Enquiry at Preston', true)),
 isDealerAction(t(9, 1, '01T09:00', 'Sale (Offer Accepted)', "Final Outcome 'Sale (Offer Accepted)' set by Dealer B at Preston", false))
 ], [true, true, false, true]);
-check('the dealership named in an entry', [dealerNamedIn({ Description: 'Offer Sent by Dealer C for Preston' }), dealerNamedIn({ Description: "Final Outcome 'No Sale' set by Dealer D at Preston" })], ['preston', 'preston']);
+check('the dealership named in an entry', [dealersNamedIn({ Description: 'Offer Sent by Dealer C for Preston' }), dealersNamedIn({ Description: "Final Outcome 'No Sale' set by Dealer D at Preston" })], [['preston'], ['preston']]);
 const pcResult = { inputIndex: 0, status: 'CLASSIFIED', tier: 5, postClosureAction: 'check: needs contact?', postClosureReason: '', postClosureEvidence: '' };
 const decidedPc = applyPostClosureDecision(pcResult, 'send back through', 'Email only', 'email only in follow up');
 check('a hand Post Closure decision', [decidedPc.postClosureAction, decidedPc.postClosureReason, decidedPc.manualOverride, decidedPc.tentative.postClosureAction], ['send back through', 'Email only', true, 'check: needs contact?']);
@@ -3979,7 +4224,7 @@ session.failureStreak = { code, count: streak };
 if (streak >= REPEATED_FAILURE_LIMIT) {
 session.paused = true;
 session.failureStreak = null;
-lcNotices.stopped = `Stopped: the last ${REPEATED_FAILURE_LIMIT} leads all failed the same way (${exceptionLabel(code)}). Konnect may have changed or be slow. Check the page, then press Start to continue.`;
+lcNotices.stopped = `Stopped: the last ${REPEATED_FAILURE_LIMIT} leads all failed the same way (${exceptionLabel(code)}). Konnect may have changed or be slow. Check the page, then press Resume to continue.`;
 notifyNoticesChanged();
 }
 }
@@ -4019,29 +4264,29 @@ recentCompletions.unshift(result);
 if (recentCompletions.length > 5) recentCompletions.length = 5;
 }
 
+// The group the last step worked on. stepOnce can skip past groups that
+// already have results, so the index from before the step is not it.
+let lastStepGroupIndex = -1;
+
 async function stepOnce(session, uiHandle) {
 if (session.done || session.cancelled) return false;
 // Re-checked on every call: after retryExceptions rewinds to an earlier
 // group, a plain +1 advance would reprocess every good group after it.
 session.groupIndex = firstUnresolvedGroupIndex(session.groups, session.results, session.groupIndex);
 if (session.groupIndex >= session.groups.length) { session.done = true; return false; }
+lastStepGroupIndex = session.groupIndex;
 
 const group = session.groups[session.groupIndex];
 
+// rowInGroupIndex above 0 means this customer's timeline is open. It is
+// set back to 0 on load and on resume, when the page may have moved.
 if (session.rowInGroupIndex === 0) {
 uiHandle.setState(`Searching for ${group.rows[0].name}...`, group.rows[0].name, null);
 const openResult = await searchAndOpenCustomer(group, session);
-if (openResult.status !== 'OK') {
+if (openResult.status !== 'OK' || openResult.noEligibleEvents) {
+const exception = openResult.status !== 'OK' ? openResult.exception : 'NO_ELIGIBLE_LEAD_EVENTS';
 group.rows.forEach((row) => {
-recordResult(session, row.inputIndex, finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception: openResult.exception }));
-});
-advanceToNextGroup(session);
-saveSession(session);
-return true;
-}
-if (openResult.noEligibleEvents) {
-group.rows.forEach((row) => {
-recordResult(session, row.inputIndex, finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception: 'NO_ELIGIBLE_LEAD_EVENTS' }));
+if (!session.results[row.inputIndex]) recordResult(session, row.inputIndex, finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception }));
 });
 advanceToNextGroup(session);
 saveSession(session);
@@ -4050,19 +4295,56 @@ return true;
 group.customerMatchMethod = openResult.matchMethod;
 }
 
-const row = group.rows[session.rowInGroupIndex];
-uiHandle.setState(`Reading lead at ${row.created}...`, group.rows[0].name, row.created);
+// The first row still without a result, so a reopened customer's finished
+// rows are not checked again.
+const rowIndex = group.rows.findIndex((r) => !session.results[r.inputIndex]);
+const row = group.rows[rowIndex];
+uiHandle.setState(row.created ? `Reading lead at ${row.created}...` : 'Reading the lead...', group.rows[0].name, row.created || (row.mode === 'postClosureList' ? 'newest Post Closure lead' : ''));
 const result = row.mode === 'national' ? await processNationalRow(row, session, group) : await processLeadRow(row, session);
 result.customerMatchMethod = group.customerMatchMethod;
 recordResult(session, row.inputIndex, result);
 
-session.rowInGroupIndex++;
-if (session.rowInGroupIndex >= group.rows.length) advanceToNextGroup(session);
+session.rowInGroupIndex = rowIndex + 1;
+if (group.rows.every((r) => session.results[r.inputIndex])) advanceToNextGroup(session);
 saveSession(session);
 return true;
 }
 
 let isRunning = false;
+
+// One lead at a time on the page, whoever asks: the run, Check one lead, or
+// an earlier copy of this tool still finishing its last lead.
+async function runStep(session, uiHandle) {
+while (klcShared.stepBusy) await sleep(100);
+klcShared.stepBusy = true;
+try {
+return await stepOnce(session, uiHandle);
+} finally {
+klcShared.stepBusy = false;
+}
+}
+
+function startTitleFlash(text) {
+const title = document.title;
+let on = false;
+const timer = setInterval(() => { on = !on; document.title = on ? text : title; }, 1000);
+return () => { clearInterval(timer); document.title = title; };
+}
+
+// A held Web Lock is one of the things that stops the browser freezing a
+// hidden tab outright. Returns the function that lets it go.
+function holdRunLock() {
+let release = null;
+let finished = false;
+try {
+if (navigator.locks && navigator.locks.request) {
+Promise.resolve(navigator.locks.request('konnectLeadChecker:run', () => new Promise((resolve) => {
+if (finished) resolve(); else release = resolve;
+}))).catch(() => {});
+}
+} catch (error) { /* locks not available */ }
+return () => { finished = true; if (release) release(); };
+}
 
 // Konnect Live logs out after 15 idle minutes. Browsers hide a saved
 // password from page scripts until the agent touches the page, so one
@@ -4070,6 +4352,10 @@ let isRunning = false;
 // boxes are never written to. Otherwise the tab is flagged and the run
 // waits for the agent's own Login press, then carries on by itself.
 async function reLogin(uiHandle, waitMs) {
+lcNotices.loggedOut = true;
+notifyNoticesChanged();
+let stopFlash = null;
+try {
 await sleep(150);
 const button = Array.from(document.querySelectorAll('button[ng-click="login()"], button.btn-login')).find((b) => b.offsetWidth || b.offsetHeight);
 // Says what the page can see, so a failed press has a clear cause.
@@ -4088,21 +4374,27 @@ if (!onLoginPage()) { await sleep(1500); return true; }
 const why = !button ? 'the Login button was not found'
 : passwordSeen ? 'Login was pressed with the password, but Konnect did not log in'
 : 'Login was pressed, but the browser has not shown the saved password to the page yet';
-lcNotices.stopped = `Konnect Live logged out: ${why}. Press Login and the check carries on.`;
+const message = `Konnect Live logged out: ${why}. Press Login and the check carries on.`;
+// The dark overlay would cover the Login button the agent has to press.
+hidePageFlashOverlay();
+if (typeof uiHandle.loggedOut === 'function') {
+lcNotices.stopped = message;
 notifyNoticesChanged();
-uiHandle.setState(`Konnect Live logged out: ${why}. Press Login and the check carries on.`);
-const title = document.title;
-let flash = false;
-const timer = setInterval(() => { flash = !flash; document.title = flash ? 'Press Login to carry on' : title; }, 1000);
-try {
-for (let waited = 0; waited < (waitMs || 30 * 60 * 1000); waited += 500) {
+uiHandle.loggedOut();
+} else {
+uiHandle.setState(message);
+}
+stopFlash = startTitleFlash('Press Login to carry on');
+const startedAt = Date.now();
+while (Date.now() - startedAt < (waitMs || 30 * 60 * 1000)) {
 await sleep(500);
 if (!onLoginPage()) { lcNotices.stopped = null; notifyNoticesChanged(); await sleep(1500); return true; }
 }
 return false;
 } finally {
-clearInterval(timer);
-document.title = title;
+if (stopFlash) stopFlash();
+lcNotices.loggedOut = false;
+notifyNoticesChanged();
 }
 }
 
@@ -4120,43 +4412,105 @@ session.rowInGroupIndex = 0;
 session.done = false;
 }
 
+// A step that threw: its leads are marked as not checked and the run moves
+// past them, so one bad lead cannot stop the same way on every retry.
+function failGroupAfterError(session, groupIndex) {
+const group = session.groups[groupIndex];
+if (!group) return;
+group.rows.forEach((row) => {
+if (!session.results[row.inputIndex]) recordResult(session, row.inputIndex, finalizeResult(makeResultBase(row), { status: 'EXCEPTION', exception: 'TOOL_ERROR' }));
+});
+if (session.groupIndex === groupIndex) advanceToNextGroup(session);
+else session.rowInGroupIndex = 0;
+}
+
+function errorText(error) {
+return String((error && error.message) || error || 'unknown error').slice(0, 160);
+}
+
 async function runLoop(session, uiHandle) {
 if (isRunning) return;
 isRunning = true;
 session.cancelled = false;
+session.stoppedOnError = false;
+const releaseLock = holdRunLock();
+let stopHiddenFlash = null;
+let failure = null;
+const endHiddenWait = () => {
+if (!stopHiddenFlash) return;
+stopHiddenFlash();
+stopHiddenFlash = null;
+lcNotices.hiddenWait = false;
+notifyNoticesChanged();
+};
 try {
 while (!session.done && !session.cancelled) {
-if (session.paused) { await sleep(200); continue; }
+if (session.paused) { endHiddenWait(); await sleep(200); continue; }
+// Only where the timer worker could not start: a hidden tab's timers are
+// then too slow to trust, and a wait could time out and misread a lead as
+// failed. With the worker the run carries on hidden.
+if (hiddenAndSlowed()) {
+if (!stopHiddenFlash) {
+stopHiddenFlash = startTitleFlash('Lead Checker is waiting');
+lcNotices.hiddenWait = true;
+hidePageFlashOverlay();
+uiHandle.setState('Waiting: this tab is in the background and the browser is slowing it. Bring Konnect Live to the front to carry on.');
+}
+await sleep(500);
+continue;
+}
+endHiddenWait();
 if (lcNotices.stopped) { lcNotices.stopped = null; notifyNoticesChanged(); }
-// Waits are timer/observer based, so a throttled background tab could time
-// out and misread a lead as failed.
-if (document.hidden) { uiHandle.setState('Paused: tab is in the background'); await sleep(200); continue; }
 if (onLoginPage()) {
 if (!await reLogin(uiHandle)) {
 session.paused = true;
-lcNotices.stopped = 'Konnect Live stayed logged out for 30 minutes, so the check paused. Log in, then press Start to carry on.';
+lcNotices.stopped = 'Konnect Live stayed logged out for 30 minutes, so the check paused. Log in, then press Resume to carry on.';
+notifyNoticesChanged();
+}
+continue;
+}
+if (klcShared.stepBusy) { await sleep(100); continue; }
+const remaining = session.rows.length - Object.keys(session.results).length;
+showPageFlashOverlay(`Checking leads… (${remaining} left)`);
+let advanced = false;
+try {
+advanced = await runStep(session, uiHandle);
+} catch (error) {
+if (!onLoginPage()) {
+console.error('KonnectLeadChecker: a lead could not be checked:', error);
+failGroupAfterError(session, lastStepGroupIndex);
+session.paused = true;
+saveSession(session);
+lcNotices.stopped = `Stopped: the tool hit an error on the last lead (${errorText(error)}). It is marked as not checked. Press Resume to carry on with the next lead, or Report a problem.`;
 notifyNoticesChanged();
 continue;
 }
+advanced = true;
 }
-const remaining = session.rows.length - Object.keys(session.results).length;
-showPageFlashOverlay(`Checking leads… (${remaining} left)`);
-const groupBefore = session.groupIndex;
-const advanced = await stepOnce(session, uiHandle);
 if (onLoginPage()) {
-redoGroupAfterLogout(session, groupBefore);
+redoGroupAfterLogout(session, lastStepGroupIndex);
 saveSession(session);
 continue;
 }
 uiHandle.render();
-if (typeof window.__workToolsOnProgress === 'function') window.__workToolsOnProgress(session);
+if (typeof uiHandle.onProgress === 'function') uiHandle.onProgress(session);
 if (!advanced) break;
 }
+} catch (error) {
+failure = error;
+console.error('KonnectLeadChecker: the check stopped on an error:', error);
+session.stoppedOnError = true;
+lcNotices.stopped = `Stopped: the tool hit an error (${errorText(error)}). Press Start to carry on, or Report a problem.`;
+notifyNoticesChanged();
 } finally {
 isRunning = false;
+releaseLock();
+endHiddenWait();
 hidePageFlashOverlay();
-uiHandle.setState(session.cancelled ? 'Cancelled' : (session.done ? 'Done' : 'Paused'));
-if (session.done && !session.cancelled && typeof window.__workToolsOnDone === 'function') window.__workToolsOnDone(session);
+// Results and the ending go to SLA Manager before the state changes on
+// screen, so it never hears "idle" about a batch it has not seen end.
+const said = typeof uiHandle.onLoopExit === 'function' ? uiHandle.onLoopExit(session) : '';
+uiHandle.setState(said || (failure ? 'Stopped on an error' : (session.cancelled ? 'Cancelled' : (session.done ? 'Done' : 'Paused'))));
 }
 }
 
@@ -4214,11 +4568,13 @@ const aliceAgainCells = rawExtractLines[2].split('\t');
 check('raw Extract export: TierName column carries the computed tier name', aliceAgainCells[8], 'CONFIRMED DATE & TIME');
 check('raw Extract export: Flags column carries the computed flags', aliceAgainCells[11], 'PX');
 check('raw Extract export: PriorityRank column carries a real numeric rank', aliceAgainCells[16], String(bookingPriorityRankValue(fakeSession.results[1])));
+const reviewTsv = buildRawNotesTsvForExtract({ rows: [{ inputIndex: 0 }], results: { 0: { name: 'Carol', status: 'EXCEPTION', exception: 'CLASSIFICATION_REVIEW_REQUIRED', tier: 2, tierName: 'DATE ONLY', subCategory: 'Customer-Stated Day', flags: [], reason: 'guess' } } }).split('\n')[1].split('\t');
+check('raw Extract export: a Needs review row carries no tier until reviewed', [reviewTsv[7], reviewTsv[8], reviewTsv[13]], ['', '', 'guess']);
 
 if (failures.length > 0) {
 console.error('KonnectLeadChecker orchestration self-test FAILED:\n' + failures.join('\n'));
 } else {
-console.info('KonnectLeadChecker orchestration self-test passed (10/10)');
+console.info('KonnectLeadChecker orchestration self-test passed (11/11)');
 }
 });
 
@@ -4316,13 +4672,10 @@ start,
 pauseResume,
 processNext,
 cancel,
-// Derived from its buttons so Start stays visible on a fresh page load.
-runControls: start || pauseResume || processNext || cancel,
 retryExceptions: retryable,
-clear: hasSession,
-maintenanceControls: retryable || hasSession,
 copyRawForExtract: hasResults,
-handoffControls: hasResults
+// Derived from its buttons so Start stays visible on a fresh page load.
+runControls: start || pauseResume || processNext || cancel || retryable || hasResults
 };
 }
 
@@ -4334,11 +4687,6 @@ const TIER_COLORS = { 1: '#059669', 2: '#2563eb', 3: '#7c3aed', 4: '#9333ea', 5:
 // Kept in lockstep with SLA-Manager.js's postClosureActionColor.
 function postClosureColor(action) {
 return action === 'send back through' ? '#0891b2' : '#d97706';
-}
-
-// The panels always use the light palette to match the Konnect pages.
-function prefersDarkScheme() {
-return false;
 }
 
 function hexToRgb(hex) {
@@ -4357,17 +4705,17 @@ return (hi + 0.05) / (lo + 0.05);
 }
 
 // Category colours double as text on a light tint of themselves. This
-// darkens (light theme) or lightens (dark theme) a colour just enough to
-// reach 4.5:1 text contrast, without changing the shared colour values.
-function readableTextColor(hex, dark) {
+// darkens a colour just enough to reach 4.5:1 against that tint on the
+// panel's grey (the darkest place a pill sits), without changing the
+// shared colour values. The panels always use the light palette.
+function readableTextColor(hex) {
 const rgb = hexToRgb(hex);
 if (!rgb) return hex;
-const isDark = dark === undefined ? prefersDarkScheme() : dark;
-const background = isDark ? [44, 44, 46] : [255, 255, 255];
-const target = isDark ? 255 : 0;
+const panel = [242, 242, 247];
+const background = rgb.map((v, i) => Math.round(panel[i] + (v - panel[i]) * (0x1a / 255)));
 let current = rgb;
-for (let step = 0; step <= 20 && contrastRatio(current, background) < 4.5; step++) {
-current = rgb.map((v) => Math.round(v + (target - v) * (step / 20)));
+for (let step = 0; step <= 20 && contrastRatio(current, background) < 4.6; step++) {
+current = rgb.map((v) => Math.round(v * (1 - step / 20)));
 }
 return '#' + current.map((v) => v.toString(16).padStart(2, '0')).join('');
 }
@@ -4416,7 +4764,8 @@ LEAD_MODAL_TIMEOUT: 'Lead window did not open',
 LEAD_VALIDATION_FAILED: 'Opened lead did not match',
 INITIAL_NOTES_FIELD_NOT_FOUND: 'Initial Notes not found',
 INITIAL_NOTES_EMPTY: 'Initial Notes are empty',
-NO_TARGET: 'No lead time given'
+NO_TARGET: 'No lead time given',
+TOOL_ERROR: 'The tool hit an error on this lead'
 };
 
 // Plain-English label for an exception code. The code itself stays in
@@ -4445,9 +4794,12 @@ return tierPill + subcat;
 }
 
 // null while actively stepping, since setState owns the label then.
-function deriveRestStateLabel(s, loopAlive) {
+function deriveRestStateLabel(s, loopAlive, stepBusy) {
 if (!s) return 'Idle';
+if (s.headerOk === false && s.rawInput) return `This batch could not be read: ${s.headerError}`;
 if (loopAlive && !s.paused) return null;
+// Pause was pressed mid-lead: the label set then stays until it finishes.
+if (stepBusy) return null;
 if (s.paused) return 'Paused';
 if (s.cancelled) return 'Cancelled';
 if (s.done) return 'Done';
@@ -4589,7 +4941,8 @@ const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'Init
 const lines = orderedResults(session).map((r) => [
 r.name, r.phone, r.email, r.source, r.campaign, r.created,
 (r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
-String(r.tier || ''), r.tierName || '', r.subCategory || '', String(r.subRank != null ? r.subRank : ''),
+// A Needs review row's tier is only a suggestion until someone accepts it.
+isNeedsReview(r) ? '' : String(r.tier || ''), isNeedsReview(r) ? '' : (r.tierName || ''), r.subCategory || '', String(r.subRank != null ? r.subRank : ''),
 (r.flags || []).join(', '),
 r.confidence || '',
 (r.reason || r.exception || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
@@ -4631,23 +4984,20 @@ if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
 
 const noSessionResult = computeButtonVisibility(null, false);
 check('No session: only Start is visible', noSessionResult, {
-start: true, pauseResume: false, processNext: false, cancel: false, runControls: true,
-retryExceptions: false, clear: false, maintenanceControls: false,
-copyRawForExtract: false, handoffControls: false
+start: true, pauseResume: false, processNext: false, cancel: false,
+retryExceptions: false, copyRawForExtract: false, runControls: true
 });
 
 const freshSession = { rows: [{ inputIndex: 0, status: 'OK' }], results: {}, done: false, paused: false };
-check('Fresh unstarted session: Start + Process next (single-stepping without ever clicking Start is a real, already-supported action) + Clear', computeButtonVisibility(freshSession, false), {
-start: true, pauseResume: false, processNext: true, cancel: false, runControls: true,
-retryExceptions: false, clear: true, maintenanceControls: true,
-copyRawForExtract: false, handoffControls: false
+check('Fresh unstarted session: Start + Process next (single-stepping without ever clicking Start is a real, already-supported action) ', computeButtonVisibility(freshSession, false), {
+start: true, pauseResume: false, processNext: true, cancel: false,
+retryExceptions: false, copyRawForExtract: false, runControls: true
 });
 
 const runningSession = { rows: [{ inputIndex: 0, status: 'OK' }], results: {}, done: false, paused: false };
 check('Actively running: Pause + Cancel only (no Start, no Process next)', computeButtonVisibility(runningSession, true), {
-start: false, pauseResume: true, processNext: false, cancel: true, runControls: true,
-retryExceptions: false, clear: true, maintenanceControls: true,
-copyRawForExtract: false, handoffControls: false
+start: false, pauseResume: true, processNext: false, cancel: true,
+retryExceptions: false, copyRawForExtract: false, runControls: true
 });
 
 const pausedWithException = {
@@ -4655,10 +5005,9 @@ rows: [{ inputIndex: 0, status: 'OK' }],
 results: { 0: { status: 'EXCEPTION', exception: 'SEARCH_NO_RESULTS' } },
 done: false, paused: true
 };
-check('Paused with a retryable exception: Resume + Process next + Cancel + Retry exceptions + Clear - Copy raw for Extract also shows since an exception is still a processed result (exported with its exception as the reason)', computeButtonVisibility(pausedWithException, true), {
-start: false, pauseResume: true, processNext: true, cancel: true, runControls: true,
-retryExceptions: true, clear: true, maintenanceControls: true,
-copyRawForExtract: true, handoffControls: true
+check('Paused with a retryable exception: Resume + Process next + Cancel + Retry exceptions - Copy raw for Extract also shows since an exception is still a processed result (exported with its exception as the reason)', computeButtonVisibility(pausedWithException, true), {
+start: false, pauseResume: true, processNext: true, cancel: true,
+retryExceptions: true, copyRawForExtract: true, runControls: true
 });
 
 const pausedNoException = {
@@ -4667,9 +5016,8 @@ results: { 0: { status: 'CLASSIFIED', tier: 4 } },
 done: false, paused: true
 };
 check('Paused with no retryable exceptions: no Retry exceptions button, but Copy raw for Extract appears (has a real result)', computeButtonVisibility(pausedNoException, true), {
-start: false, pauseResume: true, processNext: true, cancel: true, runControls: true,
-retryExceptions: false, clear: true, maintenanceControls: true,
-copyRawForExtract: true, handoffControls: true
+start: false, pauseResume: true, processNext: true, cancel: true,
+retryExceptions: false, copyRawForExtract: true, runControls: true
 });
 
 const doneSession = {
@@ -4677,10 +5025,9 @@ rows: [{ inputIndex: 0, status: 'OK' }],
 results: { 0: { status: 'CLASSIFIED', tier: 4 } },
 done: true, paused: false
 };
-check('Done: run controls collapse entirely, Clear + Copy raw for Extract remain', computeButtonVisibility(doneSession, false), {
-start: false, pauseResume: false, processNext: false, cancel: false, runControls: false,
-retryExceptions: false, clear: true, maintenanceControls: true,
-copyRawForExtract: true, handoffControls: true
+check('Done: only Copy results remains', computeButtonVisibility(doneSession, false), {
+start: false, pauseResume: false, processNext: false, cancel: false,
+retryExceptions: false, copyRawForExtract: true, runControls: true
 });
 
 const reviewOnlyException = {
@@ -5010,9 +5357,7 @@ refresh: '<path d="M21 12a9 9 0 1 1-3.2-6.9"/><path d="M21 3v6h-6"/>',
 copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
 warning: '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>',
 minimize: '<line x1="5" y1="12" x2="19" y2="12"/>',
-restore: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
 chevron: '<polyline points="6 9 12 15 18 9"/>',
-search: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
 play: '<polygon points="6 3 20 12 6 21 6 3"/>',
 pause: '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
 x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
@@ -5361,15 +5706,17 @@ color-scheme: light;
 .header { flex-shrink: 0; background: #1c1c1e; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-radius: 20px 20px 0 0; cursor: move; user-select: none; }
 .header-title { display: flex; align-items: center; gap: 6px; font-weight: 600; overflow: hidden; }
 .header-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.header button { background: transparent; border: none; color: #c7c7cc; cursor: pointer; padding: 2px; display: flex; align-items: center; }
+.header button { background: transparent; border: none; color: #c7c7cc; cursor: pointer; padding: 2px; min-width: 24px; min-height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 6px; }
 .header button:hover { color: white; }
-.bodyEl { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 12px; }
+/* Only the results list gives up height; everything else keeps its own. */
+.bodyEl { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 12px; overflow-y: auto; }
+.bodyEl > * { flex-shrink: 0; }
 textarea { width: 100%; height: 70px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid var(--wb-border-strong); border-radius: 6px; }
 textarea:focus, .search-input:focus, .review-reason:focus, .review-subcategory:focus { outline: none; border-color: var(--wb-accent); }
 .row-count { color: var(--wb-muted); margin: 4px 0 8px; }
 .section-label { color: var(--wb-muted); text-transform: uppercase; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; margin: 10px 0 4px; }
 .section-label:first-child { margin-top: 0; }
-.buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 button.action { padding: 7px 12px; border: none; background: var(--wb-control); color: var(--wb-text); border-radius: 999px; cursor: pointer; font-size: 11.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
 button.action:hover { background: var(--wb-control-hover); }
 button.action:disabled { opacity: 0.45; cursor: default; }
@@ -5378,6 +5725,9 @@ button.primary { background: #C2CB42; color: #1c1c1e; }
 button.primary:hover { background: #aab238; }
 .status { background: var(--wb-surface); border: none; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); padding: 10px 12px; margin-bottom: 8px; }
 .status div { margin-bottom: 2px; }
+.status-pair { display: flex; flex-wrap: wrap; column-gap: 14px; }
+.hint-line { color: var(--wb-review-text); font-weight: 600; }
+.link-line { font-size: 11.5px; font-weight: 600; color: var(--wb-text-2); margin: 0 0 4px; }
 .version-line { font-size: 10.5px; color: var(--wb-muted); margin: -2px 0 6px; }
 .version-line.newer { color: var(--wb-danger); font-weight: 700; font-size: 11.5px; }
 .version-line:empty { display: none; }
@@ -5387,35 +5737,31 @@ button.primary:hover { background: #aab238; }
 .recent-log { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
 .recent-log-row { display: flex; align-items: center; gap: 5px; font-size: 10.5px; overflow: hidden; }
 .recent-log-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--wb-text-2); }
-.recent-log-tier { flex-shrink: 0; padding: 1px 6px; border-radius: 6px; font-weight: 700; font-size: 9.5px; white-space: nowrap; }
+.recent-log-tier { flex-shrink: 0; padding: 1px 6px; border-radius: 6px; font-weight: 700; font-size: 10.5px; white-space: nowrap; }
 .progress-track { height: 5px; background: var(--wb-border); border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
 .progress-fill { height: 100%; background: #C2CB42; transition: width 0.2s ease; border-radius: 3px; }
 .progress-fill.active { background-image: linear-gradient(135deg, rgba(255,255,255,0.4) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.4) 75%, transparent 75%, transparent); background-size: 14px 14px; animation: klcProgressStripes 0.6s linear infinite; }
 @keyframes klcProgressStripes { from { background-position: 0 0; } to { background-position: 14px 0; } }
 /* !important: button.action's own display rule is more specific than .hidden. */
 .hidden { display: none !important; }
-.footer { flex-shrink: 0; padding: 10px 14px; background: var(--wb-surface); display: flex; justify-content: space-between; border-radius: 0 0 20px 20px; }
-.footer .report-btn { color: var(--wb-muted); }
-.footer button { padding: 4px 8px; background: transparent; color: var(--wb-danger); border: none; border-radius: 6px; cursor: pointer; font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+.footer { flex-shrink: 0; padding: 8px 14px; background: var(--wb-surface); display: flex; justify-content: space-between; gap: 6px; border-radius: 0 0 20px 20px; }
+.footer .quiet-btn { color: var(--wb-text-2); }
+.footer button { min-height: 24px; padding: 4px 8px; background: transparent; color: var(--wb-danger); border: none; border-radius: 6px; cursor: pointer; font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
 .topSection { flex-shrink: 0; border: 1px solid var(--wb-border); border-radius: 6px; background: var(--wb-surface); margin-bottom: 8px; }
 .topSection > summary { padding: 6px 8px; cursor: pointer; font-weight: 600; color: var(--wb-text-2); list-style: none; display: flex; align-items: center; gap: 6px; }
 .topSection > summary::-webkit-details-marker { display: none; }
 .topSection > summary .chev { transition: transform 0.15s ease; color: var(--wb-muted); }
 .topSection:not([open]) > summary .chev { transform: rotate(-90deg); }
 .topSection-content { padding: 0 8px 8px; }
-.exportBar { flex-shrink: 0; }
-.stats-bar { display: flex; flex-wrap: nowrap; gap: 6px; margin-bottom: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
-.stat-pill { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; padding: 5px 10px; border-radius: 999px; font-size: 10.5px; font-weight: 700; cursor: pointer; user-select: none; border: none; transition: opacity 0.1s ease; }
-.stat-pill.inactive { opacity: 0.35; }
-.stat-pill:hover { opacity: 0.85; }
+.stats-bar { flex-shrink: 0; display: flex; flex-wrap: nowrap; gap: 6px; margin-bottom: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+.stat-pill { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; min-height: 24px; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; cursor: pointer; user-select: none; border: 1px solid transparent; }
+/* A filter that is off keeps readable text: outlined, not faded. */
+.stat-pill.inactive { background: transparent !important; color: var(--wb-text-2) !important; border-color: var(--wb-border-strong); font-weight: 600; }
+.stat-pill:hover { border-color: currentColor; }
 .filter-bar { display: flex; gap: 6px; margin-bottom: 8px; }
 .search-input { flex: 1; padding: 7px 10px; border: none; background: var(--wb-surface); box-shadow: 0 1px 2px rgba(0,0,0,0.04); border-radius: 10px; font-size: 11px; box-sizing: border-box; font-family: inherit; }
-.category-badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 999px; font-size: 10.5px; font-weight: 700; white-space: nowrap; }
-.subcat-label { display: inline-block; margin-left: 4px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 500; color: var(--wb-muted); vertical-align: middle; }
-.maintenance-controls { margin-top: 6px; }
-.maintenance-controls .action { background: var(--wb-control); color: var(--wb-muted); font-weight: 600; }
-.handoff-controls { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--wb-border-strong); }
-.handoff-controls .action { width: 100%; justify-content: center; }
+.category-badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.subcat-label { display: inline-block; margin-left: 4px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; font-weight: 500; color: var(--wb-text-2); vertical-align: middle; }
 .tier { border: 1px solid var(--wb-border); border-radius: 6px; margin-bottom: 6px; background: var(--wb-surface); }
 .tier > summary { padding: 5px 8px; cursor: pointer; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 6px; justify-content: space-between; }
 .tier > summary::-webkit-details-marker { display: none; }
@@ -5441,14 +5787,15 @@ button.primary:hover { background: #aab238; }
 .review-section:not([open]) > summary .chev { transform: rotate(-90deg); }
 .review-section-left { display: flex; align-items: center; gap: 6px; }
 /* Caps the review list and scrolls it, since .bodyEl itself does not scroll. */
-.review-rows { max-height: 260px; overflow-y: auto; }
+.review-rows { max-height: 300px; overflow-y: auto; }
 .review-row { border-top: 1px solid var(--wb-review-divider); padding: 8px; }
 .review-name { font-weight: 600; margin-bottom: 2px; }
 .review-notes { white-space: pre-wrap; background: var(--wb-surface); border: 1px solid var(--wb-review-divider); border-radius: 6px; padding: 6px; margin: 4px 0 6px; font-family: monospace; font-size: 10.5px; }
 .review-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
-.review-actions button { padding: 4px 8px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; font-size: 10.5px; font-weight: 700; }
+.review-actions button { min-height: 24px; padding: 4px 8px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; font-size: 11px; font-weight: 700; }
+.review-actions button.accept { background: #1c1c1e; color: #ffffff; }
 .review-reason { width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid var(--wb-border-strong); border-radius: 6px; font-size: 11px; font-family: inherit; }
-#resultsBody { flex: 1; min-height: 40px; overflow-y: auto; }
+#resultsBody { flex: 1 1 auto; min-height: 140px; overflow-y: auto; }
 .notice-bar { flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
 .notice { background: var(--wb-notice-bg); color: var(--wb-notice-text); border: 1px solid var(--wb-notice-border); border-radius: 8px; padding: 6px 8px; font-weight: 600; }
 .stat-pill { font-family: inherit; }
@@ -5473,6 +5820,7 @@ textarea, .search-input, .review-reason, .review-subcategory { background: var(-
 </div>
 <div class="bodyEl" id="bodyEl">
 <div class="notice-bar hidden" id="noticeBar" role="status" aria-live="polite"></div>
+<div class="link-line" id="linkLine" role="status" aria-live="polite"></div>
 <div class="version-line" id="versionLine" aria-live="polite"></div>
 <details class="topSection" id="topSection" open>
 <summary>${detailsChevronIcon()}Batch input</summary>
@@ -5486,27 +5834,22 @@ Auto-start on paste
 </label>
 </div>
 </details>
-<button class="action primary hidden" id="btnClearPasteStart" style="margin-bottom: 8px; width: 100%; justify-content: center;">${svgIcon('copy', 11)}Clear & paste to start</button>
 <div class="buttons" id="runControls">
 <button class="action primary" id="btnStart">${svgIcon('play', 11)}Start</button>
 <button class="action primary" id="btnPauseResume">${svgIcon('pause', 11)}Pause</button>
-<button class="action" id="btnProcessNext">Process next</button>
+<button class="action" id="btnProcessNext" title="Checks the next lead, then stops">Check one lead</button>
 <button class="action" id="btnCancel">${svgIcon('x', 11)}Cancel</button>
-</div>
-<div class="buttons maintenance-controls" id="maintenanceControls">
-<button class="action" id="btnRetryExceptions">${svgIcon('refresh', 11)}Retry exceptions</button>
-<button class="action" id="btnClear">Clear session</button>
-</div>
-<div class="buttons handoff-controls" id="handoffControls">
+<button class="action" id="btnRetryExceptions" title="Checks again the leads that could not be checked">${svgIcon('refresh', 11)}Retry failed leads</button>
+<button class="action hidden" id="btnClearPasteStart" title="Replaces this batch with the one on the clipboard and starts it">${svgIcon('copy', 11)}Clear & paste to start</button>
 <button class="action" id="btnCopyRawForExtract">${svgIcon('copy', 11)}Copy results for SLA Manager</button>
 <button class="action hidden" id="btnCopyNationalResults">${svgIcon('copy', 11)}Copy National results for SLA Manager</button>
 </div>
 <div class="mode-banner hidden" id="modeBanner" role="status" aria-live="polite"></div>
 <div class="status">
-<div>Customer: <span id="curCustomer">-</span></div>
-<div>Lead created: <span id="curTarget">-</span></div>
+<div class="status-pair"><span>Customer: <span id="curCustomer">-</span></span><span><span id="curTargetLabel">Lead created</span>: <span id="curTarget">-</span></span></div>
 <div>State: <span id="curState">Idle</span></div>
-<div>Completed: <span id="completedCount">0</span> &middot; Exceptions: <span id="exceptionCount">0</span> &middot; Total: <span id="totalCount">0</span></div>
+<div class="hint-line hidden" id="hintLine"></div>
+<div>Checked: <span id="completedCount">0</span> &middot; Could not check: <span id="exceptionCount">0</span> &middot; Needs review: <span id="reviewCount">0</span> &middot; Total: <span id="totalCount">0</span></div>
 <div class="progress-track"><div class="progress-fill" id="progressFill" style="width: 0%;"></div></div>
 <div class="recent-log" id="recentLog"></div>
 </div>
@@ -5516,16 +5859,11 @@ Auto-start on paste
 <input type="text" class="search-input" id="searchInput" aria-label="Filter results by name" placeholder="Filter by name...">
 </div>
 <div id="resultsBody"></div>
-<div class="exportBar">
-<div class="section-label">Export</div>
-<div class="buttons">
-<button class="action" id="btnCopyReviewDecisions">${svgIcon('copy', 11)}Copy review decisions</button>
-</div>
-</div>
 </div>
 <div class="footer">
-<button id="btnReport" class="report-btn">Report a problem</button>
-<button id="btnClearStop">${svgIcon('trash', 11)}Clear & Stop</button>
+<button id="btnReport" class="quiet-btn">Report a problem</button>
+<button id="btnCopyReviewDecisions" class="quiet-btn" title="Copies the decisions made by hand, with no customer details, for writing new rules">${svgIcon('copy', 11)}Copy review decisions</button>
+<button id="btnClearStop" title="Stops the check, clears this Lead Checker's batch and results, and closes the panel. Nothing in SLA Manager or Lead Re setup is cleared.">${svgIcon('trash', 11)}Clear & Stop</button>
 </div>
 </div>
 `;
@@ -5614,26 +5952,32 @@ hidePageFlashOverlay();
 render();
 };
 
-// Storage events only fire for changes made by another tab.
-window.addEventListener('storage', (event) => {
+// Storage events only fire for changes made by another tab. The notice
+// goes when a new batch is loaded here.
+const onStorage = (event) => {
 if (event.key === SESSION_STORAGE_KEY && event.newValue !== lastSavedSessionJson) {
 lcNotices.otherTab = true;
 notifyNoticesChanged();
 }
-});
+};
+window.addEventListener('storage', onStorage);
+let destroyed = false;
+let badgeTimer = null;
+let batchWaitTimer = null;
 
 function focusPanel() {
 const target = topSectionEl.open ? pasteBox : root.getElementById('btnStart');
 try { (target || minBtn).focus(); } catch (error) { /* ignore */ }
 }
 const runControlsEl = root.getElementById('runControls');
-const maintenanceControlsEl = root.getElementById('maintenanceControls');
-const handoffControlsEl = root.getElementById('handoffControls');
+const linkLineEl = root.getElementById('linkLine');
+const hintLineEl = root.getElementById('hintLine');
+const reviewCountEl = root.getElementById('reviewCount');
+const curTargetLabelEl = root.getElementById('curTargetLabel');
 const btnStartEl = root.getElementById('btnStart');
 const btnProcessNextEl = root.getElementById('btnProcessNext');
 const btnCancelEl = root.getElementById('btnCancel');
 const btnRetryExceptionsEl = root.getElementById('btnRetryExceptions');
-const btnClearEl = root.getElementById('btnClear');
 const btnCopyRawForExtractEl = root.getElementById('btnCopyRawForExtract');
 const btnCopyNationalResultsEl = root.getElementById('btnCopyNationalResults');
 const pauseResumeBtn = root.getElementById('btnPauseResume');
@@ -5645,7 +5989,7 @@ const btnClearPasteStartEl = root.getElementById('btnClearPasteStart');
 function syncClearPasteStartVisibility() {
 btnClearPasteStartEl.classList.toggle('hidden', topSectionEl.open);
 }
-topSectionEl.addEventListener('toggle', syncClearPasteStartVisibility);
+topSectionEl.addEventListener('toggle', () => { syncClearPasteStartVisibility(); render(); });
 syncClearPasteStartVisibility();
 
 function wireBadgeClick() {
@@ -5679,7 +6023,19 @@ const activeCategoryFilters = new Set();
 let nameFilterText = '';
 
 let session = loadStoredSession();
-if (session) pasteBox.value = session.rawInput || '';
+// Shown until the batch is started or replaced.
+let restoredNote = '';
+if (session) {
+pasteBox.value = session.rawInput || '';
+// The page has reloaded, so no customer is open any more.
+session.rowInGroupIndex = 0;
+const checked = Object.keys(session.results).length;
+if (session.headerOk && session.rows.length > 0) {
+restoredNote = session.done
+? `Restored after the page reloaded: all ${session.rows.length} leads were checked.`
+: `Restored after the page reloaded: ${checked} of ${session.rows.length} checked. Press Start to carry on, or Clear & paste to start for a new batch.`;
+}
+}
 // A restored session starts collapsed, as a fresh run does.
 if (session && session.rows && session.rows.length > 0) {
 topSectionEl.open = false;
@@ -5704,7 +6060,7 @@ return (parts[0][0] + parts[1][0]).toUpperCase();
 
 // Avatar uses categoryColor(r), so it always agrees with the badge.
 function renderAvatarCircle(name, colorHex, size) {
-return `<div aria-hidden="true" style="width: ${size}px; height: ${size}px; border-radius: 50%; background: ${readableTextColor(colorHex, false)}; color: white; font-size: ${Math.round(size * 0.4)}px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">${escapeHtmlForUi(initialsForKlc(name))}</div>`;
+return `<div aria-hidden="true" style="width: ${size}px; height: ${size}px; border-radius: 50%; background: ${readableTextColor(colorHex)}; color: white; font-size: ${Math.round(size * 0.4)}px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">${escapeHtmlForUi(initialsForKlc(name))}</div>`;
 }
 
 // Lets a checked lead be corrected by hand; the correction goes into
@@ -5745,6 +6101,8 @@ return parts.join('');
 // Same priority order as the tier pills.
 const STATS_BAR_CATEGORY_ORDER = ['POST CLOSURE: SEND BACK', 'POST CLOSURE: CHECK'].concat([1, 2, 3, 4, 5, 6].map((t) => TIER_NAMES[t])).concat(['EXCEPTION']);
 
+const STATS_BAR_LABELS = { EXCEPTION: 'COULD NOT CHECK' };
+
 function renderNeedsReviewSection(needsReview) {
 if (needsReview.length === 0) {
 needsReviewSectionEl.innerHTML = '';
@@ -5754,7 +6112,11 @@ const rowsHtml = needsReview.map((r) => `
 <div class="review-row" data-key="${r.inputIndex}">
 <div class="review-name">${escapeHtmlForUi(r.name)}</div>
 <div class="notes-block review-notes">${escapeHtmlForUi(r.initialNotes || '')}</div>
-${r.tierName ? `<div class="reason">Classifier's best guess (not trusted): Tier ${r.tier}, ${escapeHtmlForUi(r.tierName)}${r.subCategory ? ', ' + escapeHtmlForUi(r.subCategory) : ''}. ${escapeHtmlForUi(r.reason || '')}</div>` : ''}
+${r.tierName ? `<div class="reason">Suggested, not applied: Tier ${r.tier}, ${escapeHtmlForUi(r.tierName)}${r.subCategory ? ', ' + escapeHtmlForUi(r.subCategory) : ''}. ${escapeHtmlForUi(r.reason || '')}</div>` : ''}
+${r.tierName ? `<div class="review-actions review-quick" role="group" aria-label="Quick decision for ${escapeHtmlForUi(r.name)}">
+<button type="button" class="accept" data-tier="${r.tier}" data-subcategory="${escapeHtmlForUi(r.subCategory || '')}">Accept Tier ${r.tier}: ${escapeHtmlForUi(r.tierName)}</button>
+${r.alternative ? `<button type="button" data-tier="${r.alternative.tier}" data-subcategory="${escapeHtmlForUi(r.alternative.subCategory || '')}" style="background: ${categoryColor({ tier: r.alternative.tier })}1a; color: ${readableTextColor(categoryColor({ tier: r.alternative.tier }))};">No call: Tier ${r.alternative.tier}, ${escapeHtmlForUi(r.alternative.subCategory || '')}</button>` : ''}
+</div>` : ''}
 <div class="review-actions" role="group" aria-label="Choose a tier for ${escapeHtmlForUi(r.name)}">
 ${REVIEW_TIER_OPTIONS.map((tier) => `<button type="button" data-tier="${tier}" style="background: ${categoryColor({ tier })}1a; color: ${readableTextColor(categoryColor({ tier }))};">Tier ${tier}: ${escapeHtmlForUi(TIER_NAMES[tier])}</button>`).join('')}
 </div>
@@ -5764,7 +6126,7 @@ ${REVIEW_TIER_OPTIONS.map((tier) => `<button type="button" data-tier="${tier}" s
 `).join('');
 needsReviewSectionEl.innerHTML = `
 <details class="review-section" ${reviewSectionOpen ? 'open' : ''}>
-<summary><span class="review-section-left">${detailsChevronIcon()}<span>Needs Review</span></span><span>${needsReview.length}</span></summary>
+<summary><span class="review-section-left">${detailsChevronIcon()}<span>Needs review</span></span><span>${needsReview.length}</span></summary>
 <div class="review-rows">${rowsHtml}</div>
 </details>
 `;
@@ -5778,8 +6140,10 @@ rowEl.querySelectorAll('.review-actions button').forEach((btn) => {
 btn.addEventListener('click', () => {
 const result = session.results[key];
 if (!result) return;
-session.results[key] = applyManualReviewDecision(result, Number(btn.dataset.tier), subCategoryInput.value.trim(), reasonInput.value.trim());
+// A quick button carries its own sub-category; a typed one still wins.
+session.results[key] = applyManualReviewDecision(result, Number(btn.dataset.tier), subCategoryInput.value.trim() || btn.dataset.subcategory || '', reasonInput.value.trim());
 saveSession(session);
+linkResendAfterDecision();
 render();
 });
 });
@@ -5787,15 +6151,22 @@ render();
 }
 
 function render() {
+if (destroyed) return;
 ensureBadgeAttached();
 renderNotices();
 renderVersionLine();
 renderModeBanner();
+linkLineEl.textContent = linkLineText();
+hintLineEl.textContent = restoredNote;
+hintLineEl.classList.toggle('hidden', !restoredNote);
+curTargetLabelEl.textContent = session ? leadTimeLabel(session.mode, session.rows) : 'Lead created';
+sayReady(false);
 if (!session) {
 rowCountEl.textContent = '0 rows parsed';
 resultsBody.innerHTML = renderZeroState('clipboard', 'No Batch Loaded', 'Paste a batch above to begin.');
 completedCountEl.textContent = '0';
 exceptionCountEl.textContent = '0';
+reviewCountEl.textContent = '0';
 totalCountEl.textContent = '0';
 progressFillEl.style.width = '0%';
 statsBarEl.classList.add('hidden');
@@ -5844,7 +6215,7 @@ if (ordered.length === 0) {
 // If every processed row is in Needs Review, "no results yet" would be wrong.
 resultsBody.innerHTML = needsReview.length > 0
 ? '<div class="empty-state">All results so far need review. See above.</div>'
-: '<div class="empty-state">No results yet. Press Start or Process next.</div>';
+: '<div class="empty-state">No results yet. Press Start.</div>';
 statsBarEl.classList.add('hidden');
 filterBarEl.classList.add('hidden');
 } else {
@@ -5861,7 +6232,7 @@ statsBarEl.innerHTML = STATS_BAR_CATEGORY_ORDER.filter((key) => countsByKey.has(
 const sample = ordered.find((r) => categoryKey(r) === key);
 const color = categoryColor(sample);
 const isActive = activeCategoryFilters.size === 0 || activeCategoryFilters.has(key);
-return `<button type="button" class="stat-pill${isActive ? '' : ' inactive'}" aria-pressed="${activeCategoryFilters.has(key)}" aria-label="Filter: ${escapeHtmlForUi(key)}, ${countsByKey.get(key)}" data-key="${escapeHtmlForUi(key)}" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(key)}<span style="opacity: 0.7;">${countsByKey.get(key)}</span></button>`;
+return `<button type="button" class="stat-pill${isActive ? '' : ' inactive'}" aria-pressed="${activeCategoryFilters.has(key)}" aria-label="Filter: ${escapeHtmlForUi(STATS_BAR_LABELS[key] || key)}, ${countsByKey.get(key)}" data-key="${escapeHtmlForUi(key)}" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(STATS_BAR_LABELS[key] || key)}<span style="font-weight: 500;">${countsByKey.get(key)}</span></button>`;
 }).join('');
 statsBarEl.querySelectorAll('.stat-pill').forEach((el) => {
 el.addEventListener('click', () => {
@@ -5883,8 +6254,8 @@ resultsBody.innerHTML = '<div class="empty-state">No results match the current f
 } else {
 const byTier = new Map();
 filtered.forEach((r) => {
-// Automation failures have no tier, so they go to a trailing
-// "Unclassified" bucket (7).
+// Leads that could not be checked have no tier, so they go to a
+// trailing bucket (7).
 const tier = r.postClosureAction ? (r.postClosureAction === 'send back through' ? -2 : -1) : (r.tier || 7);
 if (!byTier.has(tier)) byTier.set(tier, []);
 byTier.get(tier).push(r);
@@ -5902,7 +6273,7 @@ return `
 }).join('');
 const tierLabel = tier === -2 ? 'Post Closure: send back through'
 : tier === -1 ? 'Post Closure: check, needs contact?'
-: tier === 7 ? 'Unclassified'
+: tier === 7 ? 'Could not check'
 : `Tier ${tier}: ${TIER_NAMES[tier]}`;
 const tierLabelColor = tier === -2 || tier === -1 ? ` style="color: ${readableTextColor(postClosureColor(tier === -2 ? 'send back through' : 'check'))};"` : '';
 return `
@@ -5944,12 +6315,14 @@ box.querySelectorAll('button[data-tier]').forEach((btn) => btn.addEventListener(
 if (!session || !session.results[key]) return;
 session.results[key] = applyManualReviewDecision(session.results[key], Number(btn.dataset.tier), '', note());
 saveSession(session);
+linkResendAfterDecision();
 render();
 }));
 box.querySelectorAll('button[data-pc-action]').forEach((btn) => btn.addEventListener('click', () => {
 if (!session || !session.results[key]) return;
 session.results[key] = applyPostClosureDecision(session.results[key], btn.dataset.pcAction, btn.dataset.pcReason, note());
 saveSession(session);
+linkResendAfterDecision();
 render();
 }));
 });
@@ -5959,6 +6332,7 @@ const key = Number(btn.dataset.undoKey);
 if (!session || !session.results[key]) return;
 session.results[key] = undoManualReviewDecision(session.results[key]);
 saveSession(session);
+linkResendAfterDecision();
 render();
 });
 });
@@ -5984,12 +6358,13 @@ setTimeout(() => { el.textContent = original; el.style.background = ''; el.style
 });
 });
 
-// orderedAll, so Needs Review rows are counted too.
 completedCountEl.textContent = String(orderedAll.filter((r) => r.status === 'CLASSIFIED').length);
-exceptionCountEl.textContent = String(orderedAll.filter((r) => r.status === 'EXCEPTION').length);
+exceptionCountEl.textContent = String(orderedAll.filter((r) => r.status === 'EXCEPTION' && !isNeedsReview(r)).length);
+reviewCountEl.textContent = String(orderedAll.filter(isNeedsReview).length);
 totalCountEl.textContent = String(session.rows.length);
-const restStateLabel = deriveRestStateLabel(session, isRunning);
-if (restStateLabel !== null) curStateEl.textContent = restStateLabel;
+const restStateLabel = deriveRestStateLabel(session, isRunning, klcShared.stepBusy);
+// "Done: results sent to SLA Manager" says more than "Done", so it stays.
+if (restStateLabel !== null && !(restStateLabel === 'Done' && /^Done/.test(curStateEl.textContent))) curStateEl.textContent = restStateLabel;
 syncButtonStates();
 renderRecentLog();
 }
@@ -6000,14 +6375,11 @@ btnStartEl.classList.toggle('hidden', !v.start);
 pauseResumeBtn.classList.toggle('hidden', !v.pauseResume);
 btnProcessNextEl.classList.toggle('hidden', !v.processNext);
 btnCancelEl.classList.toggle('hidden', !v.cancel);
-runControlsEl.classList.toggle('hidden', !v.runControls);
+runControlsEl.classList.toggle('hidden', !v.runControls && btnClearPasteStartEl.classList.contains('hidden'));
 btnRetryExceptionsEl.classList.toggle('hidden', !v.retryExceptions);
-btnClearEl.classList.toggle('hidden', !v.clear);
-maintenanceControlsEl.classList.toggle('hidden', !v.maintenanceControls);
 const nationalMode = !!(session && session.mode === 'national');
 btnCopyRawForExtractEl.classList.toggle('hidden', !v.copyRawForExtract || nationalMode);
 btnCopyNationalResultsEl.classList.toggle('hidden', !v.copyRawForExtract || !nationalMode);
-handoffControlsEl.classList.toggle('hidden', !v.handoffControls);
 }
 
 function renderVersionLine() {
@@ -6026,7 +6398,7 @@ modeBannerEl.innerHTML = `<strong style="color: ${readableTextColor(scenario.col
 
 function renderRecentLog() {
 if (recentCompletions.length === 0) { recentLogEl.innerHTML = ''; return; }
-recentLogEl.innerHTML = recentCompletions.map((r) => {
+recentLogEl.innerHTML = recentCompletions.slice(0, 3).map((r) => {
 const color = categoryColor(r);
 const label = escapeHtmlForUi(r.exception ? exceptionLabel(r.exception) : (r.verdict || r.tierName || 'Pending'));
 return `<div class="recent-log-row"><span class="recent-log-name">${escapeHtmlForUi(r.name || '-')}</span><span class="recent-log-tier" style="background: ${color}1a; color: ${readableTextColor(color)};">${label}</span></div>`;
@@ -6035,39 +6407,17 @@ return `<div class="recent-log-row"><span class="recent-log-name">${escapeHtmlFo
 
 const uiHandle = {
 setState(state, customer, target) {
+if (destroyed) return;
 curStateEl.textContent = state;
 if (customer !== undefined) curCustomerEl.textContent = customer || '-';
 if (target !== undefined) curTargetEl.textContent = target || '-';
 render();
 },
-render
+render,
+loggedOut() { uiHandle.setState('Logged out: waiting for you to press Login'); },
+onProgress(running) { linkProgress(running); },
+onLoopExit(finished) { return linkLoopExit(finished); }
 };
-
-function ensureSessionFromPasteBox() {
-if (session && session.rawInput === pasteBox.value) return session;
-// Passes the old session so completed results carry over to a grown batch.
-session = newSession(pasteBox.value, session);
-saveSession(session);
-return session;
-}
-
-root.getElementById('btnProcessNext').addEventListener('click', async () => {
-const s = ensureSessionFromPasteBox();
-if (!s.headerOk) { uiHandle.setState(`Header error: ${s.headerError}`); return; }
-s.cancelled = false;
-showPageFlashOverlay('Checking lead…');
-try {
-await stepOnce(s, uiHandle);
-} finally {
-hidePageFlashOverlay();
-}
-uiHandle.setState(s.done ? 'Done' : 'Paused after one row');
-});
-
-// textContent would wipe the icon, so label and icon are set together.
-function setPauseResumeLabel(text) {
-pauseResumeBtn.innerHTML = svgIcon(text === 'Pause' ? 'pause' : 'play', 11) + text;
-}
 
 // Linked to SLA Manager when SLA Manager opened this tab: it sends the
 // batch here and gets the results back without the clipboard. A tab opened
@@ -6076,75 +6426,158 @@ const MANAGER_ORIGIN = 'https://konnectonlineservices.co.uk';
 function managerWindow() {
 try { return window.opener && !window.opener.closed ? window.opener : null; } catch (error) { return null; }
 }
-function startManagerLink() {
-const manager = managerWindow();
-if (!manager) return;
-window.addEventListener('message', (event) => {
-if (event.origin !== MANAGER_ORIGIN || event.source !== manager) return;
-const data = event.data;
-if (!data || data.type !== 'workTools:batch' || typeof data.tsv !== 'string') return;
-if (isRunning) { manager.postMessage({ type: 'workTools:busy' }, MANAGER_ORIGIN); return; }
-if (session) { session.cancelled = true; session.discarded = true; }
-clearStoredSession();
-session = null;
-recentCompletions = [];
-pasteBox.value = data.tsv;
-const s = ensureSessionFromPasteBox();
-s.fromManager = true;
-manager.postMessage({ type: 'workTools:received', rows: s.rows.length }, MANAGER_ORIGIN);
-host.style.display = 'block';
-badge.hide();
-clearTimeout(batchWait);
-if (s.headerOk && s.rows.length > 0 && !s.done) startProcessing();
-else { uiHandle.setState(s.headerOk ? 'The batch sent over had no leads to check.' : `The batch sent over could not be read: ${s.headerError}`); render(); }
-});
-// Says so when the link is up but no batch follows (SLA Manager reloaded,
-// or the batch went to an earlier copy of this page before it reloaded).
-uiHandle.setState('Linked: waiting for the batch from SLA Manager or the agent desktop');
-const batchWait = setTimeout(() => {
-if (!isRunning && !(session && session.fromManager)) uiHandle.setState('Linked, but no batch came. Press Send (or Check my Parked Calls) again.');
-}, 10000);
-// Results go back in step as the batch runs (every 5 leads), so the lead
-// cards fill in as it goes; the full set follows when it finishes.
-let sentAtCount = 0;
-window.__workToolsOnProgress = (running) => {
-if (!running.fromManager || !managerWindow()) return;
-const count = Object.keys(running.results).length;
-if (count - sentAtCount < 5 || running.done) return;
-sentAtCount = count;
-const national = running.mode === 'national';
-managerWindow().postMessage({
-type: 'workTools:results', partial: true, done: count, total: running.rows.length,
-kind: national ? 'national' : 'leads',
-tsv: national ? buildNationalResultsExport(running) : buildRawNotesTsvForExtract(running)
-}, MANAGER_ORIGIN);
-};
-window.__workToolsOnDone = (finished) => {
-if (!finished.fromManager || !managerWindow()) return;
-const national = finished.mode === 'national';
-managerWindow().postMessage({
-type: 'workTools:results',
-kind: national ? 'national' : 'leads',
-tsv: national ? buildNationalResultsExport(finished) : buildRawNotesTsvForExtract(finished)
-}, MANAGER_ORIGIN);
-uiHandle.setState('Done: results sent to SLA Manager');
-};
-// The address lets SLA Manager follow Konnect Live to a new version. Said
-// again every few seconds, so an SLA Manager tab that was refreshed (or
-// whose bookmark was clicked again) links back up with this tab.
-const sayReady = () => {
+function linkPost(message) {
 const opener = managerWindow();
-if (opener) opener.postMessage({ type: 'workTools:ready', url: location.origin + location.pathname }, MANAGER_ORIGIN);
+if (!opener) return false;
+try { opener.postMessage(message, MANAGER_ORIGIN); return true; } catch (error) { return false; }
+}
+// The batch SLA Manager sent that has not ended yet, if that is what is loaded.
+function linkedBatch() {
+return session && session.fromManager && !session.linkEnded ? session : null;
+}
+function linkState() {
+if (lcNotices.loggedOut) return 'loggedOut';
+if (isRunning) return (session && session.paused) || lcNotices.hiddenWait ? 'paused' : 'running';
+if (manualStepBusy) return 'running';
+if (session && !session.done && !session.cancelled && (session.stoppedOnError || (linkedBatch() && session.paused))) return 'paused';
+return 'idle';
+}
+function linkReadyMessage() {
+const batch = linkedBatch();
+return {
+type: 'workTools:ready', url: location.origin + location.pathname, state: linkState(),
+batchId: batch ? batch.linkId : null,
+done: batch ? Object.keys(batch.results).length : 0,
+total: batch ? batch.rows.length : 0
 };
-sayReady();
-setInterval(sayReady, 10000);
+}
+// Sent every 10 seconds, and straight away when the state or batch changes.
+let lastReadyKey = '';
+function sayReady(always) {
+if (destroyed) return;
+const message = linkReadyMessage();
+const key = `${message.state}|${message.batchId}`;
+if (!always && key === lastReadyKey) return;
+lastReadyKey = key;
+linkPost(message);
+}
+function linkResults(s, partial) {
+const national = s.mode === 'national';
+const count = Object.keys(s.results).length;
+s.linkSentAt = count;
+linkPost({
+type: 'workTools:results', id: s.linkId == null ? null : s.linkId, partial: !!partial, done: count, total: s.rows.length,
+kind: national ? 'national' : 'leads',
+tsv: national ? buildNationalResultsExport(s) : buildRawNotesTsvForExtract(s)
+});
+}
+// Said once for each batch received, when it stops for good.
+function linkEnd(s, reason) {
+if (!s || !s.fromManager || s.linkEnded) return;
+s.linkEnded = reason;
+linkPost({ type: 'workTools:ended', id: s.linkId == null ? null : s.linkId, reason });
+saveSession(s);
+}
+// Results go back in step as the batch runs (every 5 leads, counted for
+// this batch), so the lead cards fill in as it goes.
+function linkProgress(s) {
+if (linkedBatch() !== s || s.done) return;
+if (Object.keys(s.results).length - (s.linkSentAt || 0) < 5) return;
+linkResults(s, true);
+}
+function linkLoopExit(s) {
+if (!s.fromManager) return '';
+let said = '';
+if (s.done && !s.cancelled) {
+// Also after a retry on a batch that had already ended: the results go
+// again, the ending is not said twice.
+linkResults(s, false);
+linkEnd(s, 'done');
+if (managerWindow()) said = 'Done: results sent to SLA Manager';
+} else if (s.cancelled && !s.linkEnded) {
+if (Object.keys(s.results).length > (s.linkSentAt || 0)) linkResults(s, true);
+linkEnd(s, 'cancelled');
+}
+return said;
+}
+// A decision made by hand on a finished linked batch changes its results,
+// so the full set is sent again under the same id.
+function linkResendAfterDecision() {
+if (session && session.fromManager && session.linkEnded === 'done') linkResults(session, false);
 }
 
-function startProcessing() {
-const s = ensureSessionFromPasteBox();
-if (!s.headerOk) { uiHandle.setState(`Header error: ${s.headerError}`); return; }
+function linkLineText() {
+const state = linkState();
+if (!managerWindow()) return 'Konnect Live: not linked. Press Open Konnect Live in SLA Manager.';
+if (state === 'loggedOut') return 'Konnect Live: logged out, logging back in.';
+if (state === 'paused') return 'Konnect Live: paused.';
+if (state === 'running' && session) return `Konnect Live: checking ${Object.keys(session.results).length} of ${session.rows.length}.`;
+return 'Konnect Live: linked, ready.';
+}
+
+// Stops the batch in hand for good and waits until its run has let go of
+// the page, so a new batch never starts while the old one is mid-lead.
+async function retireSession(reason) {
+const old = session;
+if (!old) return;
+old.cancelled = true;
+old.discarded = true;
+linkEnd(old, reason);
+if (isRunning || manualStepBusy) {
+uiHandle.setState('Stopping the current check...');
+while (isRunning || manualStepBusy) await sleep(50);
+}
+}
+
+// Every change of batch goes through here, one at a time.
+let batchChanges = Promise.resolve();
+let batchChangesWaiting = 0;
+function loadBatch(text, options) {
+batchChangesWaiting++;
+const run = batchChanges.then(() => changeBatch(text, options || {}));
+batchChanges = run.catch((error) => { console.error('KonnectLeadChecker: the batch could not be loaded:', error); }).then(() => { batchChangesWaiting--; });
+return run;
+}
+async function changeBatch(text, options) {
+if (destroyed) return null;
+if (session && session.rawInput === text && !options.link && !options.fresh) return session;
+const previous = session;
+await retireSession('cleared');
+if (destroyed) return null;
+// A hand paste passes the old batch so finished results carry over to a
+// grown batch. A batch from SLA Manager or Clear & paste starts clean.
+session = newSession(text, options.link || options.fresh ? null : previous);
+if (options.link || options.fresh) recentCompletions = [];
+if (options.link) { session.fromManager = true; session.linkId = options.link.id; }
+restoredNote = '';
+lcNotices.otherTab = false;
+lcNotices.stopped = null;
+if (pasteBox.value !== text && (options.link || options.fresh)) pasteBox.value = text;
+setPauseResumeLabel('Pause');
+hidePageFlashOverlay();
+saveSession(session);
+curCustomerEl.textContent = '-';
+curTargetEl.textContent = '-';
+render();
+return session;
+}
+function loadFromPasteBox() {
+return loadBatch(pasteBox.value);
+}
+
+// textContent would wipe the icon, so label and icon are set together.
+function setPauseResumeLabel(text) {
+pauseResumeBtn.innerHTML = svgIcon(text === 'Pause' ? 'pause' : 'play', 11) + text;
+}
+
+function beginRun(s) {
+if (destroyed || !s || s !== session) return;
+if (!s.headerOk) { uiHandle.setState(`This batch could not be read: ${s.headerError}`); return; }
 s.paused = false;
 s.cancelled = false;
+// The page may have moved since the last lead, so the customer is reopened.
+if (!klcShared.stepBusy) s.rowInGroupIndex = 0;
+restoredNote = '';
 setPauseResumeLabel('Pause');
 showPageFlashOverlay('Checking leads…');
 topSectionEl.open = false;
@@ -6152,7 +6585,118 @@ syncClearPasteStartVisibility();
 runLoop(s, uiHandle);
 }
 
+async function startProcessing() {
+beginRun(await loadFromPasteBox());
+}
+
 root.getElementById('btnStart').addEventListener('click', startProcessing);
+
+// Check one lead. Waits for a lead already being checked (a run that was
+// just paused) so two never run at once and none is skipped.
+let manualStepBusy = false;
+let manualStepAsked = false;
+root.getElementById('btnProcessNext').addEventListener('click', async () => {
+if (manualStepAsked) return;
+manualStepAsked = true;
+try {
+const s = await loadFromPasteBox();
+if (!s || destroyed) return;
+if (!s.headerOk) { uiHandle.setState(`This batch could not be read: ${s.headerError}`); return; }
+if (isRunning && !s.paused) return;
+if (klcShared.stepBusy) {
+uiHandle.setState('Waiting for the lead being checked to finish...');
+while (klcShared.stepBusy) await sleep(100);
+}
+if (s !== session || s.discarded) return;
+manualStepBusy = true;
+s.cancelled = false;
+s.rowInGroupIndex = 0;
+restoredNote = '';
+showPageFlashOverlay('Checking lead…');
+let problem = '';
+try {
+await runStep(s, uiHandle);
+} catch (error) {
+console.error('KonnectLeadChecker: a lead could not be checked:', error);
+failGroupAfterError(s, lastStepGroupIndex);
+saveSession(s);
+problem = `Stopped on an error: ${errorText(error)}`;
+} finally {
+hidePageFlashOverlay();
+}
+manualStepBusy = false;
+uiHandle.setState(problem || (s.done ? 'Done' : 'Paused after one lead'));
+if (s.done && !isRunning) { const said = linkLoopExit(s); if (said) uiHandle.setState(said); }
+} finally {
+manualStepBusy = false;
+manualStepAsked = false;
+render();
+}
+});
+
+function startManagerLink() {
+if (!managerWindow()) return;
+// One listener and one 10 second timer per page, held where every copy of
+// this tool can reach them and pointed at the newest copy.
+klcShared.onMessage = onLinkMessage;
+klcShared.onTick = () => sayReady(true);
+if (!klcShared.listening) {
+klcShared.listening = (event) => { if (klcShared.onMessage) klcShared.onMessage(event); };
+window.addEventListener('message', klcShared.listening);
+}
+if (klcShared.tickTimer == null) klcShared.tickTimer = setInterval(() => { if (klcShared.onTick) klcShared.onTick(); }, 10000);
+sayReady(true);
+const restored = session;
+if (restored && restored.fromManager && !restored.linkEnded && restored.headerOk) {
+// A reload in the middle of a batch from SLA Manager: it keeps its id
+// and carries on by itself, unless the agent had paused it.
+if (restored.done) linkLoopExit(restored);
+else if (!restored.paused && !restored.cancelled) { host.style.display = 'block'; badge.hide(); beginRun(restored); }
+return;
+}
+if (restored) return;
+// Says so when the link is up but no batch follows (SLA Manager reloaded,
+// or the batch went to an earlier copy of this page before it reloaded).
+uiHandle.setState('Linked: waiting for the batch from SLA Manager or the agent desktop');
+batchWaitTimer = setTimeout(() => {
+if (!destroyed && !isRunning && !session) uiHandle.setState('Linked, but no batch came. Press Send (or Check my Parked Calls) again.');
+}, 10000);
+}
+
+function onLinkMessage(event) {
+const manager = managerWindow();
+if (destroyed || !manager || event.origin !== MANAGER_ORIGIN || event.source !== manager) return;
+const data = event.data;
+if (!data || data.type !== 'workTools:batch' || typeof data.tsv !== 'string') return;
+const id = data.id == null ? null : data.id;
+const current = linkedBatch();
+// The same batch sent twice (SLA Manager did not hear the first answer).
+if (id != null && current && current.linkId === id) { linkPost({ type: 'workTools:received', id, rows: current.rows.length }); return; }
+if (isRunning || manualStepBusy || klcShared.stepBusy || batchChangesWaiting > 0) {
+linkPost({ type: 'workTools:busy', id, runningId: current ? current.linkId : null });
+return;
+}
+clearTimeout(batchWaitTimer);
+loadBatch(data.tsv, { link: { id } }).then((s) => {
+if (!s) return;
+linkPost({ type: 'workTools:received', id, rows: s.rows.length });
+host.style.display = 'block';
+badge.hide();
+if (!s.headerOk) {
+linkEnd(s, 'unreadable');
+uiHandle.setState(`The batch sent over could not be read: ${s.headerError}`);
+} else if (s.rows.length === 0) {
+linkEnd(s, 'empty');
+uiHandle.setState('The batch sent over had no leads to check.');
+} else if (s.done) {
+// Every row was unreadable: the results say so, and the batch is done.
+uiHandle.setState(linkLoopExit(s) || 'Done');
+} else {
+beginRun(s);
+}
+sayReady(false);
+});
+}
 
 const autoStartToggle = root.getElementById('autoStartToggle');
 autoStartToggle.checked = loadSettings().autoStart;
@@ -6160,13 +6704,13 @@ autoStartToggle.addEventListener('change', () => {
 saveSettings({ autoStart: autoStartToggle.checked });
 });
 
-// Paste only, not typing, so a half-typed batch never starts a run.
+// Paste only, not typing, so a half-typed batch never starts a run. A paste
+// over a running batch stops that one first, then starts the new one.
 pasteBox.addEventListener('paste', () => {
 if (!autoStartToggle.checked) return;
-setTimeout(() => {
-if (isRunning) return;
-const s = ensureSessionFromPasteBox();
-if (s.headerOk && s.rows.length > 0 && !s.done) startProcessing();
+setTimeout(async () => {
+const s = await loadFromPasteBox();
+if (s && s.headerOk && s.rows.length > 0 && !s.done && !isRunning) beginRun(s);
 }, 0);
 });
 
@@ -6174,14 +6718,11 @@ if (s.headerOk && s.rows.length > 0 && !s.done) startProcessing();
 let pasteBoxInputDebounce = null;
 pasteBox.addEventListener('input', () => {
 clearTimeout(pasteBoxInputDebounce);
-pasteBoxInputDebounce = setTimeout(() => {
-ensureSessionFromPasteBox();
-render();
-}, 300);
+pasteBoxInputDebounce = setTimeout(() => { loadFromPasteBox(); }, 300);
 });
 
 // Reads the clipboard directly. Setting pasteBox.value fires no paste
-// event, so the handlers are called explicitly.
+// event, so the batch is loaded here.
 root.getElementById('btnPasteClipboard').addEventListener('click', async (event) => {
 const btn = event.currentTarget; // read before any await: it is null afterwards
 if (!navigator.clipboard || !navigator.clipboard.readText) {
@@ -6191,10 +6732,10 @@ return;
 try {
 const text = await navigator.clipboard.readText();
 pasteBox.value = text;
-const s = ensureSessionFromPasteBox();
-render();
+const s = await loadFromPasteBox();
+if (!s) return;
 if (autoStartToggle.checked && !isRunning && s.headerOk && s.rows.length > 0 && !s.done) {
-startProcessing();
+beginRun(s);
 } else {
 showButtonFeedback(btn, `✓ Pasted ${s.rows.length}`, false);
 }
@@ -6203,12 +6744,13 @@ showButtonFeedback(btn, 'Clipboard blocked: paste manually', true);
 }
 });
 
-// Without this, pausing would leave the real page dimmed for as long as
-// it stayed paused.
+// Hiding the overlay on Pause keeps the real page usable while paused. A
+// lead already being checked finishes first.
 pauseResumeBtn.addEventListener('click', () => {
 if (!session) return;
 if (session.paused) {
 session.paused = false;
+if (!klcShared.stepBusy) session.rowInGroupIndex = 0;
 setPauseResumeLabel('Pause');
 uiHandle.setState('Resuming...');
 showPageFlashOverlay('Checking leads…');
@@ -6216,7 +6758,7 @@ runLoop(session, uiHandle);
 } else {
 session.paused = true;
 setPauseResumeLabel('Resume');
-uiHandle.setState('Paused');
+uiHandle.setState(klcShared.stepBusy ? 'Pausing after this lead...' : 'Paused');
 hidePageFlashOverlay();
 }
 });
@@ -6225,48 +6767,40 @@ root.getElementById('btnCancel').addEventListener('click', () => {
 if (session) { session.cancelled = true; uiHandle.setState('Cancelling...'); }
 });
 
-// Unsafe only mid-step and unpaused. retryExceptions mutates in place so
-// a paused runLoop holding this object picks the change up.
-root.getElementById('btnRetryExceptions').addEventListener('click', (event) => {
+// Only while paused or stopped. retryExceptions mutates in place so a
+// paused runLoop holding this object picks the change up.
+root.getElementById('btnRetryExceptions').addEventListener('click', async (event) => {
 const btn = event.currentTarget; // read before any await: it is null afterwards
-if (!session) return;
-if (isRunning && !session.paused) {
-showButtonFeedback(btn, 'Pause/stop first', true);
+const s = session;
+if (!s) return;
+if (isRunning && !s.paused) {
+showButtonFeedback(btn, 'Pause first', true);
 return;
 }
-const retryCount = retryableExceptionCount(session);
+const retryCount = retryableExceptionCount(s);
 if (retryCount === 0) {
-showButtonFeedback(btn, 'No exceptions to retry', true);
+showButtonFeedback(btn, 'Nothing to retry', true);
 return;
 }
-retryExceptions(session);
-saveSession(session);
+// A lead still being checked after Pause would be skipped or doubled.
+if (klcShared.stepBusy) {
+uiHandle.setState('Waiting for the lead being checked to finish...');
+while (klcShared.stepBusy) await sleep(100);
+if (s !== session || s.discarded) return;
+}
+retryExceptions(s);
+saveSession(s);
+setPauseResumeLabel('Pause');
+showPageFlashOverlay('Checking leads…');
 if (isRunning) {
 // A paused loop is still alive: clearing paused resumes it; calling
 // runLoop again would start a duplicate.
-session.paused = false;
-setPauseResumeLabel('Pause');
+s.paused = false;
 uiHandle.setState('Resuming...');
-showPageFlashOverlay('Checking leads…');
 } else {
-session.paused = false;
-session.cancelled = false;
-setPauseResumeLabel('Pause');
-showPageFlashOverlay('Checking leads…');
-runLoop(session, uiHandle);
+beginRun(s);
 }
 showButtonFeedback(btn, `✓ Retrying ${retryCount}`, false);
-});
-
-root.getElementById('btnClear').addEventListener('click', () => {
-if (session) { session.cancelled = true; session.discarded = true; }
-clearStoredSession();
-session = null;
-recentCompletions = [];
-pasteBox.value = '';
-setPauseResumeLabel('Pause');
-hidePageFlashOverlay();
-uiHandle.setState('Idle', '-', '-');
 });
 
 // Clear + paste + start in one click for the collapsed panel. Always
@@ -6284,35 +6818,41 @@ text = await navigator.clipboard.readText();
 showButtonFeedback(btn, 'Clipboard blocked: paste manually', true);
 return;
 }
-if (session) { session.cancelled = true; session.discarded = true; }
-clearStoredSession();
-session = null;
-recentCompletions = [];
-hidePageFlashOverlay();
-pasteBox.value = text;
-const s = ensureSessionFromPasteBox();
+const s = await loadBatch(text, { fresh: true });
+if (!s) return;
 if (s.headerOk && s.rows.length > 0 && !s.done) {
-startProcessing();
+beginRun(s);
 } else {
-render();
 uiHandle.setState('Idle', '-', '-');
-showButtonFeedback(btn, s.headerOk ? 'No rows parsed' : `Header error: ${s.headerError}`, true);
+showButtonFeedback(btn, s.headerOk ? 'No leads found in the clipboard' : 'The clipboard is not a batch', true);
 }
 });
 
-// Full reset: stops the run, wipes the stored session and removes the panel.
 // No names are sent: only statuses, verdicts and counts.
 root.getElementById('btnReport').addEventListener('click', () => {
 const s = session;
 const results = s ? orderedResults(s) : [];
-const state = s ? `${checkScenarioOf(s.mode, s.rows).label}; ${results.length} of ${s.rows.length} done; ${curStateEl.textContent}` : 'No batch loaded';
+const state = s ? `${checkScenarioOf(s.mode, s.rows).label}; ${results.length} of ${s.rows.length} done; ${curStateEl.textContent}; timers: ${klcTimers.mode}${document.hidden ? ', tab hidden' : ''}` : 'No batch loaded';
 const lines = results.slice(-25).map((r, i) => [`row ${i + 1}`, r.status, r.exception ? exceptionLabel(r.exception) : '', r.verdict || r.tierName || '', r.postClosureAction ? `${r.postClosureAction}${r.postClosureReason ? ': ' + r.postClosureReason : ''}` : ''].filter(Boolean).join(' | '));
 reportProblem('Lead Checker', state, lines);
 });
 
+// Full reset: stops the run and this copy's timers, wipes the stored batch
+// (this tool's data only) and removes the panel.
 root.getElementById('btnClearStop').addEventListener('click', () => {
-if (session) { session.cancelled = true; session.discarded = true; }
-isRunning = false;
+if (session) { session.cancelled = true; session.discarded = true; linkEnd(session, 'cleared'); }
+destroyed = true;
+clearInterval(badgeTimer);
+clearTimeout(batchWaitTimer);
+clearTimeout(pasteBoxInputDebounce);
+if (versionState.stop) versionState.stop();
+window.removeEventListener('storage', onStorage);
+if (klcShared.listening) window.removeEventListener('message', klcShared.listening);
+klcShared.listening = false;
+klcShared.onMessage = null;
+klcShared.onTick = null;
+if (klcShared.tickTimer != null) { clearInterval(klcShared.tickTimer); klcShared.tickTimer = null; }
+lcNotices.onChange = null;
 hidePageFlashOverlay();
 clearStoredSession();
 session = null;
@@ -6323,33 +6863,24 @@ window.__konnectLeadChecker = null;
 console.info('Konnect Lead Checker stopped and cleared. Click the bookmarklet again to start fresh.');
 });
 
-root.getElementById('btnCopyRawForExtract').addEventListener('click', (event) => {
-const btn = event.currentTarget; // read before any await: it is null afterwards
-const s = ensureSessionFromPasteBox();
-const count = orderedResults(s).length;
-copyTextToClipboard(buildRawNotesTsvForExtract(s))
+function copyResults(btn, build) {
+if (!session) { showButtonFeedback(btn, 'Nothing to copy yet', true); return; }
+const count = orderedResults(session).length;
+copyTextToClipboard(build(session))
 .then(() => showButtonFeedback(btn, `✓ Copied ${count}`, false))
 .catch(() => showButtonFeedback(btn, '✗ Copy failed', true));
-});
-
-root.getElementById('btnCopyNationalResults').addEventListener('click', (event) => {
-const btn = event.currentTarget; // read before any await: it is null afterwards
-const s = ensureSessionFromPasteBox();
-const count = orderedResults(s).length;
-copyTextToClipboard(buildNationalResultsExport(s))
-.then(() => showButtonFeedback(btn, `✓ Copied ${count}`, false))
-.catch(() => showButtonFeedback(btn, '✗ Copy failed', true));
-});
+}
+root.getElementById('btnCopyRawForExtract').addEventListener('click', (event) => copyResults(event.currentTarget, buildRawNotesTsvForExtract));
+root.getElementById('btnCopyNationalResults').addEventListener('click', (event) => copyResults(event.currentTarget, buildNationalResultsExport));
 
 root.getElementById('btnCopyReviewDecisions').addEventListener('click', (event) => {
 const btn = event.currentTarget; // read before any await: it is null afterwards
-const s = ensureSessionFromPasteBox();
-const count = orderedResults(s).filter((r) => r.manualOverride).length;
+const count = session ? orderedResults(session).filter((r) => r.manualOverride).length : 0;
 if (count === 0) {
 showButtonFeedback(btn, 'No manual reviews yet', true);
 return;
 }
-copyTextToClipboard(buildManualReviewDecisionsExport(s))
+copyTextToClipboard(buildManualReviewDecisionsExport(session))
 .then(() => showButtonFeedback(btn, `✓ Copied ${count}`, false))
 .catch(() => showButtonFeedback(btn, '✗ Copy failed', true));
 });
@@ -6385,7 +6916,7 @@ window.addEventListener('mouseup', () => { dragState = null; });
 render();
 startManagerLink();
 // Keeps the button in Konnect's menu bar when the page redraws it.
-setInterval(ensureBadgeAttached, 3000);
+badgeTimer = setInterval(ensureBadgeAttached, 3000);
 
 window.__konnectLeadChecker = {
 focus() {

@@ -15,9 +15,12 @@ fetch -> check response.ok -> Function(code)() -> alert on failure.
 Work Tools (one bookmark for all the tools)
 
 Opens the right tools for the page: Lead Checker on Konnect Live, SLA
-Manager on Konnect Manager, and Konnect Notes plus Lead Re setup on the
-agent desktop, with Reg Check (Alt+R) everywhere. The Konnect Tools
-bookmark other staff use is separate and unchanged.
+Manager on Konnect Manager, and Konnect Notes, Reg Check (Alt+R) and Lead
+Re setup on the agent desktop. Reg Check is only loaded by Work Tools on
+the agent desktop; anywhere else use its own bookmark below. Clicking Work
+Tools again on the agent desktop is safe during a run: it loads whatever
+is missing and shows the Lead Re setup panel that is already there. The
+Konnect Tools bookmark other staff use is separate and unchanged.
 
 javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Work-Tools.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Work Tools: "+e);}})();
 
@@ -71,11 +74,26 @@ javascript:(async function(){try{const url="https://raw.githubusercontent.com/Om
 
 Lead Re setup (agent desktop)
 
+One panel with three runs:
+- Re setup: adds each of the National check's Re setup leads back as a new
+  lead and parks the call. On a customer already open it sets a chosen
+  closed lead up again and stops in the new lead. Never presses Finished.
+- Post Closure: opens each "send back through" lead from Parked Calls,
+  types cad or cah in Post Closure Notes (Konnect Notes writes the note),
+  sets Customer Hub Team > No Opportunity > Catch All and presses Finished.
+  Parked Calls are checked on the Lead Checker through SLA Manager.
+- Email Only: works the Email Only leads assigned in SLA Manager as they
+  present: Reject, Update Outcomes, eo in Call Notes, Customer Hub Team >
+  Ongoing > Email Only Lead, then Finished.
+
 javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Lead-Reset.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Lead-Reset: "+e);}})();
 
 --------------------------------------------------------------------
 
 Reg-Check
+
+Highlight a UK registration and press Alt+R to look it up. Shows a short
+notice when it loads; there is no pop up to click away.
 
 javascript:(async function(){try{const url="https://raw.githubusercontent.com/OmariDC/WorkBookmarklets/main/Reg-Check.js?_="+Date.now();const response=await fetch(url);if(!response.ok)throw new Error("HTTP "+response.status);const code=await response.text();Function(code)();}catch(e){alert("Error loading Reg-Check: "+e);}})();
 
