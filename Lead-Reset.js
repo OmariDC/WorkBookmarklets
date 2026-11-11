@@ -1578,6 +1578,7 @@ render();
 function waitForUser(error, inLead) {
 if (halted) return Promise.resolve('stop');
 state.paused = { message: error.message, carryOnLabel: error.carryOnLabel, noCarry: !!error.noCarry, review: !!error.review, inLead: !!inLead };
+if (ui) ui.skipAsk = false;
 showPanel();
 render();
 return new Promise((resolve) => { resolvePause = resolve; });
@@ -1591,9 +1592,9 @@ state.paused = null;
 r(answer);
 }
 
-// What a skipped or stopped lead leaves on the page for the agent, in
-// words, '' when nothing.
-function leftAsIs(ctx) {
+// What a skipped or stopped lead leaves on the page for the agent, one
+// short phrase per thing, none when nothing.
+function leftParts(ctx) {
 const parts = [];
 if (onCallPage()) {
 parts.push('the call is still open');
@@ -1610,6 +1611,12 @@ if (next && selectedText(next)) parts.push(`the next status is ${selectedText(ne
 } else if (onPresentPage()) {
 parts.push('a lead is presenting');
 }
+return parts;
+}
+
+// The same in one sentence, '' when nothing.
+function leftAsIs(ctx) {
+const parts = leftParts(ctx);
 return parts.length ? `Left as it is: ${parts.join('; ')}.` : '';
 }
 
@@ -1619,7 +1626,7 @@ async function runLeadSteps(lead, steps) {
 state.steps = steps;
 let outcome = 'Done';
 const confirmed = [];
-if (ui) ui.skipWhy = '';
+if (ui) { ui.skipWhy = ''; ui.skipAsk = false; }
 for (state.stepIndex = 0; state.stepIndex < steps.length;) {
 if (halted) return null;
 if (state.stopRequested) { outcome = null; break; }
@@ -1652,7 +1659,7 @@ const step = steps[state.stepIndex];
 const rows = loadDecisions();
 rows.push(decisionRow(state.mode, lead, outcome || 'Stopped', step ? step.label : '', confirmed, ui ? ui.skipWhy : '', new Date().toISOString()));
 saveDecisions(freshDecisions(rows, Date.now()));
-if (ui) ui.skipWhy = '';
+if (ui) { ui.skipWhy = ''; ui.skipAsk = false; }
 return outcome;
 }
 
@@ -1671,6 +1678,7 @@ render();
 function endRun() {
 if (halted) return;
 const stopped = state.stopRequested;
+const parts = stopped ? leftParts(state.ctx) : [];
 const left = stopped ? leftAsIs(state.ctx) : '';
 const available = state.mode !== 'here' && isAvailable();
 const lines = [];
@@ -1684,7 +1692,7 @@ state.paused = null;
 state.ctx = null;
 state.stopRequested = false;
 resolvePause = null;
-state.notice = left || available ? { text: lines.join(' '), shiftStart: available } : null;
+state.notice = left || available ? { text: lines.join(' '), shiftStart: available, stopped, parts } : null;
 if (lines.length) addLog(lines.join(' ')); else render();
 }
 
@@ -1798,13 +1806,13 @@ function sendBackLeads() {
 return sendBackLeadsFrom(postClosureResults());
 }
 
-// "Lead Checker results from 5 min ago", by the newest result.
+// "Checked 5 min ago", by the newest result.
 function resultsAgeLine() {
 const saved = postClosureSaved();
 const results = postClosureResults();
 if (!saved || !results.length) return '';
 const newest = results.map((r) => r.checkedAt || saved.savedAt).sort().pop();
-return `Lead Checker results from ${ageText(newest, Date.now())}.`;
+return `Checked ${ageText(newest, Date.now())}`;
 }
 
 // The desk's request while it is still good, else null.
@@ -1865,12 +1873,25 @@ function emailOnlyAgents() {
 return Array.from(new Set(emailOnlySaved().map((l) => l.agent).filter(Boolean)));
 }
 
-// Only the chosen agent's leads, as those are the ones that present here.
-function emailOnlyLeads() {
+// Whose Email Only leads these are: the one name recorded, or the name the
+// agent picked when there are several. '' while that has not been asked.
+function emailOnlyMe() {
 const agents = emailOnlyAgents();
+if (agents.length <= 1) return agents[0] || '';
 const chosen = loadSettings().emailOnlyAgent;
-const agent = agents.includes(chosen) ? chosen : agents[0];
-return emailOnlySaved().filter((l) => !agent || l.agent === agent).map((l) => ({ ...l, key: normalise(l.email) }));
+return agents.includes(chosen) ? chosen : '';
+}
+
+// True when the agent has to say who they are before any lead is listed.
+function emailOnlyAsk() {
+return emailOnlyAgents().length > 1 && !emailOnlyMe();
+}
+
+// Only this agent's own leads, as those are the ones that present here.
+function emailOnlyLeads() {
+if (emailOnlyAsk()) return [];
+const me = emailOnlyMe();
+return emailOnlySaved().filter((l) => !me || l.agent === me).map((l) => ({ ...l, key: normalise(l.email) }));
 }
 
 function loadDeskProgress() {
@@ -1989,147 +2010,180 @@ endRun();
 // PANEL
 // ===================================================================
 
-// The launcher sits above Konnect Notes' own launcher (left 20px, bottom
-// 20px), and the panel opens above that too.
+// One frame: a teal header with Hide and the one More menu, the link strip,
+// the body, and a footer that says the current stop setting in words.
 const STYLE = `
 :host { all: initial; }
 * { box-sizing: border-box; }
-.panel { position: fixed; bottom: 68px; left: 20px; width: 340px; max-width: calc(100vw - 32px); max-height: calc(100vh - 88px); display: flex; flex-direction: column; z-index: 2147483000;
-  --bg: #f2f2f7; --surface: #ffffff; --text: #1c1c1e; --text-2: #334155; --muted: #5b6577; --border: #e2e8f0; --accent: #C2CB42; --head: #1c1c1e; --ring: #1c1c1e;
-  --green: #047857; --amber: #b45309; --red: #c40013;
-  background: var(--bg); color: var(--text); border-radius: 16px; box-shadow: 0 18px 40px rgba(15, 23, 42, .22), 0 2px 6px rgba(15, 23, 42, .08); overflow: hidden;
-  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+.panel { position: fixed; bottom: 68px; left: 20px; width: 360px; max-width: calc(100vw - 32px); max-height: calc(100vh - 88px); display: flex; flex-direction: column; z-index: 2147483000;
+  --bg: #f2f2f7; --surface: #ffffff; --text: #1c1c1e; --muted: #5b6577; --border: #dfe3ea; --head: #0d3b3a; --pri: #0f766e; --acc: #0f766e; --tint: #dcf3f0; --ring: #1c1c1e;
+  --ok: #047857; --ok-t: #dff5ec; --warn: #a85a00; --warn-t: #fdf0dc; --bad: #c62828; --bad-t: #fde8e8; --info: #1d4ed8; --info-t: #e3ebfd; --amber: #b4530a;
+  background: var(--bg); color: var(--text); border-radius: 16px; box-shadow: 0 14px 34px rgba(15, 23, 42, .22), 0 2px 6px rgba(15, 23, 42, .08);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
 .panel.paused { width: 300px; }
-.head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--head); color: #fff; cursor: move; user-select: none; flex-shrink: 0; }
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: pointer; text-align: left; }
+svg.ic { width: 14px; height: 14px; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.head { display: flex; align-items: center; gap: 6px; padding: 9px 12px; background: var(--head); color: #fff; cursor: move; user-select: none; flex-shrink: 0; border-radius: 16px 16px 0 0; }
 .panel.paused .head { background: var(--amber); }
-.head .title { font-weight: 700; font-size: 13.5px; flex: 1; display: flex; align-items: center; gap: 8px; min-width: 0; }
-.head .mini-status { font-weight: 600; color: #e2e8f0; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.panel.paused .mini-status { color: #fff; }
-.icon-btn { background: transparent; border: 0; color: #e2e8f0; width: 28px; height: 28px; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; font: inherit; font-size: 16px; }
-.icon-btn:hover { background: rgba(255,255,255,.16); color: #fff; }
-.link { flex-shrink: 0; padding: 5px 12px; font-size: 11.5px; color: var(--text-2); background: #e9e9ef; border-bottom: 1px solid var(--border); }
-.link.down { color: #78350f; background: #fffbeb; }
-.body { padding: 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-.panel.minimised .body, .panel.minimised .foot, .panel.minimised .link, .panel.paused .foot, .panel.paused .link { display: none; }
-.launcher { position: fixed; bottom: 68px; left: 20px; z-index: 2147483000; align-items: center; gap: 6px; padding: 8px 14px; border: 0; border-radius: 999px; background: #1c1c1e; color: #fff; font: 600 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; box-shadow: 0 6px 16px rgba(15, 23, 42, .25); cursor: pointer; }
-.launcher:hover { background: #2c2c2e; }
-.launcher.needs { background: #b45309; animation: nudge 1.2s ease-in-out infinite; }
-.launcher:focus-visible { outline: 2px solid #fff; outline-offset: 0; box-shadow: 0 0 0 4px #1c1c1e; }
-@keyframes nudge { 50% { box-shadow: 0 0 0 6px rgba(180, 83, 9, .35); } }
-.foot { flex-shrink: 0; padding: 8px 12px; background: var(--surface); display: flex; justify-content: space-between; border-top: 1px solid var(--border); }
-.stop-clear { font: inherit; font-size: 12.5px; font-weight: 600; color: var(--red); background: transparent; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-.stop-clear:hover { background: #fef2f2; }
-.report { font: inherit; font-size: 12.5px; font-weight: 600; color: var(--muted); background: transparent; border: 0; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-.report:hover { background: var(--bg); color: var(--text); }
-.card { background: var(--surface); border-radius: 12px; padding: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05), 0 1px 1px rgba(0,0,0,.03); }
+.head .title { font-weight: 700; font-size: 13.5px; flex: 1; display: flex; align-items: baseline; gap: 8px; min-width: 0; white-space: nowrap; }
+.head .sub { font-weight: 500; opacity: .8; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.hbtn { display: inline-flex; align-items: center; gap: 5px; color: #fff; background: rgba(255,255,255,.14); border-radius: 8px; padding: 5px 9px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.hbtn:hover { background: rgba(255,255,255,.24); }
+.hbtn.quiet { background: transparent; }
+.hbtn.quiet:hover, .hbtn[aria-expanded="true"] { background: rgba(255,255,255,.24); }
+.hbtn:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
+.link { flex-shrink: 0; display: flex; align-items: center; gap: 7px; padding: 6px 12px; min-height: 31px; font-size: 12px; color: var(--muted); background: var(--surface); border-bottom: 1px solid var(--border); }
+.link.warn { background: var(--warn-t); color: #7a3d00; }
+.link.bad { background: var(--bad-t); color: var(--bad); font-weight: 600; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+.dot.off { background: #8a93a3; } .dot.busy { background: var(--info); } .dot.warn { background: #d98200; } .dot.bad { background: var(--bad); }
+.body { padding: 10px 12px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+.body > * { flex-shrink: 0; }
+.foot { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 7px 12px; background: var(--surface); border-top: 1px solid var(--border); border-radius: 0 0 16px 16px; font-size: 11.5px; color: var(--muted); }
+.panel.paused .foot, .panel.paused .link { display: none; }
+.card { background: var(--surface); border-radius: 12px; padding: 10px; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+.col { display: flex; flex-direction: column; gap: 8px; }
 .muted { color: var(--muted); }
 .small { font-size: 11.5px; }
-.version { font-size: 11px; color: var(--text-2); }
-.version.newer { color: var(--red); font-weight: 700; font-size: 12px; }
-.alert { border-radius: 10px; padding: 9px 11px; font-size: 12.5px; }
-.alert.red { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
-.alert.amber { background: #fffbeb; color: #78350f; border: 1px solid #fde68a; }
-.alert .row { margin-top: 8px; }
+.quiet-line { font-size: 11.5px; color: var(--muted); }
+.alert { border-radius: 12px; padding: 10px; font-size: 12.5px; display: flex; flex-direction: column; gap: 8px; }
+.alert.red { background: var(--bad-t); color: #8f1d1d; border: 1px solid #efb4b4; }
+.alert.amber { background: #fff8e6; color: #7a3d00; border: 1px solid #f1d98a; }
+.alert ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 3px; }
+.alert li { display: flex; gap: 7px; align-items: flex-start; }
+.alert li svg { margin-top: 2px; }
 .big-count { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
-.big-count strong { font-size: 30px; line-height: 1; letter-spacing: -.5px; }
+.big-count strong { font-size: 28px; line-height: 1; }
+.cf { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 11.5px; color: var(--muted); }
+.chip { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 2px 9px; font-size: 11.5px; font-weight: 600; background: var(--surface); border: 1px solid var(--border); color: var(--text); white-space: nowrap; }
+.chip.ok { background: var(--ok-t); border-color: transparent; color: var(--ok); }
+.chip.warn { background: var(--warn-t); border-color: transparent; color: var(--warn); }
+.chip.info { background: var(--info-t); border-color: transparent; color: var(--info); }
+.chip.acc { background: var(--tint); border-color: transparent; color: var(--acc); }
+.chip.wrap { white-space: normal; align-self: flex-start; border-radius: 10px; }
 /* 20px is a full pill on one line and a tidy rounded box if a long label wraps. */
-.btn { font: inherit; font-weight: 600; font-size: 12.5px; line-height: 1.3; text-align: center; border-radius: 20px; padding: 8px 14px; cursor: pointer; border: 1px solid transparent; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
-.btn.primary { background: var(--accent); color: #1c1c1e; }
-.btn.primary:hover { filter: brightness(.95); }
-.btn.secondary { background: #e5e5ea; color: var(--text); }
-.btn.secondary:hover { background: #d9d9de; }
-.btn.ghost { background: transparent; color: var(--text-2); border-color: #cbd5e1; }
-.btn.ghost:hover { background: var(--bg); }
-.btn.danger { background: transparent; color: var(--red); border-color: transparent; }
-.btn.danger:hover { background: #fef2f2; }
-.btn.wide { width: 100%; padding: 10px 14px; font-size: 13.5px; }
-.btn.small { padding: 5px 11px; font-size: 12px; white-space: nowrap; }
-.btn:focus-visible, .tab:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible, .report:focus-visible, .stop-clear:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-.icon-btn:focus-visible { outline: 2px solid #fff; outline-offset: 1px; }
-.row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.tabs { display: flex; gap: 4px; background: #e5e5ea; border-radius: 10px; padding: 3px; }
-.tab { flex: 1; font: inherit; font-size: 12px; font-weight: 600; color: var(--text-2); background: transparent; border: 0; border-radius: 8px; padding: 6px 4px; cursor: pointer; white-space: nowrap; }
+.btn { font-weight: 600; font-size: 12px; line-height: 1.3; text-align: center; border-radius: 20px; padding: 6px 11px; border: 1px solid transparent; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.btn.primary { background: var(--pri); color: #fff; font-weight: 700; font-size: 12.5px; padding: 8px 14px; }
+.btn.primary:hover { filter: brightness(1.08); }
+.btn.sec { background: var(--surface); color: var(--text); border-color: #c5cbd6; }
+.btn.sec:hover { border-color: var(--acc); }
+.btn.txt { color: var(--acc); text-decoration: underline; text-underline-offset: 2px; padding: 2px 4px; border-radius: 6px; }
+.btn.danger { color: var(--bad); font-weight: 700; padding: 6px 8px; }
+.btn.danger:hover { background: var(--bad-t); }
+.btn.wide { width: 100%; }
+.btn.primary.wide { padding: 10px 14px; font-size: 13.5px; }
+.btn.small { white-space: nowrap; }
+.btn:focus-visible, .tab:focus-visible, summary:focus-visible, input:focus-visible, .av:focus-visible, .rmain:focus-visible, .mi:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.grow { flex: 1; min-width: 0; }
+.tabs { display: flex; gap: 3px; background: #e5e5ea; border-radius: 10px; padding: 3px; }
+.tab { flex: 1; font-size: 12px; font-weight: 600; text-align: center; color: var(--muted); border-radius: 8px; padding: 6px 4px; white-space: nowrap; }
 .tab.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
-.toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
-.toggle input { width: 16px; height: 16px; accent-color: #1c1c1e; margin: 0; }
-.progress-top { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--muted); }
-.track { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
-.fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .3s; }
-.lead-name { font-size: 16px; font-weight: 700; margin-top: 8px; }
-.lead-meta { font-size: 12px; color: var(--muted); margin-top: 1px; }
-.steps { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-.step { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); padding: 2px 0; }
-.step .dot { width: 18px; height: 18px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; border: 1.5px solid var(--border); background: var(--surface); }
-.step.done { color: var(--text-2); }
-.step.done .dot { background: var(--green); border-color: var(--green); color: #fff; }
-.step.current { color: var(--text); font-weight: 600; }
-.step.current .dot { border-color: var(--accent); background: #f7f9dd; }
-.step.current .dot::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #8a9100; animation: pulse 1s ease-in-out infinite; }
-.step.needs .dot { background: var(--amber); border-color: var(--amber); color: #fff; }
-.step.needs { color: var(--amber); font-weight: 700; }
-@keyframes pulse { 50% { opacity: .3; } }
-.done-steps { background: none; box-shadow: none; border-radius: 0; }
-.done-steps > summary { padding: 2px 0; font-weight: 500; font-size: 12.5px; justify-content: flex-start; cursor: pointer; }
-.steps.inner { margin: 2px 0 4px 26px; }
-.needs-card { border: 2px solid #f59e0b; background: #fffbeb; }
-.needs-card .who { font-size: 11.5px; color: #78350f; overflow-wrap: anywhere; }
-.needs-card h3 { margin: 0 0 4px; font-size: 14px; color: #7c2d12; }
-.needs-card p { margin: 0 0 8px; color: #451a03; font-size: 13px; }
-.needs-card .others { margin-top: 6px; justify-content: space-between; }
-.needs-card .why { display: block; width: 100%; margin: 6px 0 0; font: inherit; font-size: 11.5px; line-height: 1.3; color: var(--text); background: #fff; border: 1px solid #e5c98b; border-radius: 8px; padding: 2px 9px; }
+.tab em { font-style: normal; font-size: 10.5px; background: var(--tint); color: var(--acc); border-radius: 999px; padding: 0 6px; margin-left: 4px; }
+.track { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.fill { height: 100%; background: var(--pri); border-radius: 3px; transition: width .3s; }
+.av { width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; background: var(--tint); color: var(--acc); flex: none; text-align: center; }
+button.av:hover { box-shadow: 0 0 0 2px var(--acc); }
+.av.grn { background: var(--ok-t); color: var(--ok); } .av.gry { background: #e9ebf0; color: #4b5565; } .av.amb { background: var(--warn-t); color: var(--warn); }
+.g { display: flex; flex-direction: column; gap: 6px; }
+.grp { display: flex; justify-content: space-between; align-items: baseline; font-weight: 700; font-size: 12.5px; padding: 2px 2px 0; }
+.grp span { color: var(--muted); font-weight: 500; }
+.list { background: var(--surface); border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.05); max-height: 250px; overflow-y: auto; }
+.r { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 9px; align-items: center; padding: 8px 10px; }
+.r + .r { border-top: 1px solid var(--border); }
+.rmain { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; min-width: 0; width: 100%; border-radius: 6px; }
+.nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.meta { grid-column: 1 / 3; font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.r .more { grid-column: 2; display: none; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); font-size: 12px; }
+.r.open .more { display: block; }
+.r.open .meta, .r.open .nm { white-space: normal; overflow-wrap: anywhere; }
+dl.kv { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+.tag { font-size: 10.5px; font-weight: 700; border-radius: 6px; padding: 1px 6px; white-space: nowrap; flex: none; }
+.tag.done { background: var(--ok-t); color: var(--ok); } .tag.wait { background: #e9ebf0; color: #4b5565; } .tag.ck { background: var(--warn-t); color: var(--warn); } .tag.next { background: var(--tint); color: var(--acc); }
+.lead-name { font-weight: 700; overflow-wrap: anywhere; }
+.steps { display: grid; gap: 6px; font-size: 12.5px; }
+.step { display: flex; gap: 8px; align-items: center; }
+.step.current, .step.needs { font-weight: 700; }
+.step.needs { color: var(--amber); }
+.step.todo { color: var(--muted); }
+.num { width: 20px; height: 20px; border-radius: 50%; background: var(--tint); color: var(--acc); font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; flex: none; }
+.step.done .num { background: var(--ok); color: #fff; }
+.step.current .num { background: var(--pri); color: #fff; }
+.step.needs .num { background: var(--amber); color: #fff; }
+details.step-fold > summary { padding: 0; font-weight: 500; justify-content: flex-start; border-radius: 6px; }
+.step-fold ol { margin: 4px 0 2px 28px; padding: 0; list-style: none; display: grid; gap: 2px; font-size: 11.5px; color: var(--muted); }
+.needs-card { background: #fff8e6; border: 2px solid #e9a13b; border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 8px; box-shadow: none; }
+.needs-card .who { font-size: 11.5px; color: #7a3d00; overflow-wrap: anywhere; }
+.needs-card .ask { margin: 2px 0 0; font-size: 13px; font-weight: 600; color: #5a2c00; overflow-wrap: anywhere; }
+.needs-card .others { justify-content: space-between; }
+.needs-card .why { display: block; width: 100%; font: inherit; font-size: 12px; color: var(--text); background: #fff; border: 1px solid #e5c98b; border-radius: 10px; padding: 6px 10px; }
 .needs-card .why::placeholder { color: #8a6d3b; }
-details { background: var(--surface); border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
-summary { cursor: pointer; padding: 10px 12px; font-weight: 600; font-size: 12.5px; display: flex; justify-content: space-between; align-items: center; list-style: none; border-radius: 12px; }
+details.fold { background: var(--surface); border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+summary { cursor: pointer; padding: 9px 10px; font-weight: 700; font-size: 12.5px; display: flex; justify-content: space-between; align-items: center; list-style: none; border-radius: 12px; }
 summary::-webkit-details-marker { display: none; }
-summary .count { background: var(--bg); color: var(--muted); border-radius: 999px; padding: 1px 8px; font-size: 11px; font-weight: 600; }
-details.how { background: none; box-shadow: none; margin: 4px 0 10px; }
-details.how > summary { display: inline-block; padding: 0; font-size: 11.5px; font-weight: 600; color: var(--text-2); text-decoration: underline; border-radius: 4px; }
-details.how > div { margin-top: 4px; font-size: 11.5px; color: var(--muted); }
-.fold { padding: 0 12px 10px; }
-.list { padding: 0 12px 8px; max-height: 220px; overflow-y: auto; }
-.list-row { display: flex; align-items: center; gap: 9px; padding: 7px 0; border-top: 1px solid var(--border); }
-.avatar { width: 26px; height: 26px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; flex-shrink: 0; }
-.list-row .who { flex: 1; min-width: 0; }
-.list-row .who div { overflow-wrap: anywhere; }
-.list-row .when { font-size: 11px; }
-.field { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.field label { font-size: 12px; font-weight: 600; color: var(--text-2); white-space: nowrap; }
-.select-wrap { position: relative; flex: 1; min-width: 0; display: flex; }
-/* The arrow is drawn here, as the select's own is switched off with its native look. */
-.select-wrap::after { content: ''; position: absolute; right: 13px; top: 50%; width: 6px; height: 6px; border-right: 1.5px solid var(--text-2); border-bottom: 1.5px solid var(--text-2); transform: translateY(-70%) rotate(45deg); pointer-events: none; }
-.field select { flex: 1; min-width: 0; -webkit-appearance: none; appearance: none; font: inherit; font-size: 12.5px; font-weight: 600; line-height: 1.3; color: var(--text); background: var(--surface); border: 1px solid #cbd5e1; border-radius: 20px; padding: 6px 30px 5px 12px; margin: 0; cursor: pointer; text-overflow: ellipsis; }
-.field select:hover { background: var(--bg); }
-.chip { font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
-.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0 10px; }
+summary .count { color: var(--muted); font-weight: 500; }
+.fold-body { padding: 0 10px 10px; }
+.log { padding: 0 10px 10px; font-size: 11.5px; color: var(--muted); max-height: 150px; overflow-y: auto; display: grid; gap: 2px; }
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .tile { background: var(--bg); border-radius: 10px; padding: 8px; text-align: center; }
 .tile strong { display: block; font-size: 20px; }
 .tile span { font-size: 11px; color: var(--muted); }
-.log { padding: 0 12px 10px; font-size: 11px; color: var(--muted); max-height: 150px; overflow-y: auto; }
-.log div { padding: 2px 0; }
-.empty { text-align: center; padding: 8px 4px; }
+.empty { text-align: center; padding: 14px 10px; align-items: center; }
+.empty strong { display: block; font-size: 14px; }
 .pick { display: flex; gap: 9px; align-items: flex-start; padding: 7px 0; border-top: 1px solid var(--border); cursor: pointer; font-size: 12.5px; }
-.pick input { margin: 3px 0 0; accent-color: #1c1c1e; }
-.empty strong { display: block; font-size: 14px; margin-bottom: 4px; }
+.pick input { margin: 3px 0 0; accent-color: #0f766e; }
+.menu { position: absolute; z-index: 5; min-width: 220px; max-width: 290px; overflow-y: auto; background: #fff; color: #1c1c1e; border-radius: 12px; box-shadow: 0 10px 30px rgba(15,23,42,.3), 0 0 0 1px rgba(15,23,42,.08); padding: 5px; display: flex; flex-direction: column; font-size: 12.5px; }
+.menu .mh { font-weight: 700; padding: 6px 9px 3px; overflow-wrap: anywhere; }
+.menu .ms { height: 1px; background: #e3e6ec; margin: 4px 0; flex: none; }
+.menu .mn { color: #5b6577; font-size: 11.5px; padding: 4px 9px; }
+.menu .mn.newer { color: var(--bad); font-weight: 700; }
+.mi { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: 8px; width: 100%; font-weight: 500; flex: none; }
+.mi:hover, .mi:focus-visible { background: #eef0f5; outline: none; }
+.mi.danger { color: var(--bad); font-weight: 700; }
+.mi em { margin-left: auto; font-style: normal; font-size: 11px; color: #5b6577; font-weight: 600; }
+.edge-tab { position: fixed; left: 0; bottom: 68px; z-index: 2147483000; display: none; align-items: center; justify-content: center; min-width: 26px; height: 36px; padding: 0 4px; border-radius: 0 6px 6px 0; background: #0f766e; color: #fff; font: 700 10.5px/1 Arial, sans-serif; overflow: hidden; }
+.edge-tab svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.edge-tab:hover { filter: brightness(1.25); }
+.edge-tab[data-state="run"] { box-shadow: inset 0 0 0 2px rgba(255,255,255,.55); }
+.edge-tab[data-state="need"] { background: #b4530a; box-shadow: inset 0 0 0 2px #fff; font-size: 16px; }
+.edge-tab:focus-visible { outline: 2px solid #fff; outline-offset: -4px; }
 `;
 
-const CHIP_COLORS = { Done: '#047857', Skipped: '#5b6577', Waiting: '#5b6577', Working: '#5b6300', 'Needs you': '#b45309' };
+const ICONS = {
+minus: '<path d="M5 12h14"/>',
+more: '<circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>',
+ok: '<path d="M5 12l5 5L20 7"/>',
+blank: '',
+paste: '<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V2h6v2"/>',
+copy: '<rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h2"/>',
+trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.4-1 1-1 1.7M12 17h.01"/>',
+flag: '<path d="M5 21V4h11l-2 4 2 4H5"/>',
+stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+phone: '<path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2"/>',
+reset: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v6h6"/>'
+};
 
-function chip(text) {
-const color = CHIP_COLORS[text] || '#5b6577';
-return `<span class="chip" style="background:${color}1a;color:${color};">${escapeHtml(text)}</span>`;
+function icon(name) {
+return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 }
+
+function chip(text, kind, extraClass) {
+return `<span class="chip${kind ? ' ' + kind : ''}${extraClass ? ' ' + extraClass : ''}">${escapeHtml(text)}</span>`;
+}
+
+const TAG_CLASS = { Done: 'done', Next: 'next', Skipped: 'ck', Waiting: 'wait', Working: 'next', 'Needs you': 'ck' };
+const AVATAR_CLASS = { Done: 'grn', Waiting: 'gry', Skipped: 'amb', 'Needs you': 'amb' };
 
 function initials(name) {
 return stripNameTitle(name).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
 }
 
-function btn(action, label, kind, extraClass) {
-return `<button type="button" class="btn ${kind || 'secondary'}${extraClass ? ' ' + extraClass : ''}" data-action="${action}">${escapeHtml(label)}</button>`;
-}
-
-// A one line summary with the detail behind a fold.
-function howItWorks(detail) {
-return `<details class="how" data-section="how"${ui.howOpen ? ' open' : ''}><summary>How it works</summary><div>${detail}</div></details>`;
+// kind: primary (the one filled button), sec (outline), txt or danger.
+function btn(action, label, kind, extraClass, iconName) {
+return `<button type="button" class="btn ${kind || 'sec'}${extraClass ? ' ' + extraClass : ''}" data-action="${action}">${iconName ? icon(iconName) : ''}${escapeHtml(label)}</button>`;
 }
 
 // "3 done, 1 skipped, 2 left" plus the names under each heading.
@@ -2150,28 +2204,17 @@ if (left.length) lines.push('Left:', ...left);
 return lines.join('\n');
 }
 
-function leadStatus(lead, index, progress) {
-const done = progress.byActivity[lead.activityId];
-if (done) return done;
-if (state.running && index === state.currentIndex) return state.paused ? 'Needs you' : 'Working';
-return 'Waiting';
-}
-
-// Finished steps fold into one line (expandable) so the current step and
-// what comes next stay in view.
+// Finished steps fold into one line, and so do the steps still to come, so
+// the step being done now stands out. Either line opens on a click.
 function renderSteps() {
-const row = (step, i) => {
-const cls = i < state.stepIndex ? 'done' : i === state.stepIndex ? (state.paused ? 'needs' : 'current') : '';
-const mark = cls === 'done' ? '&#10003;' : cls === 'needs' ? '!' : '';
-return `<li class="step ${cls}"><span class="dot" aria-hidden="true">${mark}</span>${escapeHtml(step.label)}</li>`;
-};
 const steps = state.steps || STEPS;
-const done = steps.slice(0, state.stepIndex);
-const rest = steps.slice(state.stepIndex).map((step, i) => row(step, i + state.stepIndex)).join('');
-const folded = done.length
-? `<li><details class="done-steps"${ui.stepsOpen ? ' open' : ''} data-section="steps"><summary class="step done"><span class="dot" aria-hidden="true">&#10003;</span>${done.length} step${done.length === 1 ? '' : 's'} done</summary><ol class="steps inner">${done.map(row).join('')}</ol></details></li>`
-: '';
-return `<ol class="steps">${folded}${rest}</ol>`;
+const at = Math.min(state.stepIndex, steps.length);
+const done = steps.slice(0, at);
+const current = steps[at];
+const todo = steps.slice(at + 1);
+const count = (n, word) => `${n} step${n === 1 ? '' : 's'} ${word}`;
+const fold = (section, open, cls, mark, label, list) => `<details class="step-fold" data-section="${section}"${open ? ' open' : ''}><summary class="step ${cls}"><span class="num" aria-hidden="true">${mark}</span>${label}</summary><ol>${list.map((step) => `<li>${escapeHtml(step.label)}</li>`).join('')}</ol></details>`;
+return `<div class="steps">${done.length ? fold('steps', ui.stepsOpen, 'done', '&#10003;', count(done.length, 'done'), done) : ''}${current ? `<div class="step ${state.paused ? 'needs' : 'current'}"><span class="num" aria-hidden="true">${state.paused ? '!' : at + 1}</span><span>${escapeHtml(current.label)}</span></div>` : ''}${todo.length ? fold('todo', ui.todoOpen, 'todo', at + 2, count(todo.length, 'to go'), todo) : ''}</div>`;
 }
 
 function outcomeLabel(activity) {
@@ -2211,7 +2254,7 @@ const inView = leadInView();
 const rows = activities.map((a) => {
 const outcome = outcomeLabel(a);
 const meta = [shortDate(a.CreatedDate), a.SalesLead && a.SalesLead.DealerName, outcome === 'Open' ? 'Open' : `Closed: ${outcome}`].filter(Boolean).join(' · ');
-const viewTag = inView && inView === a ? ' <span class="chip" style="background:#C2CB4233;color:#5b6300;">In view</span>' : '';
+const viewTag = inView && inView === a ? ' <span class="tag next">In view</span>' : '';
 return `<label class="pick"><input type="radio" name="hereLead" value="${escapeHtml(String(a.ID))}" data-action="pickHere"${String(a.ID) === chosen ? ' checked' : ''}><span><strong>${escapeHtml(a.CampaignName || 'Lead')}</strong>${viewTag}<br><span class="muted small">${escapeHtml(meta)}</span></span></label>`;
 }).join('');
 return `<div class="card">
@@ -2222,135 +2265,200 @@ ${rows}
 </div>`;
 }
 
-function renderTabs() {
+// How many are left in each run, shown on the tabs and in the header.
+function runCounts(leads, progress) {
+const desk = loadDeskProgress();
+return {
+re: leads.filter((l) => !progress.byActivity[l.activityId]).length,
+pc: sendBackLeads().filter((l) => !desk.pc[l.key]).length,
+eo: emailOnlyLeads().filter((l) => !desk.eo[l.key]).length
+};
+}
+
+function renderTabs(counts) {
 const view = ui.view || 're';
-const tab = (key, label) => `<button type="button" class="tab${view === key ? ' on' : ''}" data-action="view" data-view="${key}" aria-pressed="${view === key}">${label}</button>`;
-return `<div class="tabs" role="group" aria-label="Choose a run">${tab('re', 'Re setup')}${tab('pc', 'Post Closure')}${tab('eo', 'Email Only')}</div>`;
+const tab = (key, label) => `<button type="button" class="tab${view === key ? ' on' : ''}" role="tab" data-action="view" data-view="${key}" aria-selected="${view === key}">${label}${counts[key] ? `<em>${counts[key]}</em>` : ''}</button>`;
+return `<div class="tabs" role="tablist" aria-label="Choose a run">${tab('re', 'Re setup')}${tab('pc', 'Post Closure')}${tab('eo', 'Email Only')}</div>`;
 }
 
-function listRow(name, detail, status, when) {
-const color = CHIP_COLORS[status] || '#5b6577';
-return `<div class="list-row"><span class="avatar" style="background:${color}1a;color:${color};">${escapeHtml(initials(name))}</span><div class="who"><div><strong>${escapeHtml(name)}</strong></div><div class="muted small">${escapeHtml(detail)}</div>${when ? `<div class="muted when">${escapeHtml(when)}</div>` : ''}</div>${chip(status)}</div>`;
+// Which lead a list row stands for. The key is kept in the row so the
+// initials menu and the details can find the lead again after a redraw.
+function reKey(lead) {
+return `${lead.activityId}|${lead.name}`;
+}
+function listLead(run, key) {
+if (run === 'pc') return sendBackLeads().find((l) => l.key === key) || null;
+if (run === 'eo') return emailOnlyLeads().find((l) => l.key === key) || null;
+return leadsToDo().find((l) => reKey(l) === key) || null;
 }
 
-function listFold(title, doneCount, rows) {
-return `<details data-section="list"${ui.listOpen ? ' open' : ''}><summary>${title} <span class="count">${doneCount}/${rows.length}</span></summary><div class="list">${rows.join('')}</div></details>`;
+// Two lines per person: name and state, then the detail. The initials open
+// the actions; the row itself opens for more.
+function listRow(run, key, name, detail, status, more) {
+const id = `${run}:${key}`;
+const open = ui.openRows.has(id);
+const attrs = `data-run="${run}" data-key="${escapeHtml(key)}"`;
+const kv = more.filter((pair) => pair[1]).map((pair) => `<dt>${escapeHtml(pair[0])}</dt><dd>${escapeHtml(pair[1])}</dd>`).join('');
+return `<div class="r${open ? ' open' : ''}">
+<button type="button" class="av ${AVATAR_CLASS[status] || ''}" data-action="who" ${attrs} title="Actions for ${escapeHtml(name)}" aria-haspopup="true">${escapeHtml(initials(name))}</button>
+<button type="button" class="rmain" data-action="row" ${attrs} aria-expanded="${open}" title="Show or hide details"><span class="nm">${escapeHtml(name)}</span><span class="tag ${TAG_CLASS[status] || 'wait'}">${escapeHtml(status)}</span><span class="meta">${escapeHtml(detail)}</span></button>
+<div class="more"><dl class="kv">${kv}</dl></div>
+</div>`;
 }
 
-function finishToggle(settings) {
-return `<label class="toggle"><input type="checkbox" data-action="reviewFinish" ${settings.reviewBeforeFinish ? 'checked' : ''}> Stop before Finished so I can check each one</label>`;
+function listGroup(title, doneCount, rows) {
+return `<div class="g"><div class="grp">${title} <span>${doneCount} of ${rows.length} done</span></div><div class="list">${rows.join('')}</div></div>`;
+}
+
+// The first lead not yet dealt with is the one a run takes next.
+function withNext(leads, statusOf) {
+let nextGiven = false;
+return leads.map((l) => {
+const status = statusOf(l);
+if (status !== 'Waiting' || nextGiven) return status;
+nextGiven = true;
+return 'Next';
+});
 }
 
 const SEND_BACK_HOW = 'Each one is opened from your Parked Calls: CAD or CAH in Post Closure Notes, call outcome Update Outcomes, lead outcome Customer Hub Team &gt; No Opportunity &gt; the Catch All reason, next status Shift Start, then Finished. Ones not in your Parked Calls are left alone. To check your Parked Calls, SLA Manager passes them to its Konnect Live tab.';
-const EMAIL_ONLY_HOW = 'Sets you Available. Each assigned lead that presents is rejected (so it does not dial), set to Update Outcomes, given EO in Call Notes and Customer Hub Team &gt; Ongoing &gt; Email Only Lead, then Finished. You stay Available until the last one, then Shift Start.';
+const EMAIL_ONLY_HOW = 'Sets you Available. Each of your leads that presents is rejected (so it does not dial), set to Update Outcomes, given EO in Call Notes and Customer Hub Team &gt; Ongoing &gt; Email Only Lead, then Finished. Any other lead that presents is left to you. You stay Available until the last one, then Shift Start.';
 
-function renderSendBackView(settings) {
+function howLink() {
+return `<button type="button" class="btn txt" data-action="how" aria-expanded="${!!ui.howOpen}">How it works</button>`;
+}
+function howText(detail) {
+return ui.howOpen ? `<div class="muted small how">${detail}</div>` : '';
+}
+
+// While a stopped notice is showing its own button is the filled one, so
+// Start is an outline button until the notice is dealt with.
+function startButton(action, label) {
+return state.notice ? btn(action, `${label} again`, 'sec', 'wide') : btn(action, label, 'primary', 'wide');
+}
+
+function renderSendBackView() {
 const leads = sendBackLeads();
 const done = loadDeskProgress().pc;
 const left = leads.filter((l) => !done[l.key]).length;
 const checks = postClosureResults().filter((r) => normalise(r.postClosureAction) !== 'send back through').length;
-const needContact = checks ? `${checks} ${checks === 1 ? 'needs contact, so it is' : 'need contact, so they are'} left for you to call.` : '';
+const needCall = checks ? chip(`${checks} need${checks === 1 ? 's' : ''} a call`, 'warn') : '';
 const hubLine = hubStatusLine();
-const requestLine = hubLine ? `<div class="muted small hub-status" role="status" style="margin-top:6px;">${escapeHtml(hubLine)}</div>` : '';
+const requestLine = hubLine ? `<div class="muted small hub-status" role="status">${escapeHtml(hubLine)}</div>` : '';
 const age = resultsAgeLine();
-const ageLine = age ? `<div class="muted small results-age">${escapeHtml(age)}</div>` : '';
-const checkButton = btn('checkParked', 'Check my Parked Calls', leads.length ? 'secondary' : 'primary', 'wide');
+const ageChip = age ? chip(age, '', 'results-age') : '';
+const how = `${SEND_BACK_HOW}${checks ? ` The ${checks} that need${checks === 1 ? 's' : ''} contact ${checks === 1 ? 'is' : 'are'} left for you to call.` : ''}`;
 if (!leads.length) {
-return [`<div class="card empty"><strong>No send backs yet</strong><div class="muted small">Check your Parked Calls on the Lead Checker. The ones marked "send back through" show here.${needContact ? ' ' + needContact : ''}</div>${ageLine}${howItWorks(SEND_BACK_HOW)}${checkButton}${requestLine}</div>`];
+return [`<div class="card col empty"><strong>No send backs yet</strong><div class="muted small">Check your Parked Calls on the Lead Checker. The ones marked "send back through" show here.</div><div class="cf">${needCall}${ageChip}${howLink()}</div>${howText(how)}${btn('checkParked', 'Check my Parked Calls', 'primary', 'wide')}${requestLine}</div>`];
 }
 const now = Date.now();
-const rows = leads.map((l) => listRow(l.name, `${l.shorthand.toUpperCase()} · ${l.reason}`, done[l.key] || 'Waiting', l.checkedAt ? `Checked ${ageText(l.checkedAt, now)}` : ''));
-return [`<div class="card">
-<div class="big-count"><strong>${left}</strong><span>to send back through</span></div>
-<div class="muted small" style="margin-top:4px;">Opens each one from your Parked Calls, writes CAD or CAH, sets the outcomes and presses Finished.</div>
-${ageLine}${howItWorks(SEND_BACK_HOW)}
-${left ? btn('startPc', `Start (${left})`, 'primary', 'wide') : '<div class="muted small">All done.</div>'}
-${needContact ? `<div class="muted small" style="margin-top:6px;">${needContact}</div>` : ''}
-<div style="margin-top:8px;">${checkButton}</div>${requestLine}
-${Object.keys(done).length ? `<div class="row" style="margin-top:8px;">${btn('clearPc', 'Clear progress', 'ghost', 'small')}</div>` : ''}
-</div>`, finishToggle(settings), listFold('Send backs', leads.length - left, rows)];
+const statuses = withNext(leads, (l) => done[l.key] || 'Waiting');
+const rows = leads.map((l, i) => listRow('pc', l.key, l.name, `${l.shorthand.toUpperCase()} · ${l.reason}`, statuses[i], [
+['Checked', l.checkedAt ? ageText(l.checkedAt, now) : ''],
+['Result', `Send back through: ${l.reason} (${l.shorthand.toUpperCase()})`],
+['Phone', l.phone], ['Email', l.email]
+]));
+return [`<div class="card col">
+<div class="big-count"><strong>${left}</strong><span>to send back</span></div>
+<div class="cf">${needCall}${ageChip}${howLink()}</div>
+${howText(how)}
+${left ? `${startButton('startPc', 'Start')}<span class="quiet-line shift-line">Sets Shift Start before opening Parked Calls, every time.</span>` : '<div class="muted small">All done.</div>'}
+${btn('checkParked', 'Check my Parked Calls', 'sec', 'wide')}${requestLine}
+</div>`, listGroup('Send backs', leads.length - left, rows)];
 }
 
-function renderEmailOnlyView(settings) {
-const agents = emailOnlyAgents();
+// Only ever this agent's own leads. With several agents recorded and no
+// name remembered, the one question comes first.
+function renderEmailOnlyView() {
+if (emailOnlyAsk()) {
+return [`<div class="card col ask-me"><strong>Which agent are you?</strong><div class="muted small">Pick your name once. It is remembered, and you can change it in More.</div>${emailOnlyAgents().map((a) => `<button type="button" class="btn sec wide" data-action="iAm" data-agent="${escapeHtml(a)}">${escapeHtml(a)}</button>`).join('')}</div>`];
+}
 const leads = emailOnlyLeads();
 const done = loadDeskProgress().eo;
 const left = leads.filter((l) => !done[l.key]).length;
 if (!leads.length) {
-return [`<div class="card empty"><strong>No Email Only leads assigned today</strong><div class="muted small">Assign your Email Only leads in SLA Manager first; they show here. Anything else that presents is left to you.</div></div>`];
+return [`<div class="card col empty"><strong>No Email Only leads assigned today</strong><div class="muted small">Assign your Email Only leads in SLA Manager first; they show here. Anything else that presents is left to you.</div></div>`];
 }
-const chosen = agents.includes(settings.emailOnlyAgent) ? settings.emailOnlyAgent : agents[0];
-const picker = agents.length > 1 ? `<div class="field"><label for="_lrEoAgent">Assigned to</label><span class="select-wrap"><select id="_lrEoAgent" data-action="eoAgent">${agents.map((a) => `<option${a === chosen ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('')}</select></span></div>` : '';
-const rows = leads.map((l) => listRow(l.name, l.campaign || 'Email Only', done[l.key] || 'Waiting'));
-return [`<div class="card">
-${picker}
-<div class="big-count"><strong>${left}</strong><span>Email Only lead${left === 1 ? '' : 's'} to do</span></div>
-<div class="muted small" style="margin-top:4px;">Sets you Available and works each of these as it presents. Any other lead is left to you.</div>
-${howItWorks(EMAIL_ONLY_HOW)}
-${left ? btn('startEo', `Start (${left})`, 'primary', 'wide') : '<div class="muted small">All done.</div>'}
-${Object.keys(done).length ? `<div class="row" style="margin-top:8px;">${btn('clearEo', 'Clear progress', 'ghost', 'small')}</div>` : ''}
-</div>`, finishToggle(settings), listFold('Email Only leads', leads.length - left, rows)];
+const doneCount = leads.length - left;
+const statuses = withNext(leads, (l) => done[l.key] || 'Waiting');
+const rows = leads.map((l, i) => listRow('eo', l.key, l.name, l.campaign || 'Email Only', statuses[i], [['Email', l.email], ['Phone', l.phone], ['Campaign', l.campaign]]));
+const words = doneCount ? `Email Only lead${left === 1 ? '' : 's'} to do` : `Email Only lead${left === 1 ? '' : 's'} assigned to you in SLA Manager`;
+return [`<div class="card col">
+<div class="big-count"><strong>${left}</strong><span>${words}</span></div>
+<div class="cf">${chip('Sets you Available', 'info')}${doneCount ? chip(`${doneCount} done`, 'ok') : ''}${howLink()}</div>
+${howText(EMAIL_ONLY_HOW)}
+${left ? startButton('startEo', 'Start') : '<div class="muted small">All done.</div>'}
+</div>`, listGroup('Email Only leads', doneCount, rows)];
 }
 
-function renderReSetupView(settings, source, leads, progress) {
+function leadStatus(lead, index, progress) {
+const done = progress.byActivity[lead.activityId];
+if (done) return done;
+if (state.running && index === state.currentIndex) return state.paused ? 'Needs you' : 'Working';
+return 'Waiting';
+}
+
+function renderReSetupView(source, leads, progress) {
 const parts = [];
 const doneCount = leads.filter((l) => progress.byActivity[l.activityId]).length;
 const remaining = leads.length - doneCount;
-const pasted = !!readJson(PASTED_RESULTS_KEY);
-const tidy = `${doneCount ? btn('clearRe', 'Clear progress', 'ghost', 'small') : ''}${pasted ? btn('clearPasted', 'Remove pasted results', 'ghost', 'small') : ''}`;
 if (onCallPage() && liveActivities().length) parts.push(renderHereCard());
 if (!source) {
 // Nothing from the National check: the This customer card (if any) is enough.
-if (!onCallPage()) parts.push(`<div class="card empty">
+if (!onCallPage()) parts.push(`<div class="card col empty">
 <strong>No National results yet</strong>
 <div class="muted small">Import the National results in SLA Manager, or copy them from the Lead Checker and paste them here. On a customer, you can set one of their leads up again.</div>
-<div class="row" style="justify-content:center;margin-top:10px;">${btn('paste', 'Paste results', 'primary')}</div>
+${btn('paste', 'Paste results', 'primary', '', 'paste')}
 </div>`);
-else parts.push(`<div class="row">${btn('paste', 'Paste National results')}</div>`);
+else parts.push(btn('paste', 'Paste National results', 'sec', 'wide', 'paste'));
 } else if (leads.length === 0) {
-parts.push(`<div class="card empty">
+parts.push(`<div class="card col empty">
 <strong>No leads need setting up again</strong>
 <div class="muted small">The last National check found nothing to set up again.</div>
-<div class="row" style="justify-content:center;margin-top:10px;">${btn('paste', 'Paste results')}${tidy}</div>
+${btn('paste', 'Paste results', 'sec', '', 'paste')}
 </div>`);
 } else if (remaining === 0) {
-parts.push(`<div class="card">
+parts.push(`<div class="card col">
 <strong>All done</strong>
 <div class="tiles">${['Done', 'Skipped'].map((key) => `<div class="tile"><strong>${leads.filter((l) => progress.byActivity[l.activityId] === key).length}</strong><span>${key}</span></div>`).join('')}<div class="tile"><strong>0</strong><span>Left</span></div></div>
-<div class="row">${btn('copySummary', 'Copy summary', 'primary')}${tidy}</div>
+${btn('copySummary', 'Copy summary', 'primary', 'wide', 'copy')}
 </div>`);
 } else {
 const savedAt = new Date(source.savedAt).toTimeString().slice(0, 5);
-parts.push(`<div class="card">
-<div class="big-count"><strong>${remaining}</strong><span>lead${remaining === 1 ? '' : 's'} to set up again</span></div>
-<div class="muted small" style="margin:4px 0 12px;">From the National check at ${escapeHtml(savedAt)}${doneCount ? ` &middot; ${doneCount} already done` : ''}</div>
-${btn('start', doneCount ? `Continue (${remaining} left)` : 'Start', 'primary', 'wide')}
-<div class="row" style="margin-top:8px;">${btn('paste', 'Paste results', 'ghost', 'small')}${doneCount ? btn('copySummary', 'Copy summary', 'ghost', 'small') : ''}${tidy}</div>
+parts.push(`<div class="card col">
+<div class="big-count"><strong>${remaining}</strong><span>to set up again</span></div>
+<div class="cf">${chip(`National check ${savedAt}`)}${doneCount ? chip(`${doneCount} done`, 'ok') : ''}</div>
+${startButton('start', doneCount ? 'Continue' : 'Start')}
+${btn('paste', 'Paste results', 'sec', 'wide', 'paste')}
 </div>`);
 }
 if (leads.length) {
-parts.push(`<label class="toggle"><input type="checkbox" data-action="review" ${settings.reviewBeforePark ? 'checked' : ''}> Stop before parking so I can check each lead</label>`);
-parts.push(listFold('Leads', doneCount, leads.map((l, i) => listRow(l.name, l.campaign || 'Campaign read from the closed lead', leadStatus(l, i, progress)))));
+const statuses = withNext(leads, (l) => leadStatus(l, leads.indexOf(l), progress));
+parts.push(listGroup('Leads', doneCount, leads.map((l, i) => listRow('re', reKey(l), l.name, l.campaign || 'Campaign read from the closed lead', statuses[i], [['Lead', l.activityId], ['Reg', l.reg], ['Progress', progress.byActivity[l.activityId] || 'Not set up yet']]))));
 }
 return parts;
 }
 
-// What the running card shows for the run in hand.
+// What the running card shows for the run in hand. count is "1 of 5" and
+// short "1/5", both '' when the run has no count to show.
 function runInfo(leads, progress) {
 if (state.mode === 'here') {
 const lead = state.hereLead;
-return { left: 'This customer', right: 'Stops in the new lead', percent: null, name: lead.name, meta: lead.campaign || '', steps: true };
+return { left: 'This customer', right: 'Stops in the new lead', percent: null, name: lead.name, meta: lead.campaign || '', steps: true, count: '', short: '' };
 }
 if (state.mode === 'pc' || state.mode === 'eo') {
 const lead = state.deskLead;
 const count = state.deskCount || { done: 0, total: 0 };
+const at = Math.min(count.done + 1, count.total);
 return {
 left: state.mode === 'pc' ? 'Post Closure send back' : 'Email Only',
 right: `${count.done} of ${count.total} done`,
 percent: count.total ? Math.round((100 * count.done) / count.total) : 0,
 name: lead ? lead.name : (state.mode === 'eo' ? 'Waiting for your next Email Only lead' : 'Getting ready'),
 meta: lead ? (state.mode === 'pc' ? `${lead.shorthand.toUpperCase()} · ${lead.reason}` : (lead.email || '')) : '',
-steps: !!lead
+steps: !!lead,
+count: count.total ? `${at} of ${count.total}` : '',
+short: count.total ? `${at}/${count.total}` : ''
 };
 }
 const lead = leads[state.currentIndex];
@@ -2361,54 +2469,79 @@ right: `${doneCount} done`,
 percent: leads.length ? Math.round((100 * doneCount) / leads.length) : 0,
 name: lead ? lead.name : 'Getting ready',
 meta: lead ? [lead.campaign || 'Campaign read from the closed lead', lead.reg].filter(Boolean).join(' · ') : '',
-steps: !!lead
+steps: !!lead,
+count: lead ? `${state.currentIndex + 1} of ${leads.length}` : '',
+short: lead ? `${state.currentIndex + 1}/${leads.length}` : ''
 };
+}
+
+function logLines() {
+return state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('');
 }
 
 function activityFold() {
 if (!state.log.length) return '';
-return `<details data-section="log"${ui.logOpen ? ' open' : ''}><summary>Activity <span class="count">${state.log.length}</span></summary><div class="log">${state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div></details>`;
+return `<details class="fold" data-section="log"${ui.logOpen ? ' open' : ''}><summary>Activity <span class="count">${state.log.length}</span></summary><div class="log">${logLines()}</div></details>`;
 }
 
-// Paused: only the message and its buttons, so the panel covers as little
-// as it can of the page the agent is asked to look at. The main answer is
-// the one wide button; the rest are small and apart from it.
+// Paused: only the question and its buttons, so the panel covers as little
+// as it can of the page the agent is asked to look at. The header says
+// "Needs you"; the main answer is the one wide button. The why box only
+// comes once Skip lead is pressed.
 function renderPaused(info) {
 const paused = state.paused;
 const step = paused.inLead && state.steps ? state.steps[state.stepIndex] : null;
-const who = [info.steps ? info.name : '', step ? step.label : ''].filter(Boolean).join(' · ');
-const others = [];
+const who = [info.steps ? info.name : '', info.steps ? info.count : '', step ? step.label : ''].filter(Boolean).join(' · ');
 const canSkip = paused.inLead && state.mode !== 'here';
-if (paused.inLead && !paused.review) others.push(btn('retry', 'Try again', 'ghost', 'small'));
-if (canSkip) others.push(btn('skip', 'Skip lead', 'ghost', 'small'));
-// Its text is kept in ui.skipWhy and put back by render(), so it is not
-// part of the html that decides whether the panel is redrawn.
-const whyBox = canSkip ? '<input type="text" class="why" data-role="skipWhy" maxlength="200" autocomplete="off" placeholder="Why are you skipping? (optional)" aria-label="Why are you skipping? (optional)">' : '';
+const others = [];
+if (paused.inLead && !paused.review) others.push(btn('retry', 'Try again', 'sec', 'small'));
+if (canSkip) others.push(btn('skip', 'Skip lead', 'sec', 'small'));
+// The box's text is kept in ui.skipWhy and put back by render(), so it is
+// not part of the html that decides whether the panel is redrawn.
+const lower = canSkip && ui.skipAsk
+? `<input type="text" class="why" data-role="skipWhy" maxlength="200" autocomplete="off" placeholder="Why are you skipping? (optional)" aria-label="Why are you skipping? (optional)"><div class="row">${btn('skipConfirm', 'Skip this lead', 'sec', 'small')}${btn('skipCancel', 'Do not skip', 'txt', 'small')}</div>`
+: `<div class="row others"><span class="row">${others.join('')}</span>${btn('stop', 'Stop', 'danger', 'small')}</div>`;
 return [`<div class="card needs-card">
-<div role="alert">${who ? `<div class="who">${escapeHtml(who)}</div>` : ''}<h3>Needs you</h3><p>${escapeHtml(paused.message)}</p></div>
+<div role="alert">${who ? `<div class="who">${escapeHtml(who)}</div>` : ''}<p class="ask">${escapeHtml(paused.message)}</p></div>
 ${paused.noCarry ? '' : btn('carry', paused.carryOnLabel, 'primary', 'wide')}
-${whyBox}<div class="row others"><span class="row">${others.join('')}</span>${btn('stop', 'Stop', 'danger', 'small')}</div>
+${lower}
 </div>`,
-`<details data-section="more"${ui.moreOpen ? ' open' : ''}><summary>Steps and activity</summary><div class="fold">${info.steps ? renderSteps() : ''}</div><div class="log">${state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div></details>`];
+`<details class="fold" data-section="more"${ui.moreOpen ? ' open' : ''}><summary>Steps and activity <span class="count">${ui.moreOpen ? 'hide' : 'show'}</span></summary><div class="fold-body">${info.steps ? renderSteps() : ''}</div><div class="log">${logLines()}</div></details>`];
 }
 
 function renderRunning(info) {
-return [`<div class="card">
-<div class="progress-top"><span>${escapeHtml(info.left)}</span><span>${escapeHtml(info.right)}</span></div>
+return [`<div class="card col">
+<div class="row"><span class="small muted grow">${escapeHtml(info.left)}</span>${chip(info.right)}</div>
 ${info.percent == null ? '' : `<div class="track"><div class="fill" style="width:${info.percent}%"></div></div>`}
-<div class="lead-name">${escapeHtml(info.name)}</div>${info.meta ? `<div class="lead-meta">${escapeHtml(info.meta)}</div>` : ''}
+<div class="row" style="flex-wrap:nowrap;"><span class="av">${escapeHtml(info.steps ? initials(info.name) : '…')}</span><div class="grow"><div class="lead-name">${escapeHtml(info.name)}</div>${info.meta ? `<div class="small muted">${escapeHtml(info.meta)}</div>` : ''}</div></div>
 ${info.steps ? renderSteps() : ''}
-</div>`, `<div class="row">${btn('stop', 'Stop after this step', 'ghost')}</div>`, activityFold()];
+</div>`, `<div class="row">${btn('stop', 'Stop after this step', 'sec', '', 'stop')}</div>`, activityFold()];
+}
+
+// A stopped run's notice: one short line per thing left on the page, the
+// part that needs action pulled out, and Set Shift Start as the one filled
+// button.
+function renderNotice() {
+const notice = state.notice;
+const cap = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+const buttons = `<div class="row">${notice.shiftStart ? btn('shiftStart', 'Set Shift Start', 'primary', 'small') : ''}${btn('dismissNotice', 'OK', 'sec', 'small')}</div>`;
+const available = 'You are still Available, so leads can present';
+if (!notice.stopped) return `<div class="alert amber notice" role="alert"><span>${escapeHtml(notice.text)}</span>${buttons}</div>`;
+const list = notice.parts && notice.parts.length
+? `<b>Stopped. Left on the page as it is:</b><ul>${notice.parts.map((part) => `<li>${icon('ok')}<span>${escapeHtml(cap(part))}</span></li>`).join('')}</ul>`
+: '<b>Stopped.</b>';
+return `<div class="alert amber notice" role="alert">${list}${notice.shiftStart ? chip(available, 'warn', 'wrap') : ''}${buttons}</div>`;
 }
 
 function focusKey(el) {
 const action = el && el.getAttribute && el.getAttribute('data-action');
 if (!action) return null;
-return { action, view: el.getAttribute('data-view') || '', value: el.name === 'hereLead' ? el.value : '', label: action === 'carry' ? el.textContent : '' };
+return { action, view: el.getAttribute('data-view') || '', key: el.getAttribute('data-key') || el.getAttribute('data-agent') || '', value: el.name === 'hereLead' ? el.value : '', label: action === 'carry' ? el.textContent : '' };
 }
 
 // The link status line: its own strip, so SLA Manager's regular updates
-// change one line of text and not the whole panel.
+// change one line of text and not the whole panel. The dot shows the state
+// of the link; amber means it needs the agent.
 function renderLinkLine() {
 if (!ui) return;
 const link = readJson(LIVE_LINK_KEY);
@@ -2416,8 +2549,25 @@ const text = linkLineText(link, Date.now());
 if (text === ui.linkText) return;
 ui.linkText = text;
 const line = ui.root.querySelector('.link');
-line.textContent = text;
-line.classList.toggle('down', text === HUB_NOT_RUNNING || !link || link.state === 'none');
+const down = text === HUB_NOT_RUNNING;
+const state_ = down ? 'warn' : !link || link.state === 'none' || link.state === 'paused' ? 'off' : link.state === 'loggedOut' ? 'bad' : link.state === 'running' ? 'busy' : '';
+line.querySelector('.link-text').textContent = text;
+line.querySelector('.dot').className = `dot${state_ ? ' ' + state_ : ''}`;
+line.classList.toggle('warn', down);
+line.classList.toggle('bad', state_ === 'bad');
+}
+
+// True when the run in hand, or the tab on show, is one that presses
+// Finished; the others park.
+function stopsBeforeFinish() {
+if (state.running) return state.mode === 'pc' || state.mode === 'eo';
+return ui.view === 'pc' || ui.view === 'eo';
+}
+
+function footerText(settings) {
+if (state.running && state.mode === 'here') return 'Stops in the new lead';
+if (stopsBeforeFinish()) return settings.reviewBeforeFinish ? 'Stops before Finished on each one' : 'Presses Finished without stopping';
+return settings.reviewBeforePark ? 'Stops before parking each lead' : 'Parks each lead without stopping';
 }
 
 function render() {
@@ -2435,21 +2585,19 @@ if (!versionState) versionState = startVersionWatch('Lead-Reset.js', () => rende
 
 const parts = [];
 const info = state.running ? runInfo(leads, progress) : null;
+const counts = runCounts(leads, progress);
 if (state.paused) parts.push(...renderPaused(info));
 else {
-const versionText = versionLineText(versionState);
-if (versionText) parts.push(`<div class="version${versionState.newer ? ' newer' : ''}">${escapeHtml(versionText)}</div>`);
-if (selfTestFailures.length) parts.push(`<div class="alert red" role="alert"><strong>Self-test failed.</strong> Please send this on: ${escapeHtml(selfTestFailures[0])}</div>`);
-if (!onDesktop) parts.push(`<div class="alert amber">Open this on the agent desktop: Re setup, Post Closure and Email Only only work there.</div>`);
+if (versionState.newer) parts.push(`<div class="alert red version newer">${escapeHtml(versionLineText(versionState))}</div>`);
+if (selfTestFailures.length) parts.push(`<div class="alert red" role="alert"><span><strong>Self-test failed.</strong> Please send this on: ${escapeHtml(selfTestFailures[0])}</span></div>`);
+if (!onDesktop) parts.push(`<div class="alert amber"><span>Open this on the agent desktop: Re setup, Post Closure and Email Only only work there.</span></div>`);
 if (state.running) parts.push(...renderRunning(info));
 else {
-if (state.notice) {
-parts.push(`<div class="alert amber notice" role="alert">${escapeHtml(state.notice.text)}<div class="row">${state.notice.shiftStart ? btn('shiftStart', 'Set Shift Start', 'primary', 'small') : ''}${btn('dismissNotice', 'OK', 'ghost', 'small')}</div></div>`);
-}
-parts.push(renderTabs());
-if (ui.view === 'pc') parts.push(...renderSendBackView(settings));
-else if (ui.view === 'eo') parts.push(...renderEmailOnlyView(settings));
-else parts.push(...renderReSetupView(settings, source, leads, progress));
+if (state.notice) parts.push(renderNotice());
+parts.push(renderTabs(counts));
+if (ui.view === 'pc') parts.push(...renderSendBackView());
+else if (ui.view === 'eo') parts.push(...renderEmailOnlyView());
+else parts.push(...renderReSetupView(source, leads, progress));
 parts.push(activityFold());
 }
 }
@@ -2461,36 +2609,304 @@ const active = ui.root.activeElement;
 const key = active && body.contains(active) ? focusKey(active) : null;
 const inWhy = !!active && body.contains(active) && active.getAttribute('data-role') === 'skipWhy';
 const scroll = body.scrollTop;
+const listScroll = (body.querySelector('.list') || {}).scrollTop || 0;
 body.innerHTML = html;
 ui.html = html;
 body.scrollTop = scroll;
+const list = body.querySelector('.list');
+if (list && listScroll) list.scrollTop = listScroll;
 const whyBox = body.querySelector('[data-role="skipWhy"]');
 if (whyBox) {
 whyBox.value = ui.skipWhy || '';
-if (inWhy) whyBox.focus({ preventScroll: true });
+if (inWhy || ui.focusWhy) whyBox.focus({ preventScroll: true });
 }
+ui.focusWhy = false;
 // Keyboard focus stays on the same control when it is still there. A
 // carry on button with another label is another question, so it does
 // not get the focus by itself.
 if (key) {
 const again = Array.from(body.querySelectorAll(`[data-action="${key.action}"]`)).find((el) => {
 const k = focusKey(el);
-return k.view === key.view && k.value === key.value && k.label === key.label;
+return k.view === key.view && k.key === key.key && k.value === key.value && k.label === key.label;
 });
 if (again) again.focus({ preventScroll: true });
 }
+// A menu opened from a row that has been redrawn has lost its row.
+if (ui.menu && ui.menuOpener && !ui.menuOpener.isConnected) closeMenu();
 }
 
-const doneCount = leads.filter((l) => progress.byActivity[l.activityId]).length;
-const status = state.paused ? 'Needs you'
-: state.running ? (state.mode === 'here' ? 'This customer' : state.mode === 'batch' ? `${doneCount}/${leads.length} done` : `${state.deskCount.done}/${state.deskCount.total} done`)
-: (leads.length ? `${leads.length - doneCount} to do` : '');
-ui.root.querySelector('.mini-status').textContent = ui.minimised && status ? status : '';
+const title = ui.root.querySelector('.head .name');
+const sub = ui.root.querySelector('.head .sub');
+const subText = state.paused ? (info ? info.count : '')
+: state.running ? (info.count ? `Running · ${info.count}` : 'Running')
+: state.notice && state.notice.stopped ? 'Stopped'
+: (counts[ui.view || 're'] ? `${counts[ui.view || 're']} to do` : '');
+const titleText = state.paused ? 'Needs you' : 'Lead Re setup';
+if (title.textContent !== titleText) title.textContent = titleText;
+if (sub.textContent !== subText) sub.textContent = subText;
+const foot = ui.root.querySelector('.foot .setting');
+const footText = footerText(settings);
+if (foot.textContent !== footText) foot.textContent = footText;
 ui.panel.classList.toggle('paused', !!state.paused);
-ui.launcher.classList.toggle('needs', !!state.paused);
-ui.launcher.textContent = state.paused ? '! Needs you' : state.running ? '↻ Re setup: running' : '↻ Re setup';
+ui.button = state.paused ? { state: 'need', text: '!', title: 'Lead Re setup needs you' }
+: state.running ? { state: 'run', text: info.short, title: info.count ? `Lead Re setup: running, ${info.count}` : 'Lead Re setup: running' }
+: { state: 'rest', text: '', title: 'Lead Re setup' };
 renderLinkLine();
+syncButton();
 keepClear();
+}
+
+// ===================================================================
+// MENUS
+// ===================================================================
+
+function closeMenu(refocus) {
+if (!ui || !ui.menu) return;
+const opener = ui.menuOpener;
+ui.menu.remove();
+ui.menu = null;
+ui.menuOpener = null;
+ui.root.querySelector('[data-action="more"]').setAttribute('aria-expanded', 'false');
+if (refocus && opener && opener.isConnected) opener.focus({ preventScroll: true });
+}
+
+// Opens a menu under the control that asked for it, or above when there is
+// more room there. It belongs to the panel, so it moves with it.
+function openMenu(opener, html, alignRight) {
+closeMenu();
+const menu = document.createElement('div');
+menu.className = 'menu';
+menu.setAttribute('role', 'menu');
+menu.innerHTML = html;
+ui.panel.appendChild(menu);
+ui.menu = menu;
+ui.menuOpener = opener;
+const p = ui.panel.getBoundingClientRect();
+const o = opener.getBoundingClientRect();
+const m = menu.getBoundingClientRect();
+const below = window.innerHeight - o.bottom - 12;
+const above = o.top - 12;
+const up = m.height > below && above > below;
+const room = Math.max(120, Math.floor(up ? above : below));
+const height = Math.min(m.height, room);
+menu.style.maxHeight = `${room}px`;
+menu.style.top = `${Math.round((up ? o.top - height - 4 : o.bottom + 4) - p.top)}px`;
+const left = Math.max(8, Math.min(window.innerWidth - m.width - 8, alignRight ? o.right - m.width : o.left));
+menu.style.left = `${Math.round(left - p.left)}px`;
+const first = menu.querySelector('.mi');
+if (first) first.focus({ preventScroll: true });
+}
+
+function menuItem(action, iconName, label, attrs, danger) {
+return `<button type="button" class="mi${danger ? ' danger' : ''}" role="menuitem" data-action="${action}"${attrs ? ' ' + attrs : ''}>${icon(iconName)}<span>${escapeHtml(label)}</span></button>`;
+}
+
+// The one More menu: the stop setting first with its tick, then the rarely
+// used actions for the tab on show, then the tool's own controls.
+function moreMenuHtml() {
+const settings = loadSettings();
+const finish = stopsBeforeFinish();
+const on = finish ? settings.reviewBeforeFinish : settings.reviewBeforePark;
+const sep = '<div class="ms" role="separator"></div>';
+const groups = [`<button type="button" class="mi" role="menuitemcheckbox" aria-checked="${on}" data-action="${finish ? 'reviewFinish' : 'review'}">${icon(on ? 'ok' : 'blank')}<span>${finish ? 'Stop before Finished so I can check' : 'Stop before parking so I can check'}</span><em>${on ? 'On' : 'Off'}</em></button>`];
+const acts = [];
+if (!state.running && !state.checking) {
+const view = ui.view || 're';
+const desk = loadDeskProgress();
+if (view === 're') {
+const leads = leadsToDo();
+const progress = loadProgress();
+acts.push(menuItem('paste', 'paste', 'Paste results'));
+if (leads.length) acts.push(menuItem('copySummary', 'copy', 'Copy summary'));
+if (leads.some((l) => progress.byActivity[l.activityId])) acts.push(menuItem('clearRe', 'trash', 'Clear progress'));
+if (readJson(PASTED_RESULTS_KEY)) acts.push(menuItem('clearPasted', 'trash', 'Remove pasted results'));
+} else {
+if (Object.keys(desk[view] || {}).length) acts.push(menuItem(view === 'pc' ? 'clearPc' : 'clearEo', 'trash', 'Clear progress'));
+acts.push(menuItem('how', 'help', 'How it works'));
+}
+if (emailOnlyAgents().length > 1 && emailOnlyMe()) acts.push(menuItem('changeMe', 'user', 'Change who I am'));
+}
+if (acts.length) groups.push(acts.join(''));
+const version = versionState ? versionLineText(versionState) : '';
+groups.push(`${menuItem('report', 'flag', 'Report a problem')}${menuItem('clearStop', 'stop', 'Clear & Stop', 'title="Stops any run, clears this tool\'s data and closes it"', true)}${version ? `<div class="mn version${versionState.newer ? ' newer' : ''}">${escapeHtml(version)}</div>` : ''}`);
+return groups.join(sep);
+}
+
+// The actions behind a person's initials.
+function whoMenuHtml(run, key) {
+const lead = listLead(run, key);
+if (!lead) return '';
+const attrs = `data-run="${run}" data-key="${escapeHtml(key)}"`;
+return `<div class="mh">${escapeHtml(lead.name)}</div>${run === 'pc' ? menuItem('openParked', 'phone', 'Open from Parked Calls', attrs) : ''}${menuItem('copyDetails', 'copy', 'Copy details', attrs)}`;
+}
+
+function detailsForClipboard(run, lead) {
+const lines = [lead.name];
+if (run === 'pc') lines.push(`Send back through: ${lead.reason} (${lead.shorthand.toUpperCase()})`, lead.phone, lead.email);
+else if (run === 'eo') lines.push(lead.campaign || 'Email Only', lead.email, lead.phone);
+else lines.push(lead.campaign, lead.reg ? `Reg ${lead.reg}` : '', lead.activityId ? `Lead ${lead.activityId}` : '');
+return lines.filter(Boolean).join('\n');
+}
+
+// Opens one send back lead from Parked Calls for the agent and stops there:
+// nothing is written and Finished is not pressed.
+async function openFromParked(lead) {
+if (state.running || state.checking) return;
+state.checking = true;
+try {
+await goToParked();
+addLog(await openParkedCustomer(null, lead));
+} catch (error) {
+if (!halted && !(error instanceof Halted)) addLog(error.message);
+} finally {
+state.checking = false;
+}
+}
+
+// ===================================================================
+// THE BUTTON ON THE PAGE
+// ===================================================================
+
+// Tucked away, the panel is its button. The button sits beside the Konnect
+// Notes one: in Konnect's rail when a lead is open, in the Phone column
+// above the call button otherwise, and as a small tab at the screen edge
+// when the page has neither. It takes its shape and size from the Konnect
+// button next to it, and every state is drawn inside that shape.
+const BUTTON_ID = '_leadResetButton';
+const RAIL_SECTION_ID = '_leadResetRailSection';
+const BUTTON_STYLE_ID = '_leadResetButtonStyle';
+const BUTTON_SYMBOL = `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS.reset}</svg>`;
+const BUTTON_STYLE = `
+#${RAIL_SECTION_ID} { text-align: center; }
+#${BUTTON_ID} { align-items: center !important; justify-content: center !important; padding: 0 !important; border: 0 !important; background: #0f766e !important; color: #fff !important; box-shadow: none !important; font: 700 15px/1 Arial, sans-serif !important; text-decoration: none !important; text-shadow: none !important; overflow: hidden !important; cursor: pointer; }
+#${BUTTON_ID}[data-host="rail"] { display: inline-flex !important; }
+#${BUTTON_ID}[data-host="phone"] { display: flex !important; }
+#${BUTTON_ID}:hover { filter: brightness(1.25); }
+#${BUTTON_ID}[data-state="run"] { box-shadow: inset 0 0 0 3px rgba(255,255,255,.55) !important; }
+#${BUTTON_ID}[data-state="need"] { background: #b4530a !important; box-shadow: inset 0 0 0 3px #fff !important; font-size: 24px !important; }
+#${BUTTON_ID}:focus-visible { outline: 3px solid #fff !important; outline-offset: -5px !important; }
+#${BUTTON_ID} svg { width: 55%; max-width: 32px; height: 60%; max-height: 32px; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+`;
+
+function firstVisible(selector) {
+return Array.from(document.querySelectorAll(selector)).find(isVisible) || null;
+}
+
+// Where the button belongs on the page as it stands, or null for the edge
+// tab. A lead is open when the call page is, or when Konnect Notes shows
+// its own rail button.
+function buttonHost() {
+const rail = firstVisible('.userQuotesAffix');
+if (rail && (onCallPage() || isVisible(rail.querySelector('#kn-notes-launcher-section')))) return { kind: 'rail', rail };
+const anchor = firstVisible('button[ng-click="manualCallClick()"]') || firstVisible('button[ng-click="endCall()"]');
+return anchor ? { kind: 'phone', anchor } : null;
+}
+
+// Only what differs is written: Konnect Notes watches the page and scans
+// again on every change.
+function setStyle(el, name, value) {
+if (el.style.getPropertyValue(name) !== value || el.style.getPropertyPriority(name) !== 'important') el.style.setProperty(name, value, 'important');
+}
+
+function pageButton() {
+if (ui.pageButton) return ui.pageButton;
+if (!document.getElementById(BUTTON_STYLE_ID)) {
+const style = document.createElement('style');
+style.id = BUTTON_STYLE_ID;
+style.textContent = BUTTON_STYLE;
+(document.head || document.body).appendChild(style);
+}
+const button = document.createElement('button');
+button.type = 'button';
+button.id = BUTTON_ID;
+button.addEventListener('click', (event) => {
+event.preventDefault();
+event.stopPropagation();
+if (!ui) return;
+if (ui.hidden) { showPanel(); render(); } else hidePanel();
+});
+ui.pageButton = button;
+return button;
+}
+
+function placeInRail(rail) {
+const button = pageButton();
+let section = ui.railSection;
+if (!section) {
+section = ui.railSection = document.createElement('section');
+section.id = RAIL_SECTION_ID;
+section.className = 'cassini-section';
+}
+if (button.parentElement !== section) section.appendChild(button);
+// Directly under the Konnect Notes button, else under Konnect's last one.
+const notes = rail.querySelector('#kn-notes-launcher-section');
+const others = Array.from(rail.children).filter((el) => el !== section);
+const before = notes && notes.parentElement === rail ? notes : others[others.length - 1] || null;
+if (section.parentElement !== rail || section.previousElementSibling !== before) {
+if (before) before.insertAdjacentElement('afterend', section); else rail.appendChild(section);
+}
+// The same circle as the Konnect button beside it, and the same slot.
+const neighbour = Array.from(rail.querySelectorAll('.btn-circle')).find((el) => el !== button && isVisible(el));
+const size = neighbour ? neighbour.getBoundingClientRect() : { width: 60, height: 60 };
+const slot = neighbour && neighbour.closest('section') ? neighbour.closest('section').getBoundingClientRect().height : 75;
+const classes = 'btn btn-circle btn-lgr btn-call-nav';
+if (button.className !== classes) button.className = classes;
+setStyle(button, 'width', `${Math.round(size.width)}px`);
+setStyle(button, 'height', `${Math.round(size.height)}px`);
+setStyle(button, 'border-radius', neighbour ? getComputedStyle(neighbour).borderRadius || '50%' : '50%');
+setStyle(section, 'height', `${Math.round(slot)}px`);
+}
+
+function placeInPhoneColumn(anchor) {
+const button = pageButton();
+if (ui.railSection && ui.railSection.isConnected) ui.railSection.remove();
+// Directly above the Konnect Notes Booking button when that is in the
+// column, else directly above the call button.
+const notes = document.getElementById('kn-inbound-launcher');
+const before = notes && notes.parentElement === anchor.parentElement && notes.nextElementSibling === anchor ? notes : anchor;
+if (button.nextElementSibling !== before) before.insertAdjacentElement('beforebegin', button);
+// Same size and shape as the Phone buttons, without their colour or actions.
+const classes = Array.from(anchor.classList).filter((name) => !/^btn-(danger|success|info|warning|primary|default|switch)$/.test(name) && !/^ng-/.test(name)).join(' ');
+const size = anchor.getBoundingClientRect();
+if (button.className !== classes) button.className = classes;
+setStyle(button, 'width', `${Math.round(size.width)}px`);
+setStyle(button, 'height', `${Math.round(size.height)}px`);
+setStyle(button, 'border-radius', getComputedStyle(anchor).borderRadius || '4px');
+}
+
+function removePageButton() {
+if (ui.railSection && ui.railSection.isConnected) ui.railSection.remove();
+if (ui.pageButton && ui.pageButton.isConnected) ui.pageButton.remove();
+}
+
+function paintButton(el, look, hidden) {
+if (el.getAttribute('data-state') !== look.state) el.setAttribute('data-state', look.state);
+const label = look.text || 'symbol';
+if (el.getAttribute('data-label') !== label) {
+el.setAttribute('data-label', label);
+if (look.text) el.textContent = look.text; else el.innerHTML = BUTTON_SYMBOL;
+}
+if (el.title !== look.title) el.title = look.title;
+const aria = `${look.title}. ${hidden ? 'Open the panel' : 'Hide the panel'}`;
+if (el.getAttribute('aria-label') !== aria) el.setAttribute('aria-label', aria);
+if (el.getAttribute('aria-expanded') !== String(!hidden)) el.setAttribute('aria-expanded', String(!hidden));
+}
+
+// Puts the button where the page as it now stands wants it, and draws its
+// state. Runs on every redraw and whenever the page changes.
+function syncButton() {
+if (!ui) return;
+const look = ui.button || { state: 'rest', text: '', title: 'Lead Re setup' };
+let host = null;
+try { host = buttonHost(); } catch (error) { host = null; }
+if (host) {
+if (host.kind === 'rail') placeInRail(host.rail); else placeInPhoneColumn(host.anchor);
+if (ui.pageButton.getAttribute('data-host') !== host.kind) ui.pageButton.setAttribute('data-host', host.kind);
+paintButton(ui.pageButton, look, ui.hidden);
+} else removePageButton();
+const showTab = !host && ui.hidden;
+ui.edgeTab.style.display = showTab ? 'inline-flex' : 'none';
+if (showTab) paintButton(ui.edgeTab, look, true);
 }
 
 // ===================================================================
@@ -2499,7 +2915,7 @@ keepClear();
 
 const POSITION_KEY = '_leadResetPanelPos';
 // Tried in turn until the panel covers none of Konnect's own Finished and
-// Park It buttons, nor the Konnect Notes launcher.
+// Park It buttons, nor the Konnect Notes Booking button.
 const CORNERS = [{ left: 20, bottom: 68 }, { right: 20, bottom: 20 }, { right: 20, top: 20 }, { left: 20, top: 20 }];
 
 function loadPosition() {
@@ -2521,12 +2937,12 @@ return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bot
 // Otherwise the panel stays in its corner unless it would cover one of
 // Konnect's buttons there, and then moves to the next corner that is clear.
 function keepClear() {
-if (!ui || ui.panel.style.display === 'none' || (ui.pointerDownAt && Date.now() - ui.pointerDownAt < 3000)) return;
+if (!ui || ui.hidden || (ui.pointerDownAt && Date.now() - ui.pointerDownAt < 3000)) return;
 if (ui.position) {
 placeAt({ left: Math.max(0, Math.min(window.innerWidth - 80, ui.position.left)), top: Math.max(0, Math.min(window.innerHeight - 40, ui.position.top)) });
 return;
 }
-const avoid = Array.from(document.querySelectorAll('button[ng-click^="completeCall("], #kn-inbound-launcher')).filter(isVisible).map((el) => el.getBoundingClientRect());
+const avoid = Array.from(document.querySelectorAll(`button[ng-click^="completeCall("], #kn-inbound-launcher, #${BUTTON_ID}`)).filter(isVisible).map((el) => el.getBoundingClientRect());
 for (let i = 0; i < CORNERS.length; i++) {
 const corner = (ui.corner + i) % CORNERS.length;
 placeAt(CORNERS[corner]);
@@ -2536,18 +2952,22 @@ if (!avoid.some((a) => overlaps(rect, a))) { ui.corner = corner; return; }
 placeAt(CORNERS[ui.corner]);
 }
 
-// Brings the panel back in full: from the launcher, or from minimised.
+// Brings the panel back from its button.
 function showPanel() {
 if (!ui) return;
-ui.launcher.style.display = 'none';
+ui.hidden = false;
 ui.panel.style.display = '';
-if (ui.minimised) {
-ui.minimised = false;
-ui.panel.classList.remove('minimised');
-const toggle = ui.root.querySelector('[data-action="minimise"]');
-toggle.textContent = '–';
-toggle.setAttribute('aria-label', 'Minimise');
+syncButton();
 }
+
+// Tucks the panel into its button, so the tool stays one click away
+// without the bookmark.
+function hidePanel() {
+if (!ui) return;
+closeMenu();
+ui.hidden = true;
+ui.panel.style.display = 'none';
+syncButton();
 }
 
 async function pasteResults() {
@@ -2581,18 +3001,25 @@ if (request && !(Date.now() - new Date(request.at).getTime() <= REQUEST_MAX_AGE_
 } catch (error) { /* storage blocked: nothing to purge */ }
 }
 
-// Takes this copy off the page: its panel, timers and listeners. What it
-// keeps in storage stays.
+// Takes this copy off the page: its panel, its button, timers and
+// listeners. What it keeps in storage stays.
 function unload() {
 if (versionState && versionState.timer) clearInterval(versionState.timer);
 clearTimeout(hubTimer);
 if (ui) {
 clearInterval(ui.pageTimer);
 clearInterval(ui.linkTimer);
+clearTimeout(ui.syncTimer);
+if (ui.observer) ui.observer.disconnect();
 if (typeof window.removeEventListener === 'function') {
 window.removeEventListener('storage', ui.onStorage);
 window.removeEventListener('mouseup', ui.onMouseUp, true);
+window.removeEventListener('mousedown', ui.onOutsideDown, true);
+window.removeEventListener('hashchange', ui.onPageChange);
 }
+removePageButton();
+const style = document.getElementById(BUTTON_STYLE_ID);
+if (style) style.remove();
 ui.host.remove();
 ui = null;
 }
@@ -2610,10 +3037,10 @@ host.id = NOTICE_ID;
 const root = host.attachShadow({ mode: 'open' });
 root.innerHTML = `<style>
 :host { all: initial; }
-.note { position: fixed; left: 20px; bottom: 68px; width: 300px; max-width: calc(100vw - 40px); z-index: 2147483000; background: #fffbeb; color: #451a03; border: 2px solid #f59e0b; border-radius: 12px; padding: 12px; box-shadow: 0 12px 30px rgba(15, 23, 42, .25); font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+.note { position: fixed; left: 20px; bottom: 68px; width: 300px; max-width: calc(100vw - 40px); z-index: 2147483000; background: #fff8e6; color: #5a2c00; border: 2px solid #e9a13b; border-radius: 12px; padding: 12px; box-shadow: 0 12px 30px rgba(15, 23, 42, .25); font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
 p { margin: 0 0 10px; }
-button { font: inherit; font-weight: 600; font-size: 12.5px; border-radius: 999px; padding: 6px 12px; cursor: pointer; border: 1px solid #cbd5e1; background: #fff; color: #1c1c1e; margin-right: 6px; }
-button.main { background: #C2CB42; border-color: #C2CB42; }
+button { font: inherit; font-weight: 600; font-size: 12.5px; border-radius: 999px; padding: 6px 12px; cursor: pointer; border: 1px solid #c5cbd6; background: #fff; color: #1c1c1e; margin-right: 6px; }
+button.main { background: #0f766e; border-color: #0f766e; color: #fff; }
 button:focus-visible { outline: 2px solid #1c1c1e; outline-offset: 2px; }
 </style><div class="note" role="alert"><p></p>${offerShiftStart ? '<button type="button" class="main" data-act="shift">Set Shift Start</button>' : ''}<button type="button" data-act="close">OK</button></div>`;
 const message = root.querySelector('p');
@@ -2632,7 +3059,7 @@ document.body.appendChild(host);
 // Same as SLA Manager's Clear & Stop: ends any run at once, wipes what
 // this tool keeps (and nothing of SLA Manager's), withdraws its request
 // and removes the panel, so the next click of the bookmark starts from
-// scratch.
+// scratch. Who the agent said they are is a setting, not data, and stays.
 function clearAndStop() {
 const wasRunning = state.running;
 const left = wasRunning ? leftAsIs(state.ctx) : '';
@@ -2657,42 +3084,66 @@ saveDeskProgress(progress);
 render();
 }
 
+function saveSetting(name, value) {
+writeJson(SETTINGS_KEY, { ...(readJson(SETTINGS_KEY) || {}), [name]: value });
+if (state.ctx) state.ctx.settings = loadSettings();
+}
+
 function onPanelClick(event) {
 const target = event.target.closest('[data-action]');
+const inMenu = !!(ui.menu && target && ui.menu.contains(target));
+// A click anywhere but in the open menu closes it. On its own opener that
+// is all the click does.
+if (ui.menu && !inMenu) {
+const sameOpener = target && target === ui.menuOpener;
+closeMenu();
+if (sameOpener) return;
+}
 if (!target) return;
 const action = target.getAttribute('data-action');
+const run = target.getAttribute('data-run');
+const key = target.getAttribute('data-key');
+if (inMenu) closeMenu(true);
+if (action === 'more') {
+openMenu(target, moreMenuHtml(), true);
+target.setAttribute('aria-expanded', 'true');
+return;
+}
+if (action === 'who') {
+const html = whoMenuHtml(run, key);
+if (html) openMenu(target, html, false);
+return;
+}
+if (action === 'row') {
+const id = `${run}:${key}`;
+if (ui.openRows.has(id)) ui.openRows.delete(id); else ui.openRows.add(id);
+render();
+return;
+}
 if (action === 'clearStop') { clearAndStop(); return; }
 if (action === 'report') {
 // Names never leave the page: every known customer name is replaced.
-const names = leadsToDo().map((l) => l.name).concat(state.hereLead ? [state.hereLead.name] : [], sendBackLeads().map((l) => l.name), emailOnlyLeads().map((l) => l.name)).filter(Boolean);
+const names = leadsToDo().map((l) => l.name).concat(state.hereLead ? [state.hereLead.name] : [], sendBackLeads().map((l) => l.name), emailOnlySaved().map((l) => l.name)).filter(Boolean);
 const redact = (line) => names.reduce((text, name) => text.split(name).join('<customer>'), String(line));
 const where = state.running ? `running ${state.mode || ''} step ${state.stepIndex + 1}${state.paused ? ', needs you: ' + state.paused.message : ''}` : 'idle';
 reportProblem('Lead Re setup', redact(where), state.log.map(redact));
 return;
 }
-if (action === 'close') {
-// Tucks the panel away behind a small launcher button rather than closing
-// it, so the tool stays one click away without the bookmark.
-ui.panel.style.display = 'none';
-ui.launcher.style.display = 'inline-flex';
-return;
-}
+if (action === 'close') { hidePanel(); return; }
 if (action === 'reopen') { showPanel(); render(); return; }
-if (action === 'minimise') {
-ui.minimised = !ui.minimised;
-ui.panel.classList.toggle('minimised', ui.minimised);
-target.textContent = ui.minimised ? '+' : '–';
-target.setAttribute('aria-label', ui.minimised ? 'Expand' : 'Minimise');
+if (action === 'review' || action === 'reviewFinish') {
+const name = action === 'review' ? 'reviewBeforePark' : 'reviewBeforeFinish';
+saveSetting(name, !loadSettings()[name]);
 render();
 return;
 }
-if (action === 'review' || action === 'reviewFinish') {
-writeJson(SETTINGS_KEY, { ...(readJson(SETTINGS_KEY) || {}), [action === 'review' ? 'reviewBeforePark' : 'reviewBeforeFinish']: target.checked });
-if (state.ctx) state.ctx.settings = loadSettings();
+if (action === 'how') { ui.howOpen = !ui.howOpen; render(); return; }
+if (action === 'copyDetails') {
+const lead = listLead(run, key);
+if (lead) navigator.clipboard.writeText(detailsForClipboard(run, lead)).then(() => addLog('Details copied'), () => addLog('Could not copy the details'));
 return;
 }
-if (action === 'eoAgent') return;
-if (action === 'view') { ui.view = target.getAttribute('data-view'); ui.listOpen = false; ui.howOpen = false; render(); return; }
+if (action === 'view') { ui.view = target.getAttribute('data-view'); ui.howOpen = false; render(); return; }
 if (action === 'pickHere') { ui.herePicked = target.value; render(); return; }
 if (action === 'dismissNotice') { state.notice = null; render(); return; }
 if (action === 'shiftStart') {
@@ -2704,13 +3155,25 @@ if (state.paused) answerPause('stop');
 else if (state.running && !state.stopRequested) { state.stopRequested = true; addLog('Stopping after this step'); }
 return;
 }
-if (action === 'carry' || action === 'retry' || action === 'skip') { answerPause(action); return; }
-// Everything below starts something, so it waits for any run to end.
+if (action === 'skip') { ui.skipAsk = true; ui.focusWhy = true; render(); return; }
+if (action === 'skipCancel') { ui.skipAsk = false; ui.skipWhy = ''; render(); return; }
+if (action === 'skipConfirm') { answerPause('skip'); return; }
+// A reason typed and then not used for a skip is not kept.
+if (action === 'carry' || action === 'retry') { ui.skipAsk = false; ui.skipWhy = ''; answerPause(action); return; }
+// Everything below starts or changes something, so it waits for any run
+// to end.
 if (state.running || state.checking) return;
+if (action === 'iAm') { saveSetting('emailOnlyAgent', target.getAttribute('data-agent') || ''); render(); return; }
+if (action === 'changeMe') { saveSetting('emailOnlyAgent', ''); ui.view = 'eo'; ui.howOpen = false; render(); return; }
 if (action === 'start') { runAll(); return; }
 if (action === 'startPc') { runSendBack(); return; }
 if (action === 'startEo') { runEmailOnly(); return; }
 if (action === 'checkParked') { checkParkedOnLive(); return; }
+if (action === 'openParked') {
+const lead = listLead('pc', key);
+if (lead) openFromParked(lead);
+return;
+}
 if (action === 'here') {
 const chosen = hereChoice();
 if (!chosen) { addLog('Tick the lead to set up again first'); return; }
@@ -2728,6 +3191,16 @@ if (action === 'clearPc') { clearDeskProgress('pc'); return; }
 if (action === 'clearEo') { clearDeskProgress('eo'); }
 }
 
+function onPanelKey(event) {
+if (!ui || !ui.menu) return;
+if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeMenu(true); return; }
+if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+const items = Array.from(ui.menu.querySelectorAll('.mi'));
+const at = items.indexOf(ui.root.activeElement);
+const next = items[(at + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length];
+if (next) { event.preventDefault(); next.focus({ preventScroll: true }); }
+}
+
 // The panel lives in its own shadow root: Konnect's styles cannot reach
 // it, and the steps' page searches cannot mistake its buttons for Konnect's.
 function buildPanel() {
@@ -2740,32 +3213,27 @@ if (typeof host.attachShadow !== 'function') return false;
 const root = host.attachShadow({ mode: 'open' });
 root.innerHTML = `<style>${STYLE}</style>
 <div class="panel" role="dialog" aria-label="Lead Re setup">
-<div class="head"><div class="title"><span aria-hidden="true">&#8635;</span><span>Lead Re setup</span><span class="mini-status" role="status"></span></div>
-<button type="button" class="icon-btn" data-action="minimise" aria-label="Minimise">&ndash;</button>
-<button type="button" class="icon-btn" data-action="close" aria-label="Hide" title="Hide (the Re setup button brings it back)">&times;</button></div>
-<div class="link" role="status"></div>
+<div class="head"><div class="title"><span class="name">Lead Re setup</span><span class="sub" role="status"></span></div>
+<button type="button" class="hbtn" data-action="close" title="Tuck the panel into its button">${icon('minus')}Hide</button>
+<button type="button" class="hbtn quiet" data-action="more" aria-haspopup="true" aria-expanded="false">${icon('more')}More</button></div>
+<div class="link" role="status"><span class="dot" aria-hidden="true"></span><span class="link-text grow"></span></div>
 <div class="body"></div>
-<div class="foot"><button type="button" class="report" data-action="report">Report a problem</button><button type="button" class="stop-clear" data-action="clearStop" title="Stops any run, clears this tool's data and closes it">Clear &amp; Stop</button></div>
+<div class="foot"><span class="setting"></span><span>Change it in More</span></div>
 </div>
-<button type="button" class="launcher" data-action="reopen" style="display:none;" title="Show Lead Re setup">&#8635; Re setup</button>`;
+<button type="button" class="edge-tab" data-action="reopen"></button>`;
 document.body.appendChild(host);
 const panel = root.querySelector('.panel');
 const head = root.querySelector('.head');
 if (!panel || !head) return false;
-ui = { host, root, panel, launcher: root.querySelector('.launcher'), minimised: false, listOpen: false, logOpen: false, stepsOpen: false, moreOpen: false, howOpen: false, corner: 0, position: loadPosition(), html: null, linkText: null };
+ui = { host, root, panel, edgeTab: root.querySelector('.edge-tab'), hidden: false, openRows: new Set(), logOpen: false, stepsOpen: false, todoOpen: false, moreOpen: false, howOpen: false, corner: 0, position: loadPosition(), html: null, linkText: null };
 root.addEventListener('click', onPanelClick);
-root.addEventListener('change', (event) => {
-if (event.target.getAttribute && event.target.getAttribute('data-action') === 'eoAgent') {
-writeJson(SETTINGS_KEY, { ...(readJson(SETTINGS_KEY) || {}), emailOnlyAgent: event.target.value });
-render();
-}
-});
+root.addEventListener('keydown', onPanelKey);
 root.addEventListener('input', (event) => {
 if (event.target.getAttribute && event.target.getAttribute('data-role') === 'skipWhy') ui.skipWhy = event.target.value;
 });
 root.addEventListener('toggle', (event) => {
 const section = event.target.getAttribute && event.target.getAttribute('data-section');
-const key = { list: 'listOpen', log: 'logOpen', steps: 'stepsOpen', more: 'moreOpen', how: 'howOpen' }[section];
+const key = { log: 'logOpen', steps: 'stepsOpen', todo: 'todoOpen', more: 'moreOpen' }[section];
 if (key) ui[key] = event.target.open;
 }, true);
 root.addEventListener('mousedown', () => { ui.pointerDownAt = Date.now(); });
@@ -2775,6 +3243,10 @@ ui.pointerDownAt = 0;
 // After the click that this mouse up belongs to has been handled.
 if (ui.renderPending) setTimeout(render, 0);
 };
+// A press anywhere else on the page closes an open menu.
+ui.onOutsideDown = (event) => {
+if (ui && ui.menu && !(event.composedPath && event.composedPath().includes(ui.host))) closeMenu();
+};
 // Redraw when SLA Manager, in another tab on this site, saves new results,
 // Email Only assignments or progress on the desk's request.
 ui.onStorage = (event) => {
@@ -2782,9 +3254,21 @@ if (!ui) return;
 if (event.key === LIVE_LINK_KEY) renderLinkLine();
 else if (!state.running && [EMAIL_ONLY_ASSIGNED_KEY, NATIONAL_RESULTS_KEY, DESK_RESULTS_KEY, LIVE_STATUS_KEY].includes(event.key)) render();
 };
+// The button follows the page as leads open and close. The page is only
+// watched, never reloaded, and a burst of changes is answered once.
+ui.onPageChange = () => {
+if (!ui || ui.syncTimer) return;
+ui.syncTimer = setTimeout(() => { if (ui) { ui.syncTimer = 0; syncButton(); } }, 250);
+};
 if (typeof window.addEventListener === 'function') {
 window.addEventListener('storage', ui.onStorage);
 window.addEventListener('mouseup', ui.onMouseUp, true);
+window.addEventListener('mousedown', ui.onOutsideDown, true);
+window.addEventListener('hashchange', ui.onPageChange);
+}
+if (typeof MutationObserver === 'function') {
+ui.observer = new MutationObserver(ui.onPageChange);
+ui.observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
 }
 // Redraw when the agent moves to another page or customer, and as the
 // results on show get older.
@@ -2792,10 +3276,10 @@ ui.pageTimer = setInterval(() => {
 if (!ui) return;
 // A redraw held back by a mouse press whose release was never seen.
 if (ui.renderPending) { render(); return; }
-if (state.running) { keepClear(); return; }
+if (state.running) { syncButton(); keepClear(); return; }
 const inView = onCallPage() ? leadInView() : null;
 const signature = `${onCallPage()}|${liveActivities().map(({ activity }) => activity.ID).join(',')}|${inView ? inView.ID : ''}|${ui.view === 'pc' ? resultsAgeLine() + hubStatusLine() : ''}`;
-if (signature !== ui.pageSignature) { ui.pageSignature = signature; render(); } else keepClear();
+if (signature !== ui.pageSignature) { ui.pageSignature = signature; render(); } else { syncButton(); keepClear(); }
 }, 2000);
 // The link line goes stale by the clock, with no storage event to say so.
 ui.linkTimer = setInterval(renderLinkLine, 5000);
@@ -2803,6 +3287,7 @@ ui.linkTimer = setInterval(renderLinkLine, 5000);
 // session.
 head.addEventListener('mousedown', (event) => {
 if (event.target.closest('button')) return;
+closeMenu();
 const rect = panel.getBoundingClientRect();
 const dx = event.clientX - rect.left;
 const dy = event.clientY - rect.top;
@@ -2834,7 +3319,7 @@ show() {
 if (!ui) return;
 showPanel();
 render();
-const first = ui.root.querySelector('.body [data-action]') || ui.root.querySelector('[data-action="minimise"]');
+const first = ui.root.querySelector('.body [data-action]') || ui.root.querySelector('[data-action="close"]');
 if (first && !state.paused) first.focus({ preventScroll: true });
 },
 replaceable: () => !ui || (!state.running && !!(versionState && versionState.newer)),

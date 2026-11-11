@@ -77,13 +77,24 @@ async function batchRun() {
     row(['national', 'Alex Sample', '70000001', '1400001', 'OK']),
   ]);
   await inject(page);
-  await page.waitForFunction(() => /Version of/.test(document.querySelector('#_leadResetPanel').shadowRoot.textContent), null, { timeout: 5000 }).catch(() => {});
   const expected = await page.evaluate((iso) => {
     const d = new Date(iso); const pad = (n) => String(n).padStart(2, '0');
     return `Version of ${d.getDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }, PUBLISHED);
-  const panelText = await page.evaluate(() => document.querySelector('#_leadResetPanel').shadowRoot.textContent);
-  check('version line comes from the stubbed GitHub date', panelText.includes(expected), expected);
+  // The version line is in the More menu.
+  let panelText = '';
+  for (let i = 0; i < 15 && !panelText.includes('Version of'); i++) {
+    await page.waitForTimeout(300);
+    panelText = await page.evaluate(() => {
+      const r = document.querySelector('#_leadResetPanel').shadowRoot;
+      r.querySelector('[data-action=more]').click();
+      const text = (r.querySelector('.menu') || {}).textContent || '';
+      r.querySelector('[data-action=more]').click();
+      return text;
+    });
+  }
+  check('version line comes from the stubbed GitHub date, in the More menu', panelText.includes(expected), expected);
+  check('one More menu, in the header, and it closes again', await page.evaluate(() => { const r = document.querySelector('#_leadResetPanel').shadowRoot; return r.querySelectorAll('[data-action=more]').length === 1 && !!r.querySelector('.head [data-action=more]') && !r.querySelector('.menu') && !r.querySelector('.foot button'); }));
 
   await page.click('#_leadResetPanel [data-action=start]');
   await page.waitForSelector('#_leadResetPanel [data-action=carry]', { timeout: 30000 });
@@ -186,7 +197,7 @@ async function clearAndStop() {
   await page.click('#_leadResetPanel [data-action=start]');
   await page.waitForFunction(() => window.events.length > 1, null, { timeout: 5000 }).catch(() => {});
   check('run had started before Clear & Stop', await page.evaluate(() => window._leadResetState && window._leadResetState.running === true));
-  await page.click('#_leadResetPanel [data-action=clearStop]');
+  await press(page, 'clearStop');
   await page.waitForFunction(() => !document.getElementById('_leadResetPanel') && window._leadResetState === null, null, { timeout: 5000 }).catch(() => {});
   // Let any step still in flight finish so a late save would show up.
   await page.waitForTimeout(1500);
@@ -238,7 +249,15 @@ async function settle(page, timeout = 60000) {
       buttons: Array.from(panel.querySelectorAll('.needs-card [data-action]')).map((b) => b.getAttribute('data-action')), notice: (panel.querySelector('.notice') || {}).textContent || '' };
   });
 }
-const press = async (page, action) => { await page.click(`#_leadResetPanel [data-action=${action}]`); await page.waitForTimeout(300); };
+// Clear & Stop and the stop settings are in the More menu, and Skip lead asks
+// why before it skips.
+const IN_MORE = ['clearStop', 'review', 'reviewFinish', 'changeMe'];
+const press = async (page, action) => {
+  if (IN_MORE.includes(action)) await page.click('#_leadResetPanel [data-action=more]');
+  await page.click(`#_leadResetPanel [data-action=${action}]`);
+  if (action === 'skip') await page.click('#_leadResetPanel [data-action=skipConfirm]');
+  await page.waitForTimeout(300);
+};
 const count = (list, item) => list.filter((e) => e === item).length;
 
 async function slowLeads() {
@@ -290,6 +309,12 @@ async function secondLoadSkipAndStop() {
   await inject(page);
   await page.waitForTimeout(300);
   check('a second load keeps the one panel and the paused run', await page.evaluate(() => document.querySelectorAll('#_leadResetPanel').length === 1 && !!window._leadResetState.paused && !!document.querySelector('#_leadResetPanel').shadowRoot.querySelector('[data-action=carry]')));
+  // Skip lead asks why first; Do not skip goes back to the question.
+  await page.click('#_leadResetPanel [data-action=skip]');
+  check('Skip lead shows the why box with Skip this lead and Do not skip', await page.evaluate(() => { const r = document.querySelector('#_leadResetPanel').shadowRoot; return !!r.querySelector('.needs-card [data-role=skipWhy]') && Array.from(r.querySelectorAll('.needs-card [data-action]')).slice(1).map((b) => b.textContent).join() === 'Skip this lead,Do not skip'; }), (await settle(page)).buttons);
+  await page.click('#_leadResetPanel [data-action=skipCancel]');
+  const back = await settle(page);
+  check('Do not skip goes back to the question, still paused', back.buttons.join() === 'carry,skip,stop' && !!back.paused, back.buttons);
   await press(page, 'skip');
   const skipped = await settle(page);
   check('the buttons still work after the second load: Skip lead skips', /^Lead skipped\./.test(skipped.paused || ''), skipped.paused || skipped.log);
@@ -297,7 +322,7 @@ async function secondLoadSkipAndStop() {
   check('the skipped lead is not parked', !skipped.events.includes('park'), skipped.events);
   await press(page, 'stop');
   const stopped = await settle(page);
-  check('Stop ends the run and says what was left', !stopped.running && /Stopped\. Left as it is: the call is still open/.test(stopped.notice) && stopped.log.some((l) => /Stopped\. Left as it is/.test(l)), { notice: stopped.notice, log: stopped.log });
+  check('Stop ends the run and says what was left', !stopped.running && /Stopped\. Left on the page as it is:\s*The call is still open/.test(stopped.notice) && stopped.log.some((l) => /Stopped\. Left as it is/.test(l)), { notice: stopped.notice, log: stopped.log });
   const progress = await page.evaluate(() => JSON.parse(localStorage.getItem('_leadResetProgress') || 'null'));
   check('progress: the first lead skipped, the second untouched', progress && JSON.stringify(progress.byActivity) === JSON.stringify({ 70000002: 'Skipped' }), progress);
   check('nothing parked or Finished', !stopped.events.includes('park') && !stopped.events.includes('FINISHED-PRESSED'), stopped.events);
@@ -346,14 +371,14 @@ async function panelPlaceAndFocus() {
   const rects = () => page.evaluate(() => {
     const r = document.querySelector('#_leadResetPanel').shadowRoot;
     const box = (el) => { const b = el.getBoundingClientRect(); return { left: b.left, top: b.top, right: b.right, bottom: b.bottom, width: b.width }; };
-    return { panel: box(r.querySelector('.panel')), launcher: box(r.querySelector('.launcher')), notes: box(document.getElementById('kn-inbound-launcher')) };
+    return { panel: box(r.querySelector('.panel')), launcher: box(r.querySelector('.edge-tab')), notes: box(document.getElementById('kn-inbound-launcher')) };
   });
   const apart = (a, b) => !a.width || !b.width || a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
   const open = await rects();
   check('the panel does not sit on the Konnect Notes launcher', apart(open.panel, open.notes) && open.panel.width > 0, open);
   await press(page, 'close');
   const hidden = await rects();
-  check('its launcher is stacked clear of the Konnect Notes launcher', apart(hidden.launcher, hidden.notes) && hidden.launcher.width > 0 && Math.abs(hidden.launcher.left - hidden.notes.left) < 2, hidden);
+  check('with no Konnect rail or Phone column, its tab is at the screen edge, clear of the Konnect Notes launcher', apart(hidden.launcher, hidden.notes) && hidden.launcher.width > 0 && hidden.launcher.left === 0 && hidden.panel.width === 0, hidden);
   await press(page, 'reopen');
 
   const root = () => page.evaluateHandle(() => document.querySelector('#_leadResetPanel').shadowRoot);
@@ -370,10 +395,10 @@ async function panelPlaceAndFocus() {
     localStorage.setItem('_workToolsDeskResults', JSON.stringify({ savedAt: new Date().toISOString(), results: [{ name: 'Jo Example', email: 'jo.example@example.com', postClosureAction: 'send back through', postClosureReason: 'Email only', checkedAt: new Date().toISOString() }] }));
     window.dispatchEvent(new StorageEvent('storage', { key: '_workToolsDeskResults' }));
   }, SAM);
-  check('no redraw while the mouse is down', await page.evaluate((el) => el.isConnected, held) && !/to send back through/.test(await shadowText(page, '.body') || ''));
+  check('no redraw while the mouse is down', await page.evaluate((el) => el.isConnected, held) && !/to send back/.test(await shadowText(page, '.body') || ''));
   await page.evaluate(() => window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })));
   await page.waitForTimeout(200);
-  check('the redraw happens once the mouse is up', /1\s*to send back through/.test(await shadowText(page, '.body') || ''), await shadowText(page, '.body'));
+  check('the redraw happens once the mouse is up', /1\s*to send back/.test(await shadowText(page, '.body') || ''), await shadowText(page, '.body'));
 
   // Dragged somewhere: kept for the session, through Clear & Stop and a new load.
   const head = await page.evaluate((r) => { const b = r.querySelector('.head .title').getBoundingClientRect(); return { x: b.left + 40, y: b.top + 8 }; }, await root());

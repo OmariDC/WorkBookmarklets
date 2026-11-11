@@ -67,15 +67,24 @@ function renderVersionLine() {
 const html = () => {
 const text = versionLineText(slaVersionState);
 const newer = slaVersionState.newer;
-return text ? `<div id="_slaVersionLine" role="status" style="margin: 0 0 8px; font-size: ${newer ? '12px' : '11px'}; ${newer ? 'font-weight: 700; color: #b91c1c;' : 'color: var(--wb-muted, #64748b);'}">${escapeHtml(text)}</div>` : '<div id="_slaVersionLine"></div>';
+return `<div id="_slaVersionLine" class="sla-mn" role="status" ${newer ? 'style="font-weight: 700; color: #b91c1c;"' : ''}>${escapeHtml(text)}</div>`;
 };
 if (!slaVersionState) {
 slaVersionState = startVersionWatch('SLA-Manager.js', () => {
 const el = document.getElementById('_slaVersionLine');
 if (el) el.outerHTML = html();
+const notice = document.getElementById('_slaNewerNotice');
+if (notice) notice.outerHTML = renderNewerVersionNotice();
 });
 }
 return html();
+}
+
+// The version is the last line of the More menu. A newer version being out
+// matters more than that, so it also shows above the list.
+function renderNewerVersionNotice() {
+const newer = !!(slaVersionState && slaVersionState.newer);
+return `<div id="_slaNewerNotice" class="sla-notice bad" role="status" ${newer ? '' : 'hidden'}>${newer ? escapeHtml(versionLineText(slaVersionState)) : ''}</div>`;
 }
 
 // Report a problem: runs the Diagnostics capture (customer details masked)
@@ -112,8 +121,12 @@ const list = selfTestFailures.slice(0, 3).map((f) => `<div style="margin-top:4px
 return `<div role="alert" style="margin:0 0 10px;padding:8px 10px;border-radius:8px;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-size:12px;"><strong>Self-test failed:</strong> some results may be wrong. Please send this message on.${list}</div>`;
 }
 
+// Standard is layout 1 (one column), full is two columns at full height and
+// compact is the small box. Anything else stored reads as standard.
+const PANEL_SIZES = ['standard', 'full', 'compact'];
 function getPanelSize() {
-return localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
+const stored = localStorage.getItem(PANEL_SIZE_KEY);
+return PANEL_SIZES.includes(stored) ? stored : 'standard';
 }
 
 // ===================================================================
@@ -125,8 +138,6 @@ return localStorage.getItem(PANEL_SIZE_KEY) || 'compact';
 
 const ICONS = {
 refresh: '<path d="M21 12a9 9 0 1 1-3.2-6.9"/><path d="M21 3v6h-6"/>',
-history: '<path d="M3 3v18h18" fill="none"/><rect x="7" y="13" width="3" height="5" fill="currentColor" stroke="none"/><rect x="12" y="9" width="3" height="9" fill="currentColor" stroke="none"/><rect x="17" y="5" width="3" height="13" fill="currentColor" stroke="none"/>',
-bolt: '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" fill="currentColor" stroke="none"/>',
 inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
 clipboard: '<rect x="5" y="3" width="14" height="18" rx="2"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="16" x2="12" y2="16"/>',
 warning: '<path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>',
@@ -138,19 +149,31 @@ arrowUp: '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 1
 chevron: '<polyline points="6 9 12 15 18 9"/>',
 checklist: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',
 copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
-focus: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>',
 check: '<polyline points="20 6 9 17 4 12"/>',
 openOut: '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
-x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'
+x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+send: '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/>',
+more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+back: '<path d="M15 18l-6-6 6-6"/>',
+queue: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/>',
+trash: '<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/>',
+flag: '<path d="M4 21V4h12l-2 4 2 4H4"/>',
+stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
+user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+sort: '<path d="M3 6h18M6 12h12M10 18h4"/>',
+clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+paste: '<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V2h6v2"/>'
 };
 
-function svgIcon(name, size, extraStyle) {
-return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;${extraStyle || ''}">${ICONS[name]}</svg>`;
+function svgIcon(name, size, extraStyle, className) {
+return `<svg${className ? ` class="${className}"` : ''} width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;${extraStyle || ''}">${ICONS[name]}</svg>`;
 }
 
 // Only for the two full-panel empty states. Per-section empty lines stay compact.
 function renderZeroState(iconName, title, subtitle) {
-return `<div style="padding: 48px 20px; text-align: center;">
+return `<div class="sla-zero">
 <div style="width: 64px; height: 64px; border-radius: 50%; background: #e5e5ea; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px;">
 ${svgIcon(iconName, 28, ' stroke-width: 1.5; color: var(--wb-muted, #5b6577);')}
 </div>
@@ -260,6 +283,8 @@ return true;
 // Filled by _runAllMorningChecks as each check completes. Empty means not run
 // yet. Today's last run is put back further down, once its storage key exists.
 let morningChecksResults = [];
+// 'national' while the National results view is showing over the checks.
+let morningChecksSubView = null;
 const MORNING_CHECKS_ORDER = [
 { key: 'emailOnly', label: 'Email Only Count' },
 { key: 'sla', label: 'SLA Count' },
@@ -321,6 +346,15 @@ return { tier: 4, reason: 'Inbound' };
 return { tier: 4, reason: 'Uncategorized' };
 }
 
+// SLA Manager's own campaign tiers, in the words categorizeTier works to.
+// The names are fixed; `holds` is the grey line and tooltip beside each.
+const SLA_TIERS = [
+{ tier: 1, id: 'tier1', name: 'Tier 1 - Priority', holds: 'Test drive requests, electric campaigns and Reserve Used' },
+{ tier: 2, id: 'tier2', name: 'Tier 2 - High', holds: 'Customer First new enquiries, Motability and Leapmotor' },
+{ tier: 3, id: 'tier3', name: 'Tier 3 - Medium', holds: 'Used enquiries, new offer requests and PX valuations' },
+{ tier: 4, id: 'tier4', name: 'Tier 4 - Standard', holds: 'Other new enquiries, General, Inbound and anything not matched' }
+];
+
 // Real campaign strings covering the parenthetical and Register Interest cases.
 runSelfTest('categorizeTierSelfTest', function categorizeTierSelfTest() {
 const cases = [
@@ -356,30 +390,6 @@ return customer.slaDate.getTime() - Date.now();
 
 function sortByUrgency(customers) {
 return [...customers].sort((a, b) => computeDisplaySortKey(a) - computeDisplaySortKey(b));
-}
-
-// Pure. 45 reads "45m", 71 reads "1h 11m", 120 reads "2h".
-function formatMinutesAgo(minutes) {
-if (minutes < 60) return `${minutes}m`;
-const hours = Math.floor(minutes / 60);
-const rest = minutes % 60;
-return rest ? `${hours}h ${rest}m` : `${hours}h`;
-}
-
-// msUntil <= 0 counts as Missed in case the Status cell has not caught up.
-// Missed and due within 15 minutes are both emphasised.
-function slaUrgencyInfo(customer) {
-if (!customer.slaDate) return { label: null, color: null, emphasize: false };
-const minsUntil = Math.round((customer.slaDate.getTime() - Date.now()) / 60000);
-if (customer.status === 'Missed' || minsUntil <= 0) {
-return { label: `MISSED ${formatMinutesAgo(Math.abs(minsUntil))} ago`, color: '#dc2626', emphasize: true };
-}
-if (minsUntil <= 15) return { label: `Due in ${minsUntil}m`, color: '#dc2626', emphasize: true };
-if (minsUntil <= 30) return { label: `Due in ${minsUntil}m`, color: '#d97706', emphasize: false };
-if (minsUntil <= 60) return { label: `Due in ${minsUntil}m`, color: '#ca8a04', emphasize: false };
-const hrs = Math.floor(minsUntil / 60);
-const mins = minsUntil % 60;
-return { label: `Due in ${hrs}h ${mins}m`, color: '#64748b', emphasize: false };
 }
 
 function findDetailModal() {
@@ -1308,21 +1318,28 @@ function formatElapsed(ms) {
 return `${(ms / 1000).toFixed(1)}s`;
 }
 
-function renderLastRunLine(lastRun) {
+// Pure-ish. "Checks run today at 09:12, all OK, 12.3s", for the footer.
+function lastRunText(lastRun) {
 if (!lastRun) return '';
 const issueText = lastRun.failedLabels.length === 0
-? 'All OK'
-: `${lastRun.failedLabels.length} issue${lastRun.failedLabels.length > 1 ? 's' : ''} (${escapeHtml(lastRun.failedLabels.join(', '))})`;
-return `<div style="font-size: 11px; color: var(--wb-muted, #5b6577); margin-top: 8px;">Last run today at ${formatTimeForInput(new Date(lastRun.time))} &middot; ${issueText} &middot; ${formatElapsed(lastRun.elapsedMs)}</div>`;
+? 'all OK'
+: `${lastRun.failedLabels.length} issue${lastRun.failedLabels.length > 1 ? 's' : ''} (${lastRun.failedLabels.join(', ')})`;
+return `Checks run today at ${formatTimeForInput(new Date(lastRun.time))}, ${issueText}, ${formatElapsed(lastRun.elapsedMs)}`;
 }
 
 function morningCheckStatusColor(row) {
 if (row.status === 'pending') return '#cbd5e1';
 if (row.status === 'running') return '#d97706';
-if (row.ok === true) return '#16a34a';
-if (row.ok === false) return '#dc2626';
-return '#2563eb';
+if (row.ok === true) return '#047857';
+if (row.ok === false) return '#c62828';
+return '#1d4ed8';
 }
+
+// The check names as they read in the list. The stored labels stay as they
+// are, since the saved run and the problem report use them.
+const MORNING_CHECK_DISPLAY_NAMES = {
+emailOnly: 'Email Only count', sla: 'SLA count', inProgress: 'In progress', leadType: 'Lead type check', routedTo: 'All leads are routed to', voicemail: 'Voicemail', national: 'National leads'
+};
 
 // Shown once every check has settled, to answer "did anything go wrong" at
 // a glance.
@@ -1330,78 +1347,63 @@ function renderMorningChecksSummaryBanner(results) {
 const allDone = results.every(r => r.status === 'done');
 if (!allDone) {
 const doneCount = results.filter(r => r.status === 'done').length;
-return `<div style="padding: 8px 12px; border-radius: 8px; background: #eef2ff; color: #4338ca; font-size: 12px; font-weight: 600; text-align: center; margin-bottom: 10px;">Running check ${doneCount + 1} of ${results.length}…</div>`;
+return `<div class="sla-notice info" role="status">Running check ${doneCount + 1} of ${results.length}…</div>`;
 }
 // ok:null is a plain count; only an explicit ok:false is an issue.
 const failed = results.filter(r => r.ok === false);
 if (failed.length === 0) {
-return `<div style="padding: 10px 12px; border-radius: 8px; background: #d1fae5; color: #059669; font-size: 13px; font-weight: 700; text-align: center; margin-bottom: 10px;">${svgIcon('checklist', 14)} All checks passed</div>`;
+return `<div class="sla-notice ok" role="status">${svgIcon('check', 14)}All checks passed</div>`;
 }
-return `<div style="padding: 10px 12px; border-radius: 8px; background: #fee2e2; color: #dc2626; font-size: 13px; font-weight: 700; text-align: center; margin-bottom: 10px;">${svgIcon('warning', 14)} ${failed.length} issue${failed.length > 1 ? 's' : ''} found - ${escapeHtml(failed.map(f => f.label).join(', '))}</div>`;
+return `<div class="sla-notice bad" role="status">${svgIcon('warning', 14)}<span>${failed.length} issue${failed.length > 1 ? 's' : ''} found: ${escapeHtml(failed.map(f => f.label).join(', '))}</span></div>`;
 }
 
+// One line per check: a dot, the name and the answer. Blue is a count for
+// information, green a pass, red a fail. A row with details opens on a click.
 function renderMorningCheckRow(row) {
 const color = morningCheckStatusColor(row);
 const isSettled = row.status === 'done';
 const isRunning = row.status === 'running';
-const isPending = row.status === 'pending';
 const rightText = isSettled ? (row.summary || '') : (isRunning ? (row.progress || 'Running…') : 'Waiting');
 const hasDetails = isSettled && Array.isArray(row.details) && row.details.length > 0;
 const detailsId = `_mcDetails_${row.key}`;
 const chevronId = `_mcChevron_${row.key}`;
-// Pending rows are dimmed, the running row is highlighted, and the left
-// border carries the result once settled.
-const background = isPending ? '#f8fafc' : (isRunning ? '#eef2ff' : 'white');
-const borderColor = isRunning ? '#c7d2fe' : '#e2e8f0';
-const borderStyle = isPending ? 'dashed' : 'solid';
-
+const valueClass = isSettled && row.ok === true ? 'sla-tag done' : (isSettled && row.ok === false ? 'sla-tag bad' : 'sla-due mut');
 return `
-<div style="border: 1px ${borderStyle} ${borderColor}; border-left: 3px solid ${color}; border-radius: 8px; padding: 10px 12px; background: ${background}; opacity: ${isPending ? '0.65' : '1'}; transition: background 0.2s ease, opacity 0.2s ease;">
-<div style="display: flex; align-items: center; gap: 8px; ${hasDetails ? 'cursor: pointer;' : ''}" ${hasDetails ? `onclick="window._toggleMorningCheckDetails('${row.key}')"` : ''}>
-<span style="width: 8px; height: 8px; border-radius: 50%; background: ${color}; flex-shrink: 0;"></span>
-<span style="font-size: 12px; font-weight: 600; color: var(--wb-text, #1c1c1e); flex-shrink: 0;">${row.label}</span>
-<span style="font-size: 12px; color: var(--wb-muted, #5b6577); flex: 1; text-align: right;">${escapeHtml(rightText)}</span>
-${hasDetails ? chevronIcon(true, chevronId) : ''}
-</div>
-${hasDetails ? `
-<div id="${detailsId}" style="display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f1f5f9; font-size: 11px; color: #475569; line-height: 1.6;">
+<div class="sla-check ${row.status === 'pending' ? 'pending' : ''}" ${hasDetails ? `style="cursor: pointer;" title="Show or hide the details" onclick="window._toggleMorningCheckDetails('${row.key}')"` : ''}>
+<span class="sla-dot" style="background: ${color};"></span>
+<b>${escapeHtml(MORNING_CHECK_DISPLAY_NAMES[row.key] || row.label)}</b>
+<span class="${valueClass}" style="white-space: normal; text-align: right;">${escapeHtml(rightText)}</span>
+${hasDetails ? chevronIcon(true, chevronId) : '<span></span>'}
+${hasDetails ? `<div id="${detailsId}" class="sla-details" style="display: none;">
 ${row.details.map(d => `<div>${escapeHtml(d)}</div>`).join('')}
 </div>` : ''}
-${row.key === 'national' ? renderNationalRowExtras(row) : ''}
 </div>`;
 }
 
-// Reached only via the header toggle, never the background poll, which would
+// Reached only via the header button, never the background poll, which would
 // otherwise pull the user out every time a check changes page.
 function renderMorningChecksBody() {
-const lastRun = loadMorningChecksLastRun();
-
 if (morningChecksResults.length === 0) {
 return `
-<div style="padding: 24px 4px; text-align: center;">
+<div class="sla-zero">
 <div style="color: #cbd5e1; margin-bottom: 12px;">${svgIcon('checklist', 40, ' stroke-width: 1.5;')}</div>
-<p style="color: var(--wb-muted, #5b6577); margin: 0 0 20px 0; font-size: 14px; line-height: 1.6;">Runs the morning checks in order: SLA Count, In Progress, Lead Type Check, All Leads Are Routed To, Voicemail and National leads, and reports each result here.</p>
-<button onclick="window._runAllMorningChecks();" style="padding: 10px 20px; background: #1e293b; color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;">Run All Checks</button>
-${renderLastRunLine(lastRun)}
+<p style="color: var(--wb-muted, #5b6577); margin: 0 0 20px 0; font-size: 13px; line-height: 1.6;">Runs the morning checks in order: SLA count, In progress, Lead type check, All leads are routed to, Voicemail and National leads, and reports each result here.</p>
+<button type="button" class="sla-pri" onclick="window._runAllMorningChecks();">Run all checks</button>
 </div>`;
 }
 
-const banner = renderMorningChecksSummaryBanner(morningChecksResults);
-const rows = morningChecksResults.map(renderMorningCheckRow).join('');
 const allDone = morningChecksResults.every(r => r.status === 'done');
+const nationalRow = morningChecksResults.find((r) => r.key === 'national');
 
 return `
-${banner}
-<div style="display: flex; flex-direction: column; gap: 8px;">
-${rows}
+${renderMorningChecksSummaryBanner(morningChecksResults)}
+<div class="sla-list">
+${morningChecksResults.map(renderMorningCheckRow).join('')}
 </div>
-<div style="margin-top: 16px; text-align: center;">
-<button onclick="window._runAllMorningChecks();" ${runningMorningChecks ? 'disabled' : ''}
-style="padding: 8px 18px; background: ${runningMorningChecks ? '#cbd5e1' : '#1e293b'}; color: white; border: none; border-radius: 8px; cursor: ${runningMorningChecks ? 'default' : 'pointer'}; font-size: 13px; font-weight: 600;">
-${runningMorningChecks ? 'Running…' : (allDone ? 'Run Again' : 'Run All Checks')}
-</button>
-${allDone && !runningMorningChecks ? `<span onclick="window._clearMorningChecks();" style="margin-left: 10px; font-size: 12px; color: var(--wb-muted, #5b6577); cursor: pointer; text-decoration: underline;">Clear</span>` : ''}
-${allDone ? renderLastRunLine(lastRun) : ''}
+${nationalRow ? renderNationalCard(nationalRow) : ''}
+<div class="sla-bar" style="justify-content: center;">
+<button type="button" class="sla-sec" onclick="window._runAllMorningChecks();" ${runningMorningChecks ? 'disabled' : ''}>${svgIcon('refresh', 13)}${runningMorningChecks ? 'Running…' : (allDone ? 'Run again' : 'Run all checks')}</button>
+${allDone && !runningMorningChecks ? `<button type="button" class="sla-txt" onclick="window._clearMorningChecks();">Clear</button>` : ''}
 </div>`;
 }
 
@@ -1417,14 +1419,16 @@ displayMorningChecks();
 };
 
 function displayMorningChecks() {
+const nationalResults = morningChecksSubView === 'national' ? loadNationalResults() : null;
+if (!nationalResults) morningChecksSubView = null;
 mountPanel(renderPanelShell({
-title: 'Morning Checks',
-count: '',
-newCount: 0,
-removedCount: 0,
+view: nationalResults ? 'national' : 'checks',
+headerMode: nationalResults ? 'national' : 'checks',
+subtitle: nationalResults ? 'National results' : 'Morning checks',
 summaryHtml: '',
 assignSectionHtml: '',
-bodyHtml: renderMorningChecksBody(),
+bodyHtml: nationalResults ? renderNationalResultsBody(nationalResults) : renderMorningChecksBody(),
+footerText: nationalResults ? `${nationalResults.length} National lead${nationalResults.length === 1 ? '' : 's'} checked` : escapeHtml(lastRunText(loadMorningChecksLastRun())),
 hideSearch: true
 }));
 }
@@ -1442,6 +1446,7 @@ if (chevron) chevron.style.transform = `rotate(${opening ? 0 : -90}deg)`;
 // there after switching views. Only a re-run replaces it.
 window._toggleMorningChecks = function() {
 if (runningMorningChecks) return;
+morningChecksSubView = null;
 if (currentPanelMode === 'morningChecks') {
 currentPanelMode = 'normal';
 // The page showing now decides which panel comes back, not the page the
@@ -1823,55 +1828,122 @@ if (!skipRestore) window.location.hash = originalHash;
 }
 };
 
-function nationalButtonStyle(primary) {
-return `padding: 6px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; cursor: pointer; border: 1px solid ${primary ? '#1e293b' : 'var(--wb-border, #cbd5e1)'}; background: ${primary ? '#1e293b' : 'var(--wb-surface, #fff)'}; color: ${primary ? '#fff' : 'var(--wb-text, #1c1c1e)'};`;
+// Which National leads need dealing with: set up again, waiting for a
+// decision, or already decided by hand.
+function nationalFlagged(results) {
+return results.filter((r) => r.Verdict === RE_SETUP || r.Verdict === 'Check' || r.Decision);
 }
 
-// Extra block under the National leads row: the handoff buttons and,
-// once pasted back, the Lead Checker's verdicts.
-function renderNationalRowExtras(row) {
+function renderNationalCountChips(results, asFilters) {
+const counts = countNationalVerdicts(results);
+const tone = { [RE_SETUP]: 'bad', Check: 'warn', OK: 'ok' };
+const filter = { [RE_SETUP]: 'rs', Check: 'ck' };
+return NATIONAL_VERDICTS.map((v) => {
+const text = `${escapeHtml(v)} ${counts[v] || 0}`;
+return asFilters && filter[v]
+? `<button type="button" class="sla-chip ${tone[v] || ''}" aria-pressed="false" data-filter="${filter[v]}" onclick="window._filterNationalResults(this)" title="Show only these">${text}</button>`
+: `<span class="sla-chip ${tone[v] || ''}">${text}</span>`;
+}).join('');
+}
+
+// The card under the morning checks list: the handoff buttons and, once the
+// Lead Checker's verdicts are back, the counts and the way in to them.
+function renderNationalCard(row) {
 if (row.status !== 'done') return '';
 const results = loadNationalResults();
-const buttons = `
-<div style="display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px;">
-${row.nationalBatchTsv ? `<button type="button" onclick="window._sendToLeadChecker(this, 'national')" style="${nationalButtonStyle(true)}" title="Opens Konnect Live and sends the batch to the Lead Checker; the results come back here">Send to Lead Checker</button><button type="button" onclick="window._copyNationalBatch(this)" style="${nationalButtonStyle(false)}">Copy instead</button>` : ''}
-<button type="button" onclick="window._pasteNationalResults(this)" style="${nationalButtonStyle(false)}">Paste National results</button>
+const flagged = results ? nationalFlagged(results).length : 0;
+const sendClass = results ? 'sla-sec' : 'sla-pri';
+return `<div class="sla-card">
+<div class="sla-bar"><b class="sla-grow">National leads</b>${results ? `<span class="sla-small">${results.length} checked</span>` : ''}</div>
+${results ? `<div class="sla-cf">${renderNationalCountChips(results, false)}</div>` : ''}
+<div class="sla-bar">
+${results ? `<button type="button" class="sla-pri" onclick="window._showNationalResults(true)" ${flagged ? '' : 'disabled'}>${flagged ? `See the ${flagged} to deal with` : 'None to deal with'}</button>` : ''}
+${row.nationalBatchTsv ? `<button type="button" class="${sendClass}" onclick="window._sendToLeadChecker(this, 'national')" title="Opens Konnect Live and sends the batch to the Lead Checker; the results come back here">Send to Lead Checker</button><button type="button" class="sla-sec" onclick="window._copyNationalBatch(this)">Copy instead</button>` : ''}
+<button type="button" class="sla-sec" onclick="window._pasteNationalResults(this)">Paste National results</button>
+</div>
 </div>`;
-if (!results) return buttons;
-const counts = countNationalVerdicts(results);
-const countLine = NATIONAL_VERDICTS.map((v) => `${escapeHtml(v)}: ${counts[v] || 0}`).join(' &middot; ');
-const flagged = results.filter((r) => r.Verdict === RE_SETUP || r.Verdict === 'Check' || r.Decision);
+}
+
+// The National results view: Re setup leads as two line rows with their
+// state as a tag, each lead waiting for a decision as a card with the reason,
+// the note it was decided on, the why box and the two answers.
+function renderNationalResultsBody(results) {
 const resetProgress = loadLeadResetProgress();
-const list = flagged.map((r) => {
+const flagged = nationalFlagged(results);
+const outcomeLine = (r) => `Lead ${escapeHtml(r.ActivityID)}${r.FinalOutcome ? ` &middot; Final outcome: ${escapeHtml(r.FinalOutcome)}` : ''}`;
+const notesText = (r) => (r.FollowUpNotes ? `${r.FollowUpNotes.slice(0, 160)}${r.FollowUpNotes.length > 160 ? '…' : ''}` : '');
+const decidedLine = (r) => {
 // Keyed by ActivityID, not position: results arriving in parts move rows.
 const activity = escapeHtml(r.ActivityID);
-const resetStatus = resetProgress[r.ActivityID];
-const decided = r.Decision ? `<div style="color: var(--wb-muted, #5b6577);">Checked by hand: ${escapeHtml(r.Decision)}${r.DecisionNote ? ` (${escapeHtml(r.DecisionNote)})` : ''} <button type="button" data-activity="${activity}" onclick="window._undoNationalDecision(this.dataset.activity)" style="${nationalButtonStyle(false)} padding: 1px 8px;">Undo</button></div>` : '';
-const decide = r.Verdict === 'Check' && !r.Decision ? `
-<div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px;">
-<input type="text" id="_slaNatNote_${activity}" data-national-note="${activity}" placeholder="Why (optional, helps me add a rule)" aria-label="Why" style="flex: 1 1 100%; min-width: 0; box-sizing: border-box; padding: 4px 8px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; font-size: 11.5px;">
-<button type="button" data-activity="${activity}" onclick="window._decideNational(this.dataset.activity, 'Valid')" style="${nationalButtonStyle(false)}">Valid</button>
-<button type="button" data-activity="${activity}" onclick="window._decideNational(this.dataset.activity, '${RE_SETUP}')" style="${nationalButtonStyle(true)}">Needs re setup</button>
-</div>` : '';
-const notes = r.FollowUpNotes ? `<div style="color: var(--wb-muted, #5b6577);">Notes: ${escapeHtml(r.FollowUpNotes.slice(0, 160))}${r.FollowUpNotes.length > 160 ? '…' : ''}</div>` : '';
-return `
-<div style="border: 1px solid var(--wb-border, #e2e8f0); border-left: 3px solid ${r.Verdict === RE_SETUP ? '#dc2626' : '#d97706'}; border-radius: 6px; padding: 6px 8px; margin-top: 6px; font-size: 12px; line-height: 1.45; color: var(--wb-text, #1c1c1e);">
-<div><strong>${escapeHtml(r.Verdict)}</strong>: ${escapeHtml(r.Customer)} <span style="color: var(--wb-muted, #5b6577);">(lead ${escapeHtml(r.ActivityID)})</span></div>
-<div>${escapeHtml(r.Reason)}</div>
-${r.FinalOutcome ? `<div style="color: var(--wb-muted, #5b6577);">Final outcome: ${escapeHtml(r.FinalOutcome)}</div>` : ''}
-${notes}
-${r.Verdict === RE_SETUP ? (resetStatus
-? `<div style="color: ${resetStatus === 'Done' ? '#047857' : 'var(--wb-muted, #5b6577)'}; font-weight: 600;">${resetStatus === 'Done' ? 'Set up again' : 'Skipped'} in Lead Re setup</div>`
-: `<div style="color: var(--wb-muted, #5b6577);">Not set up again yet: use Lead Re setup on the agent desktop${r.ResetCampaign ? ` (${escapeHtml(r.ResetCampaign)})` : ''}.</div>`) : ''}
-${decided}${decide}
+return r.Decision ? `<dt>By hand</dt><dd>${escapeHtml(r.Decision)}${r.DecisionNote ? ` (${escapeHtml(r.DecisionNote)})` : ''} <button type="button" class="sla-sec tight" data-activity="${activity}" onclick="window._undoNationalDecision(this.dataset.activity)">Undo</button></dd>` : '';
+};
+const row = (r, tagHtml, progressText) => `<div class="sla-r">
+<span class="sla-av ${r.Verdict === RE_SETUP ? 'red' : ''}" aria-hidden="true">${escapeHtml(initialsFor(r.Customer))}</span>
+<div class="sla-rmain" onclick="window._toggleCustomerContact(this)" aria-expanded="false" title="Show or hide details">
+<span class="sla-nm"><i>${escapeHtml(r.Customer)}</i></span>
+${tagHtml}
+<span class="sla-meta">${escapeHtml(r.Reason)}</span>
+</div>
+<dl class="contact-details" style="display: none;">
+<dt>Lead</dt><dd>${escapeHtml(r.ActivityID)}</dd>
+${r.FinalOutcome ? `<dt>Final outcome</dt><dd>${escapeHtml(r.FinalOutcome)}</dd>` : ''}
+${notesText(r) ? `<dt>Notes</dt><dd>${escapeHtml(notesText(r))}</dd>` : ''}
+${progressText ? `<dt>Progress</dt><dd>${progressText}</dd>` : ''}
+${decidedLine(r)}
+</dl>
 </div>`;
-}).join('');
+
+const reSetup = flagged.filter((r) => r.Verdict === RE_SETUP).map((r) => {
+const status = resetProgress[r.ActivityID];
+const tag = status === 'Done' ? '<span class="sla-tag done">Set up again</span>' : (status ? '<span class="sla-tag wait">Skipped</span>' : '<span class="sla-tag bad">To do</span>');
+const progress = status
+? `${status === 'Done' ? 'Set up again' : 'Skipped'} in Lead Re setup`
+: `Not set up again yet: use Lead Re setup on the agent desktop${r.ResetCampaign ? ` (${escapeHtml(r.ResetCampaign)})` : ''}.`;
+return row(r, tag, progress);
+});
+const toDecide = flagged.filter((r) => r.Verdict === 'Check' && !r.Decision).map((r) => {
+const activity = escapeHtml(r.ActivityID);
+return `<div class="sla-review">
+<div class="sla-bar"><span class="sla-av amb" aria-hidden="true">${escapeHtml(initialsFor(r.Customer))}</span><b class="sla-grow">${escapeHtml(r.Customer)}</b><span class="sla-tag warn">Check</span></div>
+<div>${escapeHtml(r.Reason)}</div>
+${notesText(r) ? `<div class="sla-quote">${escapeHtml(notesText(r))}</div>` : ''}
+<div class="sla-small">${outcomeLine(r)}</div>
+<input type="text" id="_slaNatNote_${activity}" data-national-note="${activity}" placeholder="Why (optional, helps me add a rule)" aria-label="Why">
+<div class="sla-bar">
+<button type="button" class="sla-pri" data-activity="${activity}" onclick="window._decideNational(this.dataset.activity, '${RE_SETUP}')">Needs re setup</button>
+<button type="button" class="sla-sec" data-activity="${activity}" onclick="window._decideNational(this.dataset.activity, 'Valid')">Valid</button>
+</div>
+</div>`;
+});
+const decidedValid = flagged.filter((r) => r.Decision && r.Verdict !== RE_SETUP && r.Verdict !== 'Check').map((r) => row(r, '<span class="sla-tag done">Valid</span>', ''));
+const group = (key, title, count, inner) => (count ? `<div class="sla-g" data-ng="${key}"><div class="sla-grp">${title} <span>${count}</span></div>${inner}</div>` : '');
 const decisions = results.filter((r) => r.Decision).length;
-return `${buttons}
-<div style="margin-top: 8px; font-size: 11px; color: var(--wb-text, #1c1c1e);">${countLine}</div>
-${list}
-${decisions ? `<button type="button" onclick="window._copyNationalDecisions(this)" style="${nationalButtonStyle(false)} margin-top: 8px;">Copy my decisions (${decisions}) for new rules</button>` : ''}`;
+
+return `
+<div class="sla-cf">${renderNationalCountChips(results, true)}</div>
+<div id="_slaNationalList" class="sla-col" style="gap: 10px;" data-nf="">
+${group('rs', 'Re setup', reSetup.length, `<div class="sla-list">${reSetup.join('')}</div>`)}
+${group('ck', 'Check', toDecide.length, toDecide.join(''))}
+${group('ck', 'Checked by hand: valid', decidedValid.length, `<div class="sla-list">${decidedValid.join('')}</div>`)}
+${flagged.length ? '' : '<div class="sla-small">Nothing to deal with.</div>'}
+</div>
+${decisions ? `<button type="button" class="sla-sec" style="align-self: flex-start;" onclick="window._copyNationalDecisions(this)">Copy my decisions (${decisions}) for new rules</button>` : ''}`;
 }
+
+// A count chip shows only its own leads; pressing it again shows all.
+window._filterNationalResults = function(chip) {
+const list = document.getElementById('_slaNationalList');
+if (!list) return;
+const on = chip.getAttribute('aria-pressed') !== 'true';
+chip.parentElement.querySelectorAll('button[data-filter]').forEach((el) => el.setAttribute('aria-pressed', 'false'));
+chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+list.dataset.nf = on ? chip.dataset.filter : '';
+};
+
+window._showNationalResults = function(show) {
+morningChecksSubView = show ? 'national' : null;
+displayMorningChecks();
+};
 
 // Lead Re setup is on the same site and records what it did per lead.
 function loadLeadResetProgress() {
@@ -2302,12 +2374,6 @@ if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
 return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-// The avatar colour is the row's dominant status colour, so it signals the
-// most urgent thing about the lead before the badge is read.
-function renderAvatarCircle(name, colorHex, size) {
-return `<div class="avatar-circle" style="cursor: pointer; width: ${size}px; height: ${size}px; border-radius: 50%; background: ${colorHex}; color: white; font-size: ${Math.round(size * 0.4)}px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">${escapeHtml(initialsFor(name))}</div>`;
-}
-
 // Order matters: Post-Closure "send back through" and a queue mismatch (both
 // "do not just assign this") outrank an SLA timer, which outranks a note.
 // The Konnect Notes shorthand for each send back reason (CAD dealer acted,
@@ -2332,52 +2398,10 @@ return { label: leadChecker.tierName, color: leadCheckerImportCategoryColor(lead
 return null;
 }
 
-// A queue mismatch outranks urgency: "this may be rejected" is more
-// actionable. The plain "Nth in queue" case goes to the secondary line.
-function pickUrgencyBadge(urgency, queuePosition, assigned) {
-if (queuePosition && !assigned) {
-return { label: `Already in ${queuePosition.agentName}'s queue`, color: '#b45309', source: 'queue' };
-}
-if (urgency && urgency.label) {
-return { label: urgency.label, color: urgency.color, source: 'urgency' };
-}
-return null;
-}
-
-// The muted line under the badges holds whichever urgency or queue signal
-// did not win the second badge slot.
-function buildSecondaryLine(urgencyBadge, urgency, queuePosition, assigned) {
-const parts = [];
-if (urgency && urgency.label && urgencyBadge?.source !== 'urgency') parts.push(urgency.label);
-if (queuePosition && assigned) parts.push(`${ordinal(queuePosition.position)} in queue`);
-return parts.filter(Boolean).join(' &middot; ');
-}
-
-function renderCopyableField(value) {
-if (!value) {
-return `<span style="padding: 4px 6px; border-radius: 6px; background: #e2e8f0; color: var(--wb-muted, #5b6577); display: inline-block; font-size: 13px;">N/A</span>`;
-}
-const display = escapeHtml(value);
-return `<span class="sla-copyable" data-value="${display}" style="cursor: pointer; padding: 4px 6px; border-radius: 6px; background: #eef2ff; color: #1e293b; display: inline-block; font-size: 13px;">${display}</span>`;
-}
-
-// Contact details are collapsed by default: they matter when making contact,
-// not when scanning the list. Toggled via nextElementSibling since cards have
-// no natural unique id.
-function renderContactToggle(gridInnerHtml) {
-return `
-<div class="contact-toggle" onclick="window._toggleCustomerContact(this)" style="cursor: pointer; display: flex; align-items: center; gap: 4px; font-size: 11px; color: #4338ca; margin-bottom: 8px;">
-${svgIcon('chevron', 12, ' transition: transform 0.15s ease; transform: rotate(-90deg);')} Contact details
-</div>
-<div class="contact-details" style="display: none; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 10px;">
-${gridInnerHtml}
-</div>`;
-}
-
 function renderAssignmentBadge(assigned, agentName) {
 return assigned
-? `<span style="background: #d1fae5; color: #059669; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; white-space: nowrap; flex-shrink: 0;">✓ ${escapeHtml(agentName || 'Assigned')}</span>`
-: `<span style="background: #f8fafc; color: var(--wb-muted, #5b6577); padding: 2px 8px; border-radius: 6px; font-size: 11px; white-space: nowrap; flex-shrink: 0;">Unassigned</span>`;
+? `<span class="sla-tag done">${escapeHtml(agentName || 'Assigned')}</span>`
+: `<span class="sla-tag wait">Unassigned</span>`;
 }
 
 // Assigns one lead immediately on change. Handled by a delegated listener
@@ -2387,11 +2411,9 @@ function renderManualAssignPicker(leadKey, pageType) {
 const agents = getAgentRoster();
 if (agents.length === 0) return renderAssignmentBadge(false, null);
 const options = agents.map(a => `<option value="${escapeHtml(a.id)}">${escapeHtml(a.name)}</option>`).join('');
-// Same shape as renderAssignmentBadge, but blue rather than the green used
-// for batch actions, so a one-lead override reads differently.
 return `<select class="manual-assign-select" data-lead-key="${escapeHtml(leadKey)}" data-page-type="${pageType}"
-style="font-size: 11px; font-weight: 600; padding: 2px 8px; border: 1px solid #c7d2fe; border-radius: 6px; background: #eef2ff; color: #4338ca; max-width: 140px; flex-shrink: 0; cursor: pointer;">
-<option value="" selected disabled>Assign to…</option>
+style="cursor: pointer;" aria-label="Assign to">
+<option value="" selected disabled>Choose an agent</option>
 ${options}
 </select>`;
 }
@@ -2656,7 +2678,13 @@ check('missed only', names({ missedOnly: true }), ['missed']);
 check('tier filter', names({ tiers: new Set([4]) }), ['tier 4']);
 check('tier counts in a window match the run', computeSlaTierCounts(leads, 15), [0, 2, 0, 1]);
 check('tier counts with no window count every unassigned lead', computeSlaTierCounts(leads, null), [0, 4, 0, 1]);
-check('time past in plain words', [45, 60, 71, 120].map(formatMinutesAgo), ['45m', '1h', '1h 11m', '2h']);
+check('time past in plain words', [45, 60, 71, 120].map(formatDueMinutes), ['45 min', '1 h', '1 h 11 min', '2 h']);
+const dueNow = Date.now();
+const dueAt = (mins, status) => slaDueDisplay({ slaDate: new Date(dueNow + mins * 60000), status: status || 'Pending' }, dueNow);
+check('the time on a row: missed and under 15 minutes red, within the hour amber, later grey', [dueAt(-65, 'Missed'), dueAt(8), dueAt(21), dueAt(187)].map((d) => `${d.text}|${d.tone}`), ['Missed 1 h 5 min|bad', '8 min|bad', '21 min|warn', '3 h 7 min|mut']);
+check('campaign on the grey line', ['Peugeot - Test Drive Request - New (pcr_new_test_drive)', 'Citroen - Enquiry - New (Test drive request)', 'Motability', 'Citroen - Electric'].map(shortCampaign), ['Peugeot Test Drive Request, New', 'Citroen Enquiry, New (Test drive request)', 'Motability', 'Citroen Electric']);
+check('tier names read in sentence case', ['DATE ONLY', 'Date and time', ''].map(sentenceCase), ['Date only', 'Date and time', '']);
+check('the folded tiers row', [[1, 2, 3, 4], [1, 3], []].map((s) => tierFilterLabel(new Set(s))), ['Tiers: all four', 'Tiers: 1, 3', 'Tiers: none']);
 check('an unreadable date is null, not a guess', [parseKonnectDate('soon'), parseKonnectDate('') === null, parseKonnectDate('Tue, 18 Aug 2026 09:15').getHours()], [null, true, 9]);
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager due-filter self-test FAILED:\n' + failures.join('\n'));
@@ -3048,30 +3076,197 @@ function ensureWheelStyles() {
 if (document.getElementById('_slaWheelStyles')) return;
 const style = document.createElement('style');
 style.id = '_slaWheelStyles';
-// Filter toggles are styled as chips via :has(), keeping a real checkbox
-// inside so every :checked query still works. The input is hidden with
-// opacity and size, not display:none, so it stays focusable.
-style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #4f46e5; outline-offset: -1px; } .stat-tile-clickable:hover { background: #eef2ff !important; border-color: #4338ca !important; } .stat-tile-clickable:active { transform: translateY(1px); box-shadow: none !important; } .chip-label { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 14px; border: 1px solid var(--wb-border, #cbd5e1); background: var(--wb-surface, white); color: var(--wb-muted, #5b6577); font-size: 12px; cursor: pointer; user-select: none; transition: background 0.15s, border-color 0.15s, color 0.15s; } .chip-label input { position: absolute; opacity: 0; width: 0; height: 0; } .chip-label:has(input:checked) { background: #eef2ff; border-color: #4f46e5; color: #4338ca; font-weight: 600; } .lead-row-card { background: var(--wb-surface, white); border-radius: 14px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); overflow: hidden; } .avatar-circle:hover { filter: brightness(0.92); }';
+style.textContent = '.wheel-scroll::-webkit-scrollbar { display: none; } .wheel-scroll:focus { outline: 2px solid #3f3ad6; outline-offset: -1px; }';
 document.head.appendChild(style);
 ensurePanelThemeStyles();
 }
 
-// Shared tokens (same names as the Lead Checker panel), a visible keyboard focus ring, reduced motion and a width cap
-// so the panel never runs off a narrow window.
+// One stylesheet for the whole panel, scoped to the panel's own ids so the
+// host page's styles and ours do not leak into each other. The resets use
+// :where() so any class rule below wins over them. Token names match the
+// Lead Checker panel. Tier colours are set inline from the shared colour map.
 function ensurePanelThemeStyles() {
 if (document.getElementById('_slaThemeStyles')) return;
 const style = document.createElement('style');
 style.id = '_slaThemeStyles';
+const P = `#${PANEL_ID}`;
+const B = `#${PANEL_BOX_ID}`;
 style.textContent = `
-#${PANEL_ID} { --wb-bg: #f2f2f7; --wb-surface: #ffffff; --wb-text: #1c1c1e; --wb-muted: #5b6577; --wb-border: #cbd5e1; --wb-accent: #22365D; --wb-danger: #dc2626; color: var(--wb-text); }
-#${PANEL_ID} :focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; box-shadow: 0 0 0 4px #ffffff; }
-#${PANEL_BOX_ID} { max-width: calc(100vw - 32px); }
-#${PANEL_BOX_ID} button, #${PANEL_BOX_ID} input, #${PANEL_BOX_ID} select, #${PANEL_BOX_ID} textarea { font-family: inherit; line-height: inherit; }
-#_slaAvatarAssignPopover button, #_slaAvatarAssignPopover select { font-family: inherit; line-height: inherit; }
-#leadCheckerPopover { max-width: calc(100vw - 64px); box-sizing: border-box; }
-#_slaAvatarAssignPopover { max-width: calc(100vw - 16px); }
+${P} { --wb-bg: #f2f2f7; --wb-surface: #ffffff; --wb-text: #1c1c1e; --wb-muted: #5b6577; --wb-border: #dfe3ea; --wb-accent: #3f3ad6; --wb-danger: #c62828;
+--sla-hd: #1e2a52; --sla-tint: #eceaff; --sla-bad-t: #fde8e8; --sla-warn: #a85a00; --sla-warn-t: #fdf0dc; --sla-ok: #047857; --sla-ok-t: #dff5ec; --sla-info: #1d4ed8; --sla-info-t: #e3ebfd; --sla-vio: #6d28d9; --sla-vio-t: #efe7fd; color: var(--wb-text); }
+${P} :focus-visible { outline: 2px solid #1d4ed8; outline-offset: 2px; }
+${P} .sla-hd :focus-visible { outline-color: #ffffff; }
+${P} *, ${P} *::before, ${P} *::after { box-sizing: border-box; }
+${P} [hidden] { display: none !important; }
+${B} { position: fixed; z-index: 100000; display: flex; flex-direction: column; overflow: hidden; background: var(--wb-bg); box-shadow: 0 14px 34px rgba(15,23,42,0.22);
+font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 13px; font-weight: 400; font-style: normal; line-height: 1.4; letter-spacing: normal; text-align: left; text-transform: none; color: var(--wb-text);
+transition: transform 0.3s ease; max-width: calc(100vw - 32px); }
+${B}[data-size="standard"] { right: 20px; bottom: 20px; width: 440px; height: calc(100vh - 90px); border-radius: 16px; }
+${B}[data-size="compact"] { right: 20px; bottom: 20px; width: 424px; height: min(560px, calc(100vh - 90px)); border-radius: 16px; }
+${B}[data-size="full"] { top: 0; right: 0; bottom: 0; width: 812px; height: 100vh; border-radius: 0; }
+:where(${P}) button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: pointer; text-align: inherit; text-transform: none; letter-spacing: normal; }
+:where(${P}) label { font-weight: inherit; margin: 0; max-width: none; }
+:where(${P}) input, :where(${P}) select, :where(${P}) textarea { font-family: inherit; line-height: inherit; }
+:where(${P}) input[type="checkbox"] { accent-color: var(--wb-accent); margin: 0; width: 14px; height: 14px; flex: none; }
+:where(${P}) input[type="text"], :where(${P}) input[type="number"], :where(${P}) textarea, :where(${P}) select { font-size: inherit; color: var(--wb-text); background: var(--wb-surface); border: 1px solid var(--wb-border); border-radius: 10px; padding: 7px 10px; height: auto; box-shadow: none; }
+${P} svg { flex: none; }
+${P} .sla-hd { background: var(--sla-hd); color: #ffffff; display: flex; align-items: center; gap: 4px; padding: 9px 8px 9px 12px; flex: none; }
+${P} .sla-name { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; white-space: nowrap; font-weight: 700; font-size: 13.5px; }
+${P} .sla-ttl { display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; padding: 2px 5px; margin-left: -5px; font-weight: 700; }
+${P} button.sla-ttl:hover { background: rgba(255,255,255,0.16); }
+${P} .sla-ttl svg { opacity: 0.7; }
+${P} .sla-sub { font-weight: 500; opacity: 0.75; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+${P} .sla-hbtn { display: inline-flex; align-items: center; gap: 5px; color: #ffffff; background: rgba(255,255,255,0.14); border-radius: 8px; padding: 5px 8px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+${P} .sla-hbtn:hover { background: rgba(255,255,255,0.24); }
+${P} .sla-hbtn.quiet { background: transparent; }
+${P} .sla-hbtn.quiet:hover, ${P} .sla-hbtn[aria-expanded="true"] { background: rgba(255,255,255,0.24); }
+${B}[data-sub="send"] .sla-when-main, ${B}:not([data-sub="send"]) .sla-when-send { display: none; }
+${P} .sla-link { display: flex; align-items: center; gap: 7px; padding: 6px 12px; background: var(--wb-surface); border-bottom: 1px solid var(--wb-border); font-size: 12px; color: var(--wb-muted); min-height: 31px; flex: none; }
+${P} .sla-link[data-state="loggedOut"] { background: var(--sla-bad-t); color: var(--wb-danger); font-weight: 600; }
+${P} .sla-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--sla-ok); flex: none; display: inline-block; }
+${P} .sla-dot.off { background: #8a93a3; } ${P} .sla-dot.busy { background: var(--sla-info); } ${P} .sla-dot.warn { background: #d98200; } ${P} .sla-dot.bad { background: var(--wb-danger); } ${P} .sla-dot.none { background: #cbd5e1; }
+${P} .sla-grow { flex: 1; min-width: 0; }
+${P} .sla-prog { height: 6px; border-radius: 3px; background: var(--wb-border); overflow: hidden; display: block; }
+${P} .sla-prog i { display: block; height: 100%; background: var(--sla-info); }
+${P} .sla-main { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+${P} #_slaTopArea { flex: 0 1 auto; min-height: 0; overflow-y: auto; padding: 10px 12px 2px; display: flex; flex-direction: column; gap: 10px; }
+${P} #_slaTopArea > *, ${P} .panelContent > * { flex: none; }
+${P} .panelContent { flex: 1 1 160px; min-height: min(160px, 30vh); overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+${B}[data-size="full"] .sla-main.two { display: grid; grid-template-columns: 280px minmax(0, 1fr); }
+${B}[data-size="full"] .sla-main.two #_slaTopArea { padding: 10px 0 10px 12px; }
+${B}[data-size="full"] .sla-main.two .panelContent { min-height: 0; }
+${P} #_slaSearchBar { position: sticky; top: -10px; z-index: 2; background: var(--wb-bg); margin: -10px -12px -4px; padding: 10px 12px 4px; }
+${P} #_slaSearchBar input { width: 100%; }
+${P} .sla-ft { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 7px 12px; background: var(--wb-surface); border-top: 1px solid var(--wb-border); font-size: 11.5px; color: var(--wb-muted); flex: none; min-height: 31px; }
+${P} .sla-ft button { font-weight: 600; color: var(--wb-accent); display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+${P} .sla-col { display: flex; flex-direction: column; gap: 8px; }
+${P} .sla-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+${P} .sla-card { background: var(--wb-surface); border-radius: 12px; padding: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); display: flex; flex-direction: column; gap: 8px; }
+${P} .sla-small { font-size: 11.5px; color: var(--wb-muted); }
+${P} .sla-lbl { font-size: 11.5px; font-weight: 700; color: var(--wb-muted); }
+${P} .sla-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+${B}[data-size="full"] .sla-tiles, ${P} .sla-tiles.two { grid-template-columns: repeat(2, 1fr); }
+${P} .sla-tile { background: var(--wb-surface); border: 1px solid var(--wb-border); border-radius: 10px; padding: 6px 4px; text-align: center; }
+${P} .sla-tile:hover { border-color: var(--wb-accent); }
+${P} .sla-tile:active { transform: translateY(1px); }
+${P} .sla-tile b { display: block; font-size: 17px; line-height: 1.1; font-weight: 700; }
+${P} .sla-tile span { font-size: 11px; color: var(--wb-muted); }
+${P} .sla-tile.bad { border-color: #efb4b4; } ${P} .sla-tile.bad b { color: var(--wb-danger); } ${P} .sla-tile.warn b { color: var(--sla-warn); }
+${P} .sla-cf { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 11.5px; color: var(--wb-muted); }
+${P} .sla-chip { display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 2px 9px; font-size: 11.5px; font-weight: 600; background: var(--wb-surface); border: 1px solid var(--wb-border); color: var(--wb-text); white-space: nowrap; }
+${P} button.sla-chip:hover { border-color: var(--wb-accent); }
+${P} button.sla-chip[aria-pressed="true"] { background: var(--wb-text); color: #ffffff; border-color: var(--wb-text); }
+${P} .sla-chip.vio { background: var(--sla-vio-t); border-color: transparent; color: var(--sla-vio); }
+${P} .sla-chip.warn { background: var(--sla-warn-t); border-color: transparent; color: var(--sla-warn); }
+${P} .sla-chip.ok { background: var(--sla-ok-t); border-color: transparent; color: var(--sla-ok); }
+${P} .sla-chip.bad { background: var(--sla-bad-t); border-color: transparent; color: var(--wb-danger); }
+${P} .sla-chip.eo { background: #e6e9f0; border-color: transparent; color: #2b3445; }
+${P} button.sla-chip.eo[aria-pressed="true"] { background: #2b3445; color: #ffffff; }
+${P} .chip-label { display: inline-flex; align-items: center; gap: 4px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--wb-border); background: var(--wb-surface); color: var(--wb-text); font-size: 11.5px; font-weight: 600; cursor: pointer; user-select: none; white-space: nowrap; }
+${P} .chip-label input { position: absolute; opacity: 0; width: 0; height: 0; }
+${P} .chip-label:hover { border-color: var(--wb-accent); }
+${P} .chip-label:has(input:checked) { background: var(--wb-text); border-color: var(--wb-text); color: #ffffff; }
+${P} .chip-label:has(input:focus-visible) { outline: 2px solid #1d4ed8; outline-offset: 2px; }
+${P} .sla-tabs { display: flex; background: #e5e5ea; border-radius: 10px; padding: 3px; gap: 3px; }
+${P} .sla-tabs button { flex: 1; text-align: center; font-weight: 600; font-size: 12px; padding: 6px 4px; border-radius: 8px; color: var(--wb-muted); white-space: nowrap; }
+${P} .sla-tabs button[aria-selected="true"] { background: var(--wb-surface); color: var(--wb-text); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+${B}[data-size="compact"] .sla-tabs, ${B}[data-size="compact"] #_slaTodaySummary { display: none; }
+${B}[data-size="compact"] #assignSectionBody { display: flex !important; }
+${B}[data-size="compact"] #filtersZoneBody { display: none !important; }
+${P} .sla-pri { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: var(--wb-accent); color: #ffffff; font-weight: 700; font-size: 12.5px; border-radius: 999px; padding: 8px 14px; white-space: nowrap; text-align: center; }
+${P} .sla-pri:hover { filter: brightness(1.08); }
+${P} .sla-pri:disabled { background: #d9dce3; color: #6b7280; cursor: default; filter: none; }
+${P} .sla-pri.running { background: #b4530a; white-space: normal; }
+${P} .sla-pri.wide { width: 100%; padding: 10px 14px; font-size: 13.5px; }
+${P} .sla-sec { display: inline-flex; align-items: center; justify-content: center; gap: 5px; background: var(--wb-surface); border: 1px solid #c5cbd6; color: var(--wb-text); font-weight: 600; font-size: 12px; border-radius: 999px; padding: 6px 11px; white-space: nowrap; }
+${P} .sla-sec:hover { border-color: var(--wb-accent); }
+${P} .sla-sec:disabled { opacity: 0.5; cursor: default; }
+${P} .sla-sec.caution { color: var(--wb-danger); border-color: #e2b6b6; }
+${P} .sla-sec.caution:hover { border-color: var(--wb-danger); }
+${P} .sla-sec.tight { padding: 2px 8px; }
+${P} .sla-txt { font-weight: 600; font-size: 12px; color: var(--wb-accent); text-decoration: underline; text-underline-offset: 2px; }
+${P} .sla-chev { transition: transform 0.15s ease; }
+${P} [aria-expanded="true"] > .sla-chev { transform: rotate(180deg); }
+${P} .sla-agsum { display: flex; align-items: center; gap: 6px; flex-wrap: nowrap; }
+${P} .sla-agsum .sla-sec { gap: 3px; }
+${P} .sla-agents { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; max-height: 150px; overflow-y: auto; padding: 1px; }
+${P} .sla-agents label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+${P} .sla-agents b { margin-left: auto; color: var(--wb-muted); font-weight: 600; }
+${P} .sla-ckl { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; flex-wrap: wrap; }
+${P} .sla-ckl select, ${P} .sla-eo select { width: auto; padding: 3px 6px; }
+${P} .sla-agentsOnly { display: none; }
+${B}[data-size="compact"] .sla-wideonly { display: none; }
+${B}[data-size="full"] .sla-main.two #_slaTodaySummary { background: var(--wb-surface); border-radius: 12px; padding: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+${B}[data-size="full"] .sla-agentsToggle { display: none; }
+${B}[data-size="full"] .sla-agentsOnly { display: inline; font-weight: 700; font-size: 12.5px; }
+${B}[data-size="full"] #assignAgentPane { display: flex !important; }
+${B}[data-size="full"] .sla-runbar { flex-direction: column-reverse; align-items: stretch; }
+${B}[data-size="full"] .sla-runbar .sla-pri { width: 100%; padding: 10px 14px; font-size: 13.5px; }
+${P} .sla-tierl { display: grid; gap: 5px; }
+${P} .sla-tierl label { display: grid; grid-template-columns: auto 1fr; gap: 0 7px; align-items: start; cursor: pointer; font-size: 12.5px; }
+${P} .sla-tierl input { margin-top: 2px; }
+${P} .sla-tierl small { display: block; color: var(--wb-muted); font-size: 11.5px; }
+${P} #assignHistoryPanel { background: var(--wb-bg); border-radius: 8px; padding: 8px; font-size: 11.5px; }
+${P} #assignResultsLog { font-size: 11.5px; color: var(--wb-muted); max-height: 100px; overflow-y: auto; }
+${P} #assignResultsLog:empty, ${P} #assignResultsSummary:empty, ${P} #bookingExportRowCount:empty { display: none; }
+${P} .sla-g { display: flex; flex-direction: column; gap: 6px; }
+${P} .sla-grp { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 700; font-size: 12.5px; padding: 2px 2px 0; width: 100%; }
+${P} .sla-grp span { color: var(--wb-muted); font-weight: 500; }
+${P} button.sla-grp[aria-expanded="false"] { opacity: 0.7; }
+${P} .sla-list { background: var(--wb-surface); border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+${P} .sla-r { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 9px; align-items: center; padding: 8px 10px; }
+${P} .sla-r + .sla-r { border-top: 1px solid var(--wb-border); }
+${P} .sla-rmain { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; min-width: 0; width: 100%; border-radius: 6px; cursor: pointer; }
+${P} .sla-nm { font-weight: 600; white-space: nowrap; overflow: hidden; display: flex; gap: 6px; align-items: center; min-width: 0; }
+${P} .sla-nm i { font-style: normal; overflow: hidden; text-overflow: ellipsis; cursor: copy; }
+${P} .sla-meta { grid-column: 1 / 3; font-size: 11.5px; color: var(--wb-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+${P} .sla-rmain[aria-expanded="true"] .sla-meta { white-space: normal; }
+${P} .contact-details { grid-column: 2; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--wb-border); font-size: 12px; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; align-items: baseline; }
+${P} .contact-details dt, ${P} .sla-kv dt { color: var(--wb-muted); font-weight: 400; }
+${P} .contact-details dd, ${P} .sla-kv dd { margin: 0; overflow-wrap: anywhere; }
+${P} .sla-kv { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; margin: 0; font-size: 12px; }
+${P} .sla-copyable { cursor: copy; }
+${P} dd .sla-copyable { border-radius: 5px; padding: 0 4px; margin-left: -4px; background: var(--sla-tint); display: inline-block; }
+${P} .sla-due { font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+${P} .sla-due.bad { color: var(--wb-danger); } ${P} .sla-due.warn { color: var(--sla-warn); } ${P} .sla-due.mut { color: var(--wb-muted); font-weight: 600; }
+${P} .sla-tag { font-size: 10.5px; font-weight: 700; border-radius: 6px; padding: 1px 6px; white-space: nowrap; flex: none; background: color-mix(in srgb, var(--tc, #64748b) 15%, #ffffff); color: color-mix(in srgb, var(--tc, #64748b) 72%, #000000); }
+${P} .sla-tag.done { background: var(--sla-ok-t); color: var(--sla-ok); }
+${P} .sla-tag.bad { background: var(--sla-bad-t); color: var(--wb-danger); }
+${P} .sla-tag.wait { background: #e9ebf0; color: #4b5565; }
+${P} .sla-tag.warn { background: var(--sla-warn-t); color: var(--sla-warn); }
+${P} .sla-av { width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; background: #e9ebf0; color: #4b5565; flex: none; text-align: center; }
+${P} button.sla-av:hover { box-shadow: 0 0 0 2px var(--wb-accent); }
+${P} .sla-av.red { background: var(--sla-bad-t); color: var(--wb-danger); } ${P} .sla-av.amb { background: var(--sla-warn-t); color: var(--sla-warn); }
+${P} .sla-notice { border-radius: 12px; padding: 10px; font-size: 12.5px; display: flex; align-items: center; gap: 8px; font-weight: 700; }
+${P} .sla-notice.ok { background: var(--sla-ok-t); color: var(--sla-ok); }
+${P} .sla-notice.bad { background: var(--sla-bad-t); border: 1px solid #efb4b4; color: #8f1d1d; }
+${P} .sla-notice.info { background: var(--sla-info-t); color: var(--sla-info); }
+${P} .sla-check { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 0 9px; align-items: center; padding: 8px 10px; }
+${P} .sla-check + .sla-check { border-top: 1px solid var(--wb-border); }
+${P} .sla-check.pending { opacity: 0.6; }
+${P} .sla-check b { font-weight: 600; }
+${P} .sla-check .sla-details { grid-column: 2 / 5; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--wb-border); font-size: 11.5px; color: var(--wb-muted); line-height: 1.6; }
+${P} .sla-review { background: #fffbe8; border: 1px solid #f1d98a; border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+${P} .sla-review.decided { background: var(--sla-ok-t); border-color: #9fdcc4; }
+${P} .sla-quote { background: var(--wb-surface); border-radius: 8px; padding: 7px 9px; font-size: 12px; }
+${P} [data-nf="rs"] [data-ng="ck"], ${P} [data-nf="ck"] [data-ng="rs"] { display: none; }
+${P} #leadCheckerPopover { position: absolute; inset: 0; z-index: 5; background: var(--wb-bg); overflow-y: auto; padding: 10px 12px; }
+${P} #leadCheckerPopover > .sla-col { gap: 10px; }
+${P} #leadCheckerImportBox { width: 100%; min-height: 58px; resize: vertical; font-family: monospace; font-size: 11px; }
+${P} .sla-pop { position: absolute; z-index: 9; top: 44px; right: 8px; min-width: 230px; max-width: calc(100% - 16px); max-height: calc(100% - 52px); overflow-y: auto; background: #ffffff; color: #1c1c1e; border-radius: 12px; box-shadow: 0 10px 30px rgba(15,23,42,0.3), 0 0 0 1px rgba(15,23,42,0.08); padding: 5px; display: flex; flex-direction: column; font-size: 12.5px; }
+${P} .sla-pop .sla-ms { height: 1px; background: #e3e6ec; margin: 4px 0; flex: none; }
+${P} .sla-pop .sla-mn { color: #5b6577; font-size: 11.5px; padding: 4px 9px; }
+${P} .sla-pop .sla-mn:empty { display: none; }
+${P} .sla-mi { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: 8px; width: 100%; font-weight: 500; flex: none; }
+${P} .sla-mi:hover, ${P} .sla-mi:focus-visible { background: #eef0f5; outline: none; }
+${P} .sla-mi.danger { color: #c62828; font-weight: 700; }
+${P} .sla-mi:disabled { opacity: 0.45; cursor: default; background: none; }
+${P} .sla-mi em { margin-left: auto; font-style: normal; font-size: 11px; color: #5b6577; font-weight: 600; }
+${P} #_slaAvatarAssignPopover { max-width: calc(100vw - 16px); }
+${P} #_slaAvatarAssignPopover .manual-assign-select { width: 100%; max-width: none; font-size: 12px; padding: 5px 8px; }
+${P} .sla-zero { padding: 40px 20px; text-align: center; }
 @media (prefers-reduced-motion: reduce) {
-#${PANEL_ID}, #${PANEL_ID} * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+${P}, ${P} * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }`;
 document.head.appendChild(style);
 }
@@ -3266,13 +3461,6 @@ syncWheelPositionOnly('assignCutoffMinuteWheel', MINUTE_VALUES, currentMinute);
 }
 }
 
-// Compact mode's panel is short and clips overflow, and the assign section
-// is outside the scrolling list, so cap its height.
-function assignSectionBodyMaxHeight() {
-const panelSize = getPanelSize();
-return panelSize === 'full' ? '55vh' : '280px';
-}
-
 // Wires whichever wheels are mounted, seeding each from its hidden input so a
 // refresh keeps the value.
 function initAssignSectionWheels() {
@@ -3323,7 +3511,7 @@ if (agents.length === 0) {
 const label = canCheckAgentRoster()
 ? 'No agents online'
 : "Can't check agents right now (no unassigned lead to read from)";
-return `<div style="font-size: 13px; color: var(--wb-muted, #5b6577);">${label}</div>`;
+return `<div class="sla-small">${label}</div>`;
 }
 // Not-done counts come from the last Queue by Agent snapshot, matched by
 // name since it has no agent id.
@@ -3332,106 +3520,76 @@ const queueByName = new Map(queueSnapshot.agents.map((q) => [normalizeAgentName(
 return agents.map(a => {
 const queueInfo = queueByName.get(normalizeAgentName(a.name));
 const queueBadge = queueInfo
-? `<span title="${queueInfo.notDoneCount} not yet called, out of the last ${queueInfo.totalShown} queued (as of ${escapeHtml(new Date(queueSnapshot.scannedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))})" style="margin-left: 6px; padding: 1px 6px; border-radius: 6px; font-size: 11px; font-weight: 700; background: #eef2ff; color: #4338ca;">${queueInfo.notDoneCount}</span>`
+? `<b title="${queueInfo.notDoneCount} not yet called, out of the last ${queueInfo.totalShown} queued (as of ${escapeHtml(new Date(queueSnapshot.scannedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }))})">${queueInfo.notDoneCount}</b>`
 : '';
 return `
-<label style="display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--wb-text, #1c1c1e);" ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
+<label ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
 <input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()">
-<span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: ${statusDotColor(a.status)}; flex-shrink: 0;"></span>
+<span class="sla-dot" style="background: ${statusDotColor(a.status)};"></span>
 ${escapeHtml(a.name)}${queueBadge}
 </label>`;
 }).join('');
 }
 
-// Caps how many leads a run touches, applied before roundRobinAssign() in
-// every entry point. Blank means no cap.
+// All and None, then the cap on how many leads a run touches, applied before
+// roundRobinAssign() in every entry point. Blank means no cap.
 function renderAssignLimitControl(settings) {
-return `<div style="display: flex; align-items: center; gap: 10px;">
-<label for="assignLimitInput" style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--wb-muted, #5b6577); font-weight: 600; letter-spacing: 0.3px; white-space: nowrap;">
-LIMIT
-<span style="position: relative; display: inline-flex; align-items: center;">
-<input type="number" id="assignLimitInput" min="1" placeholder="all" value="${settings.assignLimit || ''}" oninput="window._updateAssignPreview()"
-style="width: 48px; padding: 4px 18px 4px 6px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; font-size: 13px; font-weight: 400; color: var(--wb-text, #1c1c1e);">
-<span onclick="window._clearAssignLimit()" title="Clear limit (assign all)" style="position: absolute; right: 4px; cursor: pointer; color: var(--wb-muted, #5b6577); display: flex; align-items: center;">${svgIcon('x', 11)}</span>
-</span>
+return `<div class="sla-bar sla-small">
+<button type="button" class="sla-txt" onclick="window._setAllAgentCheckboxes(true)">All</button>
+<button type="button" class="sla-txt" onclick="window._setAllAgentCheckboxes(false)">None</button>
+<span class="sla-grow"></span>
+<label for="assignLimitInput" class="sla-ckl" style="font-size: 11.5px;" title="The most leads one run assigns. Leave empty to assign all">Limit
+<input type="number" id="assignLimitInput" min="1" placeholder="all" value="${settings.assignLimit || ''}" oninput="window._updateAssignPreview()" style="width: 58px; padding: 3px 6px;">
 </label>
-<label for="assignLimitPerAgent" title="When on, LIMIT is the number of leads EACH selected agent gets, not the total across all of them" style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--wb-muted, #5b6577); font-weight: 600; letter-spacing: 0.3px; white-space: nowrap; cursor: pointer;">
+<label for="assignLimitPerAgent" class="sla-ckl" style="font-size: 11.5px;" title="When on, the limit is the number of leads each ticked agent gets, not the total across all of them">
 <input type="checkbox" id="assignLimitPerAgent" ${settings.assignLimitPerAgent ? 'checked' : ''} onchange="window._updateAssignPreview()">
 per agent
 </label>
 </div>`;
 }
 
-// `accent` is true for the standard red or a hex colour for groups that are
-// not about lateness. `onclick` makes the tile assign exactly the leads it
-// counts, with no prompt, so a clickable tile is drawn as a button.
-function renderStatTile(label, value, accent, onclick) {
-const color = accent === true ? '#b91c1c' : (typeof accent === 'string' ? accent : null);
-const clickable = typeof onclick === 'string' && onclick.length > 0;
-return `<div ${clickable ? `class="stat-tile-clickable" onclick="${onclick}" title="Assign these ${value} now to the ticked agents" aria-label="${escapeHtml(label)}: ${value}. Assign these now"` : ''} style="flex: 1; text-align: center; background: var(--wb-surface, white); border-radius: 8px; padding: 6px 2px 5px; border: 1px solid ${color || 'var(--wb-border, #cbd5e1)'}; ${clickable ? 'cursor: pointer; box-shadow: 0 1px 0 rgba(15,23,42,0.12), 0 1px 3px rgba(15,23,42,0.08);' : ''}">
-<div style="font-size: 16px; font-weight: 700; color: ${color || '#1e293b'};">${value}</div>
-<div style="font-size: 11px; color: var(--wb-muted, #5b6577);">${label}</div>
-${clickable ? `<div style="font-size: 11px; font-weight: 600; color: #4338ca;">Assign</div>` : ''}
+// The agents row: one control that opens the agent list, then Queue and
+// Clear Queue. Clear Queue unassigns everything and has no prompt, so it is
+// outlined in red, never filled.
+function renderAgentsRow(agentCount, agentsOpen) {
+const label = agentCount === 0
+? (canCheckAgentRoster() ? 'No agents online' : "Can't check agents")
+: `${agentCount}<span class="sla-wideonly">&nbsp;agent${agentCount === 1 ? '' : 's'}</span>&nbsp;online`;
+return `<div class="sla-agsum">
+<button type="button" class="sla-sec sla-agentsToggle" aria-expanded="${agentsOpen ? 'true' : 'false'}" aria-controls="assignAgentPane" onclick="window._toggleAgentList(this)" title="Show or hide the agent list">${label}${svgIcon('chevron', 12, '', 'sla-chev')}</button>
+<span class="sla-agentsOnly">${agentCount === 0 ? 'No agents online' : `${agentCount} online`}</span>
+<span class="sla-grow"></span>
+<button type="button" class="sla-sec" onclick="window._checkAgentQueuePositions(this.querySelector('span'))" title="Queue: reads each agent's live call queue from Konnect and shows how many leads each has not called yet">${svgIcon('queue', 13)}<span>Queue</span></button>
+<button type="button" class="sla-sec caution" onclick="window._clearWholeQueue()" title="Clear Queue: unassigns every lead (Konnect's Clear Queues). There is no undo">Clear Queue</button>
 </div>`;
 }
 
-// Kept apart from Assign and drawn quietly: it unassigns everything and has
-// no prompt.
-function renderClearQueueButton() {
-return `<button onclick="window._clearWholeQueue()" title="Unassigns every lead (Konnect's Clear Queues). There is no undo" style="background: transparent; color: var(--wb-danger, #b91c1c); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; padding: 3px 8px; font-size: 11px; font-weight: 600; cursor: pointer; white-space: nowrap; flex-shrink: 0;">Clear Queue</button>`;
-}
-
-const STAT_SUMMARY_COLLAPSED_KEY = '_slaStatSummaryCollapsed';
-
-// Collapsed by default, unlike other sections: the tiles come first on every
-// open, and the one-line fallback keeps the headline numbers visible.
-function isStatSummaryCollapsed() {
-const v = localStorage.getItem(STAT_SUMMARY_COLLAPSED_KEY);
-return v === null ? true : v === '1';
-}
-
-function renderStatSummaryShell(oneLineSummary, expandedBodyHtml) {
-const collapsed = isStatSummaryCollapsed();
-return `
-<div onclick="window._toggleStatSummary()" style="cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0 8px;">
-<span id="statSummaryLabel" data-summary="${escapeHtml(oneLineSummary)}" style="font-size: 11px; color: var(--wb-muted, #5b6577);">${collapsed ? escapeHtml(oneLineSummary) : 'OVERVIEW'}</span>
-${chevronIcon(collapsed, 'statSummaryToggle')}
-</div>
-<div id="statSummaryBody" style="display: ${collapsed ? 'none' : 'block'};">${expandedBodyHtml}</div>`;
+// `tone` is 'bad' or 'warn' when the count needs attention. A tile assigns
+// exactly the leads it counts, with no prompt, so it is drawn as a button.
+function renderStatTile(label, value, tone, onclick) {
+return `<button type="button" class="sla-tile stat-tile-clickable ${tone || ''}" onclick="${onclick}" title="Assign these ${value} now to the ticked agents" aria-label="${escapeHtml(label)}: ${value}. Assign these now"><b>${value}</b><span>${escapeHtml(label)}</span></button>`;
 }
 
 const ZEN_MODE_KEY = '_slaZenMode';
-const ZEN_SNAPSHOT_KEY = '_slaZenSnapshot';
 
+// List only view (stored as "zen mode") hides Overview, Assign, Filters and
+// Today so more leads fit. The rows keep their two lines.
 function isZenModeOn() {
 return localStorage.getItem(ZEN_MODE_KEY) === '1';
 }
 
-// List only view (stored as "zen mode") hides the whole assign and filters
-// zone, and restores whichever tab was active when turned off.
-function enableZenMode() {
-try {
-localStorage.setItem(ZEN_SNAPSHOT_KEY, JSON.stringify({ statSummaryCollapsed: isStatSummaryCollapsed() }));
-localStorage.setItem(ZEN_MODE_KEY, '1');
-localStorage.setItem(STAT_SUMMARY_COLLAPSED_KEY, '1');
-} catch (error) {
-// ignore
-}
+function setZenMode(on) {
+try { localStorage.setItem(ZEN_MODE_KEY, on ? '1' : '0'); } catch (error) { /* ignore */ }
 }
 
-function disableZenMode() {
-let snapshot = null;
-try {
-snapshot = JSON.parse(localStorage.getItem(ZEN_SNAPSHOT_KEY));
-} catch (error) {
-// ignore
-}
-try {
-localStorage.setItem(ZEN_MODE_KEY, '0');
-localStorage.setItem(STAT_SUMMARY_COLLAPSED_KEY, snapshot && snapshot.statSummaryCollapsed ? '1' : '0');
-} catch (error) {
-// ignore
-}
+// What List only view shows in place of the tiles: the headline counts and
+// the way back.
+function renderListOnlySummary(id, chips) {
+return `<div id="${id}" class="sla-cf">
+${chips.map(([text, tone]) => `<span class="sla-chip ${tone || ''}">${escapeHtml(text)}</span>`).join('')}
+<span class="sla-grow"></span>
+<button type="button" class="sla-sec tight" onclick="window._toggleZenMode()" title="Show Overview, Assign, Filters and Today again">Show overview</button>
+</div>`;
 }
 
 function renderSlaDueSummary() {
@@ -3446,32 +3604,33 @@ leads.filter(l => !l.assigned && minutesUntilDue(l) !== null && minutesUntilDue(
 const customerFirstDueCounts = SLA_DUE_BUCKET_MINUTES.map(mins =>
 leads.filter(l => !l.assigned && l.isCustomerFirst && minutesUntilDue(l) !== null && minutesUntilDue(l) <= mins).length
 );
-const assignedCount = leads.filter(l => l.assigned).length;
 const notAssignedCount = leads.filter(l => !l.assigned).length;
+const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
+
+if (isZenModeOn()) {
+return renderListOnlySummary('slaDueSummary', [
+[`${missedCount} missed`, missedCount > 0 ? 'bad' : ''],
+[`${dueCounts[1]} due in 30 min`, dueCounts[1] > 0 ? 'warn' : ''],
+[`${notAssignedCount} not assigned`, '']
+]);
+}
 
 const tiles = [
-renderStatTile('Missed', missedCount, missedCount > 0, `window._quickAssignSlaTile(null, false, true)`),
-...SLA_DUE_BUCKET_MINUTES.map((m, i) => renderStatTile(`Due ${m}m`, dueCounts[i], m === 15 && dueCounts[i] > 0, `window._quickAssignSlaTile(${m}, false, false)`))
+renderStatTile('Missed', missedCount, missedCount > 0 ? 'bad' : '', `window._quickAssignSlaTile(null, false, true)`),
+...SLA_DUE_BUCKET_MINUTES.map((m, i) => renderStatTile(`${m} min`, dueCounts[i], m === 15 && dueCounts[i] > 0 ? 'warn' : '', `window._quickAssignSlaTile(${m}, false, false)`))
 ].join('');
-// Customer First gets its own tile row because prioritizeLeads treats it as
-// a distinct category. Purple, not red: it is not a lateness signal.
-const CUSTOMER_FIRST_ACCENT = '#6d28d9';
-const cfTiles = SLA_DUE_BUCKET_MINUTES.map((m, i) =>
-renderStatTile(`Due ${m}m`, customerFirstDueCounts[i], customerFirstDueCounts[i] > 0 ? CUSTOMER_FIRST_ACCENT : null, `window._quickAssignSlaTile(${m}, true, false)`)
+// Customer First gets its own chips because prioritizeLeads treats it as a
+// distinct category. Purple, not red: it is not a lateness signal.
+const cfChips = SLA_DUE_BUCKET_MINUTES.map((m, i) =>
+`<button type="button" class="sla-chip vio" onclick="window._quickAssignSlaTile(${m}, true, false)" title="Assign these ${customerFirstDueCounts[i]} Customer First leads now to the ticked agents" aria-label="Customer First due in ${m} minutes: ${customerFirstDueCounts[i]}. Assign these now">${customerFirstDueCounts[i]} in ${m}</button>`
 ).join('');
-
-const oneLineSummary = `${missedCount} missed · ${dueCounts[1]} due within 30m · ${notAssignedCount} unassigned`;
-const expandedBody = `
-<div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
-<div style="font-size: 11px; font-weight: 600; color: ${CUSTOMER_FIRST_ACCENT}; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Customer First</div>
-<div style="display: flex; gap: 6px; margin-bottom: 8px;">${cfTiles}</div>`;
+const emailOnlyOn = !!loadAssignSettings().emailOnly;
 
 return `
-<div id="slaDueSummary" style="padding: 12px 20px 0; background: var(--wb-bg, #f2f2f7); font-size: 13px; color: var(--wb-text, #1c1c1e);">
-${renderStatSummaryShell(oneLineSummary, expandedBody)}
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-<span style="font-size: 11px; color: var(--wb-muted, #5b6577);">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
-${renderClearQueueButton()}
+<div id="slaDueSummary" class="sla-col" style="gap: 10px;">
+<div class="sla-tiles">${tiles}</div>
+<div class="sla-cf"><span class="sla-lbl">Customer First</span>${cfChips}
+<button type="button" id="_slaEoChip" class="sla-chip eo" aria-pressed="${emailOnlyOn ? 'true' : 'false'}" onclick="window._setEmailOnlyMode()" title="Assign the Email only leads">${svgIcon('mail', 12)}Email only <span id="_slaEoChipCount">${emailOnlyCount}</span></button>
 </div>
 </div>`;
 }
@@ -3532,7 +3691,7 @@ tsvClean(stripTitle(c.name)), tsvClean(c.phone), tsvClean(c.email), tsvClean(c.s
 return { tsv: [header, ...lines].join('\n'), count: rows.length, excludedCount };
 }
 
-// Pending callback types offered for the Lead Checker export popover.
+// Pending callback types offered in the Send view.
 const PENDING_LEAD_CHECKER_CALLBACK_TYPES = ['Auto Rescheduled', 'Manual Rescheduled', 'Post Closure'];
 const LEAD_CHECKER_EXPORT_PENDING_KEY = '_slaLeadCheckerExportSettingsPending';
 
@@ -3578,56 +3737,45 @@ tsvClean(stripTitle(c.name)), tsvClean(c.mobile || c.landline), tsvClean(c.email
 return { tsv: [header, ...lines].join('\n'), count: rows.length, excludedCount };
 }
 
-// Send passes the leads straight to the Lead Checker; Copy is the by-hand
-// route. Open Konnect Live makes the link without sending anything.
-function renderLeadCheckerSendButtons() {
-const quiet = 'padding: 6px 10px; background: transparent; color: var(--wb-text, #1c1c1e); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;';
-return `<span style="display: flex; gap: 6px; flex-wrap: wrap;">
-<button onclick="window._sendToLeadChecker(this, 'leads')" title="Opens Konnect Live and sends these leads to the Lead Checker; the results come back here" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Send</button>
-<button onclick="window._copyLeadCheckerExport(this)" title="Copies these leads to paste into the Lead Checker by hand" style="${quiet}">Copy</button>
-<button onclick="window._openKonnectLive(this)" title="Opens the Konnect Live tab, or brings it forward, without sending anything" style="${quiet}">Open Konnect Live</button>
-</span>`;
+function sendLabelText(count) {
+return `Send ${count} lead${count === 1 ? '' : 's'}`;
+}
+function sendLeftOutText(excludedCount) {
+return excludedCount > 0 ? `${excludedCount} already checked, left out` : '';
 }
 
-// One popover shell for both pages; only the checkboxes and TSV builder differ.
+// The Send view, opened by Send in the header. It covers the lead list and
+// stays in the page while closed, so results pasted from More and the
+// by-hand box work without opening it. Open Konnect Live is on the status
+// strip only.
 function renderLeadCheckerPopover() {
-const exportSectionHtml = (() => {
+let chips;
+let scopeExtra;
+let exported;
 if (currentPageType === PAGE_PENDING) {
 const settings = loadPendingLeadCheckerExportSettings();
 const selectedTypes = new Set(settings.callbackTypes);
-const { count, excludedCount } = buildPendingLeadCheckerTsv(settings.callbackTypes);
-const typeCheckboxes = PENDING_LEAD_CHECKER_CALLBACK_TYPES.map(t => `
-<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--wb-text, #1c1c1e);">
+exported = buildPendingLeadCheckerTsv(settings.callbackTypes);
+chips = PENDING_LEAD_CHECKER_CALLBACK_TYPES.map(t => `
+<label class="chip-label">
 <input type="checkbox" class="booking-export-callback-type" value="${escapeHtml(t)}" ${selectedTypes.has(t) ? 'checked' : ''} onchange="window._updateLeadCheckerExportPreview()">
-${escapeHtml(t)}
+${escapeHtml(t)} (${currentPendingCustomers.filter((c) => c.callbackType === t).length})
 </label>`).join('');
-return `
-<div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${typeCheckboxes}</div>
-<div style="font-size: 11px; color: var(--wb-muted, #5b6577); margin-bottom: 10px;">New leads nobody has worked yet are left out. Check the SLA queue for those.</div>
-<div style="display: flex; flex-direction: column; gap: 6px;">
-<span id="bookingExportRowCount" style="font-size: 11px; color: var(--wb-muted, #5b6577);">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already checked, left out)` : ''}</span>
-${renderLeadCheckerSendButtons()}
-</div>`;
-}
+scopeExtra = '<span class="sla-small">New leads nobody has worked yet are left out. Check the SLA queue for those.</span>';
+} else {
 const settings = loadLeadCheckerExportSettings();
 const selectedTiers = new Set(settings.tiers);
-const { count, excludedCount } = buildLeadCheckerTsv(settings.tiers, settings.customerFirstOnly);
-const tierCheckboxes = [1, 2, 3, 4].map(t => `
-<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--wb-text, #1c1c1e);">
-<input type="checkbox" class="booking-export-tier" value="${t}" ${selectedTiers.has(t) ? 'checked' : ''} onchange="window._updateLeadCheckerExportPreview()">
-Tier ${t}
+exported = buildLeadCheckerTsv(settings.tiers, settings.customerFirstOnly);
+chips = SLA_TIERS.map(({ tier, name, holds }) => `
+<label class="chip-label" title="${escapeHtml(`${name}: ${holds}.`)}">
+<input type="checkbox" class="booking-export-tier" value="${tier}" ${selectedTiers.has(tier) ? 'checked' : ''} onchange="window._updateLeadCheckerExportPreview()">
+${escapeHtml(name)} (${currentCustomers.filter((c) => c.tier === tier).length})
 </label>`).join('');
-return `
-<div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">${tierCheckboxes}</div>
-<label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--wb-text, #1c1c1e); margin-bottom: 10px;">
+scopeExtra = `<label class="sla-ckl">
 <input type="checkbox" id="bookingExportCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateLeadCheckerExportPreview()">
 Customer First only
-</label>
-<div style="display: flex; flex-direction: column; gap: 6px;">
-<span id="bookingExportRowCount" style="font-size: 11px; color: var(--wb-muted, #5b6577);">${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already checked, left out)` : ''}</span>
-${renderLeadCheckerSendButtons()}
-</div>`;
-})();
+</label>`;
+}
 
 const importState = loadLeadCheckerImportState();
 // Match against the list for the page being viewed.
@@ -3641,29 +3789,63 @@ leadCheckerResultCandidatesIndexed(c, leadCheckerMatchIndex).forEach((r) => matc
 });
 const matchedCount = matchedResultsSet.size;
 const importSummary = importState.results.length === 0
-? `<div style="font-size: 12px; color: var(--wb-muted, #5b6577); padding: 8px 0 0;">Results sent back by the Lead Checker show by themselves. To bring them in by hand, copy the results in the Lead Checker, paste them here and press Add results. Each one shows as a label on its lead card below.</div>`
-: `<div style="font-size: 12px; color: var(--wb-muted, #5b6577); padding: 8px 0 0;">${importState.results.length} result${importState.results.length === 1 ? '' : 's'} held, ${matchedCount} matched to a lead in the list below.${importState.results.length !== matchedCount ? ' The rest are not in this list (already worked, expired, or in the other queue).' : ''}</div>`;
+? ''
+: `<span class="sla-small">${importState.results.length} result${importState.results.length === 1 ? '' : 's'} held, ${matchedCount} matched to a lead in the list.${importState.results.length !== matchedCount ? ' The rest are not in this list (already worked, expired, or in the other queue).' : ''}</span>`;
+// Text typed or pasted but not added yet keeps the box open.
+const byHandOpen = !!importState.rawInput;
 
 return `
-<div id="leadCheckerPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 280px; background: var(--wb-surface, white); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px; box-sizing: border-box; max-height: calc(100% - 56px); overflow-y: auto;">
-<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 8px;">SEND LEADS TO THE LEAD CHECKER</div>
-${exportSectionHtml}
-<button id="_slaCopyReviewBtn" type="button" onclick="window._copyReviewDecisions(this)" title="Copies the review decisions the Lead Checker has sent this shift, to paste where new rules are written" style="margin-top: 8px; padding: 6px 10px; background: transparent; color: var(--wb-text, #1c1c1e); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">${reviewDecisionsButtonText()}</button>
-<hr style="border: none; border-top: 1px solid #e2e8f0; margin: 14px 0;">
-<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 8px;">BRING RESULTS BACK BY HAND</div>
-<div style="font-size: 11px; color: var(--wb-muted, #5b6577); margin-bottom: 6px;">Use the "Paste Lead Checker results" button above the list, or paste here if the browser blocks the clipboard:</div>
-<textarea id="leadCheckerImportBox" placeholder="Paste the results copied from the Lead Checker" oninput="window._updateLeadCheckerImportInput(this.value)" style="width: 100%; height: 60px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px;">${escapeHtml(importState.rawInput)}</textarea>
-<div style="display: flex; justify-content: flex-end; margin-top: 8px;">
-<button onclick="window._classifyLeadCheckerImport(this)" style="padding: 6px 12px; background: #1e293b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">Add results</button>
+<div id="leadCheckerPopover" style="display: none;">
+<div class="sla-col">
+<div class="sla-card">
+<span class="sla-lbl">Which leads</span>
+<div class="sla-cf">${chips}</div>
+${scopeExtra}
+<button type="button" class="sla-pri wide" onclick="window._sendToLeadChecker(this.querySelector('span'), 'leads')" title="Opens Konnect Live and sends these leads to the Lead Checker; the results come back here">${svgIcon('send', 14)}<span id="_slaSendLabel">${sendLabelText(exported.count)}</span></button>
+<span id="bookingExportRowCount" class="sla-small">${sendLeftOutText(exported.excludedCount)}</span>
+<div class="sla-bar">
+<button type="button" class="sla-sec" onclick="window._copyLeadCheckerExport(this.querySelector('span'))" title="Copies these leads to paste into the Lead Checker by hand">${svgIcon('copy', 13)}<span>Copy</span></button>
+<button id="_slaCopyReviewBtn" type="button" class="sla-sec" onclick="window._copyReviewDecisions(this)" title="Copies the review decisions the Lead Checker has sent this shift, to paste where new rules are written">${reviewDecisionsButtonText()}</button>
+</div>
+</div>
+<div class="sla-card">
+<button type="button" class="sla-txt" style="align-self: flex-start;" aria-expanded="${byHandOpen ? 'true' : 'false'}" aria-controls="_slaByHand" onclick="window._slaFold(this)">Bring results back by hand</button>
+<div id="_slaByHand" class="sla-col" ${byHandOpen ? '' : 'hidden'}>
+<textarea id="leadCheckerImportBox" placeholder="Paste the results copied from the Lead Checker" oninput="window._updateLeadCheckerImportInput(this.value)">${escapeHtml(importState.rawInput)}</textarea>
+<button type="button" class="sla-sec" style="align-self: flex-end;" onclick="window._classifyLeadCheckerImport(this)">Add results</button>
 </div>
 ${importSummary}
+</div>
+<div>
+<button type="button" class="sla-txt" aria-expanded="false" aria-controls="_slaHowSend" onclick="window._slaFold(this)">How it works</button>
+<p id="_slaHowSend" class="sla-small" style="margin: 6px 0 0;" hidden>Results sent back by the Lead Checker show by themselves. To bring them in by hand, copy the results in the Lead Checker, paste them here and press Add results, or use Paste Lead Checker results in More. Each one shows as a tag on its lead.</p>
+</div>
+</div>
 </div>`;
+}
+
+// Folds or unfolds the element a button names in aria-controls.
+window._slaFold = function(button) {
+const target = document.getElementById(button.getAttribute('aria-controls'));
+if (!target) return;
+const open = target.hidden;
+target.hidden = !open;
+button.setAttribute('aria-expanded', open ? 'true' : 'false');
+};
+
+// Shows or hides the Send view. The header follows through data-sub.
+function setSendView(open) {
+const popover = document.getElementById('leadCheckerPopover');
+const box = document.getElementById(PANEL_BOX_ID);
+if (!popover || !box) return;
+popover.style.display = open ? 'block' : 'none';
+if (open) box.dataset.sub = 'send'; else delete box.dataset.sub;
 }
 
 window._toggleLeadCheckerPopover = function() {
 const popover = document.getElementById('leadCheckerPopover');
 if (!popover) return;
-popover.style.display = popover.style.display === 'none' ? 'block' : 'none';
+setSendView(popover.style.display === 'none');
 // The desk may have recorded decisions since the panel was drawn.
 const reviewButton = document.getElementById('_slaCopyReviewBtn');
 if (reviewButton) reviewButton.textContent = reviewDecisionsButtonText();
@@ -3671,7 +3853,7 @@ if (reviewButton) reviewButton.textContent = reviewDecisionsButtonText();
 
 
 window._toggleZenMode = function() {
-if (isZenModeOn()) disableZenMode(); else enableZenMode();
+setZenMode(!isZenModeOn());
 if (currentPageType === PAGE_PENDING) displayPendingPanel(currentPendingCustomers, 0, 0, false);
 else displayPanel(currentCustomers, 0, 0, false);
 };
@@ -3680,18 +3862,21 @@ window._updateLeadCheckerExportPreview = function() {
 if (currentPageType === PAGE_PENDING) {
 const callbackTypes = Array.from(document.querySelectorAll('.booking-export-callback-type:checked')).map(el => el.value);
 savePendingLeadCheckerExportSettings({ callbackTypes });
-const { count, excludedCount } = buildPendingLeadCheckerTsv(callbackTypes);
-const countEl = document.getElementById('bookingExportRowCount');
-if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already checked, left out)` : ''}`;
+showSendCounts(buildPendingLeadCheckerTsv(callbackTypes));
 return;
 }
 const tiers = Array.from(document.querySelectorAll('.booking-export-tier:checked')).map(el => Number(el.value));
 const customerFirstOnly = document.getElementById('bookingExportCustomerFirstOnly')?.checked || false;
 saveLeadCheckerExportSettings({ tiers, customerFirstOnly });
-const { count, excludedCount } = buildLeadCheckerTsv(tiers, customerFirstOnly);
-const countEl = document.getElementById('bookingExportRowCount');
-if (countEl) countEl.textContent = `${count} lead${count === 1 ? '' : 's'}${excludedCount > 0 ? ` (${excludedCount} already checked, left out)` : ''}`;
+showSendCounts(buildLeadCheckerTsv(tiers, customerFirstOnly));
 };
+
+function showSendCounts({ count, excludedCount }) {
+const label = document.getElementById('_slaSendLabel');
+if (label) label.textContent = sendLabelText(count);
+const countEl = document.getElementById('bookingExportRowCount');
+if (countEl) countEl.textContent = sendLeftOutText(excludedCount);
+}
 
 // ===================================================================
 // LINK TO THE LEAD CHECKER
@@ -3833,18 +4018,23 @@ done: liveLink.done, total: liveLink.total, at: new Date().toISOString()
 } catch (error) { /* the desk then says SLA Manager is not running */ }
 }
 
-// The line at the foot of the panel: what the link is doing now.
+// The strip under the header: what the link is doing now. The stored text
+// tells the desk to press Open Konnect Live here; on this panel the button
+// beside the line says it.
 function renderLinkLine() {
 const state = liveLink.state;
-const color = state === 'idle' ? '#047857' : state === 'running' ? '#1d4ed8' : state === 'none' ? '#64748b' : '#b45309';
+const dot = state === 'idle' ? '' : state === 'running' ? 'busy' : state === 'none' ? 'off' : state === 'loggedOut' ? 'bad' : 'warn';
 const waiting = liveLink.queue.length + (liveLink.sent ? 1 : 0);
 const waitingText = waiting ? ` ${waiting} batch${waiting === 1 ? '' : 'es'} waiting to go.` : '';
+const text = (state === 'none' ? 'Konnect Live: not open.' : linkStatusText(state, liveLink.done, liveLink.total)).replace(/\.$/, '') + waitingText;
 const openButton = state === 'none'
-? `<button type="button" onclick="window._openKonnectLive(this)" style="flex-shrink: 0; padding: 3px 8px; background: var(--wb-surface, white); color: var(--wb-text, #1c1c1e); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Open Konnect Live</button>`
+? `<button type="button" class="sla-sec" onclick="window._openKonnectLive(this.querySelector('span'))" title="Opens the Konnect Live tab, or brings it forward, without sending anything">${svgIcon('openOut', 13)}<span>Open Konnect Live</span></button>`
 : '';
-return `<div id="_slaLinkLine" role="status" data-state="${state}" style="display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-top: 1px solid var(--wb-border, #cbd5e1); background: var(--wb-surface, white); font-size: 11.5px; color: var(--wb-text, #1c1c1e); flex-shrink: 0;">
-<span aria-hidden="true" style="width: 8px; height: 8px; border-radius: 50%; background: ${color}; flex-shrink: 0;"></span>
-<span style="flex: 1; min-width: 0;">${escapeHtml(linkStatusText(state, liveLink.done, liveLink.total) + waitingText)}</span>${openButton}
+const showBar = state === 'running' && liveLink.total > 0;
+const bar = showBar ? `<span class="sla-prog sla-grow" aria-hidden="true"><i style="width: ${Math.max(0, Math.min(100, Math.round(((liveLink.done || 0) / liveLink.total) * 100)))}%;"></i></span>` : '';
+return `<div id="_slaLinkLine" class="sla-link" role="status" data-state="${state}">
+<span aria-hidden="true" class="sla-dot ${dot}"></span>
+<span ${showBar ? '' : 'class="sla-grow"'}>${escapeHtml(text)}</span>${bar}${openButton}
 </div>`;
 }
 
@@ -4477,8 +4667,7 @@ buttonEl.textContent = `✓ Copied ${count}`;
 // Closes only on success, so an error stays visible for a retry.
 setTimeout(() => {
 buttonEl.textContent = original;
-const popover = document.getElementById('leadCheckerPopover');
-if (popover) popover.style.display = 'none';
+setSendView(false);
 }, 900);
 }).catch(() => {
 buttonEl.textContent = '✗ Failed';
@@ -4888,7 +5077,7 @@ byPhone.get(p).push(r);
 return { byEmail, byPhone };
 }
 
-// Shared with the popover's match count, which needs every candidate, so the
+// Shared with the Send view's match count, which needs every candidate, so the
 // asymmetric rule is not written a third time.
 function leadCheckerResultCandidatesIndexed(c, index) {
 const emailKey = normalizeEmailForLeadCheckerMatch(c.email);
@@ -4979,7 +5168,7 @@ return false;
 // old text in the box reads as unhandled.
 addLeadCheckerResults(parsed.rows);
 // A full panel redraw for the current page. buttonEl is replaced with it;
-// the redraw keeps the popover open if it was.
+// the redraw keeps the Send view open if it was.
 redrawLeadsPanel();
 return true;
 }
@@ -5172,12 +5361,12 @@ rawInput: '',
 results: [{ name: 'Sendback Sam', email: 'sam@example.com', phone: '', created: 'Sat, 26 Sep 2026 10:00', tier: 4, tierName: 'WARM ENQUIRY', postClosureAction: 'send back through' }]
 });
 
-const html = renderTierSection('Tier 1 - Priority', [
+const html = renderTierSection({ ...SLA_TIERS[0], id: 'tier1-badge-test' }, [
 { name: 'Sendback Sam', email: 'sam@example.com', phone: '', createdText: 'Sat, 26 Sep 2026 10:00', tier: 1, key: 'k1' }
-], '#dc2626', 'tier1-badge-test');
+]);
 
 if (!html.includes('send back through')) failures.push('Expected the Post Closure badge text to appear on the card');
-if (html.includes('WARM ENQUIRY')) failures.push('Expected the underlying tier badge (WARM ENQUIRY) to be replaced, not shown alongside the Post Closure badge');
+if (/warm enquiry/i.test(html)) failures.push('Expected the underlying tier badge (WARM ENQUIRY) to be replaced, not shown alongside the Post Closure badge');
 } finally {
 if (originalImportState === null) localStorage.removeItem(LEAD_CHECKER_IMPORT_KEY);
 else localStorage.setItem(LEAD_CHECKER_IMPORT_KEY, originalImportState);
@@ -5267,9 +5456,11 @@ const includedAdvancedCallbackTypes = allCallbackCheckboxes
 .filter(el => el.checked && el.closest('#advancedCallbackTypes'))
 .map(el => el.value);
 
+const emailOnlyAgent = document.getElementById('_slaEoAgent');
 saveAssignSettings({
 excludedTiers, excludedCallbackTypes, includedAdvancedCallbackTypes, excludedAgentIds,
-customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen, assignLimit, assignLimitPerAgent
+customerFirstOnly, emailOnly, windowMinutes, cutoffTime, advancedOpen, assignLimit, assignLimitPerAgent,
+...(emailOnlyAgent ? { emailOnlyAgentId: emailOnlyAgent.value } : {})
 });
 }
 
@@ -5284,55 +5475,81 @@ const effectiveLimit = settings.assignLimitPerAgent ? limit * agents.length : li
 return prioritized.slice(0, effectiveLimit);
 }
 
-// Shared by both assign sections, which only differ in the filters zone and
-// the run handler.
-const ASSIGN_PILL_ACTIVE_BG = 'white';
-const ASSIGN_PILL_ACTIVE_COLOR = '#1c1c1e';
-const ASSIGN_PILL_ACTIVE_SHADOW = '0 1px 2px rgba(0,0,0,0.08)';
-const ASSIGN_PILL_INACTIVE_BG = 'transparent';
-const ASSIGN_PILL_INACTIVE_COLOR = '#6e6e73';
-const ASSIGN_PILL_INACTIVE_SHADOW = 'none';
-
-function renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, runHandlerName, filtersZoneHtml) {
+// Shared by both assign sections, which only differ in the filters zone, the
+// run handler and the Email only bar (SLA page only).
+function renderAssignSectionShell(settings, agents, runHandlerName, filtersZoneHtml, emailOnlyBarHtml) {
 if (isZenModeOn()) return '';
 const filtersOpen = !!settings.filtersOpen;
-const assignOpen = !filtersOpen;
-const activeTabCss = `background: ${ASSIGN_PILL_ACTIVE_BG}; color: ${ASSIGN_PILL_ACTIVE_COLOR}; box-shadow: ${ASSIGN_PILL_ACTIVE_SHADOW};`;
-const inactiveTabCss = `color: ${ASSIGN_PILL_INACTIVE_COLOR};`;
+const excludedAgentIds = new Set(settings.excludedAgentIds || []);
+const buttonDisabled = agents.length === 0;
+const emailOnlyOn = !!emailOnlyBarHtml && !!settings.emailOnly;
 return `
-<div id="assignSectionContainer" style="padding: 0 20px 16px; background: var(--wb-bg, #f2f2f7);">
-<div style="display: flex; background: #e5e5ea; border-radius: 10px; padding: 2px; gap: 2px; margin-bottom: 10px;">
-<div id="assignTabPill" onclick="window._toggleAssignSection()" style="flex: 1; text-align: center; padding: 7px 0; cursor: pointer; border-radius: 8px; font-size: 13px; font-weight: 600; transition: background 0.15s, box-shadow 0.15s; ${assignOpen ? activeTabCss : inactiveTabCss}">Assign</div>
-<div id="filtersTabPill" onclick="window._toggleFiltersZone()" style="flex: 1; text-align: center; padding: 7px 0; cursor: pointer; border-radius: 8px; font-size: 13px; font-weight: 600; transition: background 0.15s, box-shadow 0.15s; ${filtersOpen ? activeTabCss : inactiveTabCss}">Filters</div>
+<div id="assignSectionContainer" class="sla-card">
+<div class="sla-tabs" role="tablist">
+<button type="button" role="tab" id="assignTabPill" aria-selected="${filtersOpen ? 'false' : 'true'}" onclick="window._toggleAssignSection()">Assign</button>
+<button type="button" role="tab" id="filtersTabPill" aria-selected="${filtersOpen ? 'true' : 'false'}" onclick="window._toggleFiltersZone()">Filters</button>
 </div>
-<div id="assignSectionBody" style="display: ${assignOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
-<div style="margin-bottom: 10px;">
-<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-<span style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px;">AGENTS ONLINE</span>
-<span style="display: flex; gap: 8px;">
-<span onclick="window._setAllAgentCheckboxes(true)" style="font-size: 11px; color: #4f46e5; cursor: pointer;">All</span>
-<span onclick="window._setAllAgentCheckboxes(false)" style="font-size: 11px; color: #4f46e5; cursor: pointer;">None</span>
-<span onclick="window._refreshAssignSection()" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('refresh', 11)} Refresh</span>
-<span onclick="window._toggleAssignHistory()" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('history', 11)} History</span>
-<span onclick="window._checkAgentQueuePositions(this)" title="Reads each agent's live call queue from Konnect's Queue by Agent page. Shows how many leads each agent hasn't called yet, and where a given lead sits in that queue" style="font-size: 11px; color: #4f46e5; cursor: pointer; display: inline-flex; align-items: center; gap: 3px;">${svgIcon('checklist', 11)} Queue</span>
-</span>
-</div>
-<div id="assignAgentList" style="display: flex; flex-direction: column; gap: 4px; max-height: 120px; overflow-y: auto;">${agentCheckboxes}</div>
-<div id="assignHistoryPanel" style="display: none; margin-top: 6px; padding: 8px; background: var(--wb-surface, white); border-radius: 6px; font-size: 11px; color: var(--wb-text, #1c1c1e);"></div>
-</div>
-<div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px;">
+<div id="assignSectionBody" class="sla-col" style="display: ${filtersOpen ? 'none' : 'flex'};">
+<div id="_slaAssignNormal" class="sla-col" ${emailOnlyOn ? 'hidden' : ''}>
+${renderAgentsRow(agents.length, !!settings.agentsOpen)}
+<div id="assignAgentPane" class="sla-col" ${settings.agentsOpen ? '' : 'hidden'}>
+<div id="assignAgentList" class="sla-agents">${renderAgentCheckboxes(agents, excludedAgentIds)}</div>
 ${renderAssignLimitControl(settings)}
-<span id="assignMatchPreview" style="font-size: 11px; color: var(--wb-muted, #5b6577); text-align: right;"></span>
 </div>
-<button id="assignRunButton" onclick="window.${runHandlerName}()" ${buttonDisabled ? 'disabled' : ''}
-style="width: 100%; padding: 10px; background: ${buttonDisabled ? '#cbd5e1' : '#059669'}; color: white; border: none; border-radius: 8px; cursor: ${buttonDisabled ? 'not-allowed' : 'pointer'}; font-size: 13px; font-weight: 600;">
-${buttonDisabled ? (canCheckAgentRoster() ? 'No agents online' : "Can't check agents right now") : 'Assign Unassigned Leads'}
-</button>
+</div>
+${emailOnlyBarHtml || ''}
+<div id="assignHistoryPanel" style="display: none;"></div>
+<div class="sla-bar sla-runbar">
+<span id="assignMatchPreview" class="sla-small sla-grow"></span>
+<button type="button" id="assignRunButton" class="sla-pri" onclick="window.${runHandlerName}()" ${buttonDisabled ? 'disabled' : ''}>${buttonDisabled ? (canCheckAgentRoster() ? 'No agents online' : "Can't check agents right now") : 'Assign'}</button>
+</div>
 <div id="assignResultsSummary"></div>
-<div id="assignResultsLog" style="margin-top: 6px; font-size: 11px; color: var(--wb-muted, #5b6577); max-height: 100px; overflow-y: auto;"></div>
+<div id="assignResultsLog"></div>
 </div>
-<div id="filtersZoneBody" style="display: ${filtersOpen ? 'block' : 'none'}; max-height: ${assignSectionBodyMaxHeight()}; overflow-y: auto; padding-right: 6px;">
+<div id="filtersZoneBody" class="sla-col" style="display: ${filtersOpen ? 'flex' : 'none'};">
 ${filtersZoneHtml}
+<span class="sla-small">Only leads not yet assigned are ever assigned.</span>
+</div>
+</div>`;
+}
+
+// Pure. The folded tiers row says which tiers a run takes.
+function tierFilterLabel(selectedTiers) {
+const picked = [1, 2, 3, 4].filter((t) => selectedTiers.has(t));
+if (picked.length === 4) return 'Tiers: all four';
+if (picked.length === 0) return 'Tiers: none';
+return `Tiers: ${picked.join(', ')}`;
+}
+
+// The agent Email only leads last went to, if still online: the stored choice
+// first, then whoever the last recorded Email only lead was assigned to.
+function lastEmailOnlyAgentId(agents, settings) {
+if (settings.emailOnlyAgentId && agents.some((a) => a.id === settings.emailOnlyAgentId)) return settings.emailOnlyAgentId;
+const stored = readStoredJson(EMAIL_ONLY_ASSIGNED_KEY);
+const leads = stored && Array.isArray(stored.leads) ? stored.leads : [];
+const lastName = leads.length ? normalizeAgentName(leads[leads.length - 1].agent || '') : '';
+const match = lastName ? agents.find((a) => normalizeAgentName(a.name) === lastName) : null;
+return match ? match.id : '';
+}
+
+// Replaces the agents row while Email only is on (the chip beside Customer
+// First, or the tick box in Filters). The run itself is the normal one with
+// the Email only filter; the agent here is who it goes to.
+function renderEmailOnlyBar(agents, settings) {
+const lastId = lastEmailOnlyAgentId(agents, settings);
+const options = agents.map((a) => `<option value="${escapeHtml(a.id)}" ${a.id === lastId ? 'selected' : ''}>${escapeHtml(a.name)}</option>`).join('');
+return `<div id="_slaEoBar" class="sla-col sla-eo" ${settings.emailOnly ? '' : 'hidden'}>
+<div class="sla-bar">
+<span class="sla-chip eo">${svgIcon('mail', 12)}Email only</span>
+<b class="sla-grow" id="_slaEoCount"></b>
+<button type="button" class="sla-sec" style="padding: 5px 7px;" onclick="window._setEmailOnlyMode(false)" title="Back to normal assigning" aria-label="Back to normal assigning">${svgIcon('x', 13)}</button>
+</div>
+<div class="sla-bar">
+<span class="sla-small">to</span>
+<select id="_slaEoAgent" data-last="${escapeHtml(lastId)}" aria-label="Agent for Email only leads" onchange="window._updateAssignPreview()">
+<option value="">the ticked agents</option>${options}
+</select>
+<span class="sla-small" id="_slaEoAgentNote"></span>
 </div>
 </div>`;
 }
@@ -5343,46 +5560,39 @@ const agents = getAgentRoster();
 
 const settings = loadAssignSettings();
 const excludedTiers = new Set(settings.excludedTiers || []);
-const excludedAgentIds = new Set(settings.excludedAgentIds || []);
 const initialWindowMinutes = settings.windowMinutes ? Number(settings.windowMinutes) : null;
 const tierCounts = computeSlaTierCounts(leads, initialWindowMinutes);
 const customerFirstCount = leads.filter(l => l.isCustomerFirst && !l.assigned).length;
 const emailOnlyCount = leads.filter(l => l.isEmailOnly && !l.assigned).length;
 
-const tierCheckboxes = [1, 2, 3, 4].map(t => `
-<label class="chip-label">
-<input type="checkbox" class="assign-tier-checkbox" value="${t}" ${excludedTiers.has(t) ? '' : 'checked'} onchange="window._updateAssignPreview()">
-Tier ${t} <span id="tier-count-${t}" style="opacity: 0.7;">(${tierCounts[t - 1]})</span>
+const tierCheckboxes = SLA_TIERS.map(({ tier, name, holds }) => `
+<label>
+<input type="checkbox" class="assign-tier-checkbox" value="${tier}" ${excludedTiers.has(tier) ? '' : 'checked'} onchange="window._updateAssignPreview()">
+<span>${escapeHtml(name)} <span id="tier-count-${tier}">(${tierCounts[tier - 1]})</span><small>${escapeHtml(holds)}</small></span>
 </label>`).join('');
+const windowOptions = SLA_WINDOW_PRESETS.map((v) => {
+const value = v === 'All' ? '' : v;
+return `<option value="${value}" ${String(settings.windowMinutes || '') === value ? 'selected' : ''}>${v}</option>`;
+}).join('');
 
-const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
-const buttonDisabled = agents.length === 0;
-
+// In the order they are used: due within, the two special filters, then the
+// tiers folded away last.
 const filtersZoneHtml = `
-<div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 6px;">TIERS</div>
-<div style="display: flex; gap: 6px; flex-wrap: wrap;">${tierCheckboxes}</div>
-</div>
-<div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 6px;">SPECIAL FILTERS</div>
-<div style="display: flex; gap: 6px; flex-wrap: wrap;">
-<label class="chip-label">
+<label class="sla-ckl">Due within
+<select id="assignWindowMinutes" aria-label="Due within, minutes" onchange="window._updateAssignPreview()">${windowOptions}</select>
+minutes</label>
+<label class="sla-ckl">
 <input type="checkbox" id="assignCustomerFirstOnly" ${settings.customerFirstOnly ? 'checked' : ''} onchange="window._updateAssignPreview()">
-Customer First <span style="opacity: 0.7;">(${customerFirstCount})</span>
+Customer First only (${customerFirstCount})
 </label>
-<label class="chip-label">
+<label class="sla-ckl">
 <input type="checkbox" id="assignEmailOnly" ${settings.emailOnly ? 'checked' : ''} onchange="window._updateAssignPreview()">
-Email only <span style="opacity: 0.7;">(${emailOnlyCount})</span>
+Email only (${emailOnlyCount})
 </label>
-</div>
-</div>
-<div>
-<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 6px;">DUE WITHIN (MINUTES)</div>
-<input id="assignWindowMinutes" type="hidden" value="${settings.windowMinutes || ''}">
-${renderWheelColumnHtml('assignWindowMinutesWheel', SLA_WINDOW_PRESETS, 90)}
-</div>`;
+<button type="button" class="sla-sec" style="align-self: flex-start;" aria-expanded="false" aria-controls="_slaTierList" onclick="window._slaFold(this)" title="Choose which tiers are assigned"><span id="_slaTierLabel">${tierFilterLabel(new Set([1, 2, 3, 4].filter((t) => !excludedTiers.has(t))))}</span>${svgIcon('chevron', 12, '', 'sla-chev')}</button>
+<div id="_slaTierList" class="sla-tierl" hidden>${tierCheckboxes}</div>`;
 
-return renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, '_runSlaAssignment', filtersZoneHtml);
+return renderAssignSectionShell(settings, agents, '_runSlaAssignment', filtersZoneHtml, renderEmailOnlyBar(agents, settings));
 }
 
 // ===================================================================
@@ -5392,13 +5602,6 @@ return renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, '_run
 const CALLBACK_TYPES_PRIMARY = ['New', 'Auto Rescheduled'];
 const CALLBACK_TYPES_ADVANCED = ['Manual Rescheduled', 'Post Closure'];
 const CALLBACK_TYPE_ORDER = [...CALLBACK_TYPES_PRIMARY, ...CALLBACK_TYPES_ADVANCED];
-const CALLBACK_TYPE_COLORS = {
-'New': '#dc2626',
-'Auto Rescheduled': '#0d9488',
-'Manual Rescheduled': '#d97706',
-'Post Closure': '#94a3b8'
-};
-
 function collectPendingCustomers() {
 const table = document.querySelector('table');
 if (!table) return [];
@@ -5507,31 +5710,29 @@ const nextHourCutoff = new Date(thisHourCutoff.getTime() + 60 * 60000);
 
 const dueThisHour = leads.filter(l => !l.assigned && l.nextActionDate && l.nextActionDate.getTime() < thisHourCutoff.getTime()).length;
 const dueNextHour = leads.filter(l => !l.assigned && l.nextActionDate && l.nextActionDate.getTime() < nextHourCutoff.getTime()).length;
-
-const callbackLine = CALLBACK_TYPES_PRIMARY.map(type =>
-`${escapeHtml(type)}: <strong>${leads.filter(l => !l.assigned && l.callbackType === type).length}</strong>`
-).join(' &nbsp; ');
-
-const assignedCount = leads.filter(l => l.assigned).length;
 const notAssignedCount = leads.filter(l => !l.assigned).length;
 
+if (isZenModeOn()) {
+return renderListOnlySummary('pendingDueSummary', [
+[`${dueThisHour} due this hour`, dueThisHour > 0 ? 'bad' : ''],
+[`${dueNextHour} due next hour`, ''],
+[`${notAssignedCount} not assigned`, '']
+]);
+}
+
+const callbackChips = CALLBACK_TYPES_PRIMARY.map(type =>
+`<span class="sla-chip">${escapeHtml(type)} ${leads.filter(l => !l.assigned && l.callbackType === type).length}</span>`
+).join('');
+
 const tiles = [
-renderStatTile('This hour', dueThisHour, dueThisHour > 0, `window._quickAssignPendingTile(0)`),
-renderStatTile('Next hour', dueNextHour, false, `window._quickAssignPendingTile(1)`)
+renderStatTile('This hour', dueThisHour, dueThisHour > 0 ? 'bad' : '', `window._quickAssignPendingTile(0)`),
+renderStatTile('Next hour', dueNextHour, '', `window._quickAssignPendingTile(1)`)
 ].join('');
 
-const oneLineSummary = `${dueThisHour} due this hour · ${dueNextHour} due next hour · ${notAssignedCount} unassigned`;
-const expandedBody = `
-<div style="display: flex; gap: 6px; margin-bottom: 8px;">${tiles}</div>
-<div style="font-size: 11px; color: var(--wb-muted, #5b6577); margin-bottom: 6px;">${callbackLine}</div>`;
-
 return `
-<div id="pendingDueSummary" style="padding: 12px 20px 0; background: var(--wb-bg, #f2f2f7); font-size: 13px; color: var(--wb-text, #1c1c1e);">
-${renderStatSummaryShell(oneLineSummary, expandedBody)}
-<div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
-<span style="font-size: 11px; color: var(--wb-muted, #5b6577);">Assigned ${assignedCount} &middot; Not assigned ${notAssignedCount} &middot; ${lastScannedLabel()}</span>
-${renderClearQueueButton()}
-</div>
+<div id="pendingDueSummary" class="sla-col" style="gap: 10px;">
+<div class="sla-tiles two">${tiles}</div>
+<div class="sla-cf"><span class="sla-lbl">Not assigned</span>${callbackChips}</div>
 </div>`;
 }
 
@@ -5542,7 +5743,6 @@ const agents = getAgentRoster();
 const settings = loadAssignSettings();
 const excludedCallbackTypes = new Set(settings.excludedCallbackTypes || []);
 const includedAdvancedCallbackTypes = new Set(settings.includedAdvancedCallbackTypes || []);
-const excludedAgentIds = new Set(settings.excludedAgentIds || []);
 const initialCutoffDate = parseCutoffFromInput(settings.cutoffTime);
 const callbackCounts = computePendingCallbackCounts(leads, initialCutoffDate);
 const countFor = (type) => callbackCounts[type] || 0;
@@ -5550,74 +5750,152 @@ const countFor = (type) => callbackCounts[type] || 0;
 const primaryCheckboxes = CALLBACK_TYPES_PRIMARY.map(type => `
 <label class="chip-label">
 <input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${excludedCallbackTypes.has(type) ? '' : 'checked'} onchange="window._updateAssignPreview()">
-${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="opacity: 0.7;">(${countFor(type)})</span>
+${escapeHtml(type)} <span id="cb-count-${slugify(type)}">(${countFor(type)})</span>
 </label>`).join('');
 
 const advancedCheckboxes = CALLBACK_TYPES_ADVANCED.map(type => `
 <label class="chip-label">
 <input type="checkbox" class="assign-callback-checkbox" value="${escapeHtml(type)}" ${includedAdvancedCallbackTypes.has(type) ? 'checked' : ''} onchange="window._updateAssignPreview()">
-${escapeHtml(type)} <span id="cb-count-${slugify(type)}" style="opacity: 0.7;">(${countFor(type)})</span>
+${escapeHtml(type)} <span id="cb-count-${slugify(type)}">(${countFor(type)})</span>
 </label>`).join('');
 
-const agentCheckboxes = renderAgentCheckboxes(agents, excludedAgentIds);
-const buttonDisabled = agents.length === 0;
 const defaultCutoff = settings.cutoffTime || formatTimeForInput(defaultHourCutoff());
 const advancedOpenStyle = settings.advancedOpen ? 'display: flex;' : 'display: none;';
 
 const filtersZoneHtml = `
-<div style="margin-bottom: 10px;">
-<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 6px;">CALLBACK TYPE</div>
-<div style="display: flex; gap: 6px; flex-wrap: wrap;">${primaryCheckboxes}</div>
-<div onclick="window._toggleAdvancedCallbackTypes()" style="margin-top: 6px; font-size: 11px; color: #4f46e5; cursor: pointer;">
-${chevronIcon(!settings.advancedOpen, 'advancedCallbackToggle')} Advanced (Manual Rescheduled, Post Closure)
-</div>
-<div id="advancedCallbackTypes" style="${advancedOpenStyle} gap: 6px; flex-wrap: wrap; margin-top: 6px;">${advancedCheckboxes}</div>
-</div>
-<div>
-<div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 6px;">DUE BEFORE</div>
+<span class="sla-lbl">Due before</span>
 <input id="assignCutoffTime" type="hidden" value="${defaultCutoff}">
 <div style="display: flex; align-items: center; gap: 6px;">
 ${renderWheelColumnHtml('assignCutoffHourWheel', HOUR_VALUES, 56)}
-<span style="font-weight: 700; color: var(--wb-text, #1c1c1e);">:</span>
+<span style="font-weight: 700;">:</span>
 ${renderWheelColumnHtml('assignCutoffMinuteWheel', MINUTE_VALUES, 56)}
 </div>
-</div>`;
+<span class="sla-lbl">Callback type</span>
+<div class="sla-cf">${primaryCheckboxes}</div>
+<button type="button" class="sla-txt" style="align-self: flex-start;" onclick="window._toggleAdvancedCallbackTypes()">
+${chevronIcon(!settings.advancedOpen, 'advancedCallbackToggle')} Advanced (Manual Rescheduled, Post Closure)
+</button>
+<div id="advancedCallbackTypes" class="sla-cf" style="${advancedOpenStyle}">${advancedCheckboxes}</div>`;
 
-return renderAssignSectionShell(settings, agentCheckboxes, buttonDisabled, '_runPendingAssignment', filtersZoneHtml);
+return renderAssignSectionShell(settings, agents, '_runPendingAssignment', filtersZoneHtml, '');
 }
 
 // ===================================================================
 // CARD RENDERING (SLA + PENDING)
 // ===================================================================
 
-// Shared section shell for the SLA tier and Pending callback-type views. The
-// row stays a renderRow callback because its content differs per page.
-function renderCustomerCardListSection({ label, customers, color, sectionId, toggleHandlerName, renderRow }) {
-if (customers.length === 0) {
-return `<div style="margin-bottom: 16px; padding: 10px 4px; border-bottom: 2px solid ${color};">
-<span style="color: ${color}; font-size: 15px; font-weight: 700;">${escapeHtml(label)}</span>
-<span style="margin-left: 10px; color: var(--wb-muted, #5b6577); font-size: 13px;">No customers</span>
+// Pure. 8 reads "8 min", 187 reads "3 h 7 min", 120 reads "2 h".
+function formatDueMinutes(minutes) {
+if (minutes < 60) return `${minutes} min`;
+const hours = Math.floor(minutes / 60);
+const rest = minutes % 60;
+return rest ? `${hours} h ${rest} min` : `${hours} h`;
+}
+
+// Pure. The time on the right of an SLA row. Red is missed or within 15
+// minutes, amber is within the hour, grey is later.
+function slaDueDisplay(customer, now) {
+if (!customer.slaDate) return { text: '', tone: 'mut' };
+const minsUntil = Math.round((customer.slaDate.getTime() - now) / 60000);
+if (customer.status === 'Missed' || minsUntil <= 0) return { text: `Missed ${formatDueMinutes(Math.abs(minsUntil))}`, tone: 'bad' };
+return { text: formatDueMinutes(minsUntil), tone: minsUntil <= 15 ? 'bad' : (minsUntil <= 60 ? 'warn' : 'mut') };
+}
+
+// Pure. "DATE ONLY" reads "Date only"; anything not all capitals is left.
+function sentenceCase(text) {
+const s = String(text || '').trim();
+if (!s || s !== s.toUpperCase()) return s;
+return s.charAt(0) + s.slice(1).toLowerCase();
+}
+
+// Pure. The campaign as it reads on the grey line: "Peugeot - Enquiry - New
+// (pcr_code)" becomes "Peugeot Enquiry, New". The full name is in the opened row.
+function shortCampaign(campaign) {
+const parts = String(campaign || '').replace(/\s*\([^)]*_[^)]*\)\s*$/, '').split(' - ').map((p) => p.trim()).filter(Boolean);
+if (parts.length < 3) return parts.join(' ');
+return `${parts.slice(0, -1).join(' ')}, ${parts[parts.length - 1]}`;
+}
+
+// Pure. What a Lead Checker result shows on its lead: one tag in the shared
+// tier colour, and for Post Closure the reason for the grey line. Post
+// Closure tags are only ever the two actions.
+function leadCheckerTagFor(leadChecker) {
+const badge = pickLeadCheckerBadge(leadChecker);
+if (!badge) return null;
+const isPostClosure = !!leadChecker.postClosureAction || badge.label === 'check: needs contact?';
+if (!isPostClosure) return { text: sentenceCase(badge.label), color: badge.color, reason: '', full: '' };
+const shorthand = POST_CLOSURE_SHORTHAND[leadChecker.postClosureReason];
+return {
+text: leadChecker.postClosureAction || 'check: needs contact?',
+color: badge.color,
+reason: leadChecker.postClosureReason ? `${leadChecker.postClosureReason}${shorthand ? ` (${shorthand})` : ''}` : '',
+full: badge.label
+};
+}
+
+function renderDetailRow(label, valueHtml) {
+return `<dt>${label}</dt><dd>${valueHtml}</dd>`;
+}
+
+function renderCopyableField(value) {
+if (!value) return '<span class="sla-small">None</span>';
+const display = escapeHtml(value);
+return `<span class="sla-copyable" data-value="${display}" title="Click to copy">${display}</span>`;
+}
+
+// One lead: two lines, the initials as the actions button, the row itself
+// opening the details. Shared by the SLA and Pending lists.
+function renderLeadRow({ c, pageType, tone, dueText, dueTone, dueTitle, leadChecker, queuePosition, metaParts, detailRowsHtml }) {
+const tag = leadCheckerTagFor(leadChecker);
+const tagTitle = leadChecker ? [leadChecker.postClosureEvidence ? `Why: ${leadChecker.postClosureEvidence}` : '', leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
+const assignedText = c.assigned ? `Assigned${queuePosition ? `, ${ordinal(queuePosition.position)}` : ''}` : '';
+const assignedTitle = c.assigned ? `Assigned to ${c.agentName || 'an agent'}${queuePosition ? `, ${ordinal(queuePosition.position)} in their queue` : ''}` : '';
+// A lead Konnect already has queued while it shows unassigned here.
+const queueWarning = queuePosition && !c.assigned
+? `<span class="sla-tag warn" title="${escapeHtml(`Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown), so assigning it may be rejected.`)}">In ${escapeHtml(queuePosition.agentName)}'s queue</span>`
+: '';
+const tags = [
+tag ? `<span class="sla-tag" style="--tc: ${tag.color};" title="${escapeHtml(tagTitle)}">${escapeHtml(tag.text)}</span>` : '',
+queueWarning,
+!tag && c.assigned ? `<span class="sla-tag done" title="${escapeHtml(assignedTitle)}">${escapeHtml(assignedText)}</span>` : ''
+].join('');
+const meta = [tag && tag.reason, ...metaParts, tag && c.assigned ? assignedText : ''].filter(Boolean).map(escapeHtml).join(' &middot; ');
+const details = [
+detailRowsHtml,
+tag && tag.full ? renderDetailRow('Post Closure', escapeHtml(tag.full)) : '',
+tag && !tag.full ? renderDetailRow('Lead Checker', escapeHtml([tag.text, leadChecker.subCategory].filter(Boolean).join(': '))) : '',
+leadChecker && leadChecker.postClosureEvidence ? renderDetailRow('Why', escapeHtml(leadChecker.postClosureEvidence)) : '',
+c.assigned ? renderDetailRow('Assigned', escapeHtml(`${c.agentName || 'An agent'}${queuePosition ? `, ${ordinal(queuePosition.position)} in the queue` : ''}`)) : ''
+].join('');
+const avatarTone = queueWarning ? 'amb' : (tone === 'bad' ? 'red' : (tone === 'warn' ? 'amb' : ''));
+return `<div class="customer-card sla-r" data-customer-name="${escapeHtml(c.name.toLowerCase())}" data-lead-key="${escapeHtml(c.key)}" data-page-type="${pageType}" data-assigned="${c.assigned ? 1 : 0}" data-agent-name="${escapeHtml(c.agentName || '')}">
+<button type="button" class="avatar-circle sla-av ${avatarTone}" title="Actions for ${escapeHtml(c.name)}" aria-haspopup="true">${escapeHtml(initialsFor(c.name))}</button>
+<div class="contact-toggle sla-rmain" onclick="window._toggleCustomerContact(this)" aria-expanded="false" title="Show or hide details">
+<span class="sla-nm"><i class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}">${escapeHtml(c.name)}</i>${tags}</span>
+<span class="sla-due ${dueTone}" title="${escapeHtml(dueTitle || '')}">${escapeHtml(dueText)}</span>
+<span class="sla-meta">${meta}</span>
+</div>
+<dl class="contact-details" style="display: none;">${details}</dl>
 </div>`;
 }
+
+// Shared section shell for the SLA tier and Pending callback-type views. The
+// row stays a renderRow callback because its content differs per page.
+function renderCustomerCardListSection({ label, tooltip, customers, sectionId, toggleHandlerName, renderRow }) {
+const tip = tooltip ? `${tooltip} ` : '';
+if (customers.length === 0) {
+return `<div class="sla-grp" title="${escapeHtml(tip.trim())}">${escapeHtml(label)} <span>No customers</span></div>`;
+}
 const collapsed = isSectionCollapsed(sectionId);
-return `<div style="margin-bottom: 16px;">
-<div onclick="window.${toggleHandlerName}('${sectionId}')" style="cursor: pointer; padding: 10px 4px;
-display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid ${color};">
-<div>
-<span style="font-weight: 700; color: var(--wb-text, #1c1c1e); font-size: 15px;">${escapeHtml(label)}</span>
-<span style="font-size: 13px; color: var(--wb-muted, #5b6577); margin-left: 10px;">${customers.length}</span>
-</div>
-<span style="color: ${color};">${chevronIcon(collapsed, 'toggle-' + sectionId)}</span>
-</div>
-<div id="${sectionId}" class="collapsible-section" style="display: ${collapsed ? 'none' : 'block'};">
-<div class="lead-row-card">
-${customers.map(renderRow).join('<div style="height: 1px; background: var(--wb-bg, #f2f2f7); margin-left: 64px;"></div>')}
-</div>
+return `<div class="sla-g">
+<button type="button" class="sla-grp" id="toggle-${sectionId}" aria-expanded="${collapsed ? 'false' : 'true'}" aria-controls="${sectionId}" onclick="window.${toggleHandlerName}('${sectionId}')" title="${escapeHtml(tip)}Click to fold or unfold">${escapeHtml(label)} <span>${customers.length}</span></button>
+<div id="${sectionId}" class="collapsible-section sla-list" style="display: ${collapsed ? 'none' : 'block'};">
+${customers.map(renderRow).join('')}
 </div>
 </div>`;
 }
 
-function renderCallbackTypeSection(typeName, customers, color) {
+function renderCallbackTypeSection(typeName, customers) {
 const sectionId = 'cb-' + slugify(typeName);
 // Loaded once per section, not per card.
 const leadCheckerResults = loadLeadCheckerImportState().results;
@@ -5631,63 +5909,33 @@ const orderedCustomers = isLeadCheckerPrioritySortEnabled()
 return renderCustomerCardListSection({
 label: typeName,
 customers: orderedCustomers,
-color,
 sectionId,
 toggleHandlerName: '_toggleCallbackType',
 renderRow: (c) => {
-const queuePosition = findAgentQueuePositionInSnapshot({ email: c.email, phone: c.mobile }, agentQueueSnapshot);
-const leadChecker = findLeadCheckerResultForCustomerIndexed(c, leadCheckerResultIndex);
-const leadCheckerTitle = leadChecker ? [leadChecker.postClosureEvidence ? `Why: ${leadChecker.postClosureEvidence}` : '', leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
-const leadCheckerBadge = pickLeadCheckerBadge(leadChecker);
-const urgencyBadge = pickUrgencyBadge(null, queuePosition, c.assigned);
-const secondaryLine = buildSecondaryLine(urgencyBadge, null, queuePosition, c.assigned);
-const urgencyBadgeTitle = urgencyBadge?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown), so assigning it may be rejected.` : '';
-const nextActionLabel = c.nextActionDate ? escapeHtml(c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })) : 'Unknown';
-// List only view shrinks the rows themselves, which take most of the space,
-// so more leads fit on screen.
-const zenCompact = isZenModeOn();
-const cardPadding = zenCompact ? '8px 14px' : '12px 14px';
-const avatarSize = zenCompact ? 30 : 38;
-const nameRowMargin = zenCompact ? '3px' : '9px';
-const avatarColor = urgencyBadge ? urgencyBadge.color : (leadCheckerBadge ? leadCheckerBadge.color : '#8e8e93');
-return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" data-lead-key="${escapeHtml(c.key)}" data-page-type="${PAGE_PENDING}" data-assigned="${c.assigned ? 1 : 0}" data-agent-name="${escapeHtml(c.agentName || '')}" style="padding: ${cardPadding};">
-<div style="display: flex; align-items: center; gap: 12px; margin-bottom: ${nameRowMargin};">
-${renderAvatarCircle(c.name, avatarColor, avatarSize)}
-<div style="flex: 1; min-width: 0;">
-<div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: var(--wb-text, #1c1c1e); font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${escapeHtml(c.name)}</span>
-${leadCheckerBadge ? `<span title="${escapeHtml(leadCheckerTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: ${leadCheckerBadge.color}18; color: ${leadCheckerBadge.color}; white-space: nowrap;">${escapeHtml(leadCheckerBadge.label)}</span>` : ''}
-${urgencyBadge ? `<span title="${escapeHtml(urgencyBadgeTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: ${urgencyBadge.color}18; color: ${urgencyBadge.color}; white-space: nowrap;">${escapeHtml(urgencyBadge.label)}</span>` : ''}
-</div>
-<div style="font-size: 12.5px; color: var(--wb-muted, #5b6577); margin-top: 2px;">${secondaryLine || `Next action: ${nextActionLabel}`}</div>
-</div>
-${c.assigned ? `<span title="Assigned to ${escapeHtml(c.agentName || 'an agent')}" style="flex-shrink: 0;">${svgIcon('check', 18, ' color: #047857;')}</span>` : ''}
-</div>
-${secondaryLine ? `<div style="font-size: 12.5px; color: var(--wb-muted, #5b6577); margin-bottom: ${zenCompact ? '4px' : '9px'}; margin-left: 50px;">Next action: ${nextActionLabel}</div>` : ''}
-${zenCompact ? '' : renderContactToggle(`
-<div>
-<div style="color: var(--wb-muted, #5b6577); font-size: 11px; font-weight: 700; margin-bottom: 4px;">MOBILE</div>
-${renderCopyableField(c.mobile)}
-</div>
-<div>
-<div style="color: var(--wb-muted, #5b6577); font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
-${renderCopyableField(c.email)}
-</div>
-<div>
-<div style="color: var(--wb-muted, #5b6577); font-size: 11px; font-weight: 700; margin-bottom: 4px;">LANDLINE</div>
-${renderCopyableField(c.landline)}
-</div>
-`)}
-${zenCompact ? '' : `<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-left: 50px;">
-<span style="color: var(--wb-muted, #5b6577);">${escapeHtml(c.brand || '')}</span>
-<span style="color: #047857;">${escapeHtml(c.campaign || '')}</span>
-</div>`}
-</div>`;
+const nextActionFull = c.nextActionDate ? c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Unknown';
+return renderLeadRow({
+c,
+pageType: PAGE_PENDING,
+tone: '',
+dueText: c.nextActionDate ? formatTimeForInput(c.nextActionDate) : '',
+dueTone: 'mut',
+dueTitle: `Next action: ${nextActionFull}`,
+leadChecker: findLeadCheckerResultForCustomerIndexed(c, leadCheckerResultIndex),
+queuePosition: findAgentQueuePositionInSnapshot({ email: c.email, phone: c.mobile }, agentQueueSnapshot),
+metaParts: [c.brand, shortCampaign(c.campaign)],
+detailRowsHtml: [
+renderDetailRow('Mobile', renderCopyableField(c.mobile)),
+renderDetailRow('Email', renderCopyableField(c.email)),
+renderDetailRow('Landline', renderCopyableField(c.landline)),
+renderDetailRow('Campaign', escapeHtml(c.campaign || '')),
+renderDetailRow('Next action', escapeHtml(nextActionFull))
+].join('')
+});
 }
 });
 }
 
-function renderTierSection(tierName, customers, color, tierId) {
+function renderTierSection(tierInfo, customers) {
 // Loaded once per tier section, not per card.
 const leadCheckerResults = loadLeadCheckerImportState().results;
 const leadCheckerResultIndex = buildLeadCheckerResultIndex(leadCheckerResults);
@@ -5695,56 +5943,31 @@ const agentQueueSnapshot = loadAgentQueueSnapshot();
 const orderedCustomers = isLeadCheckerPrioritySortEnabled()
 ? sortByLeadCheckerPriority(customers, leadCheckerResults, (c) => c.slaDate)
 : customers;
+const now = Date.now();
 return renderCustomerCardListSection({
-label: tierName,
+label: tierInfo.name,
+tooltip: `${tierInfo.name}: ${tierInfo.holds}.`,
 customers: orderedCustomers,
-color,
-sectionId: tierId,
+sectionId: tierInfo.id,
 toggleHandlerName: '_toggleTier',
 renderRow: (c) => {
-const urgency = slaUrgencyInfo(c);
-const leadChecker = findLeadCheckerResultForCustomerIndexed(c, leadCheckerResultIndex);
-const leadCheckerTitle = leadChecker ? [leadChecker.postClosureEvidence ? `Why: ${leadChecker.postClosureEvidence}` : '', leadChecker.reason, leadChecker.initialNotes].filter(Boolean).join('\n\n') : '';
-const queuePosition = findAgentQueuePositionInSnapshot(c, agentQueueSnapshot);
-const leadCheckerBadge = pickLeadCheckerBadge(leadChecker);
-const urgencyBadge = pickUrgencyBadge(urgency, queuePosition, c.assigned);
-const secondaryLine = buildSecondaryLine(urgencyBadge, urgency, queuePosition, c.assigned);
-const urgencyBadgeTitle = urgencyBadge?.source === 'queue' ? `Shows unassigned here, but Konnect's own Queue by Agent already has this lead queued to ${queuePosition.agentName} (position ${queuePosition.position} of the last ${queuePosition.totalShown} shown), so assigning it may be rejected.` : '';
-// List only view shrinks the rows themselves, which take most of the space,
-// so more leads fit on screen.
-const zenCompact = isZenModeOn();
-const cardPadding = zenCompact ? '8px 14px' : '12px 14px';
-const avatarSize = zenCompact ? 30 : 38;
-const nameRowMargin = zenCompact ? '3px' : '9px';
-const avatarColor = urgencyBadge ? urgencyBadge.color : (leadCheckerBadge ? leadCheckerBadge.color : '#8e8e93');
-return `<div class="customer-card" data-customer-name="${escapeHtml(c.name.toLowerCase())}" data-lead-key="${escapeHtml(c.key)}" data-page-type="${PAGE_SLA}" data-assigned="${c.assigned ? 1 : 0}" data-agent-name="${escapeHtml(c.agentName || '')}" style="padding: ${cardPadding};">
-<div style="display: flex; align-items: center; gap: 12px; margin-bottom: ${nameRowMargin};">
-${renderAvatarCircle(c.name, avatarColor, avatarSize)}
-<div style="flex: 1; min-width: 0;">
-<div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-<span class="sla-copyable" data-value="${escapeHtml(stripTitle(c.name))}" style="cursor: pointer; font-weight: 600; color: var(--wb-text, #1c1c1e); font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${escapeHtml(c.name)}</span>
-${leadCheckerBadge ? `<span title="${escapeHtml(leadCheckerTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: ${leadCheckerBadge.color}18; color: ${leadCheckerBadge.color}; white-space: nowrap;">${escapeHtml(leadCheckerBadge.label)}</span>` : ''}
-${urgencyBadge ? `<span title="${escapeHtml(urgencyBadgeTitle)}" style="display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: ${urgencyBadge.color}18; color: ${urgencyBadge.color}; white-space: nowrap;">${escapeHtml(urgencyBadge.label)}</span>` : ''}
-</div>
-${secondaryLine ? `<div style="font-size: 12.5px; color: var(--wb-muted, #5b6577); margin-top: 2px;">${secondaryLine}</div>` : ''}
-</div>
-${c.assigned ? `<span title="Assigned to ${escapeHtml(c.agentName || 'an agent')}" style="flex-shrink: 0;">${svgIcon('check', 18, ' color: #047857;')}</span>` : ''}
-</div>
-${zenCompact ? '' : renderContactToggle(`
-<div>
-<div style="color: var(--wb-muted, #5b6577); font-size: 11px; font-weight: 700; margin-bottom: 4px;">PHONE</div>
-${renderCopyableField(c.phone)}
-</div>
-<div>
-<div style="color: var(--wb-muted, #5b6577); font-size: 11px; font-weight: 700; margin-bottom: 4px;">EMAIL</div>
-${renderCopyableField(c.email)}
-</div>
-`)}
-${zenCompact ? '' : `<div style="display: flex; gap: 6px; flex-wrap: wrap; font-size: 12px; margin-left: 50px;">
-<span style="color: var(--wb-muted, #5b6577);">${escapeHtml(c.source)}</span>
-<span style="color: #047857;">${escapeHtml(c.campaign)}</span>
-</div>`}
-</div>`;
+const due = slaDueDisplay(c, now);
+return renderLeadRow({
+c,
+pageType: PAGE_SLA,
+tone: due.tone,
+dueText: due.text,
+dueTone: due.tone,
+dueTitle: c.slaDate ? `SLA: ${c.slaDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}` : '',
+leadChecker: findLeadCheckerResultForCustomerIndexed(c, leadCheckerResultIndex),
+queuePosition: findAgentQueuePositionInSnapshot(c, agentQueueSnapshot),
+metaParts: [c.source, shortCampaign(c.campaign)],
+detailRowsHtml: [
+renderDetailRow('Phone', renderCopyableField(c.phone)),
+renderDetailRow('Email', renderCopyableField(c.email)),
+renderDetailRow('Campaign', escapeHtml(c.campaign || ''))
+].join('')
+});
 }
 });
 }
@@ -5807,15 +6030,37 @@ if (c.emailOnly) lines.push(`Email Only: ${c.emailOnly} assigned, ${c.emailOnlyD
 return lines;
 }
 
+// Pure. One chip per kind of work, showing the number that matters; the full
+// sentence from todaySummaryLines shows when the chip is clicked.
+function todayChips(c) {
+const chips = [];
+const lines = todaySummaryLines(c);
+if (c.nationalChecked) chips.push({ kind: 'national', label: `National ${c.reSetupToDo} to do`, detail: lines[chips.length] });
+if (c.sendBack || c.toCheck) chips.push({ kind: 'postClosure', label: `Post Closure ${c.sendBack} to send back`, detail: lines[chips.length] });
+if (c.emailOnly) chips.push({ kind: 'emailOnly', label: `Email Only ${c.emailOnly}`, detail: lines[chips.length] });
+return chips;
+}
+
+// Which Today chip is open, kept here so a redraw does not fold it.
+let todayOpenKind = null;
+
 function renderTodaySummary() {
-let lines = [];
-try { lines = todaySummaryLines(loadTodayCounts()); } catch (error) { lines = []; }
-if (!lines.length) return '<div id="_slaTodaySummary"></div>';
-return `<div id="_slaTodaySummary" style="margin: 0 0 10px; padding: 6px 10px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 8px; background: var(--wb-surface, white); font-size: 11.5px; line-height: 1.5; color: var(--wb-text, #1c1c1e);">
-<div style="font-size: 11px; font-weight: 700; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px;">TODAY</div>
-${lines.map((line) => `<div>${escapeHtml(line)}</div>`).join('')}
+let chips = [];
+try { chips = todayChips(loadTodayCounts()); } catch (error) { chips = []; }
+if (!chips.length) return '<div id="_slaTodaySummary" hidden></div>';
+const open = chips.find((chip) => chip.kind === todayOpenKind);
+return `<div id="_slaTodaySummary" class="sla-col" style="gap: 5px;">
+<div class="sla-cf"><span class="sla-lbl">Today</span>
+${chips.map((chip) => `<button type="button" class="sla-chip" data-kind="${chip.kind}" aria-pressed="${open === chip ? 'true' : 'false'}" title="${escapeHtml(chip.detail)}" onclick="window._toggleTodayDetail(this.dataset.kind)">${escapeHtml(chip.label)}</button>`).join('')}
+</div>
+<div class="sla-small" role="status" ${open ? '' : 'hidden'}>${open ? escapeHtml(open.detail) : ''}</div>
 </div>`;
 }
+
+window._toggleTodayDetail = function(kind) {
+todayOpenKind = todayOpenKind === kind ? null : kind;
+renderTodaySummaryInPlace();
+};
 
 function renderTodaySummaryInPlace() {
 const el = document.getElementById('_slaTodaySummary');
@@ -5851,6 +6096,8 @@ emailOnly: [{ email: 'Eve@example.com' }, { email: 'dan@example.com' }]
 check('counts', counts, { nationalChecked: 4, reSetupToDo: 1, reSetupDone: 1, sendBack: 2, sendBackDone: 1, toCheck: 1, emailOnly: 2, emailOnlyDone: 1 });
 check('lines', todaySummaryLines(counts), ['National: 4 checked, Re setup 1 to do, 1 done', 'Post Closure: 2 to send back (1 done), 1 to check', 'Email Only: 2 assigned, 1 done']);
 check('nothing stored gives no lines', todaySummaryLines(computeTodayCounts({})), []);
+check('chips show what is left to do and carry the full line', todayChips(counts).map((chip) => `${chip.label}|${chip.detail}`), ['National 1 to do|National: 4 checked, Re setup 1 to do, 1 done', 'Post Closure 2 to send back|Post Closure: 2 to send back (1 done), 1 to check', 'Email Only 2|Email Only: 2 assigned, 1 done']);
+check('a kind with nothing in has no chip', todayChips(computeTodayCounts({ emailOnly: [{ email: 'eve@example.com' }] })).map((chip) => chip.kind), ['emailOnly']);
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager today-summary self-test FAILED:\n' + failures.join('\n'));
 } else {
@@ -5858,105 +6105,125 @@ console.info('SLA Manager today-summary self-test passed');
 }
 });
 
-// Shared chrome for both pages; only the title, counts, assign section and
-// body differ. The header, link line and footer never shrink; Overview and
-// Assign scroll in their own area so the list always keeps a usable height.
-// The box sets its own type so nothing is inherited from the host page.
-// The search bar's negative offset and margins cancel the list's padding, so
-// it sticks flush to the top and sides and no card shows around it.
-function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml, hideSearch, onTitleClick, showLeadChecker }) {
+// One line of the More menu. The menu closes on a click unless `keep` is
+// set, for lines that answer in their own text.
+function renderMoreItem(icon, label, onclick, options) {
+const o = options || {};
+return `<button type="button" role="menuitem" class="sla-mi ${o.danger ? 'danger' : ''}" ${o.keep ? 'data-keep="1"' : ''} ${o.disabled ? 'disabled' : ''} ${o.title ? `title="${escapeHtml(o.title)}"` : ''} onclick="${onclick}">${svgIcon(icon, 14)}<span>${label}</span>${o.state ? `<em>${o.state}</em>` : ''}</button>`;
+}
+
+// Everything not used every few minutes, in one named list. Lines that need
+// the lead list or the Assign card are greyed where those are not showing.
+function renderMoreMenu(leadsView) {
+const size = getPanelSize();
+const zen = isZenModeOn();
+const needsLeads = { disabled: !leadsView, title: leadsView ? '' : 'Go back to the leads first' };
+const needsAssign = { disabled: !leadsView || zen, title: !leadsView ? 'Go back to the leads first' : (zen ? 'Turn List only view off first' : '') };
+const sizeItems = [
+size !== 'standard' ? renderMoreItem('restore', 'Standard size', `window._setPanelSize('standard')`) : '',
+size !== 'compact' ? renderMoreItem('shrink', 'Compact size', `window._setPanelSize('compact')`) : '',
+size !== 'full' ? renderMoreItem('expand', 'Full size, two columns', `window._setPanelSize('full')`) : ''
+].join('');
+const sep = '<div class="sla-ms"></div>';
+return `<div id="_slaMoreMenu" class="sla-pop" role="menu" aria-label="More" hidden>
+${renderMoreItem('minimize', 'Hide the panel', 'window._toggleMinimizePanel()', { title: 'Click the badge in the top bar to bring it back' })}
+${sep}
+${renderMoreItem('sort', 'Sort by Lead Checker category', 'window._toggleLeadCheckerPrioritySort()', { ...needsLeads, state: isLeadCheckerPrioritySortEnabled() ? 'on' : 'off', title: needsLeads.title || 'Groups each section by Lead Checker category, most urgent first within each' })}
+${sizeItems}
+${renderMoreItem('arrowUp', 'Back to top', `document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0`)}
+${renderMoreItem('list', 'List only view', 'window._toggleZenMode()', { ...needsLeads, state: zen ? 'on' : 'off', title: needsLeads.title || 'Hides Overview, Assign, Filters and Today so more leads fit' })}
+${sep}
+${renderMoreItem('refresh', 'Scan again', 'window._refreshLeadsAndPanel()', needsLeads)}
+${renderMoreItem('user', 'Refresh agents', 'window._refreshAssignSection()', needsAssign)}
+${renderMoreItem('clock', 'History', 'window._showAssignHistory()', { ...needsAssign, title: needsAssign.title || 'How many leads each agent has been assigned today' })}
+${renderMoreItem('queue', 'Queue', 'window._checkAgentQueuePositions(null)', { ...needsLeads, title: needsLeads.title || "Reads each agent's live call queue from Konnect and shows how many leads each has not called yet" })}
+${renderMoreItem('paste', 'Paste Lead Checker results', `window._pasteAndClassifyLeadChecker(this.querySelector('span'))`, { ...needsLeads, keep: true, title: needsLeads.title || 'Reads the results copied from the Lead Checker off the clipboard and shows them on the leads' })}
+${renderMoreItem('trash', 'Clear Queue', 'window._clearWholeQueue()', { ...needsLeads, danger: true, title: needsLeads.title || "Unassigns every lead (Konnect's Clear Queues). There is no undo" })}
+${sep}
+${renderMoreItem('flag', 'Report a problem', 'window._slaReportProblem()')}
+${renderMoreItem('stop', 'Clear &amp; Stop', 'window._slaResetBookmarklet()', { danger: true })}
+${renderVersionLine()}
+</div>`;
+}
+
+window._toggleMoreMenu = function(forceOpen) {
+const menu = document.getElementById('_slaMoreMenu');
+const button = document.getElementById('_slaMoreBtn');
+if (!menu) return;
+const open = typeof forceOpen === 'boolean' ? forceOpen : menu.hidden;
+menu.hidden = !open;
+if (button) button.setAttribute('aria-expanded', open ? 'true' : 'false');
+};
+
+// Shared chrome for every view: header, Konnect Live strip, body, footer and
+// the More menu. Only the header buttons, counts, top area and body differ.
+// The header, strip and footer never shrink; Overview and Assign scroll in
+// their own area so the list always keeps a usable height. At full size the
+// two areas sit side by side. The search bar's negative offset and margins
+// cancel the list's padding, so it sticks flush to the top and sides.
+// headerMode: 'leads' (Send, Checks), 'checks' (Back to leads), 'national'
+// (Back to checks) or 'plain' (Checks only).
+function renderPanelShell({ view, headerMode, subtitle, summaryHtml, assignSectionHtml, bodyHtml, hideSearch, onTitleClick, showLeadChecker, footerText }) {
 const panelSize = getPanelSize();
-const isFull = panelSize === 'full';
-const positionStyle = isFull
-? 'top: 0; right: 0; bottom: 0; height: 100vh; width: 450px; border-radius: 0;'
-: 'bottom: 20px; right: 20px; width: 400px; height: min(560px, calc(100vh - 90px)); border-radius: 20px;';
+const zen = headerMode === 'leads' && isZenModeOn();
+const leadsView = headerMode === 'leads';
 
 // The poll rebuilds the whole shell on a page switch, so the minimised state
 // is reapplied here from PANEL_STATE_KEY.
 const isMinimized = localStorage.getItem(PANEL_STATE_KEY) === 'hidden';
+const topHtml = ((summaryHtml || '') + (assignSectionHtml || '')).trim();
+const todayHtml = zen ? '' : renderTodaySummary();
+const headerButton = (icon, label, onclick, title, when) => `<button type="button" class="sla-hbtn ${when || ''}" onclick="${onclick}" title="${title}">${svgIcon(icon, 14)}${label}</button>`;
+const buttons = {
+leads: headerButton('send', 'Send', 'window._toggleLeadCheckerPopover()', 'Send leads to the Lead Checker, or bring results back by hand', 'sla-when-main')
++ headerButton('checklist', 'Checks', 'window._toggleMorningChecks()', 'Morning checks', 'sla-when-main')
++ headerButton('back', 'Back to leads', 'window._toggleLeadCheckerPopover()', 'Back to the lead list', 'sla-when-send'),
+checks: headerButton('back', 'Back to leads', 'window._toggleMorningChecks()', 'Back to the lead list'),
+national: headerButton('back', 'Back to checks', 'window._showNationalResults(false)', 'Back to the morning checks'),
+plain: headerButton('checklist', 'Checks', 'window._toggleMorningChecks()', 'Morning checks')
+}[headerMode] || '';
+const sizeButton = panelSize === 'standard'
+? `<button type="button" id="_slaSizeBtn" onclick="window._togglePanelSize()" title="Two columns, full height">${svgIcon('expand', 12)}Full size</button>`
+: `<button type="button" id="_slaSizeBtn" onclick="window._togglePanelSize()" title="Back to the standard size">${svgIcon(panelSize === 'full' ? 'shrink' : 'expand', 12)}Standard size</button>`;
 
 return `
-<div id="${PANEL_BOX_ID}" data-view="${escapeHtml(title)}" style="position: fixed; ${positionStyle}
-background: var(--wb-bg, #f2f2f7); box-shadow: 0 20px 50px -12px rgba(0,0,0,0.25);
-z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-font-size: 13px; font-weight: 400; font-style: normal; line-height: 1.43; letter-spacing: normal; text-align: left; text-transform: none; color: var(--wb-text, #1c1c1e);
-display: flex; flex-direction: column; transition: transform 0.3s ease; ${isMinimized ? 'transform: translateX(150%);' : ''}">
-
-<div style="position: sticky; top: 0; background: #1e293b; color: white; padding: 10px 14px;
-display: flex; justify-content: space-between; align-items: center;
-flex-shrink: 0;">
-<div style="display: flex; align-items: center; gap: 8px;">
-<h2 ${onTitleClick ? `onclick="${onTitleClick}" title="Click to refresh the leads and this panel" style="margin: 0; font-size: 15px; font-weight: 700; cursor: pointer; display: flex; align-items: center; gap: 4px;"` : `style="margin: 0; font-size: 15px; font-weight: 700;"`}>${title}${onTitleClick ? svgIcon('refresh', 12, ' opacity: 0.55;') : ''}</h2>
-<span style="color: #cbd5e1; font-size: 13px;">${count}</span>
-${newCount > 0 ? `<span style="color: #d97706; font-size: 13px; font-weight: 600;">+${newCount}</span>` : ''}
-${removedCount > 0 ? `<span style="color: #cbd5e1; font-size: 13px; font-weight: 600;">−${removedCount}</span>` : ''}
+<div id="${PANEL_BOX_ID}" data-view="${escapeHtml(view)}" data-size="${panelSize}" style="${isMinimized ? 'transform: translateX(150%);' : ''}">
+<div class="sla-hd">
+<div class="sla-name">
+${onTitleClick ? `<button type="button" class="sla-ttl" onclick="${onTitleClick}" title="Scan again">SLA Manager${svgIcon('refresh', 12)}</button>` : '<span class="sla-ttl">SLA Manager</span>'}
+<span class="sla-sub sla-when-main" title="${escapeHtml(subtitle || '')}${zen ? ', list only view' : ''}">${escapeHtml(subtitle || '')}${zen ? ' &middot; list only' : ''}</span>
+<span class="sla-sub sla-when-send">Send to Lead Checker</span>
 </div>
-<div style="display: flex; gap: 2px; align-items: center; position: relative;">
-${showLeadChecker ? `<button onclick="window._toggleLeadCheckerPopover();"
-style="background: transparent; border: none; color: #cbd5e1; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#cbd5e1';"
-title="Lead Checker: send leads over, bring results back" aria-label="Lead Checker: send leads over, bring results back">${svgIcon('inbox', 14)}</button>` : ''}
-<button onclick="window._toggleMorningChecks();"
-style="background: ${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)'}; border: none; color: ${currentPanelMode === 'morningChecks' ? '#fbbf24' : '#cbd5e1'}; cursor: pointer; padding: 5px 9px 5px 7px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center; gap: 4px; margin: 0 4px;"
-onmouseover="this.style.background='rgba(255,255,255,0.18)';" onmouseout="this.style.background='${currentPanelMode === 'morningChecks' ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.06)'}';"
-title="${currentPanelMode === 'morningChecks' ? 'Back to queue view' : 'Switch to Morning Checks'}">${svgIcon('checklist', 13)}<span style="font-size: 11px; font-weight: 600;">Checks</span></button>
-${showLeadChecker ? `<button onclick="window._toggleLeadCheckerPrioritySort();"
-style="background: ${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#cbd5e1'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isLeadCheckerPrioritySortEnabled() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isLeadCheckerPrioritySortEnabled() ? '#fbbf24' : '#cbd5e1'}';"
-aria-pressed="${isLeadCheckerPrioritySortEnabled() ? 'true' : 'false'}" aria-label="Sort by Lead Checker category"
-title="${isLeadCheckerPrioritySortEnabled() ? 'Sorting by Lead Checker category is on. Click to turn it off' : 'Sort by Lead Checker category: groups each section by category (Confirmed, Date only, Warm, Nurture), most urgent first within each'}">${svgIcon('bolt', 14)}</button>` : ''}
-<button onclick="window._toggleZenMode();"
-style="background: ${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}; border: none; color: ${isZenModeOn() ? '#38bdf8' : '#cbd5e1'}; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='${isZenModeOn() ? 'rgba(255,255,255,0.15)' : 'transparent'}'; this.style.color='${isZenModeOn() ? '#38bdf8' : '#cbd5e1'}';"
-aria-pressed="${isZenModeOn() ? 'true' : 'false'}" aria-label="List only view"
-title="${isZenModeOn() ? 'List only view is on. Click to show Overview, Assign and Filters again' : 'List only view: hides Overview, Assign and Filters and shrinks each card so more leads fit on screen'}">${svgIcon('focus', 14)}</button>
-<button id="_slaSizeBtn" onclick="window._togglePanelSize();"
-style="background: transparent; border: none; color: #cbd5e1; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#cbd5e1';"
-title="${isFull ? 'Shrink to box' : 'Expand to full height'}" aria-label="${isFull ? 'Shrink to box' : 'Expand to full height'}">${svgIcon(isFull ? 'shrink' : 'expand', 14)}</button>
-<button onclick="document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0;"
-style="background: transparent; border: none; color: #cbd5e1; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#cbd5e1';"
-title="Back to the top of the list" aria-label="Back to the top of the list">${svgIcon('arrowUp', 14)}</button>
-<button id="_slaMinimizeBtn" onclick="window._toggleMinimizePanel();"
-style="background: transparent; border: none; color: #cbd5e1; cursor: pointer; padding: 6px; border-radius: 6px; transition: background 0.15s, color 0.15s; display: flex; align-items: center;"
-onmouseover="this.style.background='rgba(255,255,255,0.1)'; this.style.color='white';" onmouseout="this.style.background='transparent'; this.style.color='#cbd5e1';"
-title="Hide the panel (click the badge in the top bar to bring it back)" aria-label="Hide the panel">${svgIcon(isMinimized ? 'restore' : 'minimize', 14)}</button>
+${buttons}
+<button type="button" id="_slaMoreBtn" class="sla-hbtn quiet" aria-haspopup="true" aria-expanded="false" onclick="window._toggleMoreMenu()">${svgIcon('more', 14)}More</button>
 </div>
-</div>
-
-${showLeadChecker ? renderLeadCheckerPopover() : ''}
-${((summaryHtml || '') + (assignSectionHtml || '')).trim() ? `<div id="_slaTopArea" style="flex: 0 1 auto; min-height: 0; overflow-y: auto; border-bottom: 1px solid var(--wb-border, #cbd5e1);">
+${renderLinkLine()}
+<div class="sla-main ${topHtml && !zen ? 'two' : ''}">
+${topHtml ? `<div id="_slaTopArea">
 ${summaryHtml || ''}
 ${assignSectionHtml || ''}
+${todayHtml}
 </div>` : ''}
-
-<div class="panelContent" style="flex: 1 1 160px; min-height: min(160px, 30vh); box-sizing: border-box; overflow-y: auto; padding: 20px; padding-right: 12px;">
+<div class="panelContent">
 ${renderSelfTestBanner()}
-${renderVersionLine()}
-${renderTodaySummary()}
-${hideSearch ? '' : `
-${showLeadChecker ? `<button onclick="window._pasteAndClassifyLeadChecker(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 10px;" title="Reads the results copied from the Lead Checker off the clipboard and shows them on the lead cards">${svgIcon('copy', 13)}Paste Lead Checker results</button>` : ''}
-<div id="_slaSearchBar" style="position: sticky; top: -20px; z-index: 2; background: var(--wb-bg, #f2f2f7); margin: -10px -12px 10px -20px; padding: 10px 12px 10px 20px;">
-<input type="text" id="customerSearchInput" placeholder="Search by name…" oninput="window._filterCustomerSearch(this.value)"
-style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; font-size: 13px; color: var(--wb-text, #1c1c1e); background: var(--wb-surface, white);">
+${renderNewerVersionNotice()}
+${topHtml ? '' : todayHtml}
+${hideSearch ? '' : `<div id="_slaSearchBar">
+<input type="text" id="customerSearchInput" placeholder="Search by name" oninput="window._filterCustomerSearch(this.value)">
 </div>`}
 ${bodyHtml}
 </div>
-
-${renderLinkLine()}
-<div style="border-top: 1px solid var(--wb-border, #cbd5e1); padding: 8px 14px; background: var(--wb-surface, white); flex-shrink: 0; display: flex; justify-content: space-between; align-items: center;">
-<button onclick="window._slaReportProblem();" style="padding: 6px 12px; background: transparent; color: var(--wb-muted, #64748b); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Report a problem</button>
-<button onclick="window._slaResetBookmarklet();"
-style="padding: 6px 12px; background: transparent; color: var(--wb-danger, #dc2626); border: 1px solid var(--wb-danger, #dc2626); border-radius: 6px; cursor: pointer; font-size: 11px; font-weight: 600;">Clear & Stop</button>
+${showLeadChecker ? renderLeadCheckerPopover() : ''}
 </div>
+${renderMoreMenu(leadsView)}
+<div class="sla-ft"><span>${footerText || ''}</span>${sizeButton}</div>
 </div>
 `;
 }
 
 function showTableNotFoundPanel(tableName) {
 mountPanel(renderPanelShell({
-title: 'SLA Manager', count: '', newCount: 0, removedCount: 0, summaryHtml: '', assignSectionHtml: '', hideSearch: true,
+view: 'missing', headerMode: 'plain', subtitle: '', summaryHtml: '', assignSectionHtml: '', hideSearch: true,
 bodyHtml: renderZeroState('warning', `${tableName} table not found`, 'The table has not loaded yet, or the page layout has changed. Reload the page, then click the bookmarklet again.')
 }));
 }
@@ -6006,6 +6273,7 @@ topAreaScrollTop: q('#_slaTopArea') ? q('#_slaTopArea').scrollTop : 0,
 search: q('#customerSearchInput') ? q('#customerSearchInput').value : '',
 popoverOpen: shown(q('#leadCheckerPopover')),
 historyOpen: shown(q('#assignHistoryPanel')),
+openFolds: Array.from(panelElement.querySelectorAll('[onclick*="_slaFold"][aria-expanded="true"]')).map((el) => el.getAttribute('aria-controls')),
 openContacts: Array.from(panelElement.querySelectorAll('.customer-card')).filter((card) => shown(card.querySelector('.contact-details'))).map((card) => card.dataset.leadKey),
 openCheckDetails: Array.from(panelElement.querySelectorAll('[id^="_mcDetails_"]')).filter(shown).map((el) => el.id.replace('_mcDetails_', '')),
 notes
@@ -6023,7 +6291,11 @@ try { if (state.caret && typeof el.setSelectionRange === 'function') el.setSelec
 }
 // The rest only applies when the same view is drawn again.
 if (!box || box.dataset.view !== state.view) return;
-if (state.popoverOpen && q('#leadCheckerPopover')) q('#leadCheckerPopover').style.display = 'block';
+if (state.popoverOpen && q('#leadCheckerPopover')) setSendView(true);
+state.openFolds.forEach((id) => {
+const button = q(`[onclick*="_slaFold"][aria-controls="${id}"]`);
+if (button && button.getAttribute('aria-expanded') !== 'true') window._slaFold(button);
+});
 if (state.historyOpen && q('#assignHistoryPanel')) window._toggleAssignHistory();
 if (state.openContacts.length) {
 const open = new Set(state.openContacts);
@@ -6104,10 +6376,24 @@ panelBox.focus({ preventScroll: true });
 // A redraw held back while a drop-down or reason box had focus.
 panelElement.addEventListener('focusout', () => setTimeout(flushDeferredRedraw, 0));
 
+// A copy chip inside a row copies without also opening the row.
 panelElement.querySelectorAll('.sla-copyable').forEach(el => {
-el.addEventListener('click', function() {
+el.addEventListener('click', function(event) {
+event.stopPropagation();
 copyToClipboard(this.dataset.value, this);
 });
+});
+
+// The More menu closes on a click anywhere else, and after one of its own
+// lines unless that line answers in its own text.
+panelElement.addEventListener('click', (event) => {
+const menu = document.getElementById('_slaMoreMenu');
+if (!menu || menu.hidden || event.target.closest('#_slaMoreBtn')) return;
+const item = event.target.closest('#_slaMoreMenu .sla-mi');
+if (item ? !item.dataset.keep : !event.target.closest('#_slaMoreMenu')) window._toggleMoreMenu(false);
+});
+panelElement.addEventListener('keydown', (event) => {
+if (event.key === 'Escape') window._toggleMoreMenu(false);
 });
 
 // Delegated on the panel root so a picker swapped back in after a failed
@@ -6123,7 +6409,7 @@ window._manualAssignLead(el.dataset.pageType, el.dataset.leadKey, el.value, el);
 // the next mountPanel removes it.
 const avatarPopover = document.createElement('div');
 avatarPopover.id = '_slaAvatarAssignPopover';
-avatarPopover.style.cssText = 'display: none; position: fixed; z-index: 100001; width: 190px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; line-height: 1.43; text-align: left; color: var(--wb-text, #1c1c1e); background: var(--wb-surface, white); border-radius: 12px; box-shadow: 0 10px 30px -6px rgba(0,0,0,0.25); padding: 10px;';
+avatarPopover.style.cssText = 'display: none; position: fixed; z-index: 100001; width: 210px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 12.5px; line-height: 1.4; text-align: left; color: #1c1c1e; background: #ffffff; border-radius: 12px; box-shadow: 0 10px 30px rgba(15,23,42,0.3), 0 0 0 1px rgba(15,23,42,0.08); padding: 5px;';
 panelElement.appendChild(avatarPopover);
 
 function closeAvatarPopover() {
@@ -6146,9 +6432,9 @@ const assigned = card.dataset.assigned === '1';
 // The picker has its own wrapper: a failed assign redraws only that, so the
 // Open on Konnect Live entry below stays, with or without agents online.
 const assignHtml = assigned
-? `<div style="font-size: 11px; font-weight: 700; color: var(--wb-muted, #5b6577); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Assigned to</div><div style="font-size: 13px; color: var(--wb-text, #1c1c1e); padding: 4px 2px;">${escapeHtml(card.dataset.agentName || 'Unknown')}</div>`
-: `<div style="font-size: 11px; font-weight: 700; color: var(--wb-muted, #5b6577); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px;">Assign to</div><div>${renderManualAssignPicker(card.dataset.leadKey, card.dataset.pageType)}</div>`;
-avatarPopover.innerHTML = `${assignHtml}<button type="button" class="open-on-live" data-lead-key="${escapeHtml(card.dataset.leadKey)}" data-page-type="${escapeHtml(card.dataset.pageType)}" onclick="window._openLeadOnLive(this);" title="Asks the Lead Checker to open this lead in the Konnect Live tab" style="display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box; margin-top: 10px; padding: 6px 8px; background: transparent; color: var(--wb-text, #1c1c1e); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">${svgIcon('openOut', 13)}Open on Konnect Live</button>`;
+? `<div class="sla-mn">Assigned to</div><div style="padding: 0 9px 4px; font-weight: 600;">${escapeHtml(card.dataset.agentName || 'Unknown')}</div>`
+: `<div class="sla-mn">Assign to</div><div style="padding: 0 9px 4px;">${renderManualAssignPicker(card.dataset.leadKey, card.dataset.pageType)}</div>`;
+avatarPopover.innerHTML = `${assignHtml}<div class="sla-ms" style="height: 1px; background: #e3e6ec; margin: 4px 0;"></div><button type="button" class="open-on-live sla-mi" data-lead-key="${escapeHtml(card.dataset.leadKey)}" data-page-type="${escapeHtml(card.dataset.pageType)}" onclick="window._openLeadOnLive(this);" title="Asks the Lead Checker to open this lead in the Konnect Live tab">${svgIcon('openOut', 14)}Open on Konnect Live</button>`;
 avatarPopover.dataset.forCard = card.dataset.leadKey;
 const rect = el.getBoundingClientRect();
 avatarPopover.style.display = 'block';
@@ -6167,6 +6453,18 @@ initAssignSectionWheels();
 restorePanelViewState(viewState);
 }
 
+function leadCountText(count) {
+return `${count} lead${count === 1 ? '' : 's'}`;
+}
+
+// The footer's one line: the counts, when the list was last scanned and what
+// that scan added or lost.
+function leadsFooterText(customers, newCount, removedCount) {
+const assigned = customers.filter((c) => c.assigned).length;
+const changes = [newCount > 0 ? `${newCount} new` : '', removedCount > 0 ? `${removedCount} gone` : ''].filter(Boolean).map((part) => ` &middot; ${part}`).join('');
+return `${leadCountText(customers.length)} &middot; ${assigned} assigned &middot; ${escapeHtml(lastScannedLabel())}${changes}`;
+}
+
 // Pass invalidateCache false for re-renders that only change Queue by Agent
 // badges. A fresh DOM scrape right after navigating back raced Angular's
 // repopulation; reusing the cache avoids the live table entirely.
@@ -6182,18 +6480,18 @@ tier3: sortByUrgency(customers.filter(c => c.tier === 3)),
 tier4: sortByUrgency(customers.filter(c => c.tier === 4))
 };
 
-const bodyHtml = customers.length === 0 ? renderZeroState('inbox', 'No Leads in Queue', 'The SLA queue is empty. Check back when new leads arrive.') : `
-${renderTierSection('Tier 1 - Priority', tiered.tier1, '#dc2626', 'tier1')}
-${renderTierSection('Tier 2 - High', tiered.tier2, '#d97706', 'tier2')}
-${renderTierSection('Tier 3 - Medium', tiered.tier3, '#0d9488', 'tier3')}
-${renderTierSection('Tier 4 - Standard', tiered.tier4, '#94a3b8', 'tier4')}
-`;
+// Drawn first: it refills the leads cache the footer's scan time reads.
+const summaryHtml = renderSlaDueSummary();
+const bodyHtml = customers.length === 0
+? renderZeroState('inbox', 'No Leads in Queue', 'The SLA queue is empty. Check back when new leads arrive.')
+: SLA_TIERS.map((tierInfo) => renderTierSection(tierInfo, tiered[tierInfo.id])).join('');
 
 mountPanel(renderPanelShell({
-title: 'SLA Report',
-count: customers.length,
-newCount, removedCount,
-summaryHtml: renderSlaDueSummary(),
+view: 'sla',
+headerMode: 'leads',
+subtitle: leadCountText(customers.length),
+footerText: leadsFooterText(customers, newCount, removedCount),
+summaryHtml,
 assignSectionHtml: renderAssignSection(),
 bodyHtml,
 onTitleClick: 'window._refreshLeadsAndPanel()',
@@ -6208,19 +6506,17 @@ currentPageType = PAGE_PENDING;
 currentPanelMode = 'normal';
 if (invalidateCache) invalidateLeadsCache();
 
-const grouped = CALLBACK_TYPE_ORDER.map(type => ({
-type,
-color: CALLBACK_TYPE_COLORS[type],
-customers: customers.filter(c => c.callbackType === type)
-}));
-
-const bodyHtml = customers.length === 0 ? renderZeroState('inbox', 'No Pending Customers', 'Nothing in the queue right now.') : grouped.map(g => renderCallbackTypeSection(g.type, g.customers, g.color)).join('');
+const summaryHtml = renderPendingDueSummary();
+const bodyHtml = customers.length === 0
+? renderZeroState('inbox', 'No Pending Customers', 'Nothing in the queue right now.')
+: CALLBACK_TYPE_ORDER.map((type) => renderCallbackTypeSection(type, customers.filter(c => c.callbackType === type))).join('');
 
 mountPanel(renderPanelShell({
-title: 'Pending Customers',
-count: customers.length,
-newCount, removedCount,
-summaryHtml: renderPendingDueSummary(),
+view: 'pending',
+headerMode: 'leads',
+subtitle: `Pending \u00b7 ${leadCountText(customers.length)}`,
+footerText: leadsFooterText(customers, newCount, removedCount),
+summaryHtml,
 assignSectionHtml: renderPendingAssignSection(),
 bodyHtml,
 onTitleClick: 'window._refreshLeadsAndPanel()',
@@ -6631,30 +6927,20 @@ reportProblem('SLA Manager', `panel ${currentPanelMode || '-'}, page ${currentPa
 // PANEL UI TOGGLES
 // ===================================================================
 
-// Patches the box's size in place rather than rebuilding, which would rederive
-// the minimised transform. Every property is set for both states because
-// compact and full position the box with different properties.
+// The three sizes lay the panel out differently, so a change of size redraws
+// the view that is showing from what is already held.
+window._setPanelSize = function(size) {
+if (!PANEL_SIZES.includes(size) || !document.getElementById(PANEL_BOX_ID)) return;
+localStorage.setItem(PANEL_SIZE_KEY, size);
+if (currentPanelMode === 'morningChecks') displayMorningChecks();
+else if (currentPageType === PAGE_PENDING || currentPageType === PAGE_SLA) redrawLeadsPanel();
+else document.getElementById(PANEL_BOX_ID).dataset.size = size;
+};
+
+// The footer switch: standard to full size, and back to standard from
+// either of the others.
 window._togglePanelSize = function() {
-const panel = document.getElementById(PANEL_BOX_ID);
-const btn = document.getElementById('_slaSizeBtn');
-if (!panel) return;
-const current = getPanelSize();
-const next = current === 'full' ? 'compact' : 'full';
-localStorage.setItem(PANEL_SIZE_KEY, next);
-const isFull = next === 'full';
-Object.assign(panel.style, {
-top: isFull ? '0' : '',
-bottom: isFull ? '0' : '20px',
-right: isFull ? '0' : '20px',
-width: isFull ? '450px' : '400px',
-height: isFull ? '100vh' : 'min(560px, calc(100vh - 90px))',
-borderRadius: isFull ? '0' : '20px'
-});
-if (btn) {
-btn.innerHTML = svgIcon(isFull ? 'shrink' : 'expand', 14);
-btn.title = isFull ? 'Shrink to box' : 'Expand to full height';
-btn.setAttribute('aria-label', btn.title);
-}
+window._setPanelSize(getPanelSize() === 'standard' ? 'full' : 'standard');
 };
 
 // A full rebuild, since card order changes, but with invalidateCache false
@@ -6671,56 +6957,33 @@ displayPanel(currentCustomers, 0, 0, false);
 
 window._toggleMinimizePanel = function() {
 const panel = document.getElementById(PANEL_BOX_ID);
-const btn = document.getElementById('_slaMinimizeBtn');
 if (!panel) return;
 const isHidden = panel.style.transform === 'translateX(150%)';
 panel.style.transform = isHidden ? '' : 'translateX(150%)';
-if (btn) btn.innerHTML = svgIcon(isHidden ? 'minimize' : 'restore', 14);
 localStorage.setItem(PANEL_STATE_KEY, isHidden ? 'visible' : 'hidden');
 };
-window._toggleStatSummary = function() {
-const body = document.getElementById('statSummaryBody');
-const toggle = document.getElementById('statSummaryToggle');
-const label = document.getElementById('statSummaryLabel');
-if (!body || !toggle) return;
-const isHidden = body.style.display === 'none';
-body.style.display = isHidden ? 'block' : 'none';
-toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
-if (label) label.textContent = isHidden ? 'OVERVIEW' : (label.dataset.summary || '');
-try { localStorage.setItem(STAT_SUMMARY_COLLAPSED_KEY, isHidden ? '0' : '1'); } catch (error) {
-// ignore
-}
-};
 
-window._toggleTier = function(tierId) {
-const tierContent = document.getElementById(tierId);
-const toggle = document.getElementById('toggle-' + tierId);
-if (tierContent && toggle) {
-const isHidden = tierContent.style.display === 'none';
-tierContent.style.display = isHidden ? 'grid' : 'none';
-toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
-setSectionCollapsed(tierId, !isHidden);
+// Folds or unfolds one group of the list and remembers it.
+function toggleListSection(sectionId) {
+const content = document.getElementById(sectionId);
+if (!content) return;
+const isHidden = content.style.display === 'none';
+content.style.display = isHidden ? 'block' : 'none';
+const heading = document.getElementById('toggle-' + sectionId);
+if (heading) heading.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
+setSectionCollapsed(sectionId, !isHidden);
 }
-};
 
+window._toggleTier = toggleListSection;
+window._toggleCallbackType = toggleListSection;
+
+// The row opens its details: toggleEl is the row, the details follow it.
 window._toggleCustomerContact = function(toggleEl) {
 const wrapper = toggleEl.nextElementSibling;
 if (!wrapper) return;
 const opening = wrapper.style.display === 'none';
 wrapper.style.display = opening ? 'grid' : 'none';
-const chevron = toggleEl.querySelector('svg');
-if (chevron) chevron.style.transform = opening ? 'rotate(0deg)' : 'rotate(-90deg)';
-};
-
-window._toggleCallbackType = function(sectionId) {
-const content = document.getElementById(sectionId);
-const toggle = document.getElementById('toggle-' + sectionId);
-if (content && toggle) {
-const isHidden = content.style.display === 'none';
-content.style.display = isHidden ? 'grid' : 'none';
-toggle.style.transform = isHidden ? 'rotate(0deg)' : 'rotate(-90deg)';
-setSectionCollapsed(sectionId, !isHidden);
-}
+toggleEl.setAttribute('aria-expanded', opening ? 'true' : 'false');
 };
 
 // Assign and Filters are mutually exclusive tabs.
@@ -6731,17 +6994,44 @@ const assignPill = document.getElementById('assignTabPill');
 const filtersPill = document.getElementById('filtersTabPill');
 if (!assignBody || !filtersBody || !assignPill || !filtersPill) return;
 const showAssign = tab === 'assign';
-assignBody.style.display = showAssign ? 'block' : 'none';
-filtersBody.style.display = showAssign ? 'none' : 'block';
-assignPill.style.background = showAssign ? ASSIGN_PILL_ACTIVE_BG : ASSIGN_PILL_INACTIVE_BG;
-assignPill.style.color = showAssign ? ASSIGN_PILL_ACTIVE_COLOR : ASSIGN_PILL_INACTIVE_COLOR;
-assignPill.style.boxShadow = showAssign ? ASSIGN_PILL_ACTIVE_SHADOW : ASSIGN_PILL_INACTIVE_SHADOW;
-filtersPill.style.background = showAssign ? ASSIGN_PILL_INACTIVE_BG : ASSIGN_PILL_ACTIVE_BG;
-filtersPill.style.color = showAssign ? ASSIGN_PILL_INACTIVE_COLOR : ASSIGN_PILL_ACTIVE_COLOR;
-filtersPill.style.boxShadow = showAssign ? ASSIGN_PILL_INACTIVE_SHADOW : ASSIGN_PILL_ACTIVE_SHADOW;
+assignBody.style.display = showAssign ? 'flex' : 'none';
+filtersBody.style.display = showAssign ? 'none' : 'flex';
+assignPill.setAttribute('aria-selected', showAssign ? 'true' : 'false');
+filtersPill.setAttribute('aria-selected', showAssign ? 'false' : 'true');
 saveAssignSettings({ filtersOpen: !showAssign });
 if (!showAssign) syncAllWheelPositions();
 }
+
+// The "N agents online" control: opens the list of agents with their tick
+// boxes, All, None and the limit. Remembered across redraws.
+window._toggleAgentList = function(button) {
+const pane = document.getElementById('assignAgentPane');
+if (!pane) return;
+const open = pane.hidden;
+pane.hidden = !open;
+button.setAttribute('aria-expanded', open ? 'true' : 'false');
+saveAssignSettings({ agentsOpen: open });
+};
+
+// Email only mode is the Email only filter: the chip beside Customer First
+// and the tick box in Filters are the same switch. The chip also brings the
+// Assign tab forward, since that is where the run starts.
+window._setEmailOnlyMode = function(on) {
+const box = document.getElementById('assignEmailOnly');
+if (!box) return;
+box.checked = typeof on === 'boolean' ? on : !box.checked;
+if (box.checked) setActiveAssignTab('assign');
+window._updateAssignPreview();
+};
+
+// History from the More menu: shown in the Assign tab, under the agents.
+window._showAssignHistory = function() {
+const panel = document.getElementById('assignHistoryPanel');
+if (!panel) return;
+setActiveAssignTab('assign');
+window._toggleAssignHistory();
+if (panel.style.display !== 'none' && typeof panel.scrollIntoView === 'function') panel.scrollIntoView({ block: 'nearest' });
+};
 
 window._toggleFiltersZone = function() {
 setActiveAssignTab('filters');
@@ -6855,8 +7145,7 @@ if (!proceed) return null;
 // Stays enabled during a run: clicking it again cancels, through the same
 // onclick, whichever entry point started the run.
 button.disabled = false;
-button.style.background = '#d97706';
-button.style.cursor = 'pointer';
+button.classList.add('running');
 button.textContent = `Assigning 0/${plan.length}... (click to cancel)`;
 log.innerHTML = '';
 const summaryEl = document.getElementById('assignResultsSummary');
@@ -6880,9 +7169,8 @@ cancelRequested = false;
 
 const succeeded = results.filter(r => r.ok).length;
 button.disabled = false;
-button.style.background = '#059669';
-button.style.cursor = 'pointer';
-button.textContent = 'Assign Unassigned Leads';
+button.classList.remove('running');
+button.textContent = 'Assign';
 // A lead that may have gone through is not offered for a retry.
 const failedEntries = results.filter(r => !r.ok && !r.unconfirmed).map(r => ({ lead: r.lead, agent: r.agent }));
 lastFailedAssignmentPlan = failedEntries.length > 0 ? failedEntries : null;
@@ -6931,6 +7219,8 @@ alert('SLA Manager: leads were assigned, but the panel failed to reload.\n\n' + 
 // stayed on screen.
 flushDeferredRedraw();
 renderAssignResultsSummary(results);
+// Puts the count back on the Assign button, whichever copy is now mounted.
+if (window._updateAssignPreview) window._updateAssignPreview();
 return results;
 }
 
@@ -6958,7 +7248,10 @@ log.textContent = 'Select at least one tier.';
 return;
 }
 
-const agents = getAgentRoster().filter(a => selectedAgentIds.has(a.id));
+// In Email only mode the leads go to the agent chosen on the Email only
+// bar, unless that is left on the ticked agents.
+const emailOnlyAgentId = emailOnly ? (document.getElementById('_slaEoAgent')?.value || '') : '';
+const agents = getAgentRoster().filter(a => (emailOnlyAgentId ? a.id === emailOnlyAgentId : selectedAgentIds.has(a.id)));
 if (agents.length === 0) {
 log.textContent = 'Select at least one agent.';
 return;
@@ -7087,29 +7380,18 @@ const match = !q || (card.dataset.customerName || '').includes(q);
 card.style.display = match ? '' : 'none';
 });
 document.querySelectorAll('.collapsible-section').forEach((section) => {
-const toggle = document.getElementById('toggle-' + section.id);
 if (!q) {
-const collapsed = isSectionCollapsed(section.id);
-section.style.display = collapsed ? 'none' : 'grid';
-if (toggle) toggle.style.transform = collapsed ? 'rotate(-90deg)' : 'rotate(0deg)';
+section.style.display = isSectionCollapsed(section.id) ? 'none' : 'block';
 return;
 }
 const hasMatch = Array.from(section.querySelectorAll('.customer-card')).some(c => c.style.display !== 'none');
-section.style.display = hasMatch ? 'grid' : 'none';
-if (toggle) toggle.style.transform = hasMatch ? 'rotate(0deg)' : 'rotate(-90deg)';
+section.style.display = hasMatch ? 'block' : 'none';
 });
 };
 
 window._setAllAgentCheckboxes = function(checked) {
 document.querySelectorAll('.assign-agent-checkbox').forEach((el) => { el.checked = checked; });
 if (window._updateAssignPreview) window._updateAssignPreview();
-};
-
-window._clearAssignLimit = function() {
-const input = document.getElementById('assignLimitInput');
-if (!input) return;
-input.value = '';
-window._updateAssignPreview();
 };
 
 window._updateAssignPreview = function() {
@@ -7150,9 +7432,23 @@ const tierCounts = computeSlaTierCounts(leads, windowMinutes);
 const el = document.getElementById(`tier-count-${t}`);
 if (el) el.textContent = `(${tierCounts[t - 1]})`;
 });
+const tierLabel = document.getElementById('_slaTierLabel');
+if (tierLabel) tierLabel.textContent = tierFilterLabel(selectedTiers);
 }
 
-const agentCount = document.querySelectorAll('.assign-agent-checkbox:checked').length;
+// Email only mode: its bar takes the place of the agents row, and the leads
+// go to the agent chosen there unless it is left on the ticked agents.
+const emailOnlyOn = currentPageType !== PAGE_PENDING && (document.getElementById('assignEmailOnly')?.checked || false);
+const emailOnlyBar = document.getElementById('_slaEoBar');
+const normalBar = document.getElementById('_slaAssignNormal');
+if (emailOnlyBar && normalBar) { emailOnlyBar.hidden = !emailOnlyOn; normalBar.hidden = emailOnlyOn; }
+const emailOnlyChip = document.getElementById('_slaEoChip');
+if (emailOnlyChip) emailOnlyChip.setAttribute('aria-pressed', emailOnlyOn ? 'true' : 'false');
+const emailOnlyAgent = document.getElementById('_slaEoAgent');
+const emailOnlyNote = document.getElementById('_slaEoAgentNote');
+if (emailOnlyNote) emailOnlyNote.textContent = emailOnlyAgent && emailOnlyAgent.value && emailOnlyAgent.value === emailOnlyAgent.dataset.last ? '(last used for Email only)' : '';
+
+const agentCount = emailOnlyOn && emailOnlyAgent && emailOnlyAgent.value ? 1 : document.querySelectorAll('.assign-agent-checkbox:checked').length;
 const rawCount = count;
 const limitRaw = document.getElementById('assignLimitInput')?.value;
 const limit = limitRaw ? Number(limitRaw) : null;
@@ -7160,25 +7456,34 @@ const limitPerAgent = document.getElementById('assignLimitPerAgent')?.checked ||
 if (limit && limit > 0) count = Math.min(count, limitPerAgent ? limit * agentCount : limit);
 const cappedSuffix = count < rawCount ? ` (capped from ${rawCount})` : '';
 
+// The filled button says how many leads it would assign. Left alone during
+// a run, when it reads as the way to cancel, and with no agents online.
+const button = document.getElementById('assignRunButton');
+if (button && !assigning && !button.disabled) {
+button.textContent = emailOnlyOn ? `Assign ${count} Email only` : (count > 0 && agentCount > 0 ? `Assign ${count}` : 'Assign');
+}
+const emailOnlyCountEl = document.getElementById('_slaEoCount');
+if (emailOnlyCountEl) emailOnlyCountEl.textContent = `${count} Email only lead${count === 1 ? '' : 's'}`;
+
 if (agentCount === 0) {
 previewEl.textContent = count > 0
 ? `${count} lead${count === 1 ? '' : 's'} match${cappedSuffix}, but no agents are selected`
 : 'Select at least one agent';
-previewEl.style.color = '#dc2626';
+previewEl.style.color = 'var(--wb-danger, #c62828)';
 return;
 }
 
 if (count === 0) {
 previewEl.textContent = 'No leads match the current filters';
-previewEl.style.color = '#dc2626';
+previewEl.style.color = 'var(--wb-danger, #c62828)';
 return;
 }
 
 const perAgent = Math.floor(count / agentCount);
 const remainder = count % agentCount;
-const splitLabel = remainder === 0 ? `${perAgent} each` : `~${perAgent} each`;
-previewEl.textContent = `${count} lead${count === 1 ? '' : 's'}${cappedSuffix} → ${agentCount} agent${agentCount === 1 ? '' : 's'} (${splitLabel})`;
-previewEl.style.color = 'var(--wb-muted, #5b6577)';
+const splitLabel = remainder === 0 ? `${perAgent} each` : `about ${perAgent} each`;
+previewEl.textContent = `${count} lead${count === 1 ? '' : 's'}${cappedSuffix} to ${agentCount} agent${agentCount === 1 ? '' : 's'}, ${splitLabel}`;
+previewEl.style.color = '';
 };
 
 window._refreshAssignSection = function() {

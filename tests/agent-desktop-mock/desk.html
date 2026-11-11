@@ -5,6 +5,25 @@
      runs in Lead-Reset.js. The test calls window.mock.setup() with the
      customers, then drives the tool and reads window.events and
      window.snapshots (the page as it stood when Finished was pressed). -->
+<!-- Stand-ins for Konnect's button rail and Phone column, only drawn with
+     ?hosts=1, so the Lead Re setup button's placement can be tested. -->
+<style>
+ #hosts { display: none; } body.hosts #hosts { display: block; } body.hosts { padding-left: 100px; }
+ .userQuotesAffix { position: fixed; left: 10px; top: 120px; width: 80px; }
+ .cassini-section { height: 75px; text-align: center; }
+ .btn-circle.btn-lgr { display: inline-block; width: 60px; height: 60px; border-radius: 30px; border: 0; line-height: 60px; }
+ #phoneCol { position: fixed; right: 14px; bottom: 14px; width: 64px; }
+ #phoneCol .btn-phone { display: block; width: 64px; height: 37px; margin: 0 0 6px; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+ #phoneCol .btn-success { background: #5cb85c; color: #fff; }
+</style>
+<div id="hosts">
+ <div class="userQuotesAffix">
+  <section class="cassini-section"><a class="btn btn-circle btn-lgr btn-call-nav" id="railTick" style="background:rgb(40,180,60)">ok</a></section>
+  <section class="cassini-section"><a class="btn btn-circle btn-lgr btn-call-nav" id="railCar" style="background:rgb(40,190,190)">car</a></section>
+ </div>
+ <div id="phoneCol"><button class="btn btn-success btn-phone" ng-click="manualCallClick()" id="phoneCall">Call</button><button class="btn btn-default btn-phone" id="phoneHold">Hold</button></div>
+</div>
+<script>if (new URLSearchParams(location.search).get('hosts')) document.body.classList.add('hosts');</script>
 <div id="top">
  <button class="btn dropdown-toggle" data-toggle="dropdown" id="statusBtn">Shift Start</button>
  <ul class="dropdown-menu"><li><a ng-click="setMakeBusy(mbc.Id)">Available</a></li><li><a ng-click="setMakeBusy(mbc.Id)">Shift Start</a></li><li><a ng-click="setMakeBusy(mbc.Id)">Toilet Break</a></li></ul>

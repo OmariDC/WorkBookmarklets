@@ -186,8 +186,8 @@ async function busyGuard() {
   // A lead with no readable SLA date; slow assigns so the run can be poked.
   t = await open(() => { window.ASSIGN_DELAY = 1500; LEADS[5][6] = ''; });
   await openPanel(t.page);
-  const tile = await t.page.evaluate(() => { window._toggleStatSummary(); return document.querySelectorAll('.stat-tile-clickable')[1].textContent.replace(/\s+/g, ' ').trim(); });
-  check('the 15 minute tile counts 3 and reads as something to press', /^3 Due 15m Assign$/.test(tile), tile);
+  const tile = await t.page.evaluate(() => { const el = document.querySelectorAll('.stat-tile-clickable')[1]; return `${el.tagName} ${el.textContent.replace(/\s+/g, ' ').trim()} | ${el.title}`; });
+  check('the 15 minute tile counts 3 and is a button that says what a press does', /^BUTTON 3\s?15 min \| Assign these 3 now/.test(tile), tile);
   const navsBefore = await t.page.evaluate(() => window.NAVS.length);
   await t.page.evaluate(() => { window._quickAssignSlaTile(15, false, false); });
   await sleep(500);
@@ -219,18 +219,18 @@ async function resultsAndState() {
   const paste = (tsv) => t.page.evaluate((text) => { const b = document.createElement('button'); document.body.appendChild(b); document.getElementById('leadCheckerImportBox').value = text; window._classifyLeadCheckerImport(b); }, tsv);
   await paste([H, resultRow('Alex Sample', 'alex@example.com', created[0], 'DATE ONLY')].join('\n'));
   await paste([H, resultRow('Jo Example', 'jo@example.com', created[2], 'WARM ENQUIRY')].join('\n'));
-  check('a second import adds to the first', /DATE ONLY/.test(await badges(t.page, 'mr alex sample')) && /WARM ENQUIRY/.test(await badges(t.page, 'jo example')), [await badges(t.page, 'mr alex sample'), await badges(t.page, 'jo example')]);
-  check('time past the hour reads in hours', /MISSED 1h 1\dm ago/.test(await badges(t.page, 'eve evans')), await badges(t.page, 'eve evans'));
+  check('a second import adds to the first, tags in sentence case', /Date only/.test(await badges(t.page, 'mr alex sample')) && /Warm enquiry/.test(await badges(t.page, 'jo example')), [await badges(t.page, 'mr alex sample'), await badges(t.page, 'jo example')]);
+  check('time past the hour reads in hours', /Missed 1 h 1\d min/.test(await badges(t.page, 'eve evans')), await badges(t.page, 'eve evans'));
   check('a wrong paste is refused in plain words', await t.page.evaluate(() => { const b = document.createElement('button'); document.getElementById('leadCheckerImportBox').value = 'Name\tPhone'; window._classifyLeadCheckerImport(b); return b.textContent; }) === 'Not Lead Checker results');
 
   // Results arriving over the link redraw the panel under the user.
   await t.page.evaluate(() => {
     window._toggleLeadCheckerPopover();
     const search = document.getElementById('customerSearchInput');
-    search.value = 'eve';
-    window._filterCustomerSearch('eve');
+    search.value = 's';
+    window._filterCustomerSearch('s');
     search.focus();
-    search.setSelectionRange(3, 3);
+    search.setSelectionRange(1, 1);
     document.querySelector('.customer-card[data-customer-name="eve evans"] .contact-toggle').click();
     document.querySelector('.panelContent').scrollTop = 60;
   });
@@ -242,12 +242,13 @@ async function resultsAndState() {
     focused: document.activeElement && document.activeElement.id,
     hidden: document.querySelector('.customer-card[data-customer-name="jo example"]').style.display,
     popover: document.getElementById('leadCheckerPopover').style.display,
+    sendHeader: document.getElementById('_slaPanelBox').dataset.sub === 'send',
     contact: document.querySelector('.customer-card[data-customer-name="eve evans"] .contact-details').style.display,
     scroll: document.querySelector('.panelContent').scrollTop
   }));
-  check('the new result is on its card', /NURTURE/.test(after.badge), after);
-  check('search text, focus, the open pop-over, open contact details and scroll are kept', after.search === 'eve' && after.focused === 'customerSearchInput' && after.hidden === 'none' && after.popover === 'block' && after.contact === 'grid' && after.scroll === 60, after);
-  check('the overview line shows real dots', await t.page.evaluate(() => { const l = document.getElementById('statSummaryLabel'); return /\d missed · \d due within 30m · \d unassigned/.test(l.dataset.summary) && !/&middot;/.test(l.dataset.summary + l.textContent); }));
+  check('the new result is on its card', /Nurture/.test(after.badge), after);
+  check('search text, focus, the open Send view, open contact details and scroll are kept', after.search === 's' && after.sendHeader && after.focused === 'customerSearchInput' && after.hidden === 'none' && after.popover === 'block' && after.contact === 'grid' && after.scroll === 60, after);
+  check('the footer line shows real dots', await t.page.evaluate(() => { const l = document.querySelector('#_slaPanelBox .sla-ft span'); return /^\d leads · \d assigned · scanned \d\d:\d\d( · \d new)?( · \d gone)?$/.test(l.textContent.trim()); }), await t.page.evaluate(() => document.querySelector('#_slaPanelBox .sla-ft span').textContent));
 
   // A copy chip clicked twice still goes back to the name.
   await t.page.evaluate(() => { navigator.clipboard.writeText = () => Promise.resolve(); const el = document.querySelector('.customer-card[data-customer-name="eve evans"] .sla-copyable'); el.click(); setTimeout(() => el.click(), 300); });
@@ -285,6 +286,7 @@ async function nationalDecisions() {
   await t.page.evaluate(() => window._toggleMorningChecks());
   const rowText = await t.page.evaluate(() => document.querySelector('.panelContent').textContent.replace(/\s+/g, ' '));
   check('a run saved while National was still going comes back as not finished, not stuck running', /National leads\s*Not finished\. Run the checks again\./.test(rowText) && !/Running/.test(rowText), rowText.slice(0, 300));
+  check('the checks list counts the National verdicts and offers the two waiting for a decision', await t.page.evaluate(() => { const b = Array.from(document.querySelectorAll('.panelContent button')).find((el) => el.textContent.trim() === 'See the 2 to deal with'); if (b) b.click(); return !!b && document.getElementById('_slaPanelBox').dataset.view === 'national'; }), rowText.slice(0, 400));
   await t.page.evaluate(() => { const n = document.querySelector('input[data-national-note="70000001"]'); n.value = 'dealer rang them'; document.querySelector('button[data-activity="70000001"][onclick*="Valid"]').click(); });
   // The user is part-way through a reason for the second lead when more
   // results arrive.
@@ -298,13 +300,15 @@ async function nationalDecisions() {
   const done = await t.page.evaluate(() => ({ stored: JSON.parse(localStorage.getItem('_slaNationalCheckResults')).results.map((r) => `${r.ActivityID}:${r.Verdict}:${r.Decision || ''}:${r.DecisionNote || ''}`), text: document.querySelector('.panelContent').textContent.replace(/\s+/g, ' ') }));
   check('the second decision lands on the right lead with its reason', done.stored.includes('70000002:Re setup:Re setup:still typ') && done.stored.includes('70000001:OK:Valid:dealer rang them'), done.stored);
   check('the new results show once the typing is done', /New Lead/.test(done.text), done.text.slice(0, 200));
-  check('the Today summary counts them', /TODAY\s*National: 4 checked, Re setup 2 to do, 0 done/.test(done.text), done.text.slice(0, 200));
+  const todayChip = await t.page.evaluate(() => { const c = document.querySelector('#_slaTodaySummary button[data-kind="national"]'); c.click(); return { chip: c.textContent.trim(), line: document.querySelector('#_slaTodaySummary [role="status"]').textContent.trim() }; });
+  check('the Today chip counts them and opens to the full line', todayChip.chip === 'National 2 to do' && todayChip.line === 'National: 4 checked, Re setup 2 to do, 0 done', todayChip);
+  check('the National view stays up through its redraws, with the filled button still Needs re setup', await t.page.evaluate(() => document.getElementById('_slaPanelBox').dataset.view === 'national' && /Back to checks/.test(document.querySelector('.sla-hd').textContent) && Array.from(document.querySelectorAll('.sla-review .sla-pri')).every((b) => b.textContent.trim() === 'Needs re setup')));
   check('no page errors', t.errors.length === 0, t.errors);
   await t.context.close();
 }
 
 async function openOnLiveAndLayout() {
-  console.log('\nOpen on Konnect Live from the avatar control; the compact panel keeps its header, link line and footer');
+  console.log('\nOpen on Konnect Live from the avatar control; the compact panel keeps its header, link strip and footer');
   const t = await open();
   await openPanel(t.page);
   await t.page.evaluate(() => { window.OPEN_CALLS = 0; const real = window.open; window.open = (...a) => { window.OPEN_CALLS++; return real(...a); }; });
@@ -342,12 +346,12 @@ async function openOnLiveAndLayout() {
   await t.page.evaluate(() => { localStorage.setItem('_workToolsDeskDecisions', JSON.stringify({ savedAt: new Date().toISOString(), rows: [{ at: new Date().toISOString(), run: 'Email Only', name: 'Jo Example', detail: '', outcome: 'Done', step: '' }] })); window._toggleLeadCheckerPopover(); });
   check('the popover counts the desk\'s decisions when it opens', await t.page.evaluate(() => document.getElementById('_slaCopyReviewBtn').textContent) === 'Copy review decisions (1)', await t.page.evaluate(() => document.getElementById('_slaCopyReviewBtn').textContent));
   await t.page.evaluate(() => window._toggleLeadCheckerPopover());
-  // Compact size with Overview and Assign open: nothing is pushed out of the box.
-  await t.page.evaluate(() => { if (document.getElementById('_slaPanelBox').getBoundingClientRect().height >= window.innerHeight) window._togglePanelSize(); if (document.getElementById('statSummaryBody').style.display === 'none') window._toggleStatSummary(); });
+  // Compact size with the agent list open: nothing is pushed out of the box.
+  await t.page.evaluate(() => { window._setPanelSize('compact'); document.querySelector('.sla-agentsToggle').click(); });
   await sleep(300);
   const box = await t.page.evaluate(() => { const r = (el) => { const b = el.getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), height: Math.round(b.height) }; }; const panel = document.getElementById('_slaPanelBox'); const list = panel.querySelector('.panelContent'); list.scrollTop = 300; const search = document.getElementById('customerSearchInput').parentElement;
     return { panel: r(panel), list: r(list), link: r(document.getElementById('_slaLinkLine')), footer: r(panel.lastElementChild), top: r(document.getElementById('_slaTopArea')), search: r(search), size: getComputedStyle(panel).fontSize }; });
-  check('compact: the link line and footer stay inside the panel', box.link.top >= box.list.bottom && box.footer.bottom <= box.panel.bottom && box.footer.height > 20, box);
+  check('compact: the link strip sits under the header and the footer stays inside the panel', box.link.top > box.panel.top && box.link.bottom <= box.top.top && box.footer.top >= box.list.bottom && box.footer.bottom <= box.panel.bottom && box.footer.height > 20, box);
   check('compact: the list keeps at least 160px and Overview scrolls instead', box.list.height >= 160 && box.top.bottom <= box.list.top, box);
   check('the search box sticks flush to the top of the list', box.search.top === box.list.top, box);
   check('the panel sets its own type size', box.size === '13px', box.size);
@@ -363,8 +367,120 @@ async function openOnLiveAndLayout() {
   await n.context.close();
 }
 
+async function layoutAndMenus() {
+  console.log('\nLayout: the sizes, the More menu, the agents row, Filters and Email only mode');
+  const t = await open();
+  await openPanel(t.page);
+  const box = () => t.page.evaluate(() => { const r = (el) => { const b = el.getBoundingClientRect(); return { left: Math.round(b.left), right: Math.round(b.right), top: Math.round(b.top), bottom: Math.round(b.bottom) }; }; const p = document.getElementById('_slaPanelBox'); return { size: p.dataset.size, top: r(document.getElementById('_slaTopArea')), list: r(p.querySelector('.panelContent')), foot: p.querySelector('.sla-ft button').textContent.trim() }; });
+  let b = await box();
+  check('it opens at the standard size: Overview and Assign above the list', b.size === 'standard' && b.top.bottom <= b.list.top && b.foot === 'Full size', b);
+  await t.page.click('#_slaSizeBtn');
+  b = await box();
+  check('Full size puts Overview and Assign in a column beside the list, agents always listed', b.size === 'full' && b.top.right <= b.list.left && b.foot === 'Standard size' && await t.page.evaluate(() => document.getElementById('assignAgentList').getBoundingClientRect().height > 0), b);
+  await t.page.click('#_slaSizeBtn');
+  check('and the footer switch goes back', (await box()).size === 'standard');
+
+  const header = await t.page.evaluate(() => { const hd = document.querySelector('#_slaPanelBox .sla-hd'); const title = hd.querySelector('button.sla-ttl'); return { title: title.textContent.trim(), tip: title.title, buttons: Array.from(hd.querySelectorAll('.sla-hbtn')).filter((el) => el.getBoundingClientRect().width > 0).map((el) => el.textContent.trim()) }; });
+  check('the header is the tool name, Send, Checks and More', header.title === 'SLA Manager' && header.tip === 'Scan again' && header.buttons.join() === 'Send,Checks,More', header);
+  await t.page.evaluate(() => { document.getElementById('_slaPanelBox').dataset.mark = '1'; LEADS.push(['Hal Hughes', 'AB18CDE', 'Customer First', 'Citroen - Enquiry - New', at(-5), at(-4), at(40), 'Pending', 'Agent Charlie', '07700900008', 'hal@example.com']); renderSla(); });
+  await t.page.click('#_slaPanelBox button.sla-ttl');
+  check('clicking the title scans again', await waitFor(t.page, () => !document.getElementById('_slaPanelBox').dataset.mark && !!document.querySelector('.customer-card[data-customer-name="hal hughes"]') && !document.getElementById('_slaPageFlashOverlay'), null, 15000));
+  await t.page.evaluate(() => { LEADS.pop(); renderSla(); return window._refreshLeadsAndPanel(); });
+  await idle(t.page);
+  await sleep(300);
+
+  await t.page.click('#_slaMoreBtn');
+  const menu = await t.page.evaluate(() => { const m = document.getElementById('_slaMoreMenu'); const groups = [[]]; Array.from(m.children).forEach((el) => { if (el.classList.contains('sla-ms')) groups.push([]); else if (el.classList.contains('sla-mi')) groups[groups.length - 1].push(el.querySelector('span').textContent.trim()); }); return { open: !m.hidden, groups }; });
+  check('More opens with Hide the panel first and on its own', menu.open && menu.groups[0].join() === 'Hide the panel', menu);
+  check('the view group ends with List only view', menu.groups[1].join() === 'Sort by Lead Checker category,Compact size,Full size, two columns,Back to top,List only view', menu.groups[1]);
+  check('Scan again, Refresh agents, History, Queue, Paste and Clear Queue are in More', menu.groups[2].join() === 'Scan again,Refresh agents,History,Queue,Paste Lead Checker results,Clear Queue', menu.groups[2]);
+  check('then Report a problem and Clear & Stop', menu.groups[3].join() === 'Report a problem,Clear & Stop', menu.groups[3]);
+  await t.page.click('#_slaMoreMenu .sla-mi:has-text("History")');
+  check('History from More shows in the Assign card and the menu closes', await t.page.evaluate(() => document.getElementById('_slaMoreMenu').hidden && document.getElementById('assignHistoryPanel').style.display === 'block' && /No assignments recorded today yet/.test(document.getElementById('assignHistoryPanel').textContent)));
+  await t.page.click('#_slaMoreBtn');
+  await t.page.click('#_slaMoreMenu .sla-mi:has-text("Hide the panel")');
+  check('Hide the panel tucks it away; the badge brings it back', await t.page.evaluate(() => document.getElementById('_slaPanelBox').style.transform === 'translateX(150%)' && localStorage.getItem('_slaPanelState') === 'hidden'));
+  await t.page.evaluate(() => window._toggleMinimizePanel());
+
+  const row = await t.page.evaluate(() => { const r = document.querySelector('#assignSectionBody .sla-agsum'); const pane = document.getElementById('assignAgentPane'); const state = { text: Array.from(r.querySelectorAll('button')).filter((el) => el.getBoundingClientRect().width > 0).map((el) => el.textContent.replace(/\s+/g, ' ').trim()), folded: pane.hidden, bubbles: r.querySelectorAll('.sla-av, .sla-chip').length }; r.querySelector('.sla-agentsToggle').click(); return { ...state, opened: !pane.hidden, agents: pane.querySelectorAll('.assign-agent-checkbox').length, extras: pane.textContent.replace(/\s+/g, ' ').trim() }; });
+  check('the agents row is "3 agents online", Queue and Clear Queue, with no chips or bubbles', row.text.join('|') === '3 agents online|Queue|Clear Queue' && row.folded && row.bubbles === 0, row);
+  check('it opens the full agent list with All, None and the limit', row.opened && row.agents === 3 && /Agent Alpha.*Agent Bravo.*Agent Charlie.*All None Limit.*per agent/.test(row.extras), row);
+  check('the preview says how the leads split and the button says how many', await t.page.evaluate(() => document.getElementById('assignMatchPreview').textContent === '6 leads to 3 agents, 2 each' && document.getElementById('assignRunButton').textContent === 'Assign 6'), await t.page.evaluate(() => [document.getElementById('assignMatchPreview').textContent, document.getElementById('assignRunButton').textContent]));
+
+  await t.page.click('#filtersTabPill');
+  const filters = await t.page.evaluate(() => { const z = document.getElementById('filtersZoneBody'); const tiers = document.getElementById('_slaTierList'); return { order: Array.from(z.children).filter((el) => el.id !== '_slaTierList').map((el) => el.textContent.replace(/\s+/g, ' ').trim().replace(/All\s*5.*120/, '').replace(/\s+/g, ' ')), folded: tiers.hidden, tiers: Array.from(tiers.querySelectorAll('label')).map((l) => l.textContent.replace(/\s+/g, ' ').trim()) }; });
+  check('Filters run Due within, Customer First only, Email only, then the tiers folded, then the quiet line', filters.order.join('|') === 'Due within minutes|Customer First only (2)|Email only (1)|Tiers: all four|Only leads not yet assigned are ever assigned.' && filters.folded, filters.order);
+  check('each tier keeps its name and says what it holds', filters.tiers.join('|') === 'Tier 1 - Priority (1)Test drive requests, electric campaigns and Reserve Used|Tier 2 - High (3)Customer First new enquiries, Motability and Leapmotor|Tier 3 - Medium (1)Used enquiries, new offer requests and PX valuations|Tier 4 - Standard (1)Other new enquiries, General, Inbound and anything not matched', filters.tiers);
+  await t.page.click('[aria-controls="_slaTierList"]');
+  await t.page.click('.assign-tier-checkbox[value="4"]');
+  check('unticking a tier shows on the folded row and is saved', await t.page.evaluate(() => document.getElementById('_slaTierLabel').textContent === 'Tiers: 1, 2, 3' && JSON.parse(localStorage.getItem('_slaAssignSettings')).excludedTiers.join() === '4'));
+  await t.page.click('.assign-tier-checkbox[value="4"]');
+  await t.page.selectOption('#assignWindowMinutes', '15');
+  check('Due within narrows the run', await t.page.evaluate(() => document.getElementById('assignRunButton').textContent) === 'Assign 3', await t.page.evaluate(() => document.getElementById('assignRunButton').textContent));
+  await t.page.selectOption('#assignWindowMinutes', '');
+  const headings = await t.page.evaluate(() => Array.from(document.querySelectorAll('.panelContent .sla-grp')).map((h) => `${h.textContent.replace(/\s+/g, ' ').trim()} | ${h.title}`));
+  check('group headings keep their names and say what the tier holds in a tooltip', headings[0] === 'Tier 1 - Priority 1 | Tier 1 - Priority: Test drive requests, electric campaigns and Reserve Used. Click to fold or unfold' && /^Tier 4 - Standard 1 \| Tier 4 - Standard: Other new enquiries/.test(headings[3]), headings);
+
+  // Email only: the chip beside Customer First and the tick box in Filters are one switch.
+  const chip = await t.page.evaluate(() => { const c = document.getElementById('_slaEoChip'); return { text: c.textContent.replace(/\s+/g, ' ').trim(), after: c.previousElementSibling.textContent.trim(), pressed: c.getAttribute('aria-pressed') }; });
+  check('an Email only chip with its count sits beside the Customer First chips', chip.text === 'Email only 1' && /in 60$/.test(chip.after) && chip.pressed === 'false', chip);
+  await t.page.click('#_slaEoChip');
+  const eo = () => t.page.evaluate(() => ({ tick: document.getElementById('assignEmailOnly').checked, saved: JSON.parse(localStorage.getItem('_slaAssignSettings')).emailOnly, pressed: document.getElementById('_slaEoChip').getAttribute('aria-pressed'), bar: !document.getElementById('_slaEoBar').hidden, normal: !document.getElementById('_slaAssignNormal').hidden, tab: document.getElementById('assignTabPill').getAttribute('aria-selected'), count: document.getElementById('_slaEoCount').textContent, button: document.getElementById('assignRunButton').textContent }));
+  let mode = await eo();
+  check('the chip turns the Assign bar into Email only mode through the existing filter', mode.tick && mode.saved === true && mode.pressed === 'true' && mode.bar && !mode.normal && mode.tab === 'true' && mode.count === '1 Email only lead' && mode.button === 'Assign 1 Email only', mode);
+  await t.page.click('#_slaEoBar button[aria-label="Back to normal assigning"]');
+  mode = await eo();
+  check('the cross goes back to normal assigning', !mode.tick && mode.saved === false && mode.pressed === 'false' && !mode.bar && mode.normal && mode.button === 'Assign 6', mode);
+  await t.page.click('#filtersTabPill');
+  await t.page.click('#assignEmailOnly');
+  mode = await eo();
+  check('the tick box in Filters switches the same mode on', mode.tick && mode.pressed === 'true' && mode.bar, mode);
+  await t.page.click('#assignTabPill');
+  await t.page.selectOption('#_slaEoAgent', { label: 'Agent Bravo' });
+  await t.page.click('#assignRunButton');
+  await waitFor(t.page, () => /assigned/.test((document.getElementById('assignResultsSummary') || {}).textContent || ''));
+  const ran = await t.page.evaluate(() => ({ leads: LEADS.map((l) => l[8]), stored: JSON.parse(localStorage.getItem('_workToolsEmailOnlyAssigned') || '{}').leads, summary: document.getElementById('assignResultsSummary').textContent.trim() }));
+  check('the run assigns only the Email only lead, to the chosen agent', ran.leads[2] === 'Agent Bravo' && ran.leads.filter(Boolean).length === 2 && /1 assigned$/.test(ran.summary), ran);
+  check('and records it for Lead Re setup as before', Array.isArray(ran.stored) && ran.stored.length === 1 && ran.stored[0].email === 'jo@example.com' && ran.stored[0].agent === 'Agent Bravo', ran.stored);
+  check('the agent is remembered as last used for Email only', await t.page.evaluate(() => document.getElementById('_slaEoAgent').selectedOptions[0].textContent === 'Agent Bravo' && document.getElementById('_slaEoAgentNote').textContent === '(last used for Email only)'));
+
+  // List only view keeps two lines a person and hides everything above the list.
+  await t.page.evaluate(() => { window._setEmailOnlyMode(false); window._toggleZenMode(); });
+  await sleep(300);
+  const zen = await t.page.evaluate(() => ({ sub: document.querySelector('.sla-hd .sla-sub').textContent.trim(), top: document.getElementById('_slaTopArea').textContent.replace(/\s+/g, ' ').trim(), assign: !!document.getElementById('assignSectionContainer'), today: !!document.getElementById('_slaTodaySummary'), twoLines: Array.from(document.querySelectorAll('.customer-card')).every((c) => c.querySelector('.sla-nm') && c.querySelector('.sla-meta').textContent.trim().length > 0 && c.querySelector('.sla-meta').getBoundingClientRect().top > c.querySelector('.sla-nm').getBoundingClientRect().top) }));
+  check('List only view: counts and Show overview in place of Overview, Assign and Today', /list only$/.test(zen.sub) && /^\d missed\s?\d due in 30 min\s?\d not assigned\s?Show overview$/.test(zen.top) && !zen.assign && !zen.today, zen);
+  check('and every lead keeps its two lines', zen.twoLines);
+  await t.page.click('#_slaTopArea button:has-text("Show overview")');
+  await sleep(300);
+  check('Show overview brings them back', await t.page.evaluate(() => !!document.getElementById('assignSectionContainer') && !/list only/.test(document.querySelector('.sla-hd .sla-sub').textContent)));
+
+  // The Send view takes the panel; Open Konnect Live is on the strip only.
+  await t.page.click('.sla-hd .sla-hbtn:has-text("Send")');
+  const send = await t.page.evaluate(() => { const v = document.getElementById('leadCheckerPopover'); return { shown: v.style.display === 'block', header: Array.from(document.querySelectorAll('.sla-hd .sla-hbtn')).filter((el) => el.getBoundingClientRect().width > 0).map((el) => el.textContent.trim()).join(), sub: Array.from(document.querySelectorAll('.sla-hd .sla-sub')).filter((el) => el.getBoundingClientRect().width > 0).map((el) => el.textContent.trim()).join(), chips: Array.from(v.querySelectorAll('.chip-label')).map((l) => l.textContent.replace(/\s+/g, ' ').trim()), send: document.getElementById('_slaSendLabel').textContent, openLive: Array.from(v.querySelectorAll('button')).some((el) => /Open Konnect Live/.test(el.textContent)), byHandFolded: document.getElementById('_slaByHand').hidden }; });
+  check('Send opens its own view with Back to leads', send.shown && send.header === 'Back to leads,More' && send.sub === 'Send to Lead Checker', send);
+  check('the tiers are chips with their counts, and the filled button says how many', send.chips.join('|') === 'Tier 1 - Priority (1)|Tier 2 - High (3)|Tier 3 - Medium (2)|Tier 4 - Standard (1)' && send.send === 'Send 2 leads' && !send.openLive && send.byHandFolded, send);
+  await t.page.click('#leadCheckerPopover .chip-label:has-text("Tier 1")');
+  await t.page.click('#bookingExportCustomerFirstOnly');
+  check('choosing leads recounts the Send button', (await t.page.evaluate(() => document.getElementById('_slaSendLabel').textContent)) === 'Send 4 leads', await t.page.evaluate(() => document.getElementById('_slaSendLabel').textContent));
+  await t.page.click('.sla-hd .sla-hbtn:has-text("Back to leads")');
+  check('Back to leads closes it', await t.page.evaluate(() => document.getElementById('leadCheckerPopover').style.display === 'none' && !document.getElementById('_slaPanelBox').dataset.sub));
+
+  // Post Closure tags are the two actions only, in the shared colours.
+  const created = await t.page.evaluate(() => LEADS.map((l) => l[4]));
+  const pcRow = (name, email, c, action, reason) => [name, '', email, 'Post Closure Processing', 'x', c, '-', '5', 'NURTURE', '', '', '', 'medium', 'r', '', action, '203', reason, 'Dealer scheduled a call'].join('\t');
+  await t.page.evaluate((tsv) => { const b = document.createElement('button'); document.getElementById('leadCheckerImportBox').value = tsv; window._classifyLeadCheckerImport(b); }, [H, pcRow('Gus Green', 'gus@example.com', created[4], 'send back through', 'Actioned by dealership'), pcRow('Dan Davis', 'dan@example.com', created[5], 'check: needs contact?', ''), resultRow('Eve Evans', 'eve@example.com', created[6], 'DATE ONLY')].join('\n'));
+  const tags = await t.page.evaluate(() => Object.fromEntries(['dr gus green', 'dan davis', 'eve evans'].map((n) => { const c = document.querySelector(`.customer-card[data-customer-name="${n}"]`); const tag = c.querySelector('.sla-tag'); return [n, { tag: tag.textContent.trim(), colour: tag.style.getPropertyValue('--tc').trim(), meta: c.querySelector('.sla-meta').textContent.trim() }]; })));
+  check('a send back lead: the tag is the action, the reason and shorthand lead the grey line', tags['dr gus green'].tag === 'send back through' && tags['dr gus green'].colour === '#0891b2' && /^Actioned by dealership \(CAD\) · /.test(tags['dr gus green'].meta), tags['dr gus green']);
+  check('a check lead: the tag is "check: needs contact?"', tags['dan davis'].tag === 'check: needs contact?' && tags['dan davis'].colour === '#d97706', tags['dan davis']);
+  check('a tier tag takes the Lead Checker\'s tier colour', tags['eve evans'].tag === 'Date only' && tags['eve evans'].colour === '#2563eb', tags['eve evans']);
+  check('the badge that opens SLA Manager is unchanged', await t.page.evaluate(() => { const b = document.getElementById('_slaBadge'); return !!b && b.closest('li') && b.closest('li').id === '_slaBadgeNavItem'; }));
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.context.close();
+}
+
 const started = Date.now();
 try {
+  await layoutAndMenus();
   await openOnLiveAndLayout();
   await popUps();
   await busyGuard();

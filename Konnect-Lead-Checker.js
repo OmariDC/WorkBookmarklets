@@ -3145,7 +3145,7 @@ return r.status === 'EXCEPTION' ? 'Check' : (r.verdict || 'Check');
 // inside the panel code.
 function renderNationalResultsHtml(results, nameFilter, ui) {
 const filtered = results.filter((r) => !nameFilter || String(r.name || '').toLowerCase().includes(nameFilter));
-if (filtered.length === 0) return '<div class="empty-state">No results yet. Press Start or Process next.</div>';
+if (filtered.length === 0) return '<div class="empty-state">No results yet. Press Start.</div>';
 return NATIONAL_VERDICT_ORDER.map((verdict, index) => {
 const rows = filtered.filter((r) => nationalVerdictOf(r) === verdict);
 if (rows.length === 0) return '';
@@ -3159,19 +3159,14 @@ const lines = [
 ['Enquiry Max', r.enquiryMaxDealer], ['Follow-up notes', r.followUpNotes]
 ];
 if (verdict === RE_SETUP) lines.push(['Campaign to set up again', r.resetCampaign]);
-const body = lines.filter(([, v]) => v).map(([k, v]) => `<div><strong>${escapeHtmlForUi(k)}:</strong> ${escapeHtmlForUi(v)}</div>`).join('');
-const open = ui.isCustomerOpen(r.inputIndex);
-return `
-<div class="customer${open ? ' open' : ''}" data-key="${r.inputIndex}">
-<div class="customer-summary" role="button" tabindex="0" aria-expanded="${open}">${detailsChevronIcon()}${ui.avatar(r, color)}<span class="customer-main"><span class="customer-name" title="${escapeHtmlForUi(reason)}">${escapeHtmlForUi(r.name)}</span><span class="customer-badges"><span class="category-badge" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(verdict)}</span></span>${ui.openNote ? ui.openNote(r) : ''}</span></div>
-<div class="customer-body" style="display: ${open ? 'block' : 'none'};">${body}</div>
-</div>`;
+// The group heading says the verdict once, so the rows carry the reason.
+return resultRowHtml({
+key: r.inputIndex, open: ui.isCustomerOpen(r.inputIndex), avatar: ui.avatar(r, color), name: r.name, title: reason, meta: reason,
+openTag: ui.openTag ? ui.openTag(r) : '', note: ui.openNote ? ui.openNote(r) : '',
+body: kvHtml(lines.filter(([, v]) => v).map(([k, v]) => [k, escapeHtmlForUi(v)]))
+});
 }).join('');
-return `
-<details class="tier" data-key="${key}" ${ui.isTierOpen(key, verdict !== 'OK') ? 'open' : ''}>
-<summary><span class="tier-left">${detailsChevronIcon()}<span style="color: ${readableTextColor(color)};">${escapeHtmlForUi(verdict)}</span></span><span class="tier-count">${rows.length}</span></summary>
-${customers}
-</details>`;
+return resultGroupHtml(key, verdict, color, rows.length, ui.isTierOpen(key, verdict !== 'OK'), customers);
 }).join('');
 }
 
@@ -3620,11 +3615,11 @@ const SETTINGS_STORAGE_KEY = 'konnectLeadChecker:settings:v1';
 function loadSettings() {
 try {
 const raw = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY));
-if (raw && typeof raw === 'object') return { autoStart: !!raw.autoStart };
+if (raw && typeof raw === 'object') return { autoStart: !!raw.autoStart, panelHeight: Number(raw.panelHeight) > 0 ? Number(raw.panelHeight) : 0 };
 } catch (error) {
 // ignore
 }
-return { autoStart: true };
+return { autoStart: true, panelHeight: 0 };
 }
 
 function saveSettings(partial) {
@@ -4952,6 +4947,48 @@ const subcat = r.subCategory ? `<span class="subcat-label" title="${escapeHtmlFo
 return tierPill + subcat;
 }
 
+// Short tier names for the panel only. What is exported, sent over the link
+// and stored keeps TIER_NAMES.
+const TIER_SHORT = { 1: 'Date and time', 2: 'Date only', 3: 'Likely booking', 4: 'Warm enquiry', 5: 'Nurture', 6: 'No call' };
+function tierHeading(tier) {
+return `Tier ${tier} · ${TIER_SHORT[tier] || ''}`;
+}
+// Keyed by categoryKey(r).
+const CATEGORY_SHORT = { 'POST CLOSURE: SEND BACK': 'Send back', 'POST CLOSURE: CHECK': 'Check', EXCEPTION: 'Could not check' };
+[1, 2, 3, 4, 5, 6].forEach((tier) => { CATEGORY_SHORT[TIER_NAMES[tier]] = TIER_SHORT[tier]; });
+
+function tagHtml(text, color, title) {
+return `<span class="tag" style="background: ${color}1a; color: ${readableTextColor(color)};"${title ? ` title="${escapeHtmlForUi(title)}"` : ''}>${escapeHtmlForUi(text)}</span>`;
+}
+
+// Two columns of label and value. Values are already HTML.
+function kvHtml(pairs) {
+return `<dl class="kv">${pairs.map(([k, v]) => `<dt>${escapeHtmlForUi(k)}</dt><dd>${v}</dd>`).join('')}</dl>`;
+}
+
+// One result: the initials, the name with an optional tag, and one grey
+// line. The two lines are the button that opens the details under them.
+function resultRowHtml(o) {
+return `
+<div class="customer${o.open ? ' open' : ''}" data-key="${o.key}">
+${o.avatar || ''}
+<div class="customer-summary" role="button" tabindex="0" aria-expanded="${!!o.open}">
+<span class="customer-line"><span class="customer-name" title="${escapeHtmlForUi(o.title || '')}">${escapeHtmlForUi(o.name)}</span>${o.tag || ''}${o.openTag || ''}</span>
+${o.meta ? `<span class="customer-meta">${escapeHtmlForUi(o.meta)}</span>` : ''}${o.note || ''}
+</div>
+<div class="customer-body" style="display: ${o.open ? 'block' : 'none'};">${o.body}</div>
+</div>`;
+}
+
+// A group of results under a heading tinted in the group's own colour.
+function resultGroupHtml(key, label, color, count, open, rowsHtml) {
+return `
+<details class="tier" data-key="${key}" ${open ? 'open' : ''}>
+<summary style="background: ${color}24; border-left-color: ${color}; color: ${readableTextColor(color)};"><span>${escapeHtmlForUi(label)}</span><span class="tier-count">${count}</span></summary>
+<div class="tier-rows">${rowsHtml}</div>
+</details>`;
+}
+
 // null while actively stepping, since setState owns the label then.
 function deriveRestStateLabel(s, loopAlive, stepBusy) {
 if (!s) return 'Idle';
@@ -5520,26 +5557,23 @@ chevron: '<polyline points="6 9 12 15 18 9"/>',
 play: '<polygon points="6 3 20 12 6 21 6 3"/>',
 pause: '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>',
 x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
-trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>'
+trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+paste: '<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>',
+clock: '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/>',
+flag: '<path d="M5 21V4h13l-2 4 2 4H5"/>',
+shrink: '<polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/>',
+expand: '<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>',
+list: '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>',
+stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>'
 };
 
 function svgIcon(name, size, extraStyle) {
 return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;${extraStyle || ''}">${ICONS[name]}</svg>`;
 }
 
-// Only for the full empty state (no session at all).
-function renderZeroState(iconName, title, subtitle) {
-return `<div style="padding: 40px 16px; text-align: center;">
-<div style="width: 56px; height: 56px; border-radius: 50%; background: var(--wb-control); display: flex; align-items: center; justify-content: center; margin: 0 auto 14px;">
-${svgIcon(iconName, 24, ' stroke-width: 1.5; color: var(--wb-muted);')}
-</div>
-<h3 style="color: var(--wb-text); margin: 0 0 5px 0; font-size: 15px; font-weight: 600;">${title}</h3>
-<p style="color: var(--wb-muted); margin: 0; font-size: 12.5px; line-height: 1.5;">${subtitle}</p>
-</div>`;
-}
-
-// Rotated by a CSS ":not([open]) .chev" rule, since native <details> has no
-// collapsed state to pass in.
+// Turned by a CSS rule on the open paste box, since native <details> has
+// no state to pass in.
 function detailsChevronIcon() {
 return `<svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" style="display: inline-block; vertical-align: middle; flex-shrink: 0;">${ICONS.chevron}</svg>`;
 }
@@ -5846,138 +5880,151 @@ host.id = '_klcPanelHost';
 Object.assign(host.style, { all: 'initial', position: 'fixed', top: '16px', right: '16px', zIndex: 2147483000, display: 'none' });
 document.documentElement.appendChild(host);
 const root = host.attachShadow({ mode: 'open' });
+const menuItem = (id, icon, text, extra) => `<button type="button" class="mi" role="menuitem"${id ? ` id="${id}"` : ''}${extra || ''}>${icon ? svgIcon(icon, 14) : ''}<span>${text}</span></button>`;
 root.innerHTML = `
 <style>
 :host {
 --wb-bg: #f2f2f7; --wb-surface: #ffffff; --wb-control: #e5e5ea; --wb-control-hover: #d8d8dd;
---wb-text: #1c1c1e; --wb-text-2: #334155; --wb-muted: #64748b;
---wb-border: #e2e8f0; --wb-border-strong: #cbd5e1; --wb-border-soft: #f1f5f9;
---wb-accent: #C2CB42; --wb-danger: #d70015; --wb-focus-inner: #1c1c1e; --wb-focus-outer: #C2CB42;
---wb-review-bg: #fffbeb; --wb-review-border: #fbbf24; --wb-review-text: #92400e; --wb-review-divider: #fde68a;
---wb-copy-bg: #eef2ff; --wb-copy-text: #1e293b; --wb-notice-bg: #fef2f2; --wb-notice-text: #991b1b; --wb-notice-border: #fca5a5;
+--wb-text: #1c1c1e; --wb-text-2: #334155; --wb-muted: #5b6577;
+--wb-border: #e2e8f0; --wb-border-strong: #c5cbd6; --wb-border-soft: #eef0f5;
+--wb-accent: #C2CB42; --wb-accent-ink: #4c5200; --wb-danger: #c62828; --wb-focus-inner: #1c1c1e; --wb-focus-outer: #C2CB42;
+--wb-ok: #047857; --wb-ok-bg: #e3f4ec; --wb-info: #1d4ed8; --wb-warn: #92400e; --wb-warn-bg: #fdefd3;
+--wb-review-bg: #fffbe8; --wb-review-border: #f1d98a;
+--wb-copy-bg: #eef2ff; --wb-copy-text: #1e293b; --wb-notice-bg: #fde8e8; --wb-notice-text: #8f1d1d; --wb-notice-border: #efb4b4;
 color-scheme: light;
 }
 /* Two-tone ring: visible on light surfaces, the dark header and the accent buttons. */
 :focus-visible { outline: 2px solid var(--wb-focus-inner); outline-offset: 0; box-shadow: 0 0 0 4px var(--wb-focus-outer); }
 .header :focus-visible { outline-color: var(--wb-focus-outer); box-shadow: none; }
-/* Header and accent colours match Konnect Live's own navbar; category colours stay semantic. */
-.panel { width: 460px; max-width: calc(100vw - 32px); max-height: min(90vh, calc(100vh - 32px)); display: flex; flex-direction: column; background: var(--wb-bg); border: none; border-radius: 20px; box-shadow: 0 20px 50px -12px rgba(0,0,0,0.25); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12px; color: var(--wb-text); overflow: hidden; }
-.header { flex-shrink: 0; background: #1c1c1e; color: white; padding: 8px 12px; display: flex; justify-content: space-between; align-items: center; gap: 8px; border-radius: 20px 20px 0 0; cursor: move; user-select: none; }
-.header-title { display: flex; align-items: center; gap: 6px; font-weight: 600; overflow: hidden; }
-.header-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.header button { background: transparent; border: none; color: #c7c7cc; cursor: pointer; padding: 2px; min-width: 24px; min-height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 6px; }
-.header button:hover { color: white; }
-/* Only the results list gives up height; everything else keeps its own. */
-.bodyEl { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 12px; overflow-y: auto; }
+/* Black and lime are the frame only (Konnect Live's own navbar colours); tier colours carry the meaning. */
+.panel { position: relative; width: 440px; max-width: calc(100vw - 32px); display: flex; flex-direction: column; background: var(--wb-bg); border-radius: 16px; box-shadow: 0 20px 50px -12px rgba(0,0,0,0.3); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 12.5px; line-height: 1.4; color: var(--wb-text); }
+button { font-family: inherit; }
+.header { flex-shrink: 0; background: #1c1c1e; color: white; padding: 9px 10px 9px 14px; display: flex; align-items: center; gap: 8px; border-radius: 16px 16px 0 0; cursor: move; user-select: none; }
+.header-title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; overflow: hidden; white-space: nowrap; }
+.header-title .name { font-weight: 700; font-size: 14px; }
+.header-title .sub { color: #c7c7cc; font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.header button { background: transparent; border: none; color: white; cursor: pointer; padding: 5px 9px; min-height: 26px; display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; font-size: 12.5px; font-weight: 600; }
+.header button:hover, .header button[aria-expanded="true"] { background: rgba(255,255,255,0.16); }
+.strip { flex-shrink: 0; display: flex; align-items: center; gap: 7px; padding: 6px 14px; background: var(--wb-surface); border-bottom: 1px solid var(--wb-border); color: var(--wb-muted); font-size: 12px; }
+.strip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #9aa3b2; flex: none; }
+.strip.ok::before { background: var(--wb-ok); }
+.strip.busy::before { background: #2563eb; }
+.strip.paused::before { background: #d97706; }
+.strip.out { background: var(--wb-notice-bg); color: var(--wb-notice-text); font-weight: 700; }
+.strip.out::before { background: var(--wb-danger); }
+/* The list scrolls inside the panel. The height is the default below, or the one chosen with the grip or in More. */
+.bodyEl { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; overflow-y: auto; max-height: min(470px, calc(100vh - 170px)); min-height: 60px; box-sizing: border-box; }
 .bodyEl > * { flex-shrink: 0; }
-textarea { width: 100%; height: 70px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid var(--wb-border-strong); border-radius: 6px; }
-textarea:focus, .search-input:focus, .review-reason:focus, .review-subcategory:focus { outline: none; border-color: var(--wb-accent); }
-.row-count { color: var(--wb-muted); margin: 4px 0 8px; }
-.section-label { color: var(--wb-muted); text-transform: uppercase; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; margin: 10px 0 4px; }
-.section-label:first-child { margin-top: 0; }
-.buttons { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
-button.action { padding: 7px 12px; border: none; background: var(--wb-control); color: var(--wb-text); border-radius: 999px; cursor: pointer; font-size: 11.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
-button.action:hover { background: var(--wb-control-hover); }
-button.action:disabled { opacity: 0.45; cursor: default; }
-button.action:disabled:hover { background: var(--wb-control); }
-button.primary { background: #C2CB42; color: #1c1c1e; }
-button.primary:hover { background: #aab238; }
-.status { background: var(--wb-surface); border: none; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); padding: 10px 12px; margin-bottom: 8px; }
-.status div { margin-bottom: 2px; }
-.status-pair { display: flex; flex-wrap: wrap; column-gap: 14px; }
-.hint-line { color: var(--wb-review-text); font-weight: 600; }
-.link-line { font-size: 11.5px; font-weight: 600; color: var(--wb-text-2); margin: 0 0 4px; }
-.version-line { font-size: 10.5px; color: var(--wb-muted); margin: -2px 0 6px; }
-.version-line.newer { color: var(--wb-danger); font-weight: 700; font-size: 11.5px; }
-.version-line:empty { display: none; }
-.mode-banner { display: flex; align-items: center; gap: 8px; padding: 7px 10px; margin-bottom: 8px; border-radius: 10px; border: 1px solid; font-size: 11.5px; }
-.mode-banner strong { font-size: 12px; }
-.mode-banner .mode-detail { color: var(--wb-text-2); }
-.recent-log { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
-.recent-log-row { display: flex; align-items: center; gap: 5px; font-size: 10.5px; overflow: hidden; }
-.recent-log-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--wb-text-2); }
-.recent-log-tier { flex-shrink: 0; padding: 1px 6px; border-radius: 6px; font-weight: 700; font-size: 10.5px; white-space: nowrap; }
-.progress-track { height: 5px; background: var(--wb-border); border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
-.progress-fill { height: 100%; background: #C2CB42; transition: width 0.2s ease; border-radius: 3px; }
-.progress-fill.active { background-image: linear-gradient(135deg, rgba(255,255,255,0.4) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.4) 75%, transparent 75%, transparent); background-size: 14px 14px; animation: klcProgressStripes 0.6s linear infinite; }
-@keyframes klcProgressStripes { from { background-position: 0 0; } to { background-position: 14px 0; } }
-/* !important: button.action's own display rule is more specific than .hidden. */
+.bar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.grow { flex: 1; min-width: 0; }
+.small { font-size: 11.5px; color: var(--wb-muted); }
+.lbl { font-size: 11.5px; font-weight: 600; color: var(--wb-muted); }
+button.btn { padding: 6px 11px; border: 1px solid var(--wb-border-strong); background: var(--wb-surface); color: var(--wb-text); border-radius: 999px; cursor: pointer; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap; }
+button.btn:hover { border-color: var(--wb-text); }
+button.btn:disabled { opacity: 0.5; cursor: default; border-color: var(--wb-border-strong); }
+button.btn.pri { background: var(--wb-accent); border-color: var(--wb-accent); color: #1c1c1e; font-weight: 700; padding: 7px 14px; }
+button.btn.pri:hover { background: #aab238; border-color: #aab238; }
+button.txt { align-self: flex-start; background: none; border: none; padding: 0; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--wb-accent-ink); text-decoration: underline; text-underline-offset: 2px; }
+textarea { width: 100%; height: 64px; box-sizing: border-box; font-family: monospace; font-size: 11px; padding: 6px; border: 1px solid var(--wb-border-strong); border-radius: 8px; }
+input[type="text"] { width: 100%; box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--wb-border-strong); border-radius: 10px; font-size: 12px; font-family: inherit; }
+textarea, input[type="text"] { background: var(--wb-surface); color: var(--wb-text); }
+textarea:focus, input[type="text"]:focus { outline: none; border-color: var(--wb-accent-ink); }
+/* !important: the button rules above set their own display. */
 .hidden { display: none !important; }
-.footer { flex-shrink: 0; padding: 8px 14px; background: var(--wb-surface); display: flex; justify-content: space-between; gap: 6px; border-radius: 0 0 20px 20px; }
-.footer .quiet-btn { color: var(--wb-text-2); }
-.footer button { min-height: 24px; padding: 4px 8px; background: transparent; color: var(--wb-danger); border: none; border-radius: 6px; cursor: pointer; font-size: 12.5px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
-.topSection { flex-shrink: 0; border: 1px solid var(--wb-border); border-radius: 6px; background: var(--wb-surface); margin-bottom: 8px; }
-.topSection > summary { padding: 6px 8px; cursor: pointer; font-weight: 600; color: var(--wb-text-2); list-style: none; display: flex; align-items: center; gap: 6px; }
+.card, .status, .topSection { background: var(--wb-surface); border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+.topSection > summary { padding: 8px 10px; cursor: pointer; font-weight: 600; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 6px; border-radius: 12px; }
 .topSection > summary::-webkit-details-marker { display: none; }
 .topSection > summary .chev { transition: transform 0.15s ease; color: var(--wb-muted); }
-.topSection:not([open]) > summary .chev { transform: rotate(-90deg); }
-.topSection-content { padding: 0 8px 8px; }
-.stats-bar { flex-shrink: 0; display: flex; flex-wrap: nowrap; gap: 6px; margin-bottom: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
-.stat-pill { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; min-height: 24px; padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; cursor: pointer; user-select: none; border: 1px solid transparent; }
-/* A filter that is off keeps readable text: outlined, not faded. */
-.stat-pill.inactive { background: transparent !important; color: var(--wb-text-2) !important; border-color: var(--wb-border-strong); font-weight: 600; }
-.stat-pill:hover { border-color: currentColor; }
-.filter-bar { display: flex; gap: 6px; margin-bottom: 8px; }
-.search-input { flex: 1; padding: 7px 10px; border: none; background: var(--wb-surface); box-shadow: 0 1px 2px rgba(0,0,0,0.04); border-radius: 10px; font-size: 11px; box-sizing: border-box; font-family: inherit; }
-.category-badge { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; white-space: nowrap; }
-.subcat-label { display: inline-block; margin-left: 4px; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; font-weight: 500; color: var(--wb-text-2); vertical-align: middle; }
-.tier { border: 1px solid var(--wb-border); border-radius: 6px; margin-bottom: 6px; background: var(--wb-surface); }
-.tier > summary { padding: 5px 8px; cursor: pointer; font-weight: 600; list-style: none; display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+.topSection[open] > summary .chev { transform: rotate(180deg); }
+.topSection-content { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 6px; }
+.row-error { color: var(--wb-danger); font-size: 11.5px; }
+.status { padding: 10px; display: flex; flex-direction: column; gap: 7px; }
+.status #statusHeadline { font-size: 13px; white-space: nowrap; flex: 1 0 auto; }
+.status.nobatch > :not(#curState) { display: none; }
+#curCustomer:not(.hidden) + #curTargetPart::before { content: "\\00b7"; margin: 0 5px; }
+#curState.info { color: var(--wb-info); font-weight: 600; }
+.hint-line { color: var(--wb-warn); font-size: 11.5px; }
+.progress-track { height: 6px; background: var(--wb-border); border-radius: 3px; overflow: hidden; }
+.progress-fill { height: 100%; background: var(--wb-accent); transition: width 0.2s ease; border-radius: 3px; }
+.progress-fill.waiting { background: #c9ccd3; }
+.progress-fill.active { background-image: linear-gradient(135deg, rgba(255,255,255,0.4) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.4) 50%, rgba(255,255,255,0.4) 75%, transparent 75%, transparent); background-size: 14px 14px; animation: klcProgressStripes 0.6s linear infinite; }
+@keyframes klcProgressStripes { from { background-position: 0 0; } to { background-position: 14px 0; } }
+.stats-bar { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--wb-border-strong); background: var(--wb-surface); color: var(--wb-text); font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+button.chip { cursor: pointer; }
+button.chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--tc, #64748b); flex: none; }
+button.chip:hover { border-color: var(--wb-text); }
+button.chip[aria-pressed="true"] { border-color: var(--wb-text); box-shadow: inset 0 0 0 1px var(--wb-text); }
+.chip.warn { background: var(--wb-warn-bg); border-color: var(--wb-warn-bg); color: var(--wb-warn); }
+.chip.bad { background: var(--wb-notice-bg); border-color: var(--wb-notice-bg); color: var(--wb-danger); }
+.tag { font-size: 10.5px; font-weight: 700; border-radius: 6px; padding: 1px 6px; white-space: nowrap; flex: none; }
+.tag.info { background: #dbe7ff; color: var(--wb-info); }
+.tag.warn { background: var(--wb-warn-bg); color: var(--wb-warn); }
+.tag.ok { background: var(--wb-ok-bg); color: var(--wb-ok); }
+.recent-log { display: flex; flex-direction: column; gap: 2px; font-size: 11.5px; color: var(--wb-muted); }
+.recent-log-row { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tier { display: flex; flex-direction: column; }
+.tier > summary { padding: 5px 9px; cursor: pointer; font-weight: 700; list-style: none; display: flex; align-items: baseline; justify-content: space-between; gap: 6px; border-left: 4px solid var(--wb-muted); border-radius: 8px; }
 .tier > summary::-webkit-details-marker { display: none; }
-.tier > summary .chev { transition: transform 0.15s ease; color: var(--wb-muted); }
-.tier:not([open]) > summary .chev { transform: rotate(-90deg); }
-.tier-left { display: flex; align-items: center; gap: 6px; }
-.tier-count { color: var(--wb-muted); font-weight: 400; }
-.customer { border-top: 1px solid var(--wb-border-soft); }
-.customer-summary { padding: 5px 8px 5px 20px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
-/* The name keeps its full width: a badge that does not fit beside it moves to a second line under it. */
-.customer-main { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; }
-.customer-badges { display: flex; align-items: center; min-width: 0; max-width: 100%; }
-.customer-badges .category-badge { white-space: normal; }
-.avatar-btn { border: none; padding: 0; margin: 0; border-radius: 50%; color: white; font-family: inherit; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer; }
+.tier-rows { background: var(--wb-surface); border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); margin-top: 6px; }
+#resultsBody { display: flex; flex-direction: column; gap: 8px; }
+.customer { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 9px; align-items: center; padding: 8px 10px; }
+.customer > .avatar-btn { align-self: start; margin-top: 1px; }
+.customer + .customer { border-top: 1px solid var(--wb-border); }
+.customer-summary { cursor: pointer; display: flex; flex-direction: column; gap: 1px; min-width: 0; border-radius: 6px; }
+.customer-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.customer-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.customer-meta { font-size: 11.5px; color: var(--wb-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.customer.open .customer-meta { white-space: normal; }
+.open-note { font-size: 11.5px; font-weight: 600; color: var(--wb-info); }
+.customer-body { grid-column: 2; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--wb-border-strong); font-size: 12px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 0; }
+.kv dt { color: var(--wb-muted); }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
+.avatar-btn { width: 30px; height: 30px; font-size: 11px; border: none; padding: 0; margin: 0; border-radius: 50%; color: white; font-family: inherit; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer; }
 .avatar-btn:hover { filter: brightness(1.15); box-shadow: 0 0 0 2px var(--wb-surface), 0 0 0 4px var(--wb-border-strong); }
 .avatar-btn.opening { cursor: progress; box-shadow: 0 0 0 2px var(--wb-surface), 0 0 0 4px var(--wb-accent); animation: klcAvatarPulse 0.9s ease-in-out infinite alternate; }
 @keyframes klcAvatarPulse { from { opacity: 1; } to { opacity: 0.55; } }
-.open-note { flex-basis: 100%; display: block; font-size: 11px; font-weight: 600; color: var(--wb-text-2); margin-bottom: 2px; }
-.review-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-.review-head .review-name { margin-bottom: 0; }
-.customer-summary .chev { transition: transform 0.15s ease; color: var(--wb-border-strong); flex-shrink: 0; }
-.customer:not(.open) > .customer-summary .chev { transform: rotate(-90deg); }
-.customer-name { flex: 1 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.customer-body { padding: 4px 8px 8px 28px; background: var(--wb-bg); }
-.customer-body .field { margin-bottom: 3px; }
-.customer-body .field b { color: var(--wb-text-2); }
-.notes-block { white-space: pre-wrap; background: var(--wb-surface); border: 1px solid var(--wb-border); border-radius: 6px; padding: 6px; margin-top: 4px; font-family: monospace; font-size: 10.5px; }
-.reason { color: var(--wb-muted); font-style: italic; margin-top: 3px; }
+.notes-block, .quote { white-space: pre-wrap; background: var(--wb-bg); border-radius: 8px; padding: 7px 9px; margin-top: 6px; font-size: 12px; overflow-wrap: anywhere; }
+.reason { color: var(--wb-muted); margin-top: 4px; }
 .empty-state { color: var(--wb-muted); padding: 8px 4px; }
-.review-section { flex-shrink: 0; border: 1px solid var(--wb-review-border); border-radius: 6px; background: var(--wb-review-bg); margin-bottom: 8px; }
-.review-section > summary { padding: 6px 8px; cursor: pointer; font-weight: 600; color: var(--wb-review-text); list-style: none; display: flex; align-items: center; gap: 6px; justify-content: space-between; }
-.review-section > summary::-webkit-details-marker { display: none; }
-.review-section > summary .chev { transition: transform 0.15s ease; }
-.review-section:not([open]) > summary .chev { transform: rotate(-90deg); }
-.review-section-left { display: flex; align-items: center; gap: 6px; }
-/* Caps the review list and scrolls it, since .bodyEl itself does not scroll. */
-.review-rows { max-height: 300px; overflow-y: auto; }
-.review-row { border-top: 1px solid var(--wb-review-divider); padding: 8px; }
-.review-name { font-weight: 600; margin-bottom: 2px; }
-.review-notes { white-space: pre-wrap; background: var(--wb-surface); border: 1px solid var(--wb-review-divider); border-radius: 6px; padding: 6px; margin: 4px 0 6px; font-family: monospace; font-size: 10.5px; }
-.review-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 4px; }
-.review-actions button { min-height: 24px; padding: 4px 8px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; font-size: 11px; font-weight: 700; }
-.review-actions button.accept { background: #1c1c1e; color: #ffffff; }
-.review-reason { width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid var(--wb-border-strong); border-radius: 6px; font-size: 11px; font-family: inherit; }
-#resultsBody { flex: 1 1 auto; min-height: 140px; overflow-y: auto; }
-.notice-bar { flex-shrink: 0; display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
-.notice { background: var(--wb-notice-bg); color: var(--wb-notice-text); border: 1px solid var(--wb-notice-border); border-radius: 8px; padding: 6px 8px; font-weight: 600; }
-.stat-pill { font-family: inherit; }
-.customer-summary:focus-visible { border-radius: 6px; }
-.klc-copyable { cursor: pointer; padding: 1px 5px; border-radius: 6px; background: var(--wb-copy-bg); color: var(--wb-copy-text); display: inline-block; }
-.undo-review { margin-top: 6px; }
-.disagree { margin-top: 6px; }
+.empty { text-align: center; color: var(--wb-muted); padding: 18px 10px; }
+.empty b { display: block; color: var(--wb-text); font-size: 14px; }
+.review-rows { display: flex; flex-direction: column; gap: 8px; }
+.review-row { background: var(--wb-surface); border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.review-row.open { background: var(--wb-review-bg); border: 1px solid var(--wb-review-border); box-shadow: none; }
+.review-row.decided { background: var(--wb-ok-bg); border: 1px solid #9fdcc4; box-shadow: none; }
+.review-row.folded { cursor: pointer; gap: 2px; }
+.review-row.folded .customer-meta { margin-left: 39px; }
+.review-row .quote { background: var(--wb-surface); margin-top: 0; }
+.review-head { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.review-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.notice-bar { display: flex; flex-direction: column; gap: 6px; }
+.notice { background: var(--wb-notice-bg); color: var(--wb-notice-text); border: 1px solid var(--wb-notice-border); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+.notice button.txt { color: inherit; }
+.klc-copyable { cursor: pointer; padding: 0 5px; border-radius: 6px; background: var(--wb-copy-bg); color: var(--wb-copy-text); display: inline-block; }
+.undo-review { margin-top: 8px; }
+.disagree { margin-top: 8px; }
 .disagree > summary { cursor: pointer; font-size: 11.5px; color: var(--wb-muted); }
 .disagree .review-actions { margin: 6px 0; }
-textarea, .search-input, .review-reason, .review-subcategory { background: var(--wb-surface); color: var(--wb-text); }
-.review-subcategory { width: 100%; box-sizing: border-box; padding: 4px 6px; border: 1px solid var(--wb-border-strong); border-radius: 6px; font-size: 11px; font-family: inherit; margin-bottom: 4px; }
-.auto-start-label { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--wb-muted); margin-bottom: 6px; cursor: pointer; }
+.footer { flex-shrink: 0; padding: 6px 14px; background: var(--wb-surface); border-top: 1px solid var(--wb-border); display: flex; justify-content: space-between; gap: 10px; font-size: 11.5px; color: var(--wb-muted); white-space: nowrap; }
+.footer #modeBanner { overflow: hidden; text-overflow: ellipsis; }
+.version-line.newer { color: var(--wb-danger); font-weight: 700; }
+.rz { display: flex; align-items: center; justify-content: center; width: 100%; height: 14px; padding: 0; background: var(--wb-surface); border: none; border-top: 1px solid var(--wb-border); border-radius: 0 0 16px 16px; cursor: ns-resize; touch-action: none; }
+.rz::before { content: ""; width: 44px; height: 4px; border-radius: 2px; background: #b6bcc8; }
+.rz:hover::before, .rz:focus-visible::before { background: var(--wb-text); }
+/* Not inside the scrolling body, so a short panel never clips the menu. */
+.pop { position: absolute; top: 44px; right: 8px; z-index: 9; min-width: 230px; max-width: calc(100% - 16px); box-sizing: border-box; overflow-y: auto; background: var(--wb-surface); border-radius: 12px; box-shadow: 0 10px 30px rgba(15,23,42,0.3), 0 0 0 1px rgba(15,23,42,0.08); padding: 5px; display: flex; flex-direction: column; }
+.pop > * { flex-shrink: 0; }
+.pop .ms { height: 1px; background: var(--wb-border); margin: 4px 0; }
+.pop .mn { color: var(--wb-muted); font-size: 11.5px; padding: 4px 9px; }
+.pop .mn:empty { display: none; }
+.pop .mi { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border: none; background: none; border-radius: 8px; width: 100%; box-sizing: border-box; font-size: 12.5px; font-weight: 500; color: var(--wb-text); text-align: left; cursor: pointer; }
+.pop .mi:hover, .pop .mi:focus-visible, .pop .mi:focus-within { background: var(--wb-border-soft); outline: none; box-shadow: none; }
+.pop .mi.danger { color: var(--wb-danger); font-weight: 700; }
+.pop .mi[aria-checked="true"] { font-weight: 700; }
+.pop .mi input { margin: 0; width: 14px; height: 14px; accent-color: #1c1c1e; }
 @media (prefers-reduced-motion: reduce) {
 .progress-fill.active { animation: none; background-image: none; }
 *, *::before, *::after { transition: none !important; animation: none !important; }
@@ -5985,55 +6032,71 @@ textarea, .search-input, .review-reason, .review-subcategory { background: var(-
 </style>
 <div class="panel">
 <div class="header" id="headerEl">
-<div class="header-title">${svgIcon('clipboard', 15)}<span>Konnect Lead Checker</span></div>
-<button id="minBtn" title="Minimise" aria-label="Minimise panel">${svgIcon('minimize', 14)}</button>
+<div class="header-title"><span class="name">Lead Checker</span><span class="sub" id="headerSub">No batch</span></div>
+<button type="button" id="moreBtn" title="More actions" aria-haspopup="menu" aria-expanded="false">${svgIcon('more', 14)}More</button>
 </div>
+<div class="strip" id="linkLine" role="status" aria-live="polite"></div>
 <div class="bodyEl" id="bodyEl">
 <div class="notice-bar hidden" id="noticeBar" role="status" aria-live="polite"></div>
-<div class="link-line" id="linkLine" role="status" aria-live="polite"></div>
-<div class="version-line" id="versionLine" aria-live="polite"></div>
-<details class="topSection" id="topSection" open>
-<summary>${detailsChevronIcon()}Batch input</summary>
+<details class="topSection" id="topSection">
+<summary title="Open or close the paste box"><span>Paste a batch by hand</span>${detailsChevronIcon()}</summary>
 <div class="topSection-content">
 <textarea id="pasteBox" aria-label="Batch to check, pasted from SLA Manager" placeholder="Paste a batch from SLA Manager, a National batch, or the customer search table for Post Closure leads"></textarea>
-<button class="action" id="btnPasteClipboard" style="margin-bottom: 6px;">${svgIcon('copy', 11)}Paste from clipboard</button>
-<div class="row-count" id="rowCount">0 rows parsed</div>
-<label class="auto-start-label">
-<input type="checkbox" id="autoStartToggle">
-Auto-start on paste
-</label>
+<div class="bar">
+<button type="button" class="btn" id="btnPasteClipboard">${svgIcon('paste', 12)}Paste from clipboard</button>
+<button type="button" class="btn" id="btnStartFold" disabled>${svgIcon('play', 11)}Start</button>
+<span class="grow"></span>
+<span class="chip" id="rowCount">0 rows</span>
+</div>
+<div class="row-error hidden" id="rowError"></div>
 </div>
 </details>
-<div class="buttons" id="runControls">
-<button class="action primary" id="btnStart">${svgIcon('play', 11)}Start</button>
-<button class="action primary" id="btnPauseResume">${svgIcon('pause', 11)}Pause</button>
-<button class="action" id="btnProcessNext" title="Checks the next lead, then stops">Check one lead</button>
-<button class="action" id="btnCancel">${svgIcon('x', 11)}Cancel</button>
-<button class="action" id="btnRetryExceptions" title="Checks again the leads that could not be checked">${svgIcon('refresh', 11)}Retry failed leads</button>
-<button class="action hidden" id="btnClearPasteStart" title="Replaces this batch with the one on the clipboard and starts it">${svgIcon('copy', 11)}Clear & paste to start</button>
-<button class="action" id="btnCopyRawForExtract">${svgIcon('copy', 11)}Copy results for SLA Manager</button>
-<button class="action hidden" id="btnCopyNationalResults">${svgIcon('copy', 11)}Copy National results for SLA Manager</button>
+<div class="status hidden" id="statusCard">
+<div class="bar" id="runControls">
+<b class="grow" id="statusHeadline"></b>
+<button type="button" class="btn hidden" id="btnReview" title="Opens the leads that need your decision"></button>
+<button type="button" class="btn" id="btnStart">${svgIcon('play', 11)}Start</button>
+<button type="button" class="btn" id="btnPauseResume">${svgIcon('pause', 11)}Pause</button>
+<button type="button" class="btn" id="btnCancel">${svgIcon('x', 11)}Cancel</button>
+<button type="button" class="btn" id="btnRetryExceptions" title="Checks again the leads that could not be checked"></button>
 </div>
-<div class="mode-banner hidden" id="modeBanner" role="status" aria-live="polite"></div>
-<div class="status">
-<div class="status-pair"><span>Customer: <span id="curCustomer">-</span></span><span><span id="curTargetLabel">Lead created</span>: <span id="curTarget">-</span></span></div>
-<div>State: <span id="curState">Idle</span></div>
-<div class="hint-line hidden" id="hintLine"></div>
-<div>Checked: <span id="completedCount">0</span> &middot; Could not check: <span id="exceptionCount">0</span> &middot; Needs review: <span id="reviewCount">0</span> &middot; Total: <span id="totalCount">0</span></div>
 <div class="progress-track"><div class="progress-fill" id="progressFill" style="width: 0%;"></div></div>
-<div class="recent-log" id="recentLog"></div>
+<div class="small" id="curState">Idle</div>
+<div class="small hidden" id="curLine"><span id="curCustomer">-</span><span id="curTargetPart"><span id="curTargetLabel">Lead created</span>: <span id="curTarget">-</span></span></div>
+<div class="stats-bar hidden" id="statsBar"></div>
+<div class="hint-line hidden" id="hintLine"></div>
+<button type="button" class="txt hidden" id="btnRecent" aria-expanded="false">Recent activity</button>
+<div class="recent-log hidden" id="recentLog"></div>
 </div>
 <div id="needsReviewSection"></div>
-<div class="stats-bar hidden" id="statsBar"></div>
 <div class="filter-bar hidden" id="filterBar">
-<input type="text" class="search-input" id="searchInput" aria-label="Filter results by name" placeholder="Filter by name...">
+<input type="text" class="search-input" id="searchInput" aria-label="Filter results by name" placeholder="Filter by name">
 </div>
 <div id="resultsBody"></div>
 </div>
-<div class="footer">
-<button id="btnReport" class="quiet-btn">Report a problem</button>
-<button id="btnCopyReviewDecisions" class="quiet-btn" title="Copies the decisions made by hand, with no customer details, for writing new rules">${svgIcon('copy', 11)}Copy review decisions</button>
-<button id="btnClearStop" title="Stops the check, clears this Lead Checker's batch and results, and closes the panel. Nothing in SLA Manager or Lead Re setup is cleared.">${svgIcon('trash', 11)}Clear & Stop</button>
+<div class="footer"><span id="modeBanner" role="status" aria-live="polite"></span><span class="version-line" id="versionLine" aria-live="polite"></span></div>
+<button type="button" class="rz" id="resizeGrip" title="Drag to resize. Arrow keys also work" aria-label="Resize the panel height"></button>
+<div class="pop hidden" id="moreMenu" role="menu" aria-label="More actions">
+${menuItem('minBtn', 'minimize', 'Hide the panel', ' data-close')}
+<div class="ms"></div>
+${menuItem('menuPasteByHand', 'paste', 'Paste a batch by hand', ' data-close')}
+${menuItem('btnClearPasteStart', 'trash', 'Clear and paste to start', ' title="Replaces this batch with the one on the clipboard and starts it"')}
+${menuItem('btnProcessNext', 'play', 'Check one lead', ' data-close title="Checks the next lead, then stops"')}
+${menuItem('menuRetry', 'refresh', 'Retry failed leads', ' title="Checks again the leads that could not be checked"')}
+<label class="mi"><input type="checkbox" id="autoStartToggle"><span>Start by itself on paste</span></label>
+<div class="ms"></div>
+${menuItem('btnCopyRawForExtract', 'copy', 'Copy results for SLA Manager')}
+${menuItem('btnCopyNationalResults', 'copy', 'Copy National results for SLA Manager')}
+${menuItem('btnCopyReviewDecisions', 'copy', 'Copy review decisions', ' title="Copies the decisions made by hand, with no customer details, for writing new rules"')}
+${menuItem('menuRecent', 'clock', 'Recent activity')}
+<div class="ms"></div>
+${menuItem('', 'shrink', 'Height: compact', ' data-height="300"')}
+${menuItem('', 'list', 'Height: default', ' data-height="0"')}
+${menuItem('', 'expand', 'Height: tall', ' data-height="700"')}
+<div class="ms"></div>
+${menuItem('btnReport', 'flag', 'Report a problem', ' data-close')}
+<button type="button" class="mi danger" role="menuitem" id="btnClearStop" title="Stops the check, clears this Lead Checker's batch and results, and closes the panel. Nothing in SLA Manager or Lead Re setup is cleared.">${svgIcon('stop', 14)}<span>Clear &amp; Stop</span></button>
+<div class="mn" id="menuVersion"></div>
 </div>
 </div>
 `;
@@ -6083,15 +6146,20 @@ const { host, root } = buildPanelMarkup();
 
 const pasteBox = root.getElementById('pasteBox');
 const rowCountEl = root.getElementById('rowCount');
+const rowErrorEl = root.getElementById('rowError');
 const curCustomerEl = root.getElementById('curCustomer');
 const curTargetEl = root.getElementById('curTarget');
 const curStateEl = root.getElementById('curState');
+const curLineEl = root.getElementById('curLine');
+const curTargetPartEl = root.getElementById('curTargetPart');
 const modeBannerEl = root.getElementById('modeBanner');
 const versionLineEl = root.getElementById('versionLine');
+const menuVersionEl = root.getElementById('menuVersion');
 const versionState = startVersionWatch('Konnect-Lead-Checker.js', () => render());
-const completedCountEl = root.getElementById('completedCount');
-const exceptionCountEl = root.getElementById('exceptionCount');
-const totalCountEl = root.getElementById('totalCount');
+const headerSubEl = root.getElementById('headerSub');
+const bodyEl = root.getElementById('bodyEl');
+const statusCardEl = root.getElementById('statusCard');
+const statusHeadlineEl = root.getElementById('statusHeadline');
 const progressFillEl = root.getElementById('progressFill');
 const statsBarEl = root.getElementById('statsBar');
 const filterBarEl = root.getElementById('filterBar');
@@ -6099,19 +6167,46 @@ const searchInputEl = root.getElementById('searchInput');
 const resultsBody = root.getElementById('resultsBody');
 const needsReviewSectionEl = root.getElementById('needsReviewSection');
 const minBtn = root.getElementById('minBtn');
+const moreBtn = root.getElementById('moreBtn');
+const moreMenuEl = root.getElementById('moreMenu');
 const headerEl = root.getElementById('headerEl');
 const recentLogEl = root.getElementById('recentLog');
+const btnRecentEl = root.getElementById('btnRecent');
 const noticeBarEl = root.getElementById('noticeBar');
+const autoStartToggle = root.getElementById('autoStartToggle');
+autoStartToggle.checked = loadSettings().autoStart;
 
+// The technical reason for a log out folds behind "Why am I seeing this?".
+let loginWhyOpen = false;
+let lastNoticesHtml = '';
 function renderNotices() {
 const messages = [];
+const loggedOutWhy = lcNotices.loggedOut && lcNotices.stopped ? /^Konnect Live logged out: (.+)\. Press Login and the check carries on\.$/.exec(lcNotices.stopped) : null;
+if (!loggedOutWhy) loginWhyOpen = false;
 if (lcNotices.selfTestFailures.length > 0) messages.push('Self-test failed: classifications may be wrong. Check the console.');
-if (lcNotices.stopped) messages.push(lcNotices.stopped);
+if (lcNotices.stopped && !loggedOutWhy) messages.push(lcNotices.stopped);
 if (lcNotices.saveFailed) messages.push("Progress could not be saved in this browser. Don't reload the page until this batch is finished.");
 if (lcNotices.otherTab) messages.push('Another tab changed this batch. Use one Lead Checker tab at a time, then reopen this one to see its changes.');
-noticeBarEl.innerHTML = messages.map((m) => `<div class="notice">${escapeHtmlForUi(m)}</div>`).join('');
-noticeBarEl.classList.toggle('hidden', messages.length === 0);
+if (versionState.newer) messages.push(versionLineText(versionState));
+let html = messages.map((m) => `<div class="notice">${escapeHtmlForUi(m)}</div>`).join('');
+if (loggedOutWhy) {
+const why = loggedOutWhy[1].charAt(0).toUpperCase() + loggedOutWhy[1].slice(1);
+html = `<div class="notice"><b>Press Login on Konnect Live</b><span>The check carries on by itself once you are back in. Nothing has been lost.</span><button type="button" class="txt" id="btnLoginWhy" aria-expanded="${loginWhyOpen}">Why am I seeing this?</button>${loginWhyOpen ? `<span>${escapeHtmlForUi(why)}.</span>` : ''}</div>` + html;
 }
+// Left alone when nothing changed, so focus on the Why button survives a redraw.
+if (html !== lastNoticesHtml) {
+lastNoticesHtml = html;
+noticeBarEl.innerHTML = html;
+}
+noticeBarEl.classList.toggle('hidden', !html);
+}
+noticeBarEl.addEventListener('click', (event) => {
+if (!event.target || event.target.id !== 'btnLoginWhy') return;
+loginWhyOpen = !loginWhyOpen;
+renderNotices();
+const again = root.getElementById('btnLoginWhy');
+if (again) again.focus();
+});
 
 lcNotices.onChange = () => {
 if (lcNotices.stopped && session && session.paused) {
@@ -6135,16 +6230,12 @@ let destroyed = false;
 let badgeTimer = null;
 let batchWaitTimer = null;
 
-function focusPanel() {
-const target = topSectionEl.open ? pasteBox : root.getElementById('btnStart');
-try { (target || minBtn).focus(); } catch (error) { /* ignore */ }
-}
-const runControlsEl = root.getElementById('runControls');
 const linkLineEl = root.getElementById('linkLine');
 const hintLineEl = root.getElementById('hintLine');
-const reviewCountEl = root.getElementById('reviewCount');
 const curTargetLabelEl = root.getElementById('curTargetLabel');
 const btnStartEl = root.getElementById('btnStart');
+const btnStartFoldEl = root.getElementById('btnStartFold');
+const btnReviewEl = root.getElementById('btnReview');
 const btnProcessNextEl = root.getElementById('btnProcessNext');
 const btnCancelEl = root.getElementById('btnCancel');
 const btnRetryExceptionsEl = root.getElementById('btnRetryExceptions');
@@ -6152,15 +6243,12 @@ const btnCopyRawForExtractEl = root.getElementById('btnCopyRawForExtract');
 const btnCopyNationalResultsEl = root.getElementById('btnCopyNationalResults');
 const pauseResumeBtn = root.getElementById('btnPauseResume');
 const topSectionEl = root.getElementById('topSection');
-const btnClearPasteStartEl = root.getElementById('btnClearPasteStart');
 
-// Lives outside topSection so it survives the collapse; only shown when
-// collapsed.
-function syncClearPasteStartVisibility() {
-btnClearPasteStartEl.classList.toggle('hidden', topSectionEl.open);
+function focusPanel() {
+const shown = (el) => !el.classList.contains('hidden') && !statusCardEl.classList.contains('hidden');
+const target = topSectionEl.open ? pasteBox : [btnStartEl, pauseResumeBtn, btnReviewEl].find(shown);
+try { (target || moreBtn).focus(); } catch (error) { /* ignore */ }
 }
-topSectionEl.addEventListener('toggle', () => { syncClearPasteStartVisibility(); render(); });
-syncClearPasteStartVisibility();
 
 function wireBadgeClick() {
 badge.clickTarget.addEventListener('click', () => {
@@ -6203,17 +6291,21 @@ const checked = Object.keys(session.results).length;
 if (session.headerOk && session.rows.length > 0) {
 restoredNote = session.done
 ? `Restored after the page reloaded: all ${session.rows.length} leads were checked.`
-: `Restored after the page reloaded: ${checked} of ${session.rows.length} checked. Press Start to carry on, or Clear & paste to start for a new batch.`;
+: `Restored after the page reloaded: ${checked} of ${session.rows.length} checked. Press Start to carry on, or use Clear and paste to start (in More) for a new batch.`;
 }
-}
-// A restored session starts collapsed, as a fresh run does.
-if (session && session.rows && session.rows.length > 0) {
-topSectionEl.open = false;
-syncClearPasteStartVisibility();
 }
 
-const detailsState = { tiers: new Set([-2, -1, 1, 2, 3, 4, 5, 6]), customers: new Set() };
-let reviewSectionOpen = false;
+// Every group starts open, Could not check (7) included.
+const detailsState = { tiers: new Set([-2, -1, 1, 2, 3, 4, 5, 6, 7]), customers: new Set() };
+// Needs review takes the place of the results while it is open. One card
+// is open at a time; a card decided on this visit stays, in green, so the
+// Why can be added or the answer changed.
+let reviewMode = false;
+let reviewOpenKey = null;
+const reviewTiersOpen = new Set();
+const reviewDecided = new Set();
+const reviewTyped = new Map();
+let recentOpen = false;
 
 // Opening a customer by hand from the initials on a result. openInFlight
 // is the press being worked ({ key, token }); openNote is what the state
@@ -6221,6 +6313,9 @@ let reviewSectionOpen = false;
 // an outcome until the next run or batch.
 let openInFlight = null;
 let openNote = '';
+// What the note is about: 'lead' (customer and lead open), 'timeline'
+// (customer only) or '' (still opening, or not opened).
+let openNoteOpened = '';
 let openNoteUntil = 0;
 // The result the note is about, so it also shows on that row or card: the
 // state line can be scrolled out of sight.
@@ -6231,6 +6326,7 @@ const RUN_BUSY_NOTE = 'The Lead Checker is checking a batch. Pause it or wait, t
 function stopManualOpen() {
 if (openInFlight) { openInFlight.token.cancelled = true; openInFlight = null; }
 openNote = '';
+openNoteOpened = '';
 openNoteUntil = 0;
 }
 
@@ -6241,6 +6337,7 @@ if (openNote && (openNoteUntil || (!(isRunning && !(session && session.paused)) 
 
 function refuseManualOpen(text) {
 openNote = text;
+openNoteOpened = '';
 openNoteUntil = Date.now() + 5000;
 setTimeout(() => { if (!destroyed) render(); }, 5100);
 render();
@@ -6266,6 +6363,7 @@ const mine = { key, token: { cancelled: false, loggedOut: false, replaced: false
 const gaveWay = () => ({ ok: false, lead: false, text: mine.token.loggedOut ? LOGGED_OUT_NOTE : (mine.token.replaced ? 'Another customer was opened instead.' : RUN_BUSY_NOTE) });
 openInFlight = mine;
 openNote = `Opening ${row.name || 'the customer'}...`;
+openNoteOpened = '';
 openNoteUntil = 0;
 render();
 while (klcShared.stepBusy) await sleep(50);
@@ -6296,6 +6394,7 @@ if (mine.token.cancelled || destroyed) return gaveWay();
 openInFlight = null;
 const loggedOut = onLoginPage();
 openNote = loggedOut ? LOGGED_OUT_NOTE : openOutcomeText(row, outcome);
+openNoteOpened = loggedOut ? '' : (outcome.status === 'OPEN' ? 'lead' : (outcome.status === 'TIMELINE_ONLY' ? 'timeline' : ''));
 render();
 return { ok: !loggedOut && (outcome.status === 'OPEN' || outcome.status === 'TIMELINE_ONLY'), lead: !loggedOut && outcome.status === 'OPEN', text: openNote };
 }
@@ -6352,16 +6451,24 @@ if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
 return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-// The initials are a button that opens the customer on the page. The colour
-// is categoryColor(r), so it always agrees with the badge.
-function avatarButton(r, colorHex, size) {
+// The initials are a button that opens the customer on the page, filled
+// with categoryColor(r) so they agree with the group heading.
+function avatarButton(r, colorHex) {
 const label = escapeHtmlForUi(`Open ${r.name || 'this customer'} on Konnect Live`);
 const busy = !!openInFlight && openInFlight.key === r.inputIndex;
-return `<button type="button" class="avatar-btn${busy ? ' opening' : ''}" data-open-key="${r.inputIndex}" title="${label}" aria-label="${label}"${busy ? ' aria-busy="true"' : ''} style="width: ${size}px; height: ${size}px; background: ${readableTextColor(colorHex)}; font-size: ${Math.round(size * 0.4)}px;">${escapeHtmlForUi(initialsForKlc(r.name))}</button>`;
+return `<button type="button" class="avatar-btn${busy ? ' opening' : ''}" data-open-key="${r.inputIndex}" title="${label}" aria-label="${label}"${busy ? ' aria-busy="true"' : ''} style="background: ${readableTextColor(colorHex)};">${escapeHtmlForUi(initialsForKlc(r.name))}</button>`;
 }
 
+// A blue tag on the result whose customer is open on the page.
+function openTagHtml(r) {
+if (!openNote || openNoteKey !== r.inputIndex || !openNoteOpened) return '';
+return '<span class="tag info">Open now</span>';
+}
+
+// The words under the name while it opens, when only the timeline opened,
+// or when it could not be opened. A full open is said by the tag alone.
 function openNoteHtml(r) {
-if (!openNote || openNoteKey !== r.inputIndex) return '';
+if (!openNote || openNoteKey !== r.inputIndex || openNoteOpened === 'lead') return '';
 return `<span class="open-note" role="status">${escapeHtmlForUi(openNote)}</span>`;
 }
 
@@ -6371,97 +6478,214 @@ function disagreeHtml(r) {
 const choices = r.postClosureAction
 ? [['send back through', 'Actioned by dealership'], ['send back through', 'Email only'], ['send back through', "In market won't commit"], ['check: needs contact?', '']]
 .filter(([action, reason]) => !(action === r.postClosureAction && reason === (r.postClosureReason || '')))
-.map(([action, reason]) => `<button type="button" class="action" data-pc-action="${escapeHtmlForUi(action)}" data-pc-reason="${escapeHtmlForUi(reason)}">${escapeHtmlForUi(reason ? `Send back: ${reason}` : 'Needs a call')}</button>`).join('')
-: REVIEW_TIER_OPTIONS.filter((tier) => tier !== r.tier)
-.map((tier) => `<button type="button" class="action" data-tier="${tier}" style="background: ${categoryColor({ tier })}1a; color: ${readableTextColor(categoryColor({ tier }))};">Tier ${tier}: ${escapeHtmlForUi(TIER_NAMES[tier])}</button>`).join('');
+.map(([action, reason]) => `<button type="button" class="btn" data-pc-action="${escapeHtmlForUi(action)}" data-pc-reason="${escapeHtmlForUi(reason)}">${escapeHtmlForUi(reason ? `Send back: ${reason}` : 'Needs a call')}</button>`).join('')
+: REVIEW_TIER_OPTIONS.filter((tier) => tier !== r.tier).map(tierChipButton).join('');
 return `<details class="disagree" data-key="${r.inputIndex}"><summary>Disagree</summary>
 <div class="review-actions" role="group" aria-label="Correct the result for ${escapeHtmlForUi(r.name)}">${choices}</div>
 <input type="text" class="review-reason" aria-label="Why (optional)" placeholder="Why (optional): helps me add a rule">
 </details>`;
 }
 
-function customerBodyHtml(r) {
-const parts = [];
-parts.push(`<div class="field"><b>Name:</b> ${copyableField(r.name)}</div>`);
-if (r.phone) parts.push(`<div class="field"><b>Phone:</b> ${copyableField(r.phone)}</div>`);
-if (r.email) parts.push(`<div class="field"><b>Email:</b> ${copyableField(r.email)}</div>`);
-parts.push(`<div class="field"><b>Campaign:</b> ${escapeHtmlForUi(r.campaign || '-')} &middot; <b>Source:</b> ${escapeHtmlForUi(r.source || '-')}</div>`);
-parts.push(`<div class="field"><b>Created:</b> ${escapeHtmlForUi(r.created || '-')}</div>`);
-if (r.flags && r.flags.length > 0) parts.push(`<div class="field"><b>Flags:</b> ${escapeHtmlForUi(r.flags.join(', '))}</div>`);
-if (r.postClosureAction) {
-parts.push(`<div class="field"><b>Post Closure:</b> <span style="color: ${readableTextColor(postClosureColor(r.postClosureAction))}; font-weight: 700;">${escapeHtmlForUi(postClosureLabel(r))}</span></div>`);
-if (r.postClosureEvidence) parts.push(`<div class="field"><b>Why:</b> ${escapeHtmlForUi(r.postClosureEvidence)}</div>`);
+function tierChipButton(tier) {
+return `<button type="button" class="chip" data-tier="${tier}" title="${escapeHtmlForUi(tierHeading(tier))}" style="--tc: ${TIER_COLORS[tier]};">${escapeHtmlForUi(TIER_SHORT[tier])}</button>`;
 }
+
+function customerBodyHtml(r) {
+const pairs = [];
+if (r.phone) pairs.push(['Phone', copyableField(r.phone)]);
+if (r.email) pairs.push(['Email', copyableField(r.email)]);
+pairs.push(['Campaign', escapeHtmlForUi(r.campaign || '-')]);
+pairs.push(['Source', escapeHtmlForUi(r.source || '-')]);
+pairs.push(['Created', escapeHtmlForUi(r.created || '-')]);
+if (r.flags && r.flags.length > 0) pairs.push(['Flags', escapeHtmlForUi(r.flags.join(', '))]);
+if (r.postClosureAction) {
+pairs.push(['Post Closure', `<span style="color: ${readableTextColor(postClosureColor(r.postClosureAction))}; font-weight: 700;">${escapeHtmlForUi(postClosureLabel(r))}</span>`]);
+if (r.postClosureEvidence) pairs.push(['Why', escapeHtmlForUi(r.postClosureEvidence)]);
+} else if (r.tier) {
+pairs.push(['Tier', escapeHtmlForUi(tierHeading(r.tier) + (r.subCategory ? `, ${r.subCategory}` : ''))]);
+}
+const parts = [kvHtml(pairs)];
 if (r.reason) parts.push(`<div class="reason">${escapeHtmlForUi(r.reason)}</div>`);
 if (r.initialNotes) parts.push(`<div class="notes-block">${escapeHtmlForUi(r.initialNotes)}</div>`);
-if (r.manualOverride && r.preDecision) parts.push(`<button type="button" class="action undo-review" data-undo-key="${r.inputIndex}">Undo review decision</button>`);
+if (r.manualOverride && r.preDecision) parts.push(`<button type="button" class="btn undo-review" data-undo-key="${r.inputIndex}">Undo review decision</button>`);
 else if (r.status === 'CLASSIFIED' && (r.tier || r.postClosureAction)) parts.push(disagreeHtml(r));
 else if (r.status === 'EXCEPTION') parts.push(`<div class="reason" title="${escapeHtmlForUi(r.exception || '')}">No Initial Notes read: ${escapeHtmlForUi(exceptionLabel(r.exception))}</div>`);
 return parts.join('');
 }
 
-// Same priority order as the tier pills.
+// One result in the normal and Post Closure checks. The group heading
+// says the tier, so the row carries the sub-category or the reason.
+function standardRowHtml(r) {
+const color = categoryColor(r);
+let tag = '';
+let meta = r.subCategory || '';
+if (r.exception) {
+tag = tagHtml('Failed', color, r.exception);
+meta = exceptionLabel(r.exception);
+} else if (r.postClosureAction) {
+const sendBack = r.postClosureAction === 'send back through';
+const shorthand = SEND_BACK_SHORTHAND[r.postClosureReason];
+tag = tagHtml(sendBack ? `Send back${shorthand ? ` · ${shorthand}` : ''}` : 'Check', color, postClosureLabel(r));
+meta = [sendBack ? r.postClosureReason : 'Needs contact?', r.postClosureEvidence].filter(Boolean).join(' · ');
+} else if (!r.tier) {
+meta = meta || 'Pending';
+}
+return resultRowHtml({
+key: r.inputIndex, open: detailsState.customers.has(r.inputIndex), avatar: avatarButton(r, color), name: r.name,
+title: r.initialNotes || 'No Initial Notes read yet.', tag, meta, openTag: openTagHtml(r), note: openNoteHtml(r), body: customerBodyHtml(r)
+});
+}
+
+// Same priority order as the groups.
 const STATS_BAR_CATEGORY_ORDER = ['POST CLOSURE: SEND BACK', 'POST CLOSURE: CHECK'].concat([1, 2, 3, 4, 5, 6].map((t) => TIER_NAMES[t])).concat(['EXCEPTION']);
 
-const STATS_BAR_LABELS = { EXCEPTION: 'COULD NOT CHECK' };
-
-function renderNeedsReviewSection(needsReview) {
-if (needsReview.length === 0) {
-needsReviewSectionEl.innerHTML = '';
-return;
-}
-// A redraw must not lose the place in the list or text typed in a card.
-const oldRows = needsReviewSectionEl.querySelector('.review-rows');
-const oldScroll = oldRows ? oldRows.scrollTop : 0;
-const typed = new Map();
-needsReviewSectionEl.querySelectorAll('.review-row').forEach((rowEl) => {
-typed.set(rowEl.dataset.key, [rowEl.querySelector('.review-subcategory').value, rowEl.querySelector('.review-reason').value]);
-});
-const rowsHtml = needsReview.map((r) => `
-<div class="review-row" data-key="${r.inputIndex}">
-<div class="review-head">${avatarButton(r, categoryColor({ tier: r.tier }), 28)}<div class="review-name">${escapeHtmlForUi(r.name)}</div></div>
-${openNoteHtml(r)}
-<div class="notes-block review-notes">${escapeHtmlForUi(r.initialNotes || '')}</div>
-${r.tierName ? `<div class="reason">Suggested, not applied: Tier ${r.tier}, ${escapeHtmlForUi(r.tierName)}${r.subCategory ? ', ' + escapeHtmlForUi(r.subCategory) : ''}. ${escapeHtmlForUi(r.reason || '')}</div>` : ''}
-${r.tierName ? `<div class="review-actions review-quick" role="group" aria-label="Quick decision for ${escapeHtmlForUi(r.name)}">
-<button type="button" class="accept" data-tier="${r.tier}" data-subcategory="${escapeHtmlForUi(r.subCategory || '')}">Accept Tier ${r.tier}: ${escapeHtmlForUi(r.tierName)}</button>
-${r.alternative ? `<button type="button" data-tier="${r.alternative.tier}" data-subcategory="${escapeHtmlForUi(r.alternative.subCategory || '')}" style="background: ${categoryColor({ tier: r.alternative.tier })}1a; color: ${readableTextColor(categoryColor({ tier: r.alternative.tier }))};">No call: Tier ${r.alternative.tier}, ${escapeHtmlForUi(r.alternative.subCategory || '')}</button>` : ''}
-</div>` : ''}
-<div class="review-actions" role="group" aria-label="Choose a tier for ${escapeHtmlForUi(r.name)}">
-${REVIEW_TIER_OPTIONS.map((tier) => `<button type="button" data-tier="${tier}" style="background: ${categoryColor({ tier })}1a; color: ${readableTextColor(categoryColor({ tier }))};">Tier ${tier}: ${escapeHtmlForUi(TIER_NAMES[tier])}</button>`).join('')}
-</div>
-<input type="text" class="review-subcategory" aria-label="Sub-category for ${escapeHtmlForUi(r.name)} (optional)" placeholder="Sub-category (optional), for example Website Test Drive">
-<input type="text" class="review-reason" aria-label="Reason for ${escapeHtmlForUi(r.name)} (optional)" placeholder="Why (optional): helps refine the rules later">
-</div>
-`).join('');
-needsReviewSectionEl.innerHTML = `
-<details class="review-section" ${reviewSectionOpen ? 'open' : ''}>
-<summary><span class="review-section-left">${detailsChevronIcon()}<span>Needs review</span></span><span>${needsReview.length}</span></summary>
-<div class="review-rows">${rowsHtml}</div>
-</details>
-`;
-const detailsEl = needsReviewSectionEl.querySelector('details.review-section');
-if (detailsEl) detailsEl.addEventListener('toggle', () => { reviewSectionOpen = detailsEl.open; });
-const newRows = needsReviewSectionEl.querySelector('.review-rows');
-if (newRows && oldScroll) newRows.scrollTop = oldScroll;
-needsReviewSectionEl.querySelectorAll('.review-row').forEach((rowEl) => {
-const key = Number(rowEl.dataset.key);
-const subCategoryInput = rowEl.querySelector('.review-subcategory');
-const reasonInput = rowEl.querySelector('.review-reason');
-const kept = typed.get(rowEl.dataset.key);
-if (kept) { subCategoryInput.value = kept[0]; reasonInput.value = kept[1]; }
-rowEl.querySelectorAll('.review-actions button').forEach((btn) => {
-btn.addEventListener('click', () => {
-const result = session.results[key];
+function decideReview(key, tier, subCategoryText, note) {
+const result = session && session.results[key];
 if (!result) return;
-// A quick button carries its own sub-category; a typed one still wins.
-session.results[key] = applyManualReviewDecision(result, Number(btn.dataset.tier), subCategoryInput.value.trim() || btn.dataset.subcategory || '', reasonInput.value.trim());
+session.results[key] = applyManualReviewDecision(result, tier, subCategoryText, note);
 saveSession(session);
 linkResendAfterDecision();
+}
+
+function leaveReview() {
+reviewMode = false;
+reviewOpenKey = null;
+reviewTiersOpen.clear();
+reviewDecided.clear();
+reviewTyped.clear();
+}
+
+// Returns true while the review view is showing.
+function renderNeedsReviewSection(orderedAll) {
+const list = reviewMode ? orderedAll.filter((r) => isNeedsReview(r) || (reviewDecided.has(r.inputIndex) && r.manualOverride)) : [];
+if (list.length === 0) {
+if (reviewMode) leaveReview();
+needsReviewSectionEl.innerHTML = '';
+return false;
+}
+// A redraw must not lose text typed in a card or the box being typed in.
+const active = root.activeElement;
+const typingIn = active && active.tagName === 'INPUT' && active.closest('.review-row')
+? { key: active.closest('.review-row').dataset.key, cls: active.className, at: active.selectionStart } : null;
+needsReviewSectionEl.querySelectorAll('.review-row').forEach((rowEl) => {
+const kept = reviewTyped.get(rowEl.dataset.key) || {};
+const sub = rowEl.querySelector('.review-subcategory');
+const why = rowEl.querySelector('.review-reason');
+if (sub) kept.sub = sub.value;
+if (why) kept.why = why.value;
+reviewTyped.set(rowEl.dataset.key, kept);
+});
+const waiting = list.filter(isNeedsReview);
+if (!waiting.some((r) => r.inputIndex === reviewOpenKey)) reviewOpenKey = waiting.length > 0 ? waiting[0].inputIndex : null;
+const rowsHtml = list.map((r) => {
+const name = escapeHtmlForUi(r.name);
+const head = (tag) => `<div class="review-head">${avatarButton(r, categoryColor({ tier: r.tier }))}<b class="review-name grow">${name}</b>${tag}</div>`;
+if (!isNeedsReview(r)) {
+const sub = r.subCategory && r.subCategory !== '(manually reviewed)' ? `, ${r.subCategory}` : '';
+return `
+<div class="review-row decided" data-key="${r.inputIndex}">
+${head('<span class="tag ok">Decided</span>')}
+${openNoteHtml(r)}
+<b>Decided: ${escapeHtmlForUi(tierHeading(r.tier) + sub)}</b>
+<input type="text" class="review-reason" aria-label="Why for ${name} (optional)" placeholder="Why (optional): helps refine the rules later">
+<button type="button" class="txt" data-change-answer>Change my answer</button>
+</div>`;
+}
+const needsTag = '<span class="tag warn">Needs review</span>';
+if (r.inputIndex !== reviewOpenKey) {
+return `
+<div class="review-row folded" data-key="${r.inputIndex}" role="button" tabindex="0" aria-expanded="false">
+${head(needsTag)}
+${openNoteHtml(r)}
+<span class="customer-meta">${escapeHtmlForUi(r.reason || 'Open to decide')}</span>
+</div>`;
+}
+const tiersOpen = !r.tierName || reviewTiersOpen.has(r.inputIndex);
+const choose = tiersOpen ? `
+<span class="lbl">Change tier to</span>
+<div class="review-actions review-tiers" role="group" aria-label="Choose a tier for ${name}">${REVIEW_TIER_OPTIONS.map(tierChipButton).join('')}</div>
+<input type="text" class="review-subcategory" aria-label="Sub-category for ${name} (optional)" placeholder="Sub-category (optional), for example Website Test Drive">
+${r.tierName ? '<button type="button" class="txt" data-hide-tiers>Back to the suggestion</button>' : ''}` : `
+<div class="review-actions review-quick" role="group" aria-label="Quick decision for ${name}">
+<button type="button" class="btn pri accept" data-tier="${r.tier}" data-subcategory="${escapeHtmlForUi(r.subCategory || '')}" title="Accept ${escapeHtmlForUi(tierHeading(r.tier))}">Accept</button>
+<button type="button" class="btn" data-show-tiers>Change tier</button>
+${r.alternative ? `<button type="button" class="btn" data-tier="${r.alternative.tier}" data-subcategory="${escapeHtmlForUi(r.alternative.subCategory || '')}" title="No call: ${escapeHtmlForUi(tierHeading(r.alternative.tier))}, ${escapeHtmlForUi(r.alternative.subCategory || '')}">No call</button>` : ''}
+</div>`;
+return `
+<div class="review-row open" data-key="${r.inputIndex}">
+${head(needsTag)}
+${openNoteHtml(r)}
+<div class="quote review-notes">${escapeHtmlForUi(r.initialNotes || '')}</div>
+${r.tierName ? `<div class="small">Suggested: ${tagHtml(tierHeading(r.tier), TIER_COLORS[r.tier] || '#64748b')}${r.subCategory ? ` (${escapeHtmlForUi(r.subCategory)})` : ''}. ${escapeHtmlForUi(r.reason || '')}</div>` : ''}
+${choose}
+</div>`;
+}).join('');
+needsReviewSectionEl.innerHTML = `
+<div class="bar"><b class="grow">Needs review</b><span class="chip warn">${waiting.length > 0 ? `${waiting.length} left` : 'All decided'}</span><button type="button" class="btn" id="btnBackToResults">Back to results</button></div>
+<div class="review-rows">${rowsHtml}</div>
+`;
+needsReviewSectionEl.querySelector('#btnBackToResults').addEventListener('click', () => { leaveReview(); render(); });
+needsReviewSectionEl.querySelectorAll('.review-row').forEach((rowEl) => {
+const key = Number(rowEl.dataset.key);
+const kept = reviewTyped.get(rowEl.dataset.key) || {};
+const subCategoryInput = rowEl.querySelector('.review-subcategory');
+const reasonInput = rowEl.querySelector('.review-reason');
+if (subCategoryInput && kept.sub) subCategoryInput.value = kept.sub;
+if (reasonInput) reasonInput.value = kept.why != null ? kept.why : ((session.results[key] && session.results[key].manualNote) || '');
+if (rowEl.classList.contains('folded')) {
+const open = () => { reviewOpenKey = key; render(); };
+rowEl.addEventListener('click', open);
+rowEl.addEventListener('keydown', (event) => {
+if (event.target === rowEl && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); open(); }
+});
+return;
+}
+rowEl.querySelectorAll('.review-actions button[data-tier]').forEach((btn) => {
+btn.addEventListener('click', () => {
+// A quick button carries its own sub-category; a typed one still wins.
+decideReview(key, Number(btn.dataset.tier), (subCategoryInput ? subCategoryInput.value.trim() : '') || btn.dataset.subcategory || '', '');
+reviewDecided.add(key);
+reviewTiersOpen.delete(key);
+reviewTyped.delete(rowEl.dataset.key);
+reviewOpenKey = null;
 render();
 });
 });
+const showTiers = rowEl.querySelector('[data-show-tiers]');
+if (showTiers) showTiers.addEventListener('click', () => { reviewTiersOpen.add(key); render(); });
+const hideTiers = rowEl.querySelector('[data-hide-tiers]');
+if (hideTiers) hideTiers.addEventListener('click', () => { reviewTiersOpen.delete(key); reviewTyped.delete(rowEl.dataset.key); render(); });
+const changeAnswer = rowEl.querySelector('[data-change-answer]');
+if (changeAnswer) {
+changeAnswer.addEventListener('click', () => {
+if (!session || !session.results[key]) return;
+session.results[key] = undoManualReviewDecision(session.results[key]);
+saveSession(session);
+linkResendAfterDecision();
+reviewDecided.delete(key);
+reviewTyped.delete(rowEl.dataset.key);
+reviewOpenKey = key;
+render();
 });
+// The Why is taken when the box is left or Enter is pressed: the same
+// decision is made again with the reason on it.
+reasonInput.addEventListener('change', () => {
+const current = session && session.results[key];
+const why = reasonInput.value.trim();
+if (!current || !current.manualOverride || (current.manualNote || '') === why) return;
+const sub = current.subCategory === '(manually reviewed)' ? '' : current.subCategory;
+session.results[key] = undoManualReviewDecision(current);
+decideReview(key, current.tier, sub, why);
+reviewTyped.set(rowEl.dataset.key, { why });
+render();
+});
+}
+});
+if (typingIn) {
+const again = needsReviewSectionEl.querySelector(`.review-row[data-key="${typingIn.key}"] input.${typingIn.cls.split(' ')[0]}`);
+if (again) { again.focus({ preventScroll: true }); try { again.setSelectionRange(typingIn.at, typingIn.at); } catch (error) { /* ignore */ } }
+}
+return true;
 }
 
 function render() {
@@ -6476,43 +6700,54 @@ ensureBadgeAttached();
 renderNotices();
 renderVersionLine();
 renderModeBanner();
-linkLineEl.textContent = linkLineText();
+renderLinkLine();
 hintLineEl.textContent = restoredNote;
 hintLineEl.classList.toggle('hidden', !restoredNote);
 curTargetLabelEl.textContent = session ? leadTimeLabel(session.mode, session.rows) : 'Lead created';
 sayReady(false);
 if (!session) {
-rowCountEl.textContent = '0 rows parsed';
-resultsBody.innerHTML = renderZeroState('clipboard', 'No Batch Loaded', 'Paste a batch above to begin.');
-completedCountEl.textContent = '0';
-exceptionCountEl.textContent = '0';
-reviewCountEl.textContent = '0';
-totalCountEl.textContent = '0';
+headerSubEl.textContent = 'No batch';
+rowCountEl.textContent = '0 rows';
+rowErrorEl.classList.add('hidden');
+if (reviewMode) leaveReview();
+needsReviewSectionEl.innerHTML = '';
+resultsBody.classList.remove('hidden');
+resultsBody.innerHTML = '<div class="empty"><b>No batch loaded</b>Press Send in SLA Manager and the batch arrives here by itself.</div>';
 progressFillEl.style.width = '0%';
 statsBarEl.classList.add('hidden');
 filterBarEl.classList.add('hidden');
-needsReviewSectionEl.innerHTML = '';
 updateBadgeProgress(badge, [], session);
 curStateEl.textContent = deriveRestStateLabel(session, isRunning);
 showOpenNote();
-syncButtonStates();
+syncButtonStates(0);
+renderStatusCard(0, false);
 renderRecentLog();
 return;
 }
-rowCountEl.textContent = `${session.rows.length} rows parsed` + (session.headerOk ? '' : `: ${session.headerError}`);
+const rowTotal = session.rows.length;
+headerSubEl.textContent = `${rowTotal} ${rowTotal === 1 ? 'lead' : 'leads'}`;
+rowCountEl.textContent = `${rowTotal} ${rowTotal === 1 ? 'row' : 'rows'}`;
+rowErrorEl.textContent = session.headerOk ? '' : session.headerError;
+rowErrorEl.classList.toggle('hidden', session.headerOk);
 const orderedAll = orderedResults(session);
+const percent = rowTotal > 0 ? Math.round((100 * orderedAll.length) / rowTotal) : 0;
+progressFillEl.style.width = `${percent}%`;
+// Animated only while working, so it never reads as busy at rest.
+progressFillEl.classList.toggle('active', isRunning && !session.done && !lcNotices.loggedOut);
+progressFillEl.classList.toggle('waiting', lcNotices.loggedOut);
+updateBadgeProgress(badge, orderedAll, session);
+let needsReviewCount = 0;
+let reviewing = false;
 if (session.mode === 'national') {
+if (reviewMode) leaveReview();
 needsReviewSectionEl.innerHTML = '';
 statsBarEl.classList.add('hidden');
 filterBarEl.classList.toggle('hidden', orderedAll.length === 0);
-const nationalPercent = session.rows.length > 0 ? Math.round((100 * orderedAll.length) / session.rows.length) : 0;
-progressFillEl.style.width = `${nationalPercent}%`;
-progressFillEl.classList.toggle('active', isRunning && !session.done);
-updateBadgeProgress(badge, orderedAll, session);
 resultsBody.innerHTML = renderNationalResultsHtml(orderedAll, nameFilterText, {
 isCustomerOpen: (key) => detailsState.customers.has(key),
 isTierOpen: (key, openByDefault) => detailsState.tiers.has(key) || openByDefault,
-avatar: (r, color) => avatarButton(r, color, 28),
+avatar: (r, color) => avatarButton(r, color),
+openTag: openTagHtml,
 openNote: openNoteHtml
 });
 } else {
@@ -6526,89 +6761,76 @@ orderedAll,
 );
 const needsReview = orderedAll.filter(isNeedsReview);
 const ordered = orderedAll.filter((r) => !isNeedsReview(r));
-renderNeedsReviewSection(needsReview);
-const percent = session.rows.length > 0 ? Math.round((100 * orderedAll.length) / session.rows.length) : 0;
-progressFillEl.style.width = `${percent}%`;
-// Animated only while working, so it never reads as busy at rest.
-progressFillEl.classList.toggle('active', isRunning && !session.done);
-updateBadgeProgress(badge, orderedAll, session);
+needsReviewCount = needsReview.length;
+reviewing = renderNeedsReviewSection(orderedAll);
 
-if (ordered.length === 0) {
-// If every processed row is in Needs Review, "no results yet" would be wrong.
-resultsBody.innerHTML = needsReview.length > 0
-? '<div class="empty-state">All results so far need review. See above.</div>'
-: '<div class="empty-state">No results yet. Press Start.</div>';
-statsBarEl.classList.add('hidden');
-filterBarEl.classList.add('hidden');
-} else {
-statsBarEl.classList.remove('hidden');
-filterBarEl.classList.remove('hidden');
-
+// One row of chips: Needs review first, then a count for each group.
 // Built from the unfiltered set, so it does not shrink with the filter.
 const countsByKey = new Map();
 ordered.forEach((r) => {
 const key = categoryKey(r);
 countsByKey.set(key, (countsByKey.get(key) || 0) + 1);
 });
-statsBarEl.innerHTML = STATS_BAR_CATEGORY_ORDER.filter((key) => countsByKey.has(key)).map((key) => {
-const sample = ordered.find((r) => categoryKey(r) === key);
-const color = categoryColor(sample);
-const isActive = activeCategoryFilters.size === 0 || activeCategoryFilters.has(key);
-return `<button type="button" class="stat-pill${isActive ? '' : ' inactive'}" aria-pressed="${activeCategoryFilters.has(key)}" aria-label="Filter: ${escapeHtmlForUi(STATS_BAR_LABELS[key] || key)}, ${countsByKey.get(key)}" data-key="${escapeHtmlForUi(key)}" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(STATS_BAR_LABELS[key] || key)}<span style="font-weight: 500;">${countsByKey.get(key)}</span></button>`;
-}).join('');
+const chips = [];
+if (needsReviewCount > 0) chips.push(`<button type="button" class="chip warn" data-review="1" aria-pressed="${reviewing}" title="Opens the leads that need your decision" style="--tc: #d97706;">Needs review ${needsReviewCount}</button>`);
+STATS_BAR_CATEGORY_ORDER.filter((key) => countsByKey.has(key)).forEach((key) => {
+const color = categoryColor(ordered.find((r) => categoryKey(r) === key));
+const label = escapeHtmlForUi(CATEGORY_SHORT[key] || key);
+chips.push(`<button type="button" class="chip stat-pill${key === 'EXCEPTION' ? ' bad' : ''}" aria-pressed="${activeCategoryFilters.has(key)}" aria-label="Filter: ${label}, ${countsByKey.get(key)}" data-key="${escapeHtmlForUi(key)}" style="--tc: ${color};">${label} ${countsByKey.get(key)}</button>`);
+});
+statsBarEl.innerHTML = chips.join('');
+statsBarEl.classList.toggle('hidden', chips.length === 0);
 statsBarEl.querySelectorAll('.stat-pill').forEach((el) => {
 el.addEventListener('click', () => {
 const key = el.dataset.key;
 if (activeCategoryFilters.has(key)) activeCategoryFilters.delete(key);
 else activeCategoryFilters.add(key);
+if (reviewMode) leaveReview();
 render();
 });
 });
+const reviewChip = statsBarEl.querySelector('[data-review]');
+if (reviewChip) reviewChip.addEventListener('click', () => { if (reviewMode) leaveReview(); else reviewMode = true; render(); });
 
+filterBarEl.classList.toggle('hidden', ordered.length === 0);
+if (ordered.length === 0) {
+// If every processed row is in Needs review, "no results yet" would be wrong.
+resultsBody.innerHTML = needsReviewCount > 0
+? '<div class="empty-state">All results so far need review. Press Review.</div>'
+: '<div class="empty-state">No results yet. Press Start.</div>';
+} else {
 const filtered = ordered.filter((r) => {
 if (!(activeCategoryFilters.size === 0 || activeCategoryFilters.has(categoryKey(r)))) return false;
 if (nameFilterText && !r.name.toLowerCase().includes(nameFilterText)) return false;
 return true;
 });
-
 if (filtered.length === 0) {
 resultsBody.innerHTML = '<div class="empty-state">No results match the current filters.</div>';
 } else {
 const byTier = new Map();
 filtered.forEach((r) => {
 // Leads that could not be checked have no tier, so they go to a
-// trailing bucket (7).
+// trailing group (7).
 const tier = r.postClosureAction ? (r.postClosureAction === 'send back through' ? -2 : -1) : (r.tier || 7);
 if (!byTier.has(tier)) byTier.set(tier, []);
 byTier.get(tier).push(r);
 });
 resultsBody.innerHTML = Array.from(byTier.keys()).sort((a, b) => a - b).map((tier) => {
 const rows = [...byTier.get(tier)].sort(compareByBookingPriority);
-const customersHtml = rows.map((r) => {
-const open = detailsState.customers.has(r.inputIndex);
-return `
-<div class="customer${open ? ' open' : ''}" data-key="${r.inputIndex}">
-<div class="customer-summary" role="button" tabindex="0" aria-expanded="${open}">${detailsChevronIcon()}${avatarButton(r, categoryColor(r), 28)}<span class="customer-main"><span class="customer-name" title="${escapeHtmlForUi(r.initialNotes || 'No Initial Notes read yet.')}">${escapeHtmlForUi(r.name)}</span><span class="customer-badges">${categoryBadge(r)}</span>${openNoteHtml(r)}</span></div>
-<div class="customer-body" style="display: ${open ? 'block' : 'none'};">${customerBodyHtml(r)}</div>
-</div>
-`;
-}).join('');
-const tierLabel = tier === -2 ? 'Post Closure: send back through'
-: tier === -1 ? 'Post Closure: check, needs contact?'
+const label = tier === -2 ? 'Post Closure · send back through'
+: tier === -1 ? 'Post Closure · check: needs contact?'
 : tier === 7 ? 'Could not check'
-: `Tier ${tier}: ${TIER_NAMES[tier]}`;
-const tierLabelColor = tier === -2 || tier === -1 ? ` style="color: ${readableTextColor(postClosureColor(tier === -2 ? 'send back through' : 'check'))};"` : '';
-return `
-<details class="tier" data-key="${tier}" ${detailsState.tiers.has(tier) ? 'open' : ''}>
-<summary><span class="tier-left">${detailsChevronIcon()}<span${tierLabelColor}>${escapeHtmlForUi(tierLabel)}</span></span><span class="tier-count">${rows.length}</span></summary>
-${customersHtml}
-</details>
-`;
+: tierHeading(tier);
+const color = tier === -2 || tier === -1 ? postClosureColor(tier === -2 ? 'send back through' : 'check')
+: tier === 7 ? '#dc2626' : TIER_COLORS[tier];
+return resultGroupHtml(tier, label, color, rows.length, detailsState.tiers.has(tier), rows.map(standardRowHtml).join(''));
 }).join('');
 }
 }
-
 }
+// The review view takes the place of the results while it is open.
+resultsBody.classList.toggle('hidden', reviewing);
+if (reviewing) filterBarEl.classList.add('hidden');
 
 resultsBody.querySelectorAll('details.tier').forEach((el) => {
 const key = Number(el.dataset.key);
@@ -6634,10 +6856,7 @@ resultsBody.querySelectorAll('details.disagree').forEach((box) => {
 const key = Number(box.dataset.key);
 const note = () => box.querySelector('.review-reason').value.trim();
 box.querySelectorAll('button[data-tier]').forEach((btn) => btn.addEventListener('click', () => {
-if (!session || !session.results[key]) return;
-session.results[key] = applyManualReviewDecision(session.results[key], Number(btn.dataset.tier), '', note());
-saveSession(session);
-linkResendAfterDecision();
+decideReview(key, Number(btn.dataset.tier), '', note());
 render();
 }));
 box.querySelectorAll('button[data-pc-action]').forEach((btn) => btn.addEventListener('click', () => {
@@ -6680,10 +6899,6 @@ setTimeout(() => { el.textContent = original; el.style.background = ''; el.style
 });
 });
 
-completedCountEl.textContent = String(orderedAll.filter((r) => r.status === 'CLASSIFIED').length);
-exceptionCountEl.textContent = String(orderedAll.filter((r) => r.status === 'EXCEPTION' && !isNeedsReview(r)).length);
-reviewCountEl.textContent = String(orderedAll.filter(isNeedsReview).length);
-totalCountEl.textContent = String(session.rows.length);
 const restStateLabel = deriveRestStateLabel(session, isRunning, klcShared.stepBusy);
 // "Done: results sent to SLA Manager" says more than "Done", so it stays.
 if (restStateLabel !== null && !(restStateLabel === 'Done' && /^Done/.test(curStateEl.textContent))) curStateEl.textContent = restStateLabel;
@@ -6692,43 +6907,101 @@ if (focusedAvatar) {
 const again = focusedAvatar.scope.querySelector(`.avatar-btn[data-open-key="${focusedAvatar.key}"]`);
 if (again) again.focus({ preventScroll: true });
 }
-syncButtonStates();
+syncButtonStates(needsReviewCount);
+renderStatusCard(orderedAll.length, reviewing);
 renderRecentLog();
 }
 
-function syncButtonStates() {
+// The one status card: what the batch is doing, the bar, and the state
+// line under it. The headline already says a plain Idle, Done or Paused.
+function renderStatusCard(checked, reviewing) {
+const state = curStateEl.textContent;
+const plain = state === 'Idle' || state === 'Done' || state === 'Paused';
+curStateEl.classList.toggle('hidden', plain);
+curStateEl.classList.toggle('info', !!openNote && state === openNote);
+statusCardEl.classList.toggle('nobatch', !session);
+statusCardEl.classList.toggle('hidden', session ? (reviewing && !isRunning) : plain);
+if (!session) return;
+const total = session.rows.length;
+const paused = isRunning && session.paused;
+statusHeadlineEl.textContent = lcNotices.loggedOut ? `Waiting for Login · ${checked} of ${total}`
+: paused ? `Paused · ${checked} of ${total}`
+: isRunning ? `Checking ${checked} of ${total}`
+: `${checked} of ${total} checked`;
+// The customer and lead time show while working, unless the state line
+// already says them.
+const customer = curCustomerEl.textContent;
+const target = curTargetEl.textContent;
+const showCustomer = customer !== '-' && !state.includes(customer);
+const showTarget = target !== '-' && !state.includes(target);
+curCustomerEl.classList.toggle('hidden', !showCustomer);
+curTargetPartEl.classList.toggle('hidden', !showTarget);
+curLineEl.classList.toggle('hidden', !(isRunning || manualStepBusy) || !(showCustomer || showTarget));
+}
+
+let lastRetryCount = -1;
+function syncButtonStates(needsReviewCount) {
 const v = computeButtonVisibility(session, isRunning);
-btnStartEl.classList.toggle('hidden', !v.start);
+const startShown = v.start && !!session;
+btnStartEl.classList.toggle('hidden', !startShown);
+btnStartFoldEl.disabled = !v.start || !pasteBox.value.trim();
 pauseResumeBtn.classList.toggle('hidden', !v.pauseResume);
 btnProcessNextEl.classList.toggle('hidden', !v.processNext);
 btnCancelEl.classList.toggle('hidden', !v.cancel);
-runControlsEl.classList.toggle('hidden', !v.runControls && btnClearPasteStartEl.classList.contains('hidden'));
 btnRetryExceptionsEl.classList.toggle('hidden', !v.retryExceptions);
+const retryCount = v.retryExceptions ? retryableExceptionCount(session) : 0;
+// Only when the count changes, so the words shown after a press are not wiped.
+if (retryCount !== lastRetryCount) {
+lastRetryCount = retryCount;
+btnRetryExceptionsEl.innerHTML = `${svgIcon('refresh', 11)}Retry ${retryCount} failed`;
+}
+// While a batch runs the Needs review chip opens the cards; the button
+// comes once the run has stopped.
+const reviewShown = needsReviewCount > 0 && !reviewMode && !v.pauseResume;
+btnReviewEl.classList.toggle('hidden', !reviewShown);
+btnReviewEl.textContent = `Review ${needsReviewCount}`;
+// One filled button: what is left to press. None while logged out, as
+// the thing to press is then on the Konnect Live page.
+const pausePrimary = v.pauseResume && !lcNotices.loggedOut;
+pauseResumeBtn.classList.toggle('pri', pausePrimary);
+btnStartEl.classList.toggle('pri', startShown && !v.pauseResume);
+btnReviewEl.classList.toggle('pri', reviewShown && !startShown);
 const nationalMode = !!(session && session.mode === 'national');
-btnCopyRawForExtractEl.classList.toggle('hidden', !v.copyRawForExtract || nationalMode);
-btnCopyNationalResultsEl.classList.toggle('hidden', !v.copyRawForExtract || !nationalMode);
+btnCopyRawForExtractEl.classList.toggle('hidden', nationalMode);
+btnCopyNationalResultsEl.classList.toggle('hidden', !nationalMode);
 }
 
 function renderVersionLine() {
-versionLineEl.textContent = versionLineText(versionState);
+const text = versionLineText(versionState);
+versionLineEl.textContent = versionState.newer ? 'A newer version is out' : text;
 versionLineEl.classList.toggle('newer', versionState.newer);
+menuVersionEl.textContent = text;
 }
 
+// The footer says what kind of check is loaded, or the paste setting when
+// nothing is.
 function renderModeBanner() {
 const scenario = session && session.headerOk ? checkScenarioOf(session.mode, session.rows) : null;
-modeBannerEl.classList.toggle('hidden', !scenario);
-if (!scenario) { modeBannerEl.innerHTML = ''; return; }
-modeBannerEl.style.background = `${scenario.color}14`;
-modeBannerEl.style.borderColor = `${scenario.color}55`;
-modeBannerEl.innerHTML = `<strong style="color: ${readableTextColor(scenario.color)};">${escapeHtmlForUi(scenario.label)}</strong><span class="mode-detail">${escapeHtmlForUi(scenario.detail)}</span>`;
+const text = scenario ? `${scenario.label} · ${scenario.detail}` : (autoStartToggle.checked ? 'Starts by itself on paste' : 'Does not start by itself on paste');
+modeBannerEl.textContent = text;
+modeBannerEl.title = text;
 }
 
+function renderLinkLine() {
+linkLineEl.textContent = linkLineText();
+const state = linkState();
+linkLineEl.className = 'strip ' + (!managerWindow() ? 'off' : state === 'loggedOut' ? 'out' : state === 'paused' ? 'paused' : state === 'running' ? 'busy' : 'ok');
+}
+
+// Folded behind "Recent activity" on the status card.
 function renderRecentLog() {
-if (recentCompletions.length === 0) { recentLogEl.innerHTML = ''; return; }
+const any = recentCompletions.length > 0;
+btnRecentEl.classList.toggle('hidden', !any);
+btnRecentEl.setAttribute('aria-expanded', String(recentOpen));
+recentLogEl.classList.toggle('hidden', !any || !recentOpen);
 recentLogEl.innerHTML = recentCompletions.slice(0, 3).map((r) => {
-const color = categoryColor(r);
-const label = escapeHtmlForUi(r.exception ? exceptionLabel(r.exception) : (r.verdict || r.tierName || 'Pending'));
-return `<div class="recent-log-row"><span class="recent-log-name">${escapeHtmlForUi(r.name || '-')}</span><span class="recent-log-tier" style="background: ${color}1a; color: ${readableTextColor(color)};">${label}</span></div>`;
+const label = r.exception ? exceptionLabel(r.exception) : (r.verdict || CATEGORY_SHORT[categoryKey(r)] || 'Pending');
+return `<span class="recent-log-row">${escapeHtmlForUi(r.name || '-')}: ${escapeHtmlForUi(label)}</span>`;
 }).join('');
 }
 
@@ -6879,6 +7152,7 @@ if (destroyed) return null;
 // grown batch. A batch from SLA Manager or Clear & paste starts clean.
 session = newSession(text, options.link || options.fresh ? null : previous);
 if (options.link || options.fresh) recentCompletions = [];
+leaveReview();
 if (options.link) { session.fromManager = true; session.linkId = options.link.id; }
 restoredNote = '';
 lcNotices.otherTab = false;
@@ -6913,7 +7187,6 @@ restoredNote = '';
 setPauseResumeLabel('Pause');
 showPageFlashOverlay('Checking leads…');
 topSectionEl.open = false;
-syncClearPasteStartVisibility();
 runLoop(s, uiHandle);
 }
 
@@ -6921,7 +7194,8 @@ async function startProcessing() {
 beginRun(await loadFromPasteBox());
 }
 
-root.getElementById('btnStart').addEventListener('click', startProcessing);
+btnStartEl.addEventListener('click', startProcessing);
+btnStartFoldEl.addEventListener('click', startProcessing);
 
 // Check one lead. Waits for a lead already being checked (a run that was
 // just paused) so two never run at once and none is skipped.
@@ -7033,10 +7307,9 @@ sayReady(false);
 });
 }
 
-const autoStartToggle = root.getElementById('autoStartToggle');
-autoStartToggle.checked = loadSettings().autoStart;
 autoStartToggle.addEventListener('change', () => {
 saveSettings({ autoStart: autoStartToggle.checked });
+render();
 });
 
 // Paste only, not typing, so a half-typed batch never starts a run. A paste
@@ -7105,7 +7378,7 @@ if (session) { session.cancelled = true; uiHandle.setState('Cancelling...'); }
 
 // Only while paused or stopped. retryExceptions mutates in place so a
 // paused runLoop holding this object picks the change up.
-root.getElementById('btnRetryExceptions').addEventListener('click', async (event) => {
+async function retryFailedLeads(event) {
 const btn = event.currentTarget; // read before any await: it is null afterwards
 const s = session;
 if (!s) return;
@@ -7138,9 +7411,11 @@ uiHandle.setState('Resuming...');
 beginRun(s);
 }
 showButtonFeedback(btn, `✓ Retrying ${retryCount}`, false);
-});
+}
+btnRetryExceptionsEl.addEventListener('click', retryFailedLeads);
+root.getElementById('menuRetry').addEventListener('click', retryFailedLeads);
 
-// Clear + paste + start in one click for the collapsed panel. Always
+// Clear + paste + start in one click, from More. Always
 // starts, whatever the autoStart toggle (that governs paste-into-textarea).
 root.getElementById('btnClearPasteStart').addEventListener('click', async (event) => {
 const btn = event.currentTarget; // read before any await: it is null afterwards
@@ -7185,6 +7460,7 @@ clearTimeout(batchWaitTimer);
 clearTimeout(pasteBoxInputDebounce);
 if (versionState.stop) versionState.stop();
 window.removeEventListener('storage', onStorage);
+window.removeEventListener('mousedown', onPageMouseDown);
 if (klcShared.listening) window.removeEventListener('message', klcShared.listening);
 klcShared.listening = false;
 klcShared.onMessage = null;
@@ -7230,6 +7506,105 @@ host.style.display = 'none';
 badge.show();
 });
 
+// The More menu. Items marked data-close shut it; the rest stay so the
+// words that answer a press ("Copied 4") can be read.
+function setMenuOpen(open) {
+moreMenuEl.classList.toggle('hidden', !open);
+moreBtn.setAttribute('aria-expanded', String(open));
+if (!open) return;
+syncHeightMenu();
+// Kept inside the window wherever the panel has been dragged to.
+moreMenuEl.style.maxHeight = `${Math.max(160, window.innerHeight - moreBtn.getBoundingClientRect().bottom - 16)}px`;
+moreMenuEl.scrollTop = 0;
+}
+const menuIsOpen = () => !moreMenuEl.classList.contains('hidden');
+moreBtn.addEventListener('click', () => {
+setMenuOpen(!menuIsOpen());
+if (menuIsOpen()) minBtn.focus();
+});
+moreMenuEl.addEventListener('click', (event) => {
+if (event.target && event.target.closest && event.target.closest('[data-close]')) setMenuOpen(false);
+});
+moreMenuEl.addEventListener('keydown', (event) => {
+if (event.key === 'Escape') { setMenuOpen(false); moreBtn.focus(); return; }
+if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+const items = Array.from(moreMenuEl.querySelectorAll('button.mi:not(.hidden), .mi input'));
+const at = items.indexOf(root.activeElement);
+const next = items[(at + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length];
+if (next) { event.preventDefault(); next.focus(); }
+});
+// A press anywhere else, in the panel or on the page, shuts the menu.
+root.addEventListener('mousedown', (event) => {
+if (menuIsOpen() && !moreMenuEl.contains(event.target) && !moreBtn.contains(event.target)) setMenuOpen(false);
+});
+const onPageMouseDown = (event) => { if (event.target !== host && menuIsOpen()) setMenuOpen(false); };
+window.addEventListener('mousedown', onPageMouseDown);
+
+root.getElementById('menuPasteByHand').addEventListener('click', () => {
+topSectionEl.open = true;
+bodyEl.scrollTop = 0;
+pasteBox.focus();
+});
+function showRecent(open) {
+recentOpen = open;
+renderRecentLog();
+}
+btnRecentEl.addEventListener('click', () => showRecent(!recentOpen));
+root.getElementById('menuRecent').addEventListener('click', (event) => {
+if (recentCompletions.length === 0 || statusCardEl.classList.contains('hidden')) { showButtonFeedback(event.currentTarget, 'No activity to show yet', true); return; }
+setMenuOpen(false);
+showRecent(true);
+bodyEl.scrollTop = 0;
+btnRecentEl.focus();
+});
+btnReviewEl.addEventListener('click', () => { reviewMode = true; bodyEl.scrollTop = 0; render(); });
+
+// The panel's height: a default with the list scrolling inside, or the
+// one last chosen with the grip or in More (0 means the default). Kept
+// with this tool's settings.
+let panelHeight = loadSettings().panelHeight;
+const resizeGripEl = root.getElementById('resizeGrip');
+const heightItems = Array.from(moreMenuEl.querySelectorAll('[data-height]'));
+function syncHeightMenu() {
+heightItems.forEach((item) => {
+item.setAttribute('role', 'menuitemradio');
+item.setAttribute('aria-checked', String(Number(item.dataset.height) === panelHeight));
+});
+}
+function applyPanelHeight() {
+bodyEl.style.height = panelHeight > 0 ? `min(${panelHeight}px, calc(100vh - 170px))` : '';
+bodyEl.style.maxHeight = panelHeight > 0 ? 'none' : '';
+syncHeightMenu();
+}
+function setPanelHeight(height, keep) {
+panelHeight = height > 0 ? Math.max(140, Math.min(900, Math.round(height))) : 0;
+applyPanelHeight();
+if (keep) saveSettings({ panelHeight });
+}
+heightItems.forEach((item) => item.addEventListener('click', () => setPanelHeight(Number(item.dataset.height), true)));
+let gripDrag = null;
+resizeGripEl.addEventListener('pointerdown', (event) => {
+gripDrag = { startY: event.clientY, startHeight: bodyEl.getBoundingClientRect().height };
+try { resizeGripEl.setPointerCapture(event.pointerId); } catch (error) { /* ignore */ }
+event.preventDefault();
+});
+resizeGripEl.addEventListener('pointermove', (event) => {
+if (gripDrag) setPanelHeight(gripDrag.startHeight + event.clientY - gripDrag.startY, false);
+});
+const endGripDrag = () => {
+if (!gripDrag) return;
+gripDrag = null;
+saveSettings({ panelHeight });
+};
+resizeGripEl.addEventListener('pointerup', endGripDrag);
+resizeGripEl.addEventListener('pointercancel', endGripDrag);
+resizeGripEl.addEventListener('keydown', (event) => {
+if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+event.preventDefault();
+setPanelHeight(bodyEl.getBoundingClientRect().height + (event.key === 'ArrowDown' ? 20 : -20), true);
+});
+applyPanelHeight();
+
 // Not rebuilt by render(), so typing never loses focus mid-run.
 searchInputEl.addEventListener('input', () => {
 nameFilterText = searchInputEl.value.trim().toLowerCase();
@@ -7238,6 +7613,7 @@ render();
 
 let dragState = null;
 headerEl.addEventListener('mousedown', (event) => {
+if (event.target && event.target.closest && event.target.closest('button')) return;
 const rect = host.getBoundingClientRect();
 dragState = { startX: event.clientX, startY: event.clientY, startTop: rect.top, startRight: window.innerWidth - rect.right };
 event.preventDefault();

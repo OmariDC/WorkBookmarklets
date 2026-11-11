@@ -315,7 +315,7 @@ async function bookingAndRoutes() {
   await sleep(200);
   const blocked = await page.evaluate(() => Array.from(document.querySelectorAll('.kn-bk-actions .kn-button')).map((b) => [b.textContent, b.disabled]));
   check('13 booking buttons are disabled while something is missing', blocked.slice(0, 3).every((b) => b[1] === true) && blocked[3][1] === false, blocked);
-  check('12 Clear says what it clears', /Clear notes \+ form/.test(blocked[3][0]), blocked[3]);
+  check('12 Clear says what it clears', /Clear notes and form/.test(blocked[3][0]), blocked[3]);
 
   // Item 10: yesterday is an error until the year is confirmed.
   const dates = await page.evaluate(() => {
@@ -428,8 +428,91 @@ async function pureBuilders() {
     await stored.inputValue('#callA') === 'My own wording -- Sam Tester\n', [cad, await stored.inputValue('#callA'), await stored.evaluate(() => KonnectNotes.state.configStatus)]);
 }
 
+// The look of the buttons and panels: navy buttons the size of Konnect's own,
+// nothing outside the shape, and the Customer step's seven fields.
+async function layout() {
+  console.log('\nLayout');
+  let page = await fresh({ booking: true });
+  const rail = await page.evaluate(() => {
+    const button = document.querySelector('#kn-notes-launcher-section .kn-launcher');
+    const tick = document.querySelector('.userQuotesAffix a.btn-call-nav').getBoundingClientRect();
+    const box = button.getBoundingClientRect();
+    const style = getComputedStyle(button);
+    const bolt = button.querySelector('.kn-launcher-bolt').getBoundingClientRect();
+    return { colour: style.backgroundColor, shadow: style.boxShadow, title: button.title, text: button.textContent.trim().length,
+      sameSize: Math.round(box.width) === Math.round(tick.width) && Math.round(box.height) === Math.round(tick.height),
+      boltInside: bolt.left >= box.left && bolt.right <= box.right && bolt.top >= box.top && bolt.bottom <= box.bottom };
+  });
+  check('the rail button is navy, the size of the Konnect button, with nothing outside it',
+    rail.colour === 'rgb(30, 29, 73)' && rail.shadow === 'none' && rail.sameSize && rail.boltInside && rail.title === 'Konnect Notes (Alt+N)' && rail.text <= 2, rail);
+  await page.click('#callA');
+  await page.keyboard.press('Alt+n');
+  await sleep(150);
+  const main = await page.evaluate(() => {
+    const palette = document.getElementById('kn-notes-palette');
+    return { open: document.querySelector('.kn-launcher').classList.contains('kn-launcher-open'),
+      header: Array.from(palette.querySelectorAll('.kn-header .kn-icon-button')).map((b) => `${b.title}|${b.textContent}`),
+      booking: palette.querySelector('.kn-main-booking').textContent, search: /Search all phrases/.test(palette.textContent) };
+  });
+  check('the phrase list names its header buttons and marks the rail button as open',
+    main.open && main.header.join() === 'Phrase settings|Settings,Close|Close' && main.booking === 'BookingB' && main.search, main);
+  await page.keyboard.press('Escape');
+  await sleep(100);
+  check('closing takes the mark off the rail button', await page.evaluate(() => !document.querySelector('.kn-launcher').classList.contains('kn-launcher-open')));
+  await page.fill('#initA', '');
+  await typeCad(page);
+  check('the notice says first that nothing was written', /^Nothing was written\. Initial Notes is empty/.test(await toastText(page)), await toastText(page));
+
+  // No lead open: the Phone column button and the Customer step.
+  page = await fresh({ booking: true, hash: '#!/present-inbound-call', before: () => {
+    document.querySelector('.tab-content').remove();
+    const phone = document.createElement('button');
+    phone.setAttribute('ng-click', 'manualCallClick()');
+    phone.className = 'btn btn-success';
+    phone.style.cssText = 'position:fixed;right:14px;bottom:60px;width:64px;height:37px';
+    phone.textContent = 'Call';
+    document.body.appendChild(phone);
+  } });
+  await sleep(400);
+  const phone = await page.evaluate(() => {
+    const button = document.getElementById('kn-inbound-launcher');
+    const call = document.querySelector('button[ng-click="manualCallClick()"]');
+    const style = getComputedStyle(button);
+    return { colour: style.backgroundColor, shadow: style.boxShadow, text: button.textContent, classes: button.className, beforeCall: button.nextElementSibling === call,
+      size: [button.offsetWidth, button.offsetHeight], callSize: [call.offsetWidth, call.offsetHeight] };
+  });
+  check('the Phone column button is navy, symbol only and the size of the button beside it',
+    phone.colour === 'rgb(30, 29, 73)' && phone.shadow === 'none' && phone.text === '⚡' && phone.beforeCall && phone.classes === 'btn kn-ui kn-phone-launcher' && phone.size.join() === phone.callSize.join(), phone);
+  await page.click('#kn-inbound-launcher');
+  await page.waitForSelector('.kn-bk-content', { timeout: 5000 });
+  await sleep(200);
+  const customer = await page.evaluate(() => {
+    const content = document.querySelector('.kn-bk-content');
+    const body = document.querySelector('.kn-bk-body').getBoundingClientRect();
+    const fields = Array.from(content.querySelectorAll('.kn-bk-field'));
+    const inView = fields.every((f) => { const r = f.getBoundingClientRect(); return r.top >= body.top && r.bottom <= body.bottom; });
+    const selects = content.querySelectorAll('select');
+    const row = (n) => Math.round(n.getBoundingClientRect().top);
+    return { labels: fields.map((f) => f.querySelector('.kn-bk-label').textContent), inView, sideBySide: row(selects[0]) === row(selects[1]),
+      brands: Array.from(selects[1].options).map((o) => o.textContent), open: document.getElementById('kn-inbound-launcher').classList.contains('kn-launcher-open'),
+      create: !!Array.from(content.querySelectorAll('button')).find((b) => b.textContent === 'Create new customer') };
+  });
+  check('the Customer step shows all seven fields without scrolling, Dealer and Brand side by side',
+    customer.labels.join() === 'Mobile,Name,Email,Postcode,Address line 1,Dealer,Brand' && customer.inView && customer.sideBySide && customer.create && customer.open, customer);
+  check('Brand offers Auto and the same eleven brands', customer.brands.length === 12 && customer.brands[0] === 'Auto (vehicle make)' && customer.brands.includes('Peugeot'), customer.brands);
+  await page.selectOption('.kn-bk-content select >> nth=1', 'Peugeot');
+  await sleep(200);
+  check('a Brand choice is kept when the step is drawn again', await page.evaluate(() => document.querySelectorAll('.kn-bk-content select')[1].value) === 'Peugeot');
+  await page.fill('.kn-bk-content input[placeholder="07700 900123"]', '07700 900123');
+  await page.press('.kn-bk-content input[placeholder="07700 900123"]', 'Enter');
+  await sleep(300);
+  check('Enter in Mobile still searches', /Accept the call first, then search|Searched Konnect|search/i.test(await toastText(page)), await toastText(page));
+  check('no page errors on the layout pages', page.errors.length === 0, page.errors);
+}
+
 const started = Date.now();
 try {
+  await layout();
   await notesCorrectness();
   await typing();
   await leadResetContract();

@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.13.1'
+    version: '1.14.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -521,8 +521,14 @@
     const button = document.createElement('a');
     button.href = '#';
     button.className = 'btn btn-circle btn-lgr btn-call-nav kn-launcher';
-    button.title = 'Call-note phrases (Alt+N)';
-    button.setAttribute('aria-label', 'Open Call-note phrases');
+    button.title = 'Konnect Notes (Alt+N)';
+    button.setAttribute('aria-label', 'Open Konnect Notes');
+    /* Exactly the size of Konnect's own rail button beside it. */
+    const tickSize = greenTick.getBoundingClientRect();
+    if (tickSize.width > 20 && tickSize.height > 20) {
+      button.style.setProperty('width', `${Math.round(tickSize.width)}px`, 'important');
+      button.style.setProperty('height', `${Math.round(tickSize.height)}px`, 'important');
+    }
 
     const clipboard = document.createElement('span');
     clipboard.className = 'kn-launcher-clipboard';
@@ -613,150 +619,185 @@
     style.id = STYLE_ID;
     style.textContent = `
       .kn-launcher-section { height: 75px; text-align: center; }
-      .kn-launcher { position: relative; display: inline-flex !important; align-items: center; justify-content: center; width: 60px !important; height: 60px !important; border-radius: 30px !important; background: #1c1c1e !important; color: #fff !important; box-shadow: 0 4px 14px rgba(0,0,0,0.3) !important; border: none !important; text-decoration: none !important; }
-      .kn-launcher:hover, .kn-launcher:focus { background: #2c2c2e !important; color: #fff !important; }
+      /* Navy, the size of Konnect's own rail buttons, with nothing outside the circle. */
+      .kn-launcher { position: relative; display: inline-flex !important; align-items: center; justify-content: center; width: 60px !important; height: 60px !important; border-radius: 50% !important; background: #1e1d49 !important; color: #fff !important; box-shadow: none !important; border: none !important; text-decoration: none !important; overflow: hidden; }
+      .kn-launcher:hover, .kn-launcher:focus, .kn-launcher.kn-launcher-open { background: #1e1d49 !important; color: #fff !important; box-shadow: inset 0 0 0 3px #f9772e !important; }
       .kn-launcher-clipboard { position: relative; width: 24px; height: 29px; border: 3px solid #fff; border-radius: 3px; display: block; }
-      .kn-launcher-clipboard::before { content: ''; position: absolute; width: 12px; height: 5px; border: 2px solid #fff; border-radius: 3px; background: #1c1c1e; top: -7px; left: 3px; }
+      .kn-launcher-clipboard::before { content: ''; position: absolute; width: 12px; height: 5px; border: 2px solid #fff; border-radius: 3px; background: #1e1d49; top: -7px; left: 3px; }
       .kn-launcher-bolt { position: absolute; right: -10px; bottom: -8px; display: flex; align-items: center; justify-content: center; width: 19px; height: 19px; border-radius: 50%; background: #f9772e; color: #1c1c1e; font: 900 14px/1 -apple-system, sans-serif; }
       .kn-ui, .kn-ui * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-      #${PALETTE_ID} { position: fixed; top: 0; left: 0; width: 240px; max-height: 380px; z-index: 2147483000; display: none; flex-direction: column; overflow: hidden; color: #1c1c1e; background: #f2f2f7; border: none; border-radius: 20px; box-shadow: 0 20px 50px -12px rgba(0,0,0,0.3); }
+      .kn-ui svg { width: 14px; height: 14px; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      #${PALETTE_ID} { position: fixed; top: 0; left: 0; width: 240px; max-height: 380px; z-index: 2147483000; display: none; flex-direction: column; overflow: hidden; color: #1c1c1e; background: #f2f2f7; border: none; border-radius: 16px; box-shadow: 0 20px 50px -12px rgba(0,0,0,0.3); font-size: 13px; line-height: 1.35; container-type: inline-size; }
       #${PALETTE_ID}.kn-open { display: flex; }
       #${PALETTE_ID}:focus { outline: none; }
-      .kn-header { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 11px 14px; background: #1c1c1e; border-radius: 20px 20px 0 0; }
-      .kn-title { flex: 1; font-size: 15px; font-weight: 600; color: #fff; letter-spacing: -0.1px; }
-      .kn-body { flex: 1 1 auto; min-height: 0; padding: 12px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+      .kn-header { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 9px 12px; background: #1c1c1e; border-radius: 16px 16px 0 0; }
+      .kn-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .kn-body { flex: 1 1 auto; min-height: 0; padding: 10px 12px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
       .kn-icon-button, .kn-button, .kn-chip, .kn-result, .kn-quick, .kn-attempt { border: none; cursor: pointer; }
-      .kn-icon-button { min-width: 30px; height: 30px; padding: 3px 8px; border-radius: 8px; background: rgba(255,255,255,0.12); color: #fff; font-weight: 600; }
-      .kn-icon-button:hover { background: rgba(255,255,255,0.2); }
-      .kn-button { padding: 8px 12px; border-radius: 999px; background: white; color: #1c1c1e; font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
-      .kn-button.kn-primary { background: #f9772e; color: #1c1c1e; }
-      .kn-button:disabled, .kn-button.kn-primary:disabled { background: #e5e5ea; color: #636366; box-shadow: none; cursor: not-allowed; }
+      .kn-icon-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 28px; height: 28px; padding: 5px 9px; border-radius: 8px; background: rgba(255,255,255,0.14); color: #fff; font-size: 12px; font-weight: 600; white-space: nowrap; }
+      .kn-icon-button:hover { background: rgba(255,255,255,0.24); }
+      /* The words go when the panel is too narrow for them; the name stays in the tooltip. */
+      @container (max-width: 279px) { .kn-icon-label { display: none; } .kn-icon-button { padding: 5px 7px; } }
+      .kn-button { padding: 7px 13px; border-radius: 999px; background: #fff; color: #1c1c1e; font-size: 12.5px; font-weight: 600; box-shadow: inset 0 0 0 1px #c9cbd3; }
+      .kn-button:hover:not(:disabled) { box-shadow: inset 0 0 0 1.5px #f9772e; }
+      .kn-button.kn-primary { background: #f9772e; color: #1c1c1e; font-weight: 700; box-shadow: none; }
+      .kn-button.kn-primary:hover:not(:disabled) { box-shadow: none; filter: brightness(1.06); }
+      .kn-button.kn-outline-accent { box-shadow: inset 0 0 0 1.5px #f9772e; }
+      .kn-button:disabled, .kn-button.kn-primary:disabled { background: #d9dce3; color: #636366; box-shadow: none; cursor: not-allowed; filter: none; }
       .kn-ui button:focus-visible, .kn-ui a:focus-visible { outline: 2px solid #1c1c1e; outline-offset: 2px; }
       .kn-header button:focus-visible { outline-color: #fff; }
-      .kn-button.kn-danger { background: transparent; color: #c9251c; box-shadow: none; padding: 8px 6px; }
-      .kn-search, .kn-input, .kn-textarea, .kn-select { width: 100%; padding: 8px 10px; color: #1c1c1e; background: #fff; border: none; border-radius: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-      .kn-search { margin-bottom: 10px; font-size: 14px; }
+      .kn-button.kn-danger { background: transparent; color: #c62828; box-shadow: none; padding: 7px 4px; font-weight: 700; }
+      .kn-button.kn-danger:hover:not(:disabled) { box-shadow: none; text-decoration: underline; }
+      .kn-search, .kn-input, .kn-textarea, .kn-select { width: 100%; padding: 7px 10px; color: #1c1c1e; background: #fff; border: none; border-radius: 10px; box-shadow: inset 0 0 0 1px #d6d8de; font-size: 13px; }
+      .kn-search:focus, .kn-input:focus, .kn-textarea:focus, .kn-select:focus { outline: none; box-shadow: inset 0 0 0 2px #f9772e; }
+      .kn-search { margin-bottom: 10px; }
       .kn-search::placeholder, .kn-input::placeholder, .kn-textarea::placeholder { color: #6e6e73; }
-      .kn-quick-grid { display: grid; grid-template-columns: 1fr; gap: 7px; margin-bottom: 10px; }
-      .kn-quick { position: relative; min-height: 48px; padding: 8px 9px 8px 33px; border-radius: 12px; background: #fff; color: #1c1c1e; text-align: left; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); }
-      .kn-quick-key { position: absolute; top: 50%; left: 8px; transform: translateY(-50%); width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: #f9772e; color: #1c1c1e; font-weight: 700; font-size: 11px; }
+      .kn-quick-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; margin-bottom: 7px; }
+      .kn-quick { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 38px; padding: 8px 10px; border-radius: 10px; background: #fff; color: #1c1c1e; font-size: 13px; font-weight: 500; text-align: left; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+      .kn-quick:hover { box-shadow: 0 0 0 1.5px #f9772e; }
+      .kn-quick-key { flex: 0 0 auto; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: #ffe9dc; color: #b24a0d; font-weight: 700; font-size: 11px; }
+      .kn-key { margin-left: 6px; opacity: 0.7; font: inherit; }
       .kn-categories { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 3px; }
-      .kn-chip { flex: 0 0 auto; padding: 5px 10px; border-radius: 999px; color: #1c1c1e; background: #fff; font-size: 12px; font-weight: 500; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+      .kn-chip { flex: 0 0 auto; padding: 4px 10px; border-radius: 999px; color: #1c1c1e; background: #fff; font-size: 12px; font-weight: 600; box-shadow: inset 0 0 0 1px #d6d8de; }
+      .kn-chip:hover:not(:disabled):not(.kn-active) { box-shadow: inset 0 0 0 1.5px #f9772e; }
       .kn-chip.kn-active { background: #f9772e; color: #1c1c1e; font-weight: 700; box-shadow: none; }
       .kn-results { display: flex; flex-direction: column; gap: 6px; }
-      .kn-result { padding: 10px 12px; border-radius: 12px; background: #fff; color: #1c1c1e; text-align: left; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); }
+      .kn-result { padding: 9px 11px; border-radius: 10px; background: #fff; color: #1c1c1e; text-align: left; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
       .kn-result.kn-selected, .kn-result:hover { background: #fff3ea; box-shadow: 0 0 0 1.5px #f9772e; }
-      .kn-result-label { display: block; font-size: 14px; font-weight: 600; }
-      .kn-result-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: #6e6e73; font-size: 11px; }
-      .kn-result-shortcut { display: inline-flex; padding: 2px 7px; border-radius: 999px; background: #f9772e18; color: #b23a0a; font-weight: 700; }
-      .kn-result-preview { display: -webkit-box; margin-top: 5px; color: #6e6e73; font-size: 11px; line-height: 1.35; white-space: normal; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+      .kn-result-label { display: block; font-size: 13.5px; font-weight: 600; }
+      .kn-result-meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: #6e6e73; font-size: 11.5px; }
+      .kn-result-shortcut { display: inline-flex; padding: 1px 7px; border-radius: 6px; background: #ffe9dc; color: #b24a0d; font-weight: 700; }
+      .kn-result-preview { display: -webkit-box; margin-top: 4px; color: #6e6e73; font-size: 11.5px; line-height: 1.35; white-space: normal; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
       .kn-alias { display: inline-block; margin: 4px 4px 0 0; padding: 1px 6px; border-radius: 999px; background: #f2f2f7; color: #636366; font-size: 11px; }
-      .kn-browse-controls { position: sticky; top: -12px; z-index: 2; margin-top: -12px; padding-top: 12px; background: #f2f2f7; }
-      .kn-muted { color: #6e6e73; font-size: 12px; }
-      .kn-status { margin: 0 0 9px; padding: 8px 10px; background: #fff; border-radius: 10px; color: #6e6e73; font-size: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
-      .kn-status.kn-status-error { background: #ff3b3012; color: #c9251c; font-weight: 600; }
-      .kn-attempt-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 14px 0; }
-      .kn-attempt { min-height: 52px; border-radius: 12px; background: #fff; color: #1c1c1e; font-size: 16px; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); }
-      .kn-settings-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
-      .kn-phrase-list { display: flex; flex-direction: column; gap: 6px; }
-      .kn-phrase-row { padding: 10px; border-radius: 12px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); }
-      .kn-phrase-row-top { display: flex; align-items: flex-start; gap: 8px; }
-      .kn-phrase-row-title { flex: 1; font-weight: 600; }
-      .kn-row-actions { display: flex; gap: 5px; }
-      .kn-row-actions .kn-button { padding: 4px 8px; font-size: 11px; box-shadow: none; background: #f2f2f7; }
-      .kn-row-actions .kn-button.kn-danger { background: transparent; }
+      .kn-browse-controls { position: sticky; top: -10px; z-index: 2; margin-top: -10px; padding-top: 10px; background: #f2f2f7; }
+      .kn-muted { color: #6e6e73; font-size: 11.5px; }
+      .kn-status { margin: 0 0 8px; color: #6e6e73; font-size: 11.5px; }
+      .kn-status.kn-status-error { padding: 8px 10px; border-radius: 10px; background: #fde8e8; box-shadow: inset 0 0 0 1px #efb4b4; color: #8f1d1d; font-weight: 600; }
+      .kn-status.kn-status-warn { padding: 8px 10px; border-radius: 10px; background: #fff8e6; box-shadow: inset 0 0 0 1px #f1d98a; color: #7a3d00; font-weight: 600; }
+      .kn-attempt-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 12px 0; }
+      .kn-attempt { min-height: 48px; border-radius: 10px; background: #fff; color: #1c1c1e; font-size: 16px; font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+      .kn-attempt:hover { box-shadow: 0 0 0 1.5px #f9772e; }
+      .kn-settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+      .kn-settings-actions .kn-grow { flex: 1 1 auto; }
+      .kn-settings-actions .kn-danger { margin-left: auto; }
+      .kn-signed b { color: #1c1c1e; }
+      .kn-phrase-list { display: flex; flex-direction: column; border-radius: 10px; background: #fff; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+      .kn-phrase-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid #ececf1; }
+      .kn-phrase-row:first-child { border-top: none; }
+      .kn-phrase-row-text { flex: 1; min-width: 0; }
+      .kn-phrase-row-title { font-size: 13px; font-weight: 600; }
+      .kn-phrase-row .kn-result-preview { margin-top: 1px; }
+      .kn-row-actions { flex: 0 0 auto; display: flex; gap: 10px; }
+      .kn-row-actions .kn-button { padding: 2px 0; font-size: 12px; font-weight: 700; box-shadow: none; background: transparent; border-radius: 4px; color: #b24a0d; text-decoration: underline; }
+      .kn-row-actions .kn-button.kn-danger { color: #c62828; text-decoration: none; }
+      .kn-row-actions .kn-button:hover { box-shadow: none; text-decoration: underline; }
       .kn-field { display: block; margin-bottom: 10px; }
-      .kn-field-label { display: block; margin-bottom: 4px; font-weight: 600; font-size: 12px; color: #3a3a3c; }
+      .kn-field-label { display: block; margin-bottom: 4px; font-weight: 600; font-size: 12px; color: #4b5565; }
       .kn-textarea { min-height: 105px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
       .kn-check-row { display: flex; align-items: center; gap: 7px; margin: 8px 0; }
+      .kn-ui input[type="checkbox"] { accent-color: #b24a0d; }
       .kn-form-actions { display: flex; gap: 7px; margin-top: 12px; }
       .kn-export { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
-      .kn-browse-button { width: 100%; margin-bottom: 8px; }
-      .kn-shortcut-hint { text-align: center; }
-      .kn-bk-body { padding: 10px; background: #e9e9ee; }
-      .kn-bk-section { margin-bottom: 8px; background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; border-left: 4px solid transparent; }
-      .kn-bk-section.kn-bk-open { border-left-color: #f9772e; box-shadow: 0 2px 10px rgba(0,0,0,0.12); }
-      .kn-bk-head { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 12px; border: none; background: transparent; cursor: pointer; text-align: left; }
+      .kn-browse-button { width: 100%; margin-bottom: 7px; }
+      .kn-main-booking { padding: 10px 14px; font-size: 13.5px; }
+      .kn-foot { flex: 0 0 auto; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 2px 10px; padding: 7px 12px; background: #fff; border-top: 1px solid #e2e2e8; border-radius: 0 0 16px 16px; font-size: 11.5px; color: #6e6e73; }
+      .kn-foot-links { display: inline-flex; gap: 10px; margin-left: auto; }
+      .kn-bk-body { padding: 9px 10px; background: #f2f2f7; }
+      .kn-bk-section { margin-bottom: 7px; background: #fff; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); overflow: hidden; border-left: 3px solid transparent; }
+      .kn-bk-section.kn-bk-open { border-left-color: #f9772e; }
+      .kn-bk-head { display: flex; align-items: center; gap: 9px; width: 100%; padding: 9px 11px 9px 8px; border: none; background: transparent; color: #1c1c1e; cursor: pointer; text-align: left; }
       .kn-bk-head-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-      .kn-bk-badge { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-top: 1px; border-radius: 50%; font-size: 12px; font-weight: 800; }
+      .kn-bk-badge { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; font-size: 11px; font-weight: 700; }
       .kn-bk-badge-done { background: #1f7a35; color: #fff; }
-      .kn-bk-badge-needed { background: #f9772e; color: #1c1c1e; }
-      .kn-bk-badge-optional { background: #e5e5ea; color: #6e6e73; }
-      .kn-bk-optional { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #f2f2f7; color: #636366; font-size: 11px; font-weight: 600; vertical-align: 2px; }
-      .kn-bk-prompt { margin-bottom: 9px; font-size: 13px; font-weight: 700; color: #c2410c; }
-      .kn-bk-needed { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 8px; padding: 8px 10px; border-radius: 12px; background: #fff4ec; box-shadow: inset 0 0 0 1.5px #f9772e; }
-      .kn-bk-needed.kn-bk-ready { background: #eafaf0; box-shadow: inset 0 0 0 1.5px #34c759; }
-      .kn-bk-needed-title { font-size: 12.5px; font-weight: 800; color: #1c1c1e; margin-right: 2px; }
-      .kn-bk-ready .kn-bk-needed-title { color: #248a3d; }
-      .kn-bk-needed-chip { border: none; cursor: pointer; padding: 4px 10px; border-radius: 999px; background: #f9772e; color: #1c1c1e; font-size: 12px; font-weight: 700; }
-      .kn-bk-head:hover { background: #fafafa; }
+      .kn-bk-badge-needed { background: #ffe9dc; color: #b24a0d; }
+      .kn-bk-open .kn-bk-badge-needed, .kn-bk-open .kn-bk-badge-optional { background: #f9772e; color: #1c1c1e; }
+      .kn-bk-badge-optional { background: #ffe9dc; color: #b24a0d; }
+      .kn-bk-optional { margin-left: 6px; padding: 1px 6px; border-radius: 6px; background: #e9ebf0; color: #4b5565; font-size: 10.5px; font-weight: 700; vertical-align: 1px; }
+      .kn-bk-prompt { margin-bottom: 9px; font-size: 13px; font-weight: 700; color: #b24a0d; }
+      .kn-bk-needed { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 8px; padding: 1px 0; }
+      .kn-bk-needed.kn-bk-ready { padding: 9px 10px; border-radius: 12px; background: #dff3e6; }
+      .kn-bk-needed-title { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 700; color: #1c1c1e; margin-right: 2px; }
+      .kn-bk-ready .kn-bk-needed-title { color: #1f7a35; }
+      .kn-bk-needed-chip { border: none; cursor: pointer; padding: 3px 10px; border-radius: 999px; background: #ffe9dc; color: #b24a0d; font-size: 11.5px; font-weight: 700; }
+      .kn-bk-needed-chip:hover { box-shadow: inset 0 0 0 1.5px #f9772e; }
+      .kn-bk-head:hover { background: #fafafb; }
       .kn-bk-head-top { display: flex; align-items: center; justify-content: space-between; }
-      .kn-bk-head-title { font-size: 14px; font-weight: 700; color: #1c1c1e; }
-      .kn-bk-chevron { font-size: 13px; color: #6e6e73; }
-      .kn-bk-head-summary { margin-top: 2px; font-size: 12.5px; font-weight: 500; color: #3a3a3c; line-height: 1.35; }
-      .kn-bk-head-summary.kn-bk-missing { color: #c2410c; font-weight: 600; }
-      .kn-bk-open .kn-bk-head { background: #fff3ea; border-bottom: 1px solid #fde0cc; }
-      .kn-bk-content { padding: 10px 12px 12px; }
+      .kn-bk-head-title { font-size: 13.5px; font-weight: 700; color: #1c1c1e; }
+      .kn-bk-chevron { flex: 0 0 auto; display: inline-flex; color: #6e6e73; }
+      .kn-bk-head-summary { margin-top: 1px; font-size: 12px; font-weight: 400; color: #6e6e73; line-height: 1.35; }
+      .kn-bk-head-summary.kn-bk-missing { color: #6e6e73; }
+      .kn-bk-content { padding: 0 11px 10px 8px; }
+      .kn-bk-group { margin: 4px 0 6px; font-size: 12px; font-weight: 700; color: #4b5565; }
       .kn-bk-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
-      .kn-bk-chips .kn-chip { max-width: 100%; white-space: normal; text-align: left; padding: 6px 11px; font-size: 12.5px; background: #fff; box-shadow: inset 0 0 0 1px #d1d1d6; }
-      .kn-bk-chips .kn-chip.kn-active { background: #f9772e; color: #1c1c1e; box-shadow: none; font-weight: 700; }
+      .kn-bk-chips .kn-chip { max-width: 100%; white-space: normal; text-align: left; padding: 4px 10px; font-size: 12px; }
       .kn-bk-chips .kn-chip:disabled { opacity: 0.4; cursor: default; }
-      .kn-bk-sub .kn-chip { font-size: 11px; padding: 4px 9px; }
+      .kn-bk-sub .kn-chip { font-size: 11.5px; padding: 3px 9px; }
       .kn-bk-field { display: block; flex: 1 1 0; min-width: 0; margin-bottom: 7px; }
-      .kn-bk-label { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; font-size: 12px; font-weight: 700; color: #1c1c1e; }
-      .kn-bk-tag { padding: 0 6px; border-radius: 999px; background: #34c75922; color: #1f7a35; font-size: 11px; font-weight: 700; }
-      .kn-bk-field .kn-input { padding: 7px 9px; font-size: 13.5px; background: #fff; box-shadow: inset 0 0 0 1px #c7c7cc; }
-      .kn-bk-field .kn-input:focus { outline: none; box-shadow: inset 0 0 0 2px #f9772e; }
+      .kn-bk-label { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; font-size: 12px; font-weight: 600; color: #4b5565; }
+      .kn-bk-tag { padding: 1px 6px; border-radius: 6px; background: #dff3e6; color: #1f7a35; font-size: 10.5px; font-weight: 700; }
+      .kn-bk-field .kn-input { padding: 6px 10px; font-size: 13px; }
       .kn-bk-notes { min-height: 90px; resize: vertical; font-family: inherit; }
-      .kn-bk-row { display: flex; gap: 6px; }
+      .kn-bk-row { display: flex; gap: 8px; }
       .kn-bk-small { flex: 1 1 0; }
-      .kn-bk-days { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 6px; margin-bottom: 6px; }
-      .kn-bk-day { display: flex !important; flex-direction: column; align-items: center; min-width: 42px; padding: 5px 6px !important; background: #fff !important; box-shadow: inset 0 0 0 1px #d1d1d6 !important; }
-      .kn-bk-day.kn-active { background: #f9772e !important; color: #1c1c1e !important; box-shadow: none !important; }
+      .kn-bk-narrow { flex: 0 0 96px; }
+      .kn-bk-days { display: flex; gap: 5px; overflow-x: auto; padding: 1px 1px 6px; margin-bottom: 6px; }
+      .kn-bk-day { display: flex !important; flex-direction: column; align-items: center; min-width: 42px; padding: 5px 6px !important; border-radius: 10px !important; }
       .kn-bk-day:disabled { opacity: 0.35; cursor: default; }
       .kn-bk-day-name { font-size: 10.5px; font-weight: 600; }
       .kn-bk-day-num { font-size: 14px; font-weight: 700; }
-      .kn-bk-readout { margin: 2px 0 8px; padding: 7px 9px; border-radius: 10px; background: #1c1c1e; color: #fff; font-size: 13px; font-weight: 700; }
-      .kn-bk-readout.kn-bk-error { background: #c9251c; color: #fff; }
-      .kn-bk-confirm-year { display: block; margin-top: 6px; padding: 5px 10px; font-size: 12px; }
-      .kn-bk-times { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 8px; }
-      .kn-bk-times .kn-chip { padding: 6px 0; font-size: 12.5px; font-weight: 600; background: #fff; box-shadow: inset 0 0 0 1px #d1d1d6; text-align: center; }
-      .kn-bk-times .kn-chip.kn-active { background: #f9772e; color: #1c1c1e; }
+      .kn-bk-readout { margin: 2px 0 8px; color: #6e6e73; font-size: 12px; font-weight: 600; }
+      /* A date that cannot be booked yet: a light red notice in place of the plain line. */
+      .kn-bk-readout.kn-bk-error { padding: 9px 10px; border-radius: 12px; background: #fde8e8; box-shadow: inset 0 0 0 1px #efb4b4; color: #8f1d1d; font-size: 12.5px; }
+      .kn-bk-confirm-year { display: block; margin-top: 7px; padding: 5px 12px; font-size: 12px; }
+      .kn-bk-times { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin-bottom: 8px; }
+      .kn-bk-times .kn-chip { padding: 5px 0; font-size: 12px; text-align: center; }
       .kn-bk-card { margin-bottom: 8px; padding: 10px; border-radius: 10px; background: #f7f7f9; box-shadow: inset 0 0 0 1px #e5e5ea; }
       .kn-bk-card-head { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 12.5px; font-weight: 700; color: #1c1c1e; }
-      .kn-bk-remove { border: none; background: none; color: #c9251c; font-size: 11px; font-weight: 600; cursor: pointer; }
-      .kn-bk-add { width: 100%; margin-bottom: 8px; font-size: 12px; background: #f2f2f7; box-shadow: none; }
+      .kn-bk-remove { border: none; background: none; color: #c62828; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+      .kn-bk-add { width: 100%; margin-bottom: 8px; font-size: 12.5px; }
       .kn-bk-gap { margin-bottom: 8px; }
-      .kn-bk-error { color: #c9251c; font-size: 12px; font-weight: 600; }
-      .kn-bk-warn { color: #b25000; font-size: 12px; }
-      .kn-bk-notice { margin-bottom: 8px; padding: 9px 10px; border-radius: 12px; background: #fff4d6; box-shadow: 0 0 0 1.5px #ffcc00; }
-      .kn-bk-notice-text { font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
+      .kn-bk-error { color: #c62828; font-size: 12px; font-weight: 600; }
+      .kn-bk-warn { color: #8a4b00; font-size: 12px; }
+      .kn-bk-notice { margin-bottom: 8px; padding: 9px 10px; border-radius: 12px; background: #fff8e6; box-shadow: inset 0 0 0 1px #f1d98a; color: #7a3d00; }
+      .kn-bk-notice-text { font-size: 12.5px; margin-bottom: 7px; }
+      .kn-bk-notice-text b { color: #5c2c00; }
       .kn-bk-notice-actions { display: flex; gap: 6px; }
-      .kn-bk-notice-actions .kn-button { padding: 5px 10px; font-size: 12px; }
-      .kn-bk-footer { flex: 0 0 auto; padding: 8px 10px 10px; background: #fff; border-top: 1px solid #e5e5ea; border-radius: 0 0 20px 20px; }
-      .kn-bk-preview-label { margin-bottom: 4px; font-size: 11px; font-weight: 700; color: #6e6e73; text-transform: uppercase; letter-spacing: 0.3px; }
-      .kn-bk-preview { max-height: 150px; margin: 0 0 6px; padding: 7px 8px; overflow: auto; border-radius: 8px; background: #f2f2f7; color: #1c1c1e; font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
-      .kn-bk-issues { margin-bottom: 6px; }
-      .kn-bk-status { margin-bottom: 6px; font-size: 12px; font-weight: 600; }
-      .kn-bk-status-ok { color: #248a3d; }
-      .kn-bk-status-warn { color: #b25000; }
-      .kn-bk-status-error { color: #c9251c; }
+      .kn-bk-notice-actions .kn-button { padding: 5px 11px; font-size: 12px; }
+      .kn-bk-footer { flex: 0 0 auto; padding: 0 10px 9px; background: #f2f2f7; }
+      .kn-bk-preview-card { margin-bottom: 8px; padding: 9px 10px; border-radius: 12px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
+      .kn-bk-preview-label { margin-bottom: 5px; font-size: 11.5px; font-weight: 700; color: #4b5565; }
+      .kn-bk-preview { max-height: 96px; margin: 0; padding: 8px; overflow: auto; border-radius: 8px; background: #f2f2f7; color: #1c1c1e; font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+      /* With no lead nothing can be inserted yet, so on a short screen the preview gives its room to the Customer step. */
+      @media (max-height: 960px) { .kn-bk-inbound .kn-bk-preview { max-height: 60px; } }
+      .kn-bk-issues:empty { display: none; }
+      .kn-bk-issues { margin-bottom: 8px; }
+      .kn-bk-issue-box { padding: 9px 10px; border-radius: 12px; background: #fde8e8; box-shadow: inset 0 0 0 1px #efb4b4; color: #8f1d1d; }
+      .kn-bk-issue-box + .kn-bk-issue-box { margin-top: 6px; }
+      .kn-bk-issue-box.kn-bk-issue-warn { background: #fff8e6; box-shadow: inset 0 0 0 1px #f1d98a; color: #7a3d00; }
+      .kn-bk-issue-title { margin-bottom: 4px; font-size: 12.5px; font-weight: 700; }
+      .kn-bk-issue-box .kn-bk-error, .kn-bk-issue-box .kn-bk-warn { display: flex; align-items: flex-start; gap: 7px; padding: 1px 0; color: inherit; font-size: 12.5px; font-weight: 400; }
+      .kn-bk-issue-box svg { margin-top: 2px; }
+      .kn-bk-status { margin-bottom: 7px; font-size: 12px; font-weight: 600; }
+      .kn-bk-status-ok { color: #1f7a35; }
+      .kn-bk-status-warn { color: #8a4b00; }
+      .kn-bk-status-error { color: #c62828; }
       /* The main action has a row to itself; the others sit under it and wrap as whole buttons when narrow. */
-      .kn-bk-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+      .kn-bk-actions { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
       .kn-bk-actions .kn-button { white-space: nowrap; }
-      .kn-bk-actions .kn-primary { flex: 1 0 100%; padding: 10px 14px; font-size: 14px; font-weight: 700; }
-      .kn-bk-actions .kn-bk-small { flex: 0 1 auto; padding: 6px 12px; font-size: 12px; }
-      .kn-bk-actions .kn-bk-small:not(.kn-danger):not(:disabled) { box-shadow: inset 0 0 0 1px #d1d1d6; }
-      .kn-bk-actions .kn-danger { margin-left: auto; padding: 6px 4px; }
-      .kn-inbound-launcher { position: fixed; left: 20px; bottom: 20px; z-index: 2147482999; padding: 10px 16px; border: none; border-radius: 999px; background: #1c1c1e; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,0.3); }
-      .kn-inbound-launcher:hover { background: #2c2c2e; }
-      .kn-phone-launcher { display: block; background: #1c1c1e !important; color: #fff !important; border: none !important; font-size: 18px; font-weight: 900; line-height: 1; cursor: pointer; }
+      .kn-bk-actions .kn-primary { flex: 1 0 100%; padding: 10px 14px; font-size: 13.5px; font-weight: 700; }
+      .kn-bk-actions .kn-bk-small { flex: 0 1 auto; padding: 6px 12px; font-size: 12.5px; }
+      .kn-bk-actions .kn-danger { margin-left: auto; padding: 6px 0; }
+      /* Used only when Konnect's Phone column cannot be found. */
+      .kn-inbound-launcher { position: fixed; left: 20px; bottom: 20px; z-index: 2147482999; padding: 10px 16px; border: none; border-radius: 999px; background: #1e1d49; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: none; }
+      .kn-inbound-launcher:hover, .kn-inbound-launcher.kn-launcher-open { box-shadow: inset 0 0 0 2px #f9772e; }
+      .kn-phone-launcher { display: block; background: #1e1d49 !important; color: #fff !important; border: none !important; box-shadow: none !important; font-size: 18px; font-weight: 900; line-height: 1; cursor: pointer; }
       .kn-phone-launcher:hover { background: #f9772e !important; color: #1c1c1e !important; }
+      .kn-phone-launcher.kn-launcher-open { box-shadow: inset 0 0 0 2px #f9772e !important; }
       .kn-bk-search-row { align-items: flex-end; }
-      .kn-bk-search-button { flex: 0 0 auto; margin-bottom: 7px; padding: 7px 16px; }
-      .kn-bk-version { margin-top: 6px; text-align: right; font-size: 11px; color: #6e6e73; }
-      .kn-bk-report { color: #6e6e73; text-decoration: underline; cursor: pointer; }
-      .kn-update { margin: 0 0 8px; padding: 8px 10px; border-radius: 12px; background: #e8f0fe; color: #1c1c1e; font-size: 12px; font-weight: 600; }
+      .kn-bk-search-button { flex: 0 0 auto; margin-bottom: 7px; padding: 7px 14px; }
+      .kn-bk-report { border: none; background: none; padding: 0; color: #b24a0d; font-size: 11.5px; font-weight: 600; text-decoration: none; cursor: pointer; }
+      .kn-bk-report:hover { text-decoration: underline; }
+      .kn-update { margin: 0 0 8px; padding: 9px 10px; border-radius: 12px; background: #e8f0fe; color: #1c1c1e; font-size: 12px; font-weight: 600; }
       @media (max-width: 720px) {
         #${PALETTE_ID} { width: 200px; }
       }
@@ -776,6 +817,52 @@
     node.type = 'button';
     if (onClick) node.addEventListener('click', onClick);
     return node;
+  }
+
+  const ICONS = {
+    back: '<path d="M15 18l-6-6 6-6"/>',
+    close: '<path d="M18 6L6 18M6 6l12 12"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
+    tick: '<path d="M20 6L9 17l-5-5"/>',
+    down: '<path d="M6 9l6 6 6-6"/>',
+    up: '<path d="M18 15l-6-6-6 6"/>'
+  };
+
+  function icon(name) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('aria-hidden', 'true');
+    svg.innerHTML = ICONS[name] || '';
+    return svg;
+  }
+
+  /* A header button: a symbol with its name beside it. */
+  function headerButton(iconName, label, title, onClick) {
+    const node = element('button', 'kn-icon-button');
+    node.type = 'button';
+    node.title = title;
+    node.setAttribute('aria-label', title);
+    node.appendChild(icon(iconName));
+    node.appendChild(element('span', 'kn-icon-label', label));
+    node.addEventListener('click', onClick);
+    return node;
+  }
+
+  /* The strip under a panel: a note on the left, links on the right. */
+  function footLink(text, title, onClick) {
+    const link = element('button', 'kn-bk-report', text);
+    link.type = 'button';
+    if (title) link.title = title;
+    link.addEventListener('click', (event) => { event.preventDefault(); onClick(); });
+    return link;
+  }
+
+  /* The launcher shows an orange ring inside its edge while its panel is
+     open. Only a change is written, as the page observer sees each write. */
+  function markLaunchers() {
+    const mark = (node, on) => { if (node && node.classList.contains('kn-launcher-open') !== on) node.classList.toggle('kn-launcher-open', on); };
+    mark(state.launcherButton, state.open && !(state.view === 'booking' && inboundContext()));
+    mark(document.getElementById(INBOUND_LAUNCHER_ID), state.open && state.view === 'booking' && inboundContext());
   }
 
   function ensurePalette() {
@@ -818,9 +905,9 @@
 
     if (!isContext) {
       const safeRight = Math.max(128, Math.round(targetRect.left) - 18);
-      const preferredWidth = 240;
+      const preferredWidth = 300;
       left = Math.max(8, Math.min(Math.round(railRect.left) - 18, safeRight - preferredWidth));
-      width = Math.max(120, Math.min(260, safeRight - left));
+      width = Math.max(120, Math.min(preferredWidth, safeRight - left));
       top = Math.max(8, Math.round(anchorRect.bottom + 6));
       maxHeight = Math.max(160, Math.min(440, window.innerHeight - top - 10));
     } else {
@@ -852,33 +939,16 @@
 
   function renderHeader(title, backAction, showSettings) {
     const header = element('div', 'kn-header');
-    if (backAction) {
-      const back = element('button', 'kn-icon-button', '‹');
-      back.type = 'button';
-      back.title = 'Back';
-      back.setAttribute('aria-label', 'Back');
-      back.addEventListener('click', backAction);
-      header.appendChild(back);
-    }
+    if (backAction) header.appendChild(headerButton('back', 'Back', 'Back', backAction));
     header.appendChild(element('div', 'kn-title', title));
     if (showSettings) {
-      const settings = element('button', 'kn-icon-button', '⚙');
-      settings.type = 'button';
-      settings.title = 'Phrase settings';
-      settings.setAttribute('aria-label', 'Phrase settings');
-      settings.addEventListener('click', () => {
+      header.appendChild(headerButton('settings', 'Settings', 'Phrase settings', () => {
         state.view = 'settings';
         state.statusMessage = '';
         renderPalette();
-      });
-      header.appendChild(settings);
+      }));
     }
-    const close = element('button', 'kn-icon-button', '×');
-    close.type = 'button';
-    close.title = 'Close';
-    close.setAttribute('aria-label', 'Close');
-    close.addEventListener('click', closePalette);
-    header.appendChild(close);
+    header.appendChild(headerButton('close', 'Close', 'Close', closePalette));
     return header;
   }
 
@@ -947,8 +1017,13 @@
     const palette = ensurePalette();
     palette.appendChild(renderHeader('Konnect Notes', null, true));
     const body = element('div', 'kn-body');
+    let foot = null;
     renderUpdateNotice(body);
-    if (bookingAllowed()) body.appendChild(button('Booking  (B)', 'kn-primary kn-browse-button', openBooking));
+    if (bookingAllowed()) {
+      const booking = button('Booking', 'kn-primary kn-browse-button kn-main-booking', openBooking);
+      booking.appendChild(element('span', 'kn-key', 'B'));
+      body.appendChild(booking);
+    }
     if (state.config) {
       const quickGrid = element('div', 'kn-quick-grid');
       state.config.phrases
@@ -963,24 +1038,24 @@
           quickGrid.appendChild(quick);
         });
       body.appendChild(quickGrid);
-      const browse = button('Search / browse all phrases', 'kn-primary kn-browse-button', () => {
+      const browse = button('Search all phrases', 'kn-browse-button', () => {
         state.view = 'browse';
         state.selectedResult = 0;
         renderPalette();
       });
       body.appendChild(browse);
-      body.appendChild(element('div', 'kn-muted kn-shortcut-hint', 'Keys 1 to 5 select a quick option'));
-      const report = element('a', 'kn-bk-report kn-muted', 'Report a problem');
-      report.href = '#';
-      report.style.cssText = 'display:block;margin-top:6px;font-size:11px;text-align:right;';
-      report.addEventListener('click', (event) => { event.preventDefault(); reportProblem(); });
-      body.appendChild(report);
+      foot = element('div', 'kn-foot');
+      foot.appendChild(element('span', '', 'Keys 1 to 5 pick a quick phrase'));
+      const links = element('span', 'kn-foot-links');
+      links.appendChild(footLink('Report a problem', '', reportProblem));
+      foot.appendChild(links);
     } else {
       if (state.configStatus) body.appendChild(element('div', 'kn-status', state.configStatus));
       body.appendChild(element('div', 'kn-muted', 'Phrases have not loaded yet.'));
     }
 
     palette.appendChild(body);
+    if (foot) palette.appendChild(foot);
   }
 
   function renderBrowse() {
@@ -990,7 +1065,7 @@
       renderPalette();
     }, false));
     const body = element('div', 'kn-body');
-    if (state.statusMessage) body.appendChild(element('div', 'kn-status', state.statusMessage));
+    if (state.statusMessage) body.appendChild(element('div', 'kn-status kn-status-warn', state.statusMessage));
     const controls = element('div', 'kn-browse-controls');
     body.appendChild(controls);
     const search = element('input', 'kn-search');
@@ -1109,10 +1184,15 @@
     }, false));
     const body = element('div', 'kn-body');
     body.appendChild(element('div', 'kn-status', state.statusMessage || state.configStatus));
-    body.appendChild(element('div', 'kn-muted', `Notes are signed as: ${getAgentName() || 'not set'}`));
+    const nameRow = element('div', 'kn-settings-actions');
+    const signed = element('span', 'kn-muted kn-grow kn-signed', 'Notes are signed as: ');
+    signed.appendChild(element('b', '', getAgentName() || 'not set'));
+    nameRow.appendChild(signed);
+    body.appendChild(nameRow);
 
     const actions = element('div', 'kn-settings-actions');
-    actions.appendChild(button('Change name', '', () => {
+    const lastRow = element('div', 'kn-settings-actions');
+    nameRow.appendChild(button('Change name', '', () => {
       const name = askAgentName();
       state.statusMessage = name ? `Notes will be signed as ${name}.` : 'No name saved.';
       renderPalette();
@@ -1130,7 +1210,7 @@
       state.view = 'import';
       renderPalette();
     }));
-    actions.appendChild(button('Reset to standard phrases', '', async () => {
+    lastRow.appendChild(button('Reset to standard phrases', '', async () => {
       if (!confirm('Remove your own phrase changes on this computer and go back to the standard phrases?')) return;
       state.configStatus = 'Loading the standard phrases...';
       renderPalette();
@@ -1140,17 +1220,17 @@
     }));
     const stop = button('Stop Konnect Notes', 'kn-danger', () => stopKonnectNotes());
     stop.title = 'Stops Konnect Notes without refreshing the page. Click the bookmark again to load the latest version. Booking drafts are kept.';
-    actions.appendChild(stop);
+    lastRow.appendChild(stop);
     body.appendChild(actions);
+    body.appendChild(lastRow);
 
     const list = element('div', 'kn-phrase-list');
     (state.config?.phrases || []).forEach((phrase) => {
       const row = element('div', 'kn-phrase-row');
-      const top = element('div', 'kn-phrase-row-top');
-      const title = element('div', 'kn-phrase-row-title');
-      title.appendChild(document.createTextNode(phrase.label));
-      title.appendChild(element('div', 'kn-muted', getCategoryLabel(phrase.category)));
-      top.appendChild(title);
+      const text = element('div', 'kn-phrase-row-text');
+      text.appendChild(element('div', 'kn-phrase-row-title', phrase.label));
+      text.appendChild(element('div', 'kn-result-preview', `${getCategoryLabel(phrase.category)} · ${phrasePreview(phrase)}`));
+      row.appendChild(text);
       const rowActions = element('div', 'kn-row-actions');
       rowActions.appendChild(button('Edit', '', () => {
         state.editingPhraseId = phrase.id;
@@ -1165,9 +1245,7 @@
         writeStored();
         renderPalette();
       }));
-      top.appendChild(rowActions);
-      row.appendChild(top);
-      row.appendChild(element('div', 'kn-result-preview', phrasePreview(phrase)));
+      row.appendChild(rowActions);
       list.appendChild(row);
     });
     body.appendChild(list);
@@ -2537,15 +2615,35 @@
     }
   }
 
-  function showToast(text) {
+  /* Styled in place, as it must still show after Stop has removed the style
+     sheet. "lead" is what happened, said first with an amber dot. */
+  function showToast(text, lead) {
     logActivity(text);
     const toast = document.createElement('div');
     toast.className = 'kn-toast';
-    toast.textContent = text;
+    toast.setAttribute('role', 'status');
     toast.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483000;' +
-      'max-width:80vw;padding:10px 16px;border-radius:12px;background:#1c1c1e;color:#fff;' +
-      'font:600 13px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
+      'display:flex;align-items:center;gap:8px;' +
+      'max-width:80vw;padding:9px 14px;border-radius:12px;background:#1c1c1e;color:#fff;' +
+      'font:600 13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
       'box-shadow:0 10px 30px rgba(0,0,0,0.3);pointer-events:none';
+    if (lead) {
+      const dot = document.createElement('span');
+      dot.style.cssText = 'flex:0 0 auto;width:8px;height:8px;border-radius:50%;background:#f0a020';
+      toast.appendChild(dot);
+      const words = document.createElement('span');
+      const strong = document.createElement('b');
+      strong.textContent = lead;
+      strong.style.fontWeight = '700';
+      const why = document.createElement('span');
+      why.style.fontWeight = '500';
+      why.textContent = ` ${text}`;
+      words.appendChild(strong);
+      words.appendChild(why);
+      toast.appendChild(words);
+    } else {
+      toast.textContent = text;
+    }
     document.body.appendChild(toast);
     setTimeout(() => toast.remove(), 4500);
   }
@@ -3216,15 +3314,52 @@
     draft.openSection = nextMissingSection(draft);
   }
 
+  /* A green tick for a finished step, its number otherwise. */
+  function setBadge(badge, status, number) {
+    const done = status === 'done';
+    if (badge.dataset.shows === (done ? 'tick' : String(number))) return;
+    badge.dataset.shows = done ? 'tick' : String(number);
+    badge.textContent = done ? '' : String(number);
+    if (done) badge.appendChild(icon('tick'));
+  }
+
+  /* The engine's reasons as short lists: what stops the insert, then what to check. */
+  function renderIssues(box, draft, result) {
+    box.textContent = '';
+    const readout = dateReadout(draft);
+    const d = draft.data;
+    const list = (title, items, itemClass, boxClass) => {
+      if (!items.length) return;
+      const card = element('div', `kn-bk-issue-box ${boxClass}`.trim());
+      card.appendChild(element('div', 'kn-bk-issue-title', title));
+      items.forEach((text) => {
+        const line = element('div', itemClass);
+        line.appendChild(icon('close'));
+        line.appendChild(element('span', '', text));
+        card.appendChild(line);
+      });
+      box.appendChild(card);
+    };
+    /* The date warning is already shown in full under When, so here it is one short line. */
+    const dated = readout.confirmYear
+      ? `${String(d.day).padStart(2, '0')}/${String(d.month).padStart(2, '0')}/${readout.confirmYear}` : '';
+    const errors = result.errors.map((text) => (dated && text.includes(dated) ? `Confirm the date ${dated}` : text));
+    list('Before you can insert:', errors, 'kn-bk-error', '');
+    list('Check:', result.warnings, 'kn-bk-warn', 'kn-bk-issue-warn');
+  }
+
   function renderNeededBar(draft, body) {
     const d = draft.data;
     const missing = visibleSections(d).filter((section) => sectionRequired(section, d) && sectionMissing(draft, section.id));
     const bar = element('div', missing.length ? 'kn-bk-needed' : 'kn-bk-needed kn-bk-ready');
     bookingRefs.needed = bar;
     if (!missing.length) {
-      bar.appendChild(element('span', 'kn-bk-needed-title', '✓ Ready to insert'));
+      const ready = element('span', 'kn-bk-needed-title');
+      ready.appendChild(icon('tick'));
+      ready.appendChild(document.createTextNode('Ready to insert'));
+      bar.appendChild(ready);
     } else {
-      bar.appendChild(element('span', 'kn-bk-needed-title', 'Still needed:'));
+      bar.appendChild(element('span', 'kn-bk-needed-title', 'Still needed'));
       missing.forEach((section) => {
         const chip = element('button', 'kn-bk-needed-chip', section.titleFor ? section.titleFor(d) : section.title);
         chip.type = 'button';
@@ -3250,7 +3385,7 @@
     Object.values(bookingRefs.badges).forEach((ref) => {
       const status = sectionStatus(draft, ref.section);
       ref.badge.className = `kn-bk-badge kn-bk-badge-${status}`;
-      ref.badge.textContent = status === 'done' ? '✓' : String(ref.number);
+      setBadge(ref.badge, status, ref.number);
       ['done', 'needed', 'optional'].forEach((name) => ref.wrap.classList.toggle(`kn-bk-s-${name}`, name === status));
     });
     if (bookingRefs.needed) {
@@ -3276,14 +3411,12 @@
       }
     }
     bookingRefs.preview.textContent = result.text;
-    bookingRefs.issues.textContent = '';
-    result.errors.forEach((text) => bookingRefs.issues.appendChild(element('div', 'kn-bk-error', text)));
-    result.warnings.forEach((text) => bookingRefs.issues.appendChild(element('div', 'kn-bk-warn', text)));
+    renderIssues(bookingRefs.issues, draft, result);
     const waitingForLead = draft.key === INBOUND_KEY;
     const plan = bookingRefs.diary ? diaryPlan(draft) : null;
     const withDiary = !!plan && !diaryAlreadyBooked(draft, plan);
     bookingRefs.insert.textContent = waitingForLead ? 'Insert after the lead is created'
-      : withDiary ? (draft.inserted ? 'Update notes + book diary' : 'Insert + book diary')
+      : withDiary ? (draft.inserted ? 'Update notes and book diary' : 'Insert and book diary')
       : draft.inserted ? 'Update Call Notes' : 'Insert into Call Notes';
     const why = result.errors.length ? `Fix first: ${result.errors[0]}` : '';
     const block = (node, blocked, reason) => {
@@ -3350,7 +3483,8 @@
       const wrap = element('div', `kn-bk-section kn-bk-s-${status}${open ? ' kn-bk-open' : ''}`);
       const head = element('button', 'kn-bk-head');
       head.type = 'button';
-      const badge = element('span', `kn-bk-badge kn-bk-badge-${status}`, status === 'done' ? '✓' : String(index + 1));
+      const badge = element('span', `kn-bk-badge kn-bk-badge-${status}`);
+      setBadge(badge, status, index + 1);
       bookingRefs.badges[section.id] = { badge, wrap, section, number: index + 1 };
       head.appendChild(badge);
       const textCol = element('span', 'kn-bk-head-text');
@@ -3358,12 +3492,15 @@
       const titleNode = element('span', 'kn-bk-head-title', section.titleFor ? section.titleFor(d) : section.title);
       if (!sectionRequired(section, d)) titleNode.appendChild(element('span', 'kn-bk-optional', 'optional'));
       top.appendChild(titleNode);
-      top.appendChild(element('span', 'kn-bk-chevron', open ? '▾' : '▸'));
       textCol.appendChild(top);
       const summary = element('span', 'kn-bk-head-summary', sectionSummary(draft, section.id));
       bookingRefs.summaries[section.id] = summary;
       textCol.appendChild(summary);
       head.appendChild(textCol);
+      const chevron = element('span', 'kn-bk-chevron');
+      chevron.appendChild(icon(open ? 'up' : 'down'));
+      head.appendChild(chevron);
+      head.setAttribute('aria-expanded', String(open));
       head.addEventListener('click', () => {
         draft.openSection = open ? '' : section.id;
         saveDraftSoon();
@@ -3380,11 +3517,13 @@
       body.appendChild(wrap);
     });
 
-    const footer = element('div', 'kn-bk-footer');
-    footer.appendChild(element('div', 'kn-bk-preview-label', 'Goes into Call Notes'));
+    const footer = element('div', draft.key === INBOUND_KEY ? 'kn-bk-footer kn-bk-inbound' : 'kn-bk-footer');
+    const previewCard = element('div', 'kn-bk-preview-card');
+    previewCard.appendChild(element('div', 'kn-bk-preview-label', 'Goes into Call Notes'));
     const preview = element('pre', 'kn-bk-preview');
     bookingRefs.preview = preview;
-    footer.appendChild(preview);
+    previewCard.appendChild(preview);
+    footer.appendChild(previewCard);
     const issues = element('div', 'kn-bk-issues');
     bookingRefs.issues = issues;
     footer.appendChild(issues);
@@ -3409,7 +3548,7 @@
       actions.appendChild(diary);
     }
     const clearsNotes = draft.key !== INBOUND_KEY;
-    const clear = button(clearsNotes ? 'Clear notes + form' : 'Clear form', 'kn-danger kn-bk-small', () => {
+    const clear = button(clearsNotes ? 'Clear notes and form' : 'Clear form', 'kn-danger kn-bk-small', () => {
       const notesLength = clearsNotes ? String(callNotesBox()?.value || '').length : 0;
       if (notesLength && !confirm(`Empty the whole Call Notes box (${notesLength} characters, not only the booking) and reset this booking form?`)) return;
       const removed = draft.key === INBOUND_KEY ? 0 : clearCallNotes();
@@ -3431,19 +3570,14 @@
       : 'Resets this booking form and the customer details typed here';
     actions.appendChild(clear);
     footer.appendChild(actions);
-    const versionRow = element('div', 'kn-bk-version', `Konnect Notes v${KN.version} · `);
-    const report = element('a', 'kn-bk-report', 'Report a problem');
-    report.href = '#';
-    report.addEventListener('click', (event) => { event.preventDefault(); reportProblem(); });
-    versionRow.appendChild(report);
-    versionRow.appendChild(document.createTextNode(' · '));
-    const stopLink = element('a', 'kn-bk-report', 'Stop Konnect Notes');
-    stopLink.href = '#';
-    stopLink.title = 'Stops Konnect Notes without refreshing the page. Booking drafts are kept.';
-    stopLink.addEventListener('click', (event) => { event.preventDefault(); stopKonnectNotes(); });
-    versionRow.appendChild(stopLink);
-    footer.appendChild(versionRow);
     palette.appendChild(footer);
+    const versionRow = element('div', 'kn-foot kn-bk-version');
+    versionRow.appendChild(element('span', '', `Konnect Notes v${KN.version}`));
+    const links = element('span', 'kn-foot-links');
+    links.appendChild(footLink('Report a problem', '', reportProblem));
+    links.appendChild(footLink('Stop Konnect Notes', 'Stops Konnect Notes without refreshing the page. Booking drafts are kept.', () => stopKonnectNotes()));
+    versionRow.appendChild(links);
+    palette.appendChild(versionRow);
 
     updateBookingLive(draft);
     if (state.bookingScroll) body.scrollTop = state.bookingScroll;
@@ -3849,16 +3983,21 @@
       }
     });
     searchRow.appendChild(mobileField);
-    searchRow.appendChild(button('Search', 'kn-primary kn-bk-search-button', searchKonnect));
+    searchRow.appendChild(button('Search', 'kn-bk-search-button', searchKonnect));
+    body.appendChild(element('div', 'kn-bk-group', 'Contact'));
     body.appendChild(searchRow);
     body.appendChild(element('div', 'kn-muted kn-bk-gap', 'New customer? Add their details below and press Create new customer.'));
     body.appendChild(bkInput('Name', c.name, update('name')));
     body.appendChild(bkInput('Email', c.email, update('email')));
+    body.appendChild(element('div', 'kn-bk-group', 'Address'));
     const row2 = element('div', 'kn-bk-row');
-    row2.appendChild(bkInput('Postcode', c.postcode, update('postcode')));
-    row2.appendChild(bkInput('Address line 1 (in person)', c.address1, update('address1')));
+    row2.appendChild(bkInput('Postcode', c.postcode, update('postcode'), { className: 'kn-bk-narrow' }));
+    row2.appendChild(bkInput('Address line 1', c.address1, update('address1')));
     body.appendChild(row2);
 
+    /* Dealer and Brand share a row, so all seven fields fit without scrolling. */
+    body.appendChild(element('div', 'kn-bk-group', 'Dealer and brand'));
+    const row3 = element('div', 'kn-bk-row');
     const dealerWrap = element('label', 'kn-bk-field');
     dealerWrap.appendChild(element('span', 'kn-bk-label', 'Dealer'));
     const dealer = element('select', 'kn-input');
@@ -3871,22 +4010,35 @@
     dealer.addEventListener('change', () => { c.dealer = dealer.value; inbound.pending = true; changed(draft, true); });
     dealer.addEventListener('keydown', (event) => event.stopPropagation());
     dealerWrap.appendChild(dealer);
-    body.appendChild(dealerWrap);
+    row3.appendChild(dealerWrap);
 
-    body.appendChild(element('div', 'kn-bk-label', 'Brand'));
-    body.appendChild(bkChips([{ value: '', label: 'Auto (vehicle make)' }, ...KONNECT_BRANDS.map((name) => ({ value: name, label: name }))],
-      c.brand, (value) => { c.brand = value; inbound.pending = true; changed(draft, true); }, 'kn-bk-sub'));
+    const brandWrap = element('label', 'kn-bk-field');
+    brandWrap.appendChild(element('span', 'kn-bk-label', 'Brand'));
+    const brand = element('select', 'kn-input');
+    [['', 'Auto (vehicle make)'], ...KONNECT_BRANDS.map((name) => [name, name])].forEach(([value, label]) => {
+      const option = element('option', '', label);
+      option.value = value;
+      if (value === c.brand) option.selected = true;
+      brand.appendChild(option);
+    });
+    brand.addEventListener('change', () => { c.brand = brand.value; inbound.pending = true; changed(draft, true); });
+    brand.addEventListener('keydown', (event) => event.stopPropagation());
+    brandWrap.appendChild(brand);
+    row3.appendChild(brandWrap);
+    body.appendChild(row3);
 
-    body.appendChild(button('Create new customer', 'kn-primary kn-bk-add', fillCustomerForm));
+    body.appendChild(button('Create new customer', 'kn-bk-add', fillCustomerForm));
     body.appendChild(element('div', 'kn-muted', 'Customer details stay in this page only and are wiped when the booking moves onto the new lead.'));
   }
 
   function renderMobileCard(draft, body) {
     if (!inbound.mobile || draft.key !== inbound.mobileLead) return;
     const card = element('div', 'kn-bk-notice');
-    card.appendChild(element('div', 'kn-bk-notice-text', `Mobile from the inbound call: ${inbound.mobile}`));
+    const text = element('div', 'kn-bk-notice-text', 'Mobile from the inbound call: ');
+    text.appendChild(element('b', '', inbound.mobile));
+    card.appendChild(text);
     const actions = element('div', 'kn-bk-notice-actions');
-    actions.appendChild(button('Re-add mobile', 'kn-primary', readdMobile));
+    actions.appendChild(button('Re-add mobile', 'kn-outline-accent', readdMobile));
     actions.appendChild(button('Forget', '', () => { forgetInboundCustomer(); renderPalette(); }));
     card.appendChild(actions);
     body.appendChild(card);
@@ -3909,7 +4061,9 @@
     const anchor = phoneColumnAnchor();
     /* Only what differs is written: every write here is seen by the page
        observer, which would otherwise scan again and loop for good. */
-    const look = (className, text, width, height) => {
+    const openHere = state.open && state.view === 'booking';
+    const look = (baseClass, text, width, height) => {
+      const className = openHere ? `${baseClass} kn-launcher-open` : baseClass;
       if (launcher.className !== className) launcher.className = className;
       if (launcher.textContent !== text) launcher.textContent = text;
       if (launcher.style.width !== width) launcher.style.width = width;
@@ -3945,6 +4099,7 @@
     const palette = ensurePalette();
     palette.textContent = '';
     palette.classList.toggle('kn-open', state.open);
+    markLaunchers();
     if (!state.open) return;
     positionPalette();
     if (state.view === 'attempt') renderAttempt();
@@ -3986,6 +4141,7 @@
     state.attemptPhrase = null;
     state.otherAttemptOpen = false;
     if (state.palette) state.palette.classList.remove('kn-open');
+    markLaunchers();
     /* Hand the caret back to the notes box it came from. */
     const last = state.lastSelection;
     if (hadFocus && last && last.target.isConnected && isVisible(last.target)) {
@@ -4279,7 +4435,7 @@
      palette is usually closed when a shorthand is typed. */
   function notWritten(message) {
     state.statusMessage = message;
-    showToast(message);
+    showToast(message, 'Nothing was written.');
     if (state.open) {
       state.view = 'browse';
       renderPalette();

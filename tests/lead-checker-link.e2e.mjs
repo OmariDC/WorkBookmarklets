@@ -82,6 +82,11 @@ async function openLinked(options = {}) {
       return null;
     },
     panel: (selector) => live.locator('#_klcPanelHost').locator(selector),
+    // A control kept in the More menu: the menu is opened first.
+    more: async (selector) => {
+      if (await live.evaluate(() => document.getElementById('_klcPanelHost').shadowRoot.getElementById('moreMenu').classList.contains('hidden'))) await api.panel('#moreBtn').click();
+      return api.panel(selector);
+    },
     text: (id) => live.evaluate((i) => { const host = document.getElementById('_klcPanelHost'); const el = host && host.shadowRoot.getElementById(i); return el ? el.textContent : null; }, id),
     close: () => context.close()
   };
@@ -190,7 +195,7 @@ async function openLinked(options = {}) {
   await t.send({ type: 'workTools:batch', id: 'k1', kind: 'leads', tsv: batch(8, 'a') });
   await t.waitFor('ready', (m) => m.state === 'running');
   await t.live.waitForTimeout(800);
-  await t.panel('#btnClearStop').click();
+  await (await t.more('#btnClearStop')).click();
   const cleared = await t.waitFor('ended');
   check('Clear & Stop ends the running batch as cleared', cleared && cleared.id === 'k1' && cleared.reason === 'cleared', cleared);
   check('Clear & Stop removes the panel and the stored batch', await t.live.evaluate(() => !document.getElementById('_klcPanelHost') && !document.getElementById('_klcNavItem') && localStorage.getItem('konnectLeadChecker:session:v1') === null));
@@ -295,8 +300,9 @@ for (const workerOn of [true, false]) {
   check('ready says paused', paused && paused.batchId === 'p1', paused);
   check('the link line says paused', (await t.text('linkLine')) === 'Konnect Live: paused.', await t.text('linkLine'));
   // Check one lead pressed twice while the paused lead is still finishing.
-  await t.panel('#btnProcessNext').click();
-  await t.panel('#btnProcessNext').click({ force: true }).catch(() => {});
+  await (await t.more('#btnProcessNext')).click();
+  // The menu has closed, so the second press is made straight on the item.
+  await t.panel('#btnProcessNext').evaluate((el) => el.click());
   await t.live.waitForFunction(() => Object.keys(window.__konnectLeadChecker.getSession().results).length >= 2 && !window.__klcShared.stepBusy, null, { timeout: 30000 });
   await t.live.waitForTimeout(300);
   const afterManual = await t.live.evaluate(() => ({ done: Object.keys(window.__konnectLeadChecker.getSession().results).length, searches: window.mock.searches.slice() }));
@@ -330,7 +336,7 @@ for (const workerOn of [true, false]) {
   await t.live.waitForFunction(() => window.mock.searches.length === 1);
   await t.live.bringToFront();
   await t.live.evaluate((text) => navigator.clipboard.writeText(text), batch(3, 'new'));
-  await t.panel('#btnClearPasteStart').click();
+  await (await t.more('#btnClearPasteStart')).click();
   const cleared = await t.waitFor('ended');
   check('a hand paste over a linked batch ends it as cleared', cleared && cleared.id === 'q1' && cleared.reason === 'cleared', cleared);
   await t.live.waitForFunction(() => { const s = window.__konnectLeadChecker.getSession(); return s && s.done && s.rows.length === 3; }, null, { timeout: 40000 });

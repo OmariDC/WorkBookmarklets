@@ -111,7 +111,15 @@ async function settle(page, timeout = 60000) {
       buttons: Array.from(panel.querySelectorAll('.needs-card [data-action]')).map((b) => b.getAttribute('data-action')), notice: (panel.querySelector('.notice') || {}).textContent || '' };
   });
 }
-const press = async (page, action) => { await page.click(`#_leadResetPanel [data-action=${action}]`); await page.waitForTimeout(300); };
+// Clear & Stop and the stop settings are in the More menu, and Skip lead asks
+// why before it skips.
+const IN_MORE = ['clearStop', 'review', 'reviewFinish', 'changeMe'];
+const press = async (page, action) => {
+  if (IN_MORE.includes(action)) await page.click('#_leadResetPanel [data-action=more]');
+  await page.click(`#_leadResetPanel [data-action=${action}]`);
+  if (action === 'skip') await page.click('#_leadResetPanel [data-action=skipConfirm]');
+  await page.waitForTimeout(300);
+};
 const stored = (page, key) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) || 'null'), key);
 
 async function carryOn(page) {
@@ -151,8 +159,8 @@ async function postClosureNoReview() {
     ] }
   });
   await page.click('#_leadResetPanel [data-action=view][data-view=pc]');
-  check('Post Closure tab counts the two send backs', /^2\s*to send back through/.test(await shadowText(page, '.big-count') || ''), await shadowText(page, '.big-count'));
-  await page.click('#_leadResetPanel [data-action=reviewFinish]');
+  check('Post Closure tab counts the two send backs', /^2\s*to send back/.test(await shadowText(page, '.big-count') || ''), await shadowText(page, '.big-count'));
+  await press(page, 'reviewFinish');
   check('Stop before Finished turned off', await page.evaluate(() => JSON.parse(localStorage.getItem('_leadResetSettings')).reviewBeforeFinish === false));
   await page.click('#_leadResetPanel [data-action=startPc]');
   const out = await settle(page);
@@ -200,7 +208,10 @@ async function postClosureWithReview() {
   check('Stop before Finished is on by default', await page.evaluate(() => {
     const p = document.querySelector('#_leadResetPanel').shadowRoot;
     p.querySelector('[data-view=pc]').click();
-    return p.querySelector('[data-action=reviewFinish]').checked;
+    p.querySelector('[data-action=more]').click();
+    const on = p.querySelector('.menu [data-action=reviewFinish]').getAttribute('aria-checked') === 'true' && /Stops before Finished on each one/.test(p.querySelector('.foot').textContent);
+    p.querySelector('[data-action=more]').click();
+    return on && !p.querySelector('.menu');
   }));
   await page.click('#_leadResetPanel [data-action=startPc]');
   for (const [id, outcome] of [['alex', 'Catch All - Email Only Lead'], ['chris', 'Catch All - In Market Would Not Commit to appoint']]) {
@@ -247,8 +258,19 @@ async function emailOnly() {
     ] }
   });
   await page.click('#_leadResetPanel [data-action=view][data-view=eo]');
-  check('Email Only tab counts Agent One\'s two leads', /^2\s*Email Only leads to do/.test(await shadowText(page, '.big-count') || ''), await shadowText(page, '.big-count'));
-  await page.click('#_leadResetPanel [data-action=reviewFinish]');
+  // Two agents recorded and no name remembered: it asks once, then only
+  // ever lists this agent's own leads.
+  const asked = await page.evaluate(() => { const r = document.querySelector('#_leadResetPanel').shadowRoot; return { title: (r.querySelector('.ask-me strong') || {}).textContent, names: Array.from(r.querySelectorAll('[data-action=iAm]')).map((b) => b.textContent).join(), count: !!r.querySelector('.big-count'), start: !!r.querySelector('[data-action=startEo]') }; });
+  check('with two agents recorded it asks "Which agent are you?" before listing anything', asked.title === 'Which agent are you?' && asked.names === 'Agent One,Agent Two' && !asked.count && !asked.start, asked);
+  await page.click('#_leadResetPanel [data-action=iAm][data-agent="Agent One"]');
+  check('Email Only tab counts Agent One\'s two leads', /^2\s*Email Only leads assigned to you in SLA Manager$/.test(await shadowText(page, '.big-count') || ''), await shadowText(page, '.big-count'));
+  const mine = await page.evaluate(() => { const r = document.querySelector('#_leadResetPanel').shadowRoot; return { text: r.querySelector('.panel').textContent, select: !!r.querySelector('select'), tab: r.querySelector('[data-view=eo] em').textContent }; });
+  check('no "Assigned to" picker and no agent named anywhere', !mine.select && !/Assigned to\b|Agent One|Agent Two|Fay Field/.test(mine.text) && mine.tab === '2', mine);
+  check('the answer is remembered in the tool\'s own settings', ((await stored(page, '_leadResetSettings')) || {}).emailOnlyAgent === 'Agent One', await stored(page, '_leadResetSettings'));
+  await press(page, 'changeMe');
+  check('More has "Change who I am", which asks again', /Which agent are you\?/.test(await shadowText(page, '.ask-me') || '') && ((await stored(page, '_leadResetSettings')) || {}).emailOnlyAgent === '', await shadowText(page, '.body'));
+  await page.click('#_leadResetPanel [data-action=iAm][data-agent="Agent One"]');
+  await press(page, 'reviewFinish');
   await page.click('#_leadResetPanel [data-action=startEo]');
 
   const atUma = await settle(page);
@@ -351,8 +373,10 @@ async function secondLoadSkipAndStop() {
     const box = root.querySelector('.needs-card [data-role=skipWhy]');
     return box ? { value: box.value, placeholder: box.placeholder, focused: root.activeElement === box } : null;
   });
+  check('the "why" box is not there until Skip lead is pressed', await whyBox() === null, await whyBox());
+  await page.click('#_leadResetPanel [data-action=skip]');
   const emptyBox = await whyBox();
-  check('the pause has the optional "why" box, and it does not take the focus', emptyBox && emptyBox.placeholder === 'Why are you skipping? (optional)' && !emptyBox.focused, emptyBox);
+  check('Skip lead brings the optional "why" box, ready to type in', emptyBox && emptyBox.placeholder === 'Why are you skipping? (optional)' && emptyBox.focused, emptyBox);
   await page.fill('#_leadResetPanel [data-role=skipWhy]', 'already rang in');
 
   // A fast double click of the Work Tools bookmark.
@@ -376,13 +400,18 @@ async function secondLoadSkipAndStop() {
   await page.addScriptTag({ content: script });
   check('a direct second load keeps the one panel and its run', await page.evaluate(() => document.querySelectorAll('#_leadResetPanel').length === 1 && !!window._leadResetState.paused));
 
+  check('the typed reason is still in the box after the second loads', ((await whyBox()) || {}).value === 'already rang in', await whyBox());
+  await page.click('#_leadResetPanel [data-action=skipCancel]');
+  check('Do not skip goes back to the question and forgets the reason', (await settle(page)).buttons.join() === 'retry,skip,stop' && await whyBox() === null);
   await press(page, 'retry');
   const review = await settle(page);
   check('Try again carries on now Konnect Notes is there', /Carry on to press Finished/.test(review.paused || '') && review.events.includes('konnect-notes:cad'), review.paused || review.log);
   check('the note was written once', count(review.events, 'konnect-notes:cad') === 1, review.events);
-  check('the typed reason is still in the box after the panel was redrawn', ((await whyBox()) || {}).value === 'already rang in', await whyBox());
+  await page.click('#_leadResetPanel [data-action=skip]');
+  await page.fill('#_leadResetPanel [data-role=skipWhy]', 'already rang in');
 
-  await press(page, 'skip');
+  await page.click('#_leadResetPanel [data-action=skipConfirm]');
+  await page.waitForTimeout(300);
   const skipped = await settle(page);
   check('Skip lead says what was left changed', /Lead skipped\. Left as it is: the call is still open; the call outcome is "Update Outcomes \(No Call Made\)"; the CAD note was written; the lead outcome is set to Customer Hub Team > No Opportunity > Catch All - Ongoing \/ Actioned by Dealer; the next status is Shift Start\./.test(skipped.paused || ''), skipped.paused || skipped.log);
   check('Finished not pressed for the skipped lead', !skipped.events.some((e) => /^FINISH/.test(e)), skipped.events);
@@ -398,7 +427,7 @@ async function secondLoadSkipAndStop() {
   await press(page, 'stop');
   const stopped = await settle(page);
   check('Stop ends the run', !stopped.running && !stopped.paused, stopped);
-  check('Stop says what was left changed, in the panel and the log', /Stopped\. Left as it is: the call is still open; the call outcome is "Update Outcomes/.test(stopped.notice) && stopped.log.some((l) => /Stopped\. Left as it is/.test(l)), { notice: stopped.notice, log: stopped.log });
+  check('Stop says what was left changed, in the panel and the log', /Stopped\. Left on the page as it is:\s*The call is still open\s*The call outcome is "Update Outcomes/.test(stopped.notice) && stopped.log.some((l) => /Stopped\. Left as it is/.test(l)), { notice: stopped.notice, log: stopped.log });
   check('nothing was Finished', !stopped.events.some((e) => /^FINISH/.test(e)), stopped.events);
   const progress = await stored(page, '_leadResetDeskProgress');
   check('progress: Jo skipped, Al not marked', progress && JSON.stringify(progress.pc) === JSON.stringify({ 'jo.example@example.com': 'Skipped' }), progress);
@@ -533,9 +562,9 @@ async function emailOnlyClearAndStop() {
   await press(page, 'view][data-view=eo');
   await press(page, 'startEo');
   await page.waitForFunction(() => document.getElementById('statusBtn').textContent === 'Available', null, { timeout: 5000 }).catch(() => {});
-  // Hidden behind its launcher while it waits.
+  // Tucked into its button while it waits (the edge tab, as this page has no rail or Phone column).
   await press(page, 'close');
-  check('the launcher shows while the panel is hidden', await page.evaluate(() => { const r = document.querySelector('#_leadResetPanel').shadowRoot; return r.querySelector('.launcher').style.display !== 'none' && r.querySelector('.panel').style.display === 'none'; }));
+  check('the edge tab shows while the panel is hidden', await page.evaluate(() => { const r = document.querySelector('#_leadResetPanel').shadowRoot; return r.querySelector('.edge-tab').style.display !== 'none' && r.querySelector('.panel').style.display === 'none'; }));
   await press(page, 'reopen');
   await press(page, 'clearStop');
   const notice = await page.evaluate(() => { const n = document.getElementById('_leadResetNotice'); return n ? n.shadowRoot.textContent.replace(/\s+/g, ' ') : null; });
@@ -550,7 +579,7 @@ async function emailOnlyClearAndStop() {
 
 // A pause brings the panel back and cannot be missed.
 async function pauseReopensThePanel() {
-  console.log('\nA pause re-opens a hidden panel; hidden or minimised it says Needs you');
+  console.log('\nA pause re-opens a hidden panel; open or tucked away it says Needs you');
   const { context, page, errors } = await openDesk({ status: 'Shift Start', customers: [postClosureCustomer('jo', 'Jo Example', 'jo.example@example.com', '07700 900101', '')] },
     { _workToolsDeskResults: { results: [sendBack('Jo Example', 'jo.example@example.com', '', 'Actioned by dealership')] } }, { viewport: { width: 1024, height: 600 } });
   await press(page, 'view][data-view=pc');
@@ -563,11 +592,13 @@ async function pauseReopensThePanel() {
     const rect = panel.getBoundingClientRect();
     const hit = (el) => { const b = el.getBoundingClientRect(); return b.width > 0 && rect.left < b.right && b.left < rect.right && rect.top < b.bottom && b.top < rect.bottom; };
     return {
-      panelShown: panel.style.display !== 'none', launcher: r.querySelector('.launcher').textContent, launcherNeeds: r.querySelector('.launcher').classList.contains('needs'),
-      mini: r.querySelector('.mini-status').textContent, headColour: getComputedStyle(r.querySelector('.head')).backgroundColor,
+      panelShown: panel.style.display !== 'none', tab: r.querySelector('.edge-tab').textContent, tabState: r.querySelector('.edge-tab').getAttribute('data-state'), tabTitle: r.querySelector('.edge-tab').title,
+      tabShown: r.querySelector('.edge-tab').style.display !== 'none', tabColour: getComputedStyle(r.querySelector('.edge-tab')).backgroundColor,
+      name: r.querySelector('.head .name').textContent, sub: r.querySelector('.head .sub').textContent, headColour: getComputedStyle(r.querySelector('.head')).backgroundColor,
+      minimise: r.querySelectorAll('[data-action=minimise], .mini-status, .launcher').length,
       width: Math.round(rect.width), height: Math.round(rect.height), covers: ['finished', 'park'].filter((id) => hit(document.getElementById(id))),
       body: r.querySelector('.body').textContent.replace(/\s+/g, ' '), footShown: getComputedStyle(r.querySelector('.foot')).display !== 'none',
-      stops: r.querySelectorAll('.panel [data-action=stop], .panel [data-action=clearStop]').length - (getComputedStyle(r.querySelector('.foot')).display === 'none' ? 1 : 0),
+      stops: r.querySelectorAll('.panel [data-action=stop], .panel [data-action=clearStop]').length,
       live: Array.from(r.querySelectorAll('[aria-live]')).length, first: (r.querySelector('.needs-card .btn') || {}).textContent
     };
   });
@@ -577,12 +608,13 @@ async function pauseReopensThePanel() {
   check('paused: the main answer comes first and there is one Stop', open.first === 'Looks right, press Finished' && open.stops === 1 && !open.footShown, open);
   check('paused: the panel does not cover Finished or Park It', open.covers.length === 0, open.covers);
   check('the whole body is no longer a live region', open.live === 0, open.live);
-  await press(page, 'minimise');
-  const mini = await look();
-  check('minimised while paused: the header says Needs you in another colour', mini.mini === 'Needs you' && mini.headColour === 'rgb(180, 83, 9)', mini);
+  check('paused: the header itself says Needs you, in amber, with where the run is', open.name === 'Needs you' && open.sub === '1 of 1' && open.headColour === 'rgb(180, 83, 10)', open);
+  check('one tucked away form: no minimise, no header only state', open.minimise === 0 && !open.tabShown, open);
   await press(page, 'close');
   const hidden = await look();
-  check('hidden while paused: the launcher says Needs you', /Needs you/.test(hidden.launcher) && hidden.launcherNeeds, hidden);
+  check('hidden while paused: its button turns amber with "!" inside and says so in its tooltip', !hidden.panelShown && hidden.tabShown && hidden.tab === '!' && hidden.tabState === 'need' && hidden.tabColour === 'rgb(180, 83, 10)' && hidden.tabTitle === 'Lead Re setup needs you', hidden);
+  await press(page, 'reopen');
+  check('the button opens the panel again, still paused', (await look()).panelShown && (await look()).first === 'Looks right, press Finished');
   check('no page errors', errors.length === 0, errors);
   await context.close();
 }
@@ -631,8 +663,8 @@ async function sharedStorage() {
   check('and goes stale by the clock, with no new storage event', await linkLine() === NOT_RUNNING, await linkLine());
 
   await press(page, 'view][data-view=pc');
-  check('Post Closure results come from the desk results only, and old ones are left out', /^1\s*to send back through/.test(await shadowText(page, '.big-count') || ''), await shadowText(page, '.big-count'));
-  check('the age of the results is shown', /Lead Checker results from 7 min ago\./.test(await shadowText(page, '.results-age') || ''), await shadowText(page, '.results-age'));
+  check('Post Closure results come from the desk results only, and old ones are left out', /^1\s*to send back/.test(await shadowText(page, '.big-count') || ''), await shadowText(page, '.big-count'));
+  check('the age of the results is shown', /^Checked 7 min ago$/.test(await shadowText(page, '.results-age') || ''), await shadowText(page, '.results-age'));
 
   const hubLine = async () => (await shadowText(page, '.hub-status')) || '';
   await page.evaluate(() => {
@@ -780,8 +812,8 @@ async function parkedCallsThroughManager() {
   await ready(manager, 'running', batch.id, 1, 2);
   check('desk: the link line shows the progress', await waitForLink(desk, 'Konnect Live: checking 1 of 2.'), await shadowText(desk, '.link'));
   await fromLive(manager, { type: 'workTools:results', id: batch.id, partial: true, done: 1, total: 2, kind: 'leads', tsv: resultsTsv([['Jo Example', 'jo.example@example.com', 'send back through', 'Actioned by dealership']]) });
-  await desk.waitForFunction(() => /^1\s*to send back through/.test((document.querySelector('#_leadResetPanel').shadowRoot.querySelector('.big-count') || {}).textContent || ''), null, { timeout: 15000 }).catch(() => {});
-  check('the first send back shows before the batch ends', /^1\s*to send back through/.test(await shadowText(desk, '.big-count') || ''), await shadowText(desk, '.big-count'));
+  await desk.waitForFunction(() => /^1\s*to send back/.test((document.querySelector('#_leadResetPanel').shadowRoot.querySelector('.big-count') || {}).textContent || ''), null, { timeout: 15000 }).catch(() => {});
+  check('the first send back shows before the batch ends', /^1\s*to send back/.test(await shadowText(desk, '.big-count') || ''), await shadowText(desk, '.big-count'));
   await fromLive(manager, { type: 'workTools:results', id: batch.id, kind: 'leads', done: 2, total: 2, tsv: resultsTsv([['Jo Example', 'jo.example@example.com', 'send back through', 'Actioned by dealership'], ['Al Sample', 'al.sample@example.com', 'check: needs contact?', '']]) });
   await fromLive(manager, { type: 'workTools:ended', id: batch.id, reason: 'done' });
   check('desk: done', await waitForState(desk, ['done', 'ended']), await stored(desk, '_workToolsLiveStatus'));
@@ -789,7 +821,7 @@ async function parkedCallsThroughManager() {
   check('desk results have the agreed shape', results && !Number.isNaN(Date.parse(results.savedAt)) && Array.isArray(results.results) && results.results.length === 2
     && results.results.every((r) => r.name && r.email && r.postClosureAction && !Number.isNaN(Date.parse(r.checkedAt))), results);
   await desk.waitForFunction(() => /1 needs contact/.test(document.querySelector('#_leadResetPanel').shadowRoot.textContent), null, { timeout: 5000 }).catch(() => {});
-  check('the one that needs contact is counted, not sent back', /1 needs contact, so it is left for you to call/.test(await shadowText(desk, '.card') || ''), await shadowText(desk, '.card'));
+  check('the one that needs contact is counted, not sent back', /1 needs a call/.test(await shadowText(desk, '.card') || ''), await shadowText(desk, '.card'));
   check('SLA Manager\'s own lead card results are untouched', await manager.evaluate(() => localStorage.getItem('_slaLeadCheckerImportState')) === null);
 
   // SLA Manager's bookmark clicked again: still one answer per message.
@@ -860,7 +892,7 @@ async function deskBeforeManager() {
   await ready(manager, 'paused');
   await desk.click('#_leadResetPanel [data-action=checkParked]');
   await waitForState(desk, ['waiting']);
-  await desk.click('#_leadResetPanel [data-action=clearStop]');
+  await press(desk, 'clearStop');
   await desk.waitForTimeout(500);
   await ready(manager);
   await manager.waitForTimeout(1500);
@@ -870,8 +902,83 @@ async function deskBeforeManager() {
 }
 
 const started = Date.now();
+// The mock is opened with stand-ins for Konnect's button rail and Phone
+// column, and for the two Konnect Notes buttons, which Lead Re setup must
+// sit beside without moving them.
+async function buttonBesideKonnectNotes() {
+  console.log('\nThe Lead Re setup button: Phone column, rail, states inside the shape');
+  const { context, page, errors } = await openDesk({ status: 'Shift Start', customers: [postClosureCustomer('jo', 'Jo Example', 'jo.example@example.com', '07700 900101', '')] },
+    { _workToolsDeskResults: { results: [sendBack('Jo Example', 'jo.example@example.com', '', 'Actioned by dealership')] } }, { query: '?hosts=1' });
+  await page.evaluate(() => {
+    window.__sameDocument = true;
+    const booking = document.createElement('button'); booking.id = 'kn-inbound-launcher'; booking.className = 'btn btn-phone'; booking.textContent = 'B';
+    document.getElementById('phoneCall').insertAdjacentElement('beforebegin', booking);
+    const notes = document.createElement('section'); notes.id = 'kn-notes-launcher-section'; notes.className = 'cassini-section';
+    notes.innerHTML = '<a class="btn btn-circle btn-lgr btn-call-nav" id="knRail" style="background:#1e1d49">n</a>';
+    document.getElementById('railTick').parentElement.insertAdjacentElement('afterend', notes);
+  });
+  const button = () => page.evaluate(() => {
+    const b = document.getElementById('_leadResetButton');
+    if (!b) return null;
+    const box = (el) => { const r = el.getBoundingClientRect(); return { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), right: Math.round(r.right), bottom: Math.round(r.bottom) }; };
+    const style = getComputedStyle(b);
+    const me = box(b);
+    const hit = (el) => { const o = box(el); return o.width > 0 && me.left < o.right && o.left < me.right && me.top < o.bottom && o.top < me.bottom; };
+    const r = document.querySelector('#_leadResetPanel').shadowRoot;
+    return {
+      parent: b.parentElement.id, host: b.getAttribute('data-host'), state: b.getAttribute('data-state'), text: b.textContent, svg: !!b.querySelector('svg'), title: b.title,
+      box: me, colour: style.backgroundColor, ink: style.color, radius: style.borderRadius, shadow: style.boxShadow,
+      next: (b.nextElementSibling || {}).id || '', sectionPrev: b.parentElement.previousElementSibling ? b.parentElement.previousElementSibling.id : '',
+      call: box(document.getElementById('phoneCall')), notesRail: box(document.getElementById('knRail')),
+      notesKept: document.getElementById('kn-inbound-launcher').nextElementSibling.id === 'phoneCall' && document.getElementById('kn-notes-launcher-section').previousElementSibling.contains(document.getElementById('railTick')),
+      covers: ['finished', 'park', 'kn-inbound-launcher', 'knRail', 'railCar', 'phoneCall'].filter((id) => hit(document.getElementById(id))),
+      tabShown: r.querySelector('.edge-tab').style.display !== 'none', panelShown: r.querySelector('.panel').style.display !== 'none', sameDocument: window.__sameDocument === true
+    };
+  });
+  const waitButton = (test, arg) => page.waitForFunction(test, arg, { timeout: 15000 }).then(() => true, () => false);
+  await waitButton(() => (document.getElementById('_leadResetButton') || {}).parentElement === document.getElementById('phoneCol'));
+  const idle = await button();
+  check('no lead open: the button is in the Phone column, directly above the Konnect Notes Booking button', idle && idle.parent === 'phoneCol' && idle.host === 'phone' && idle.next === 'kn-inbound-launcher' && idle.notesKept, idle);
+  check('the same box as the Phone button beside it, measured from the page', idle.box.width === idle.call.width && idle.box.height === idle.call.height && idle.box.left === idle.call.left, idle);
+  check('teal with a white symbol only, the name in the tooltip, and nothing outside the shape', idle.colour === 'rgb(15, 118, 110)' && idle.ink === 'rgb(255, 255, 255)' && idle.text === '' && idle.svg && idle.title === 'Lead Re setup' && idle.shadow === 'none' && idle.state === 'rest', idle);
+  check('no second form: the edge tab is not shown while a Konnect button place exists', !idle.tabShown && idle.panelShown, idle);
+  await page.click('#_leadResetButton');
+  check('the button tucks the open panel away', !(await button()).panelShown && !(await button()).tabShown, await button());
+  await page.click('#_leadResetButton');
+  check('and opens it again', (await button()).panelShown);
+
+  await press(page, 'view][data-view=pc');
+  check('Post Closure has the quiet Shift Start line under Start', (await shadowText(page, '.shift-line')) === 'Sets Shift Start before opening Parked Calls, every time.', await shadowText(page, '.shift-line'));
+  await press(page, 'startPc');
+  const ran = await waitButton(() => { const b = document.getElementById('_leadResetButton'); return b && b.getAttribute('data-state') === 'run' && /^1\/1$/.test(b.textContent); });
+  const running = await button();
+  check('running: the count is inside the shape with an inner ring', ran && /inset/.test(running.shadow) && !running.svg, running);
+  check('running: the header says where the run is', /^Running · 1 of 1$/.test(await shadowText(page, '.head .sub') || ''), await shadowText(page, '.head .sub'));
+  await press(page, 'close');
+  const paused = await settle(page);
+  await waitButton(() => (document.getElementById('_leadResetButton') || {}).getAttribute('data-state') === 'need' && document.getElementById('_leadResetButton').closest('.userQuotesAffix'));
+  const inLead = await button();
+  check('in a lead: the button is in Konnect\'s rail, directly under the Konnect Notes button', /Carry on to press Finished/.test(paused.paused || '') && inLead.host === 'rail' && inLead.parent === '_leadResetRailSection' && inLead.sectionPrev === 'kn-notes-launcher-section' && inLead.notesKept, inLead);
+  check('the same circle as the Konnect button beside it', inLead.box.width === inLead.notesRail.width && inLead.box.height === inLead.notesRail.height && inLead.box.left === inLead.notesRail.left && inLead.radius === '30px', inLead);
+  check('needs you: amber with "!" and an inner ring, all inside the shape', inLead.colour === 'rgb(180, 83, 10)' && inLead.text === '!' && /inset/.test(inLead.shadow) && inLead.title === 'Lead Re setup needs you', inLead);
+  check('it covers none of Finished, Park It or the Konnect buttons', inLead.covers.length === 0, inLead.covers);
+  check('the pause brought the panel back by itself', inLead.panelShown, inLead);
+  await carryOn(page);
+  await settle(page);
+  // Konnect Notes hides its rail button once no lead is open.
+  await page.evaluate(() => { document.getElementById('kn-notes-launcher-section').style.display = 'none'; });
+  await waitButton(() => (document.getElementById('_leadResetButton') || {}).parentElement === document.getElementById('phoneCol'));
+  const after = await button();
+  check('lead closed: the button is back in the Phone column, at rest', after.parent === 'phoneCol' && after.state === 'rest' && after.svg, after);
+  check('the page was followed without ever being reloaded', after.sameDocument && after.notesKept, after);
+  await press(page, 'clearStop');
+  check('Clear & Stop takes the button off the page too', await page.evaluate(() => !document.getElementById('_leadResetButton') && !document.getElementById('_leadResetRailSection') && !document.getElementById('_leadResetButtonStyle')));
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
 const tests = [postClosureNoReview, postClosureWithReview, postClosureOtherEmail, emailOnly, secondLoadSkipAndStop, slowPage, notesPutBack, emailOnlyChecks,
-  emailOnlyClearAndStop, pauseReopensThePanel, sharedStorage, realKonnectNotes, parkedCallsThroughManager, deskWaitsItsTurn, deskBeforeManager];
+  emailOnlyClearAndStop, pauseReopensThePanel, buttonBesideKonnectNotes, sharedStorage, realKonnectNotes, parkedCallsThroughManager, deskWaitsItsTurn, deskBeforeManager];
 const only = process.argv.slice(2);
 for (const test of tests) {
   if (only.length && !only.includes(test.name)) continue;

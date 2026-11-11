@@ -89,6 +89,14 @@ async function openLinked() {
       return null;
     },
     panel: (selector) => live.locator('#_klcPanelHost').locator(selector),
+    // A control kept in the More menu: the menu is opened first.
+    more: async (selector) => {
+      if (await live.evaluate(() => document.getElementById('_klcPanelHost').shadowRoot.getElementById('moreMenu').classList.contains('hidden'))) await t.panel('#moreBtn').click();
+      return t.panel(selector);
+    },
+    closeMore: async () => {
+      if (await live.evaluate(() => !document.getElementById('_klcPanelHost').shadowRoot.getElementById('moreMenu').classList.contains('hidden'))) await t.panel('#moreBtn').click();
+    },
     state: () => live.evaluate(() => document.getElementById('_klcPanelHost').shadowRoot.getElementById('curState').textContent),
     waitState: (pattern, timeout = 30000) => live.waitForFunction((source) => new RegExp(source).test(document.getElementById('_klcPanelHost').shadowRoot.getElementById('curState').textContent), pattern.source, { timeout }).then(() => true, () => false),
     snapshot: () => live.evaluate(() => { const s = window.__konnectLeadChecker.getSession(); return s ? JSON.stringify({ results: s.results, groupIndex: s.groupIndex, rowInGroupIndex: s.rowInGroupIndex, paused: s.paused, done: s.done, cancelled: s.cancelled }) : null; }),
@@ -168,7 +176,7 @@ let finishedOutcomes = null;
   check('results and position are unchanged', (await t.snapshot()) === before);
   await t.live.evaluate(() => { window.mock.searchDelay = 120; });
 
-  await t.panel('#resultsBody details.tier[data-key="7"] > summary').click();
+  check('Could not check is shown open, with the reason on the row', await t.panel('#resultsBody details.tier[data-key="7"]').evaluate((el) => el.open && /Couldn't find a lead at that time/.test(el.querySelector('.customer[data-key="1"] .customer-meta').textContent)));
   await t.avatar(1).click();
   check('lead not on the timeline: timeline only, said plainly', await t.waitState(/^Morgan Reedwell is open, timeline only: the lead for 10 Nov 2026 16:40 was not found\.$/), await t.state());
   page = await t.page();
@@ -185,23 +193,32 @@ let finishedOutcomes = null;
   check('focus stays on the initials with a visible ring, and the row did not fold open', focus.key === '0' && focus.ring === 'solid' && !focus.rowOpen, focus);
 
   // Needs review card.
-  await t.panel('details.review-section > summary').click();
+  await t.panel('#btnReview').click();
+  check('Review opens the Needs review cards in place of the results', await t.live.evaluate(() => { const root = document.getElementById('_klcPanelHost').shadowRoot; return !!root.querySelector('.review-row.open[data-key="3"]') && root.getElementById('resultsBody').classList.contains('hidden'); }));
   const reviewButton = await t.avatar(3, true).evaluate((el) => ({ tag: el.tagName, title: el.title }));
   check('a Needs review card has the same button', reviewButton.tag === 'BUTTON' && reviewButton.title === 'Open Jo Tavistock on Konnect Live', reviewButton);
-  await t.panel('.review-row[data-key="3"] .review-reason').fill('warranty question first');
+  await t.panel('.review-row[data-key="3"] [data-show-tiers]').click();
+  await t.panel('.review-row[data-key="3"] .review-subcategory').fill('Aftersales first');
   await t.avatar(3, true).click();
   check('it opens that customer and lead', await t.waitState(/^Jo Tavistock is open: timeline and lead\.$/), await t.state());
   page = await t.page();
   check('Jo Tavistock and the lead are open, panel still usable', /connectedCustomer\/700300/.test(page.hash) && page.lead === '1386400' && !page.sawOverlay, page);
-  check('the Needs review section stayed open and kept what was typed', await t.live.evaluate(() => { const root = document.getElementById('_klcPanelHost').shadowRoot; return root.querySelector('details.review-section').open && root.querySelector('.review-row[data-key="3"] .review-reason').value === 'warranty question first'; }));
+  check('the Needs review section stayed open and kept what was typed', await t.live.evaluate(() => { const root = document.getElementById('_klcPanelHost').shadowRoot; return !!root.querySelector('.review-row.open[data-key="3"] .review-tiers') && root.querySelector('.review-row[data-key="3"] .review-subcategory').value === 'Aftersales first'; }));
   check('still nothing changed in the batch', (await t.snapshot()) === before);
   const quiet = await t.msgs();
   check('nothing was sent over the link by opening customers', quiet.every((m) => m.type === 'workTools:ready' && m.state === 'idle'), quiet.map((m) => [m.type, m.state]));
 
   // Review decisions go back by themselves.
+  await t.panel('.review-row[data-key="3"] [data-hide-tiers]').click();
   await t.panel('.review-row[data-key="3"] button.accept').click();
+  const first = await t.waitFor('review');
+  check('Accept sends the decision straight away, and the card turns to Decided', !!first && first.tsv.split('\n').length === 2 && await t.panel('.review-row.decided[data-key="3"]').count() === 1, first);
+  // The Why is asked for after the decision and goes back the same way.
+  await t.clearMsgs();
+  await t.panel('.review-row[data-key="3"] .review-reason').fill('warranty question first');
+  await t.live.keyboard.press('Enter');
   const review = await t.waitFor('review');
-  await t.panel('#btnCopyReviewDecisions').click();
+  await (await t.more('#btnCopyReviewDecisions')).click();
   await t.live.waitForTimeout(200);
   const copied = await t.live.evaluate(() => navigator.clipboard.readText());
   const reviewLines = review ? review.tsv.split('\n') : [];
@@ -209,6 +226,8 @@ let finishedOutcomes = null;
   check('it is exactly what Copy review decisions copies', !!review && review.tsv === copied, copied);
   check('the lead window is still open after the decision', (await t.page()).lead === '1386400', await t.page());
   await t.clearMsgs();
+  await t.closeMore();
+  await t.panel('#btnBackToResults').click();
   await t.panel('#resultsBody .customer[data-key="3"] .customer-summary').click();
   await t.panel('#resultsBody .undo-review').click();
   const undone = await t.waitFor('review');
@@ -217,7 +236,7 @@ let finishedOutcomes = null;
   // Two quick presses: the second replaces the first, they never overlap.
   await t.live.evaluate(() => { window.mock.searchDelay = 700; window.mock.modalOpens = []; window.mock.searches = []; window.__maxBusyOwners = 0; });
   await t.avatar(0).click();
-  await t.live.waitForTimeout(150);
+  await t.panel('#btnReview').click();
   await t.avatar(3, true).click();
   check('the second press takes over the state line', (await t.state()) === 'Opening Jo Tavistock...', await t.state());
   check('and ends with the second customer open', await t.waitState(/^Jo Tavistock is open: timeline and lead\.$/), await t.state());
@@ -227,6 +246,7 @@ let finishedOutcomes = null;
   check('only the second lead window was opened, after the first search was let finish', page.modals === 1 && page.lead === '1386400' && trail.modalOpens.join() === '1386400' && trail.searches.length === 2 && /reedwell/.test(trail.searches[0]) && /tavistock/.test(trail.searches[1]) && !page.busy, [page, trail]);
   check('the state line still says the second customer', (await t.state()) === 'Jo Tavistock is open: timeline and lead.', await t.state());
   await t.live.evaluate(() => { window.mock.searchDelay = 120; });
+  await t.panel('#btnBackToResults').click();
 
   // Asked for by SLA Manager with a finished batch loaded.
   await t.clearMsgs();
@@ -305,10 +325,13 @@ let finishedOutcomes = null;
 {
   const t = await openLinked();
   await t.live.evaluate((text) => navigator.clipboard.writeText(text), BATCH);
-  await t.panel('#autoStartToggle').uncheck();
+  await (await t.more('#autoStartToggle')).uncheck();
+  await t.closeMore();
+  check('the paste box is folded to one row until it is asked for', await t.panel('#topSection').evaluate((el) => !el.open));
+  await t.panel('#topSection > summary').click();
   await t.panel('#btnPasteClipboard').click();
   await t.live.waitForFunction(() => { const s = window.__konnectLeadChecker.getSession(); return s && s.rows.length === 7; });
-  await t.panel('#btnProcessNext').click();
+  await (await t.more('#btnProcessNext')).click();
   await t.live.waitForFunction(() => { const s = window.__konnectLeadChecker.getSession(); return Object.keys(s.results).length === 1 && !window.__klcShared.stepBusy; }, null, { timeout: 30000 });
   await t.live.waitForTimeout(300);
   const position = () => t.live.evaluate(() => { const s = window.__konnectLeadChecker.getSession(); return [s.groupIndex, s.rowInGroupIndex]; });
@@ -350,11 +373,10 @@ let finishedOutcomes = null;
   check('a Post Closure list runs on the mock', pcOutcomes.join('|') === 'postClosureList|check: needs contact?|POST_CLOSURE_LEAD_NOT_FOUND', pcOutcomes);
   await t.avatar(0).click();
   check('Post Closure list: the newest Post Closure lead is opened', await t.waitState(/^Morgan Reedwell is open: timeline and lead\.$/) && (await t.page()).lead === '1386302', [await t.state(), await t.page()]);
-  await t.panel('#resultsBody details.tier[data-key="7"] > summary').click();
   await t.avatar(1).click();
   check('Post Closure list: no Post Closure lead, timeline only', await t.waitState(/^Jo Tavistock is open, timeline only: the newest Post Closure lead was not found\.$/) && (await t.page()).modals === 0, await t.state());
-  const badge = await t.panel('#resultsBody .customer[data-key="0"] .category-badge').evaluate((el) => ({ title: el.title, text: el.textContent }));
-  check('a Post Closure badge carries its full text in a title', badge.title === badge.text && badge.title.length > 0, badge);
+  const badge = await t.panel('#resultsBody .customer[data-key="0"] .tag').evaluate((el) => ({ title: el.title, text: el.textContent }));
+  check('a Post Closure tag is short and carries its full text in a title', /^(send back through|check: needs contact\?)/.test(badge.title) && /^(Send back|Check)/.test(badge.text), badge);
 
   const NATIONAL = 'NationalCheck\tCustomer\tReg\tActivityID\tLeadCreated\tCampaign\tDealer\tLastContact\tState\tExportOutcome\tAttempts\tManualReschedules\tAutoReschedules\tExportHint';
   const national = [NATIONAL,

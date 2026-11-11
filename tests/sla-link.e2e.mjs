@@ -336,18 +336,19 @@ async function openWithNoLeads() {
   const flash = await manager.evaluate(() => { const b = document.createElement('button'); b.textContent = 'Send'; window._sendToLeadChecker(b, 'leads'); return b.textContent; });
   check('Send with no leads opens nothing', flash === 'No leads' && (await manager.evaluate(() => window.opened)) === 0);
   await manager.evaluate(() => window._toggleMorningChecks());
-  check('the panel shows the link line and an Open Konnect Live button', await manager.evaluate(() => { const line = document.getElementById('_slaLinkLine'); return !!line && /Konnect Live: not open\. Press Open Konnect Live in SLA Manager\./.test(line.textContent) && !!line.querySelector('button'); }));
+  // On the panel the strip is short and its button says the rest; the text stored for the desk keeps the full sentence.
+  check('the panel shows the link strip, "not open", with an Open Konnect Live button', await manager.evaluate(() => { const line = document.getElementById('_slaLinkLine'); const button = line && line.querySelector('button'); return !!button && button.textContent.trim() === 'Open Konnect Live' && line.querySelector('span:not(.sla-dot)').textContent.trim() === 'Konnect Live: not open'; }), await manager.evaluate(() => (document.getElementById('_slaLinkLine') || {}).textContent));
   await manager.click('#_slaLinkLine button');
   check('Open Konnect Live opens the tab with nothing to send', (await manager.evaluate(() => window.opened)) === 1 && (await toLive(manager)).length === 0);
   await manager.evaluate(() => window._openKonnectLive());
   check('pressing it again reuses the tab', (await manager.evaluate(() => window.opened)) === 1);
   await ready(manager);
-  check('the line follows the link without a redraw', await manager.evaluate(() => { const line = document.getElementById('_slaLinkLine'); return /Konnect Live: linked, ready\./.test(line.textContent) && !line.querySelector('button'); }));
+  check('the line follows the link without a redraw', await manager.evaluate(() => { const line = document.getElementById('_slaLinkLine'); return line.textContent.trim() === 'Konnect Live: linked, ready' && !line.querySelector('button'); }));
   await deskAsks(desk, 'desk-1');
   check('the desk batch can then go with no Send pressed', (await waitSent(manager, 1)).length === 1 && (await manager.evaluate(() => window.opened)) === 1);
   for (const [state, text] of [['paused', 'Konnect Live: paused.'], ['loggedOut', 'Konnect Live: logged out, logging back in.']]) {
     await ready(manager, { state, batchId: null });
-    check(`line wording for ${state}`, (await manager.evaluate(() => document.getElementById('_slaLinkLine').textContent.trim())).startsWith(text) && (await stored(desk, '_workToolsLinkState')).text === text, await stored(desk, '_workToolsLinkState'));
+    check(`line wording for ${state}`, (await manager.evaluate(() => document.getElementById('_slaLinkLine').textContent.trim())).startsWith(text.replace(/\.$/, '')) && (await stored(desk, '_workToolsLinkState')).text === text, await stored(desk, '_workToolsLinkState'));
   }
   // Clear & Stop really stops the link.
   await manager.evaluate(() => window._slaResetBookmarklet());
