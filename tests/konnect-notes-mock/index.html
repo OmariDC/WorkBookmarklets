@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Mock agent desktop for Konnect Notes</title>
+<!-- Only what Konnect Notes looks for: the left rail with the green tick,
+     the top Name and Email rows, sales tabs, and one pane per lead with
+     Initial Notes, Call Notes (footer.text-primary textarea.form-control)
+     and Post Closure Notes. All values are fictional. A pane with
+     data-lead-id answers angular.element(node).scope() with that lead, the
+     way the real page's scope does; a pane without one gives no proof of
+     which lead it is. -->
+<style>
+body { font-family: Arial, sans-serif; margin: 0; padding: 10px 10px 10px 110px; background: #eee; }
+.userQuotesAffix { position: fixed; left: 10px; top: 60px; width: 80px; }
+.btn-call-nav { display: inline-block; width: 60px; height: 60px; border-radius: 30px; }
+.tab-pane { display: none; } .tab-pane.active { display: block; }
+textarea { display: block; width: 520px; height: 90px; }
+.row { margin: 6px 0; }
+</style></head><body>
+<div class="userQuotesAffix">
+ <section class="cassini-section"><a class="btn btn-circle btn-lgr btn-call-nav" style="background:rgb(40,180,60)">ok</a></section>
+ <section class="cassini-section"><a class="btn btn-circle btn-lgr btn-call-nav" style="background:rgb(40,190,190)">car</a></section>
+</div>
+<div class="row"><b>Name</b> <span id="custName">Jo Example</span></div>
+<div class="row" id="emailRow"><b>Email</b> <span class="ng-scope" id="custEmail">jo@example.com</span></div>
+<div class="row"><label>Mileage</label> <input id="other" type="text"></div>
+<ul><li class="active" id="salesTab-1"><a>Lead A</a></li><li id="salesTab-2"><a>Lead B</a></li></ul>
+<div><div class="tab-content">
+ <div class="tab-pane active" id="paneA">
+  <div class="form-group"><label>Initial Notes</label><div><textarea id="initA"></textarea></div></div>
+  <div class="form-group" id="callWrapA"><label>Call Notes</label><footer class="text-primary"><textarea class="form-control" id="callA" ng-model="theActivity.SalesLead.LeadDetails.Notes"></textarea></footer></div>
+  <div class="form-group" id="pcWrapA"><label>Post Closure Notes</label><div><textarea class="form-control" id="pcA"></textarea></div></div>
+ </div>
+ <div class="tab-pane" id="paneB">
+  <div class="form-group"><label>Initial Notes</label><div><textarea id="initB"></textarea></div></div>
+  <div class="form-group"><label>Call Notes</label><footer class="text-primary"><textarea class="form-control" id="callB" ng-model="theActivity.SalesLead.LeadDetails.Notes"></textarea></footer></div>
+  <div class="form-group" id="pcWrapB"><label>Post Closure Notes</label><div><textarea class="form-control" id="pcB"></textarea></div></div>
+ </div>
+</div></div>
+<script>
+window.angular = {
+  element(node) {
+    return {
+      scope() {
+        const pane = node && node.closest ? node.closest('.tab-pane[data-lead-id]') : null;
+        return pane ? { theActivity: { ID: Number(pane.dataset.leadId) } } : undefined;
+      },
+      controller() { return null; }
+    };
+  }
+};
+</script>
+</body></html>

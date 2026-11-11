@@ -309,6 +309,44 @@ test('Day and month: rolls to next year only when not given a year', () => {
   assert.ok(E.resolveDate({ day: 31, month: 11 }, NOW).error);
 });
 
+test('A day and month just passed is an error, not next year', () => {
+  const yesterday = E.resolveDate({ day: 5, month: 11 }, NOW);
+  assert.ok(/already passed this year/.test(yesterday.error), yesterday.error);
+  assert.ok(/05\/11\/2027/.test(yesterday.error), yesterday.error);
+  assert.strictEqual(yesterday.needsYear, 2027);
+  assert.strictEqual(yesterday.passed, true);
+  assert.strictEqual(yesterday.dateObj, undefined);
+});
+
+test('More than 60 days ahead needs the year confirmed', () => {
+  const near = E.resolveDate({ day: 5, month: 1 }, NOW); // 60 days ahead
+  assert.strictEqual(near.error, undefined);
+  assert.strictEqual(near.year, 2027);
+  const far = E.resolveDate({ day: 6, month: 1 }, NOW); // 61 days ahead
+  assert.ok(/more than 60 days away/.test(far.error), far.error);
+  assert.strictEqual(far.needsYear, 2027);
+  assert.strictEqual(far.passed, false);
+  const sameYear = E.resolveDate({ day: 20, month: 6 }, new Date(2026, 0, 10, 9, 0));
+  assert.ok(/20\/06\/2026 is more than 60 days away/.test(sameYear.error), sameYear.error);
+  assert.strictEqual(sameYear.passed, false);
+});
+
+test('A confirmed year is taken as given', () => {
+  const confirmed = E.resolveDate({ day: 5, month: 11, year: 2027 }, NOW);
+  assert.strictEqual(confirmed.error, undefined);
+  assert.strictEqual(confirmed.year, 2027);
+  assert.strictEqual(confirmed.text, '05/11');
+  assert.ok(E.resolveDate({ day: 5, month: 11, year: 2026 }, NOW).error);
+});
+
+test('A far date blocks the booking until the year is confirmed', () => {
+  const vehicles = [{ make: 'Peugeot', model: '208', reg: 'AB12CDE' }];
+  const blocked = build({ type: 'testdrive', date: { day: 5, month: 11 }, time: '11:00', vehicles });
+  assert.ok(blocked.errors.some((e) => /already passed this year/.test(e)), blocked.errors.join(' / '));
+  const ok = build({ type: 'testdrive', date: { day: 5, month: 11, year: 2027 }, time: '11:00', vehicles });
+  assert.ok(!ok.errors.some((e) => /passed|days away/.test(e)), ok.errors.join(' / '));
+});
+
 test('Times: 24h, am/pm, only :00 or :30', () => {
   assert.strictEqual(E.resolveTime('11:00AM').text, '11:00');
   assert.strictEqual(E.resolveTime('9:00 AM').text, '09:00');

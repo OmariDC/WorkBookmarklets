@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.12.0'
+    version: '1.13.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -32,10 +32,10 @@
     if (window.KonnectNotesBooking === true) return true;
     try { return localStorage.getItem(BOOKING_ACCESS_KEY) === 'on'; } catch (error) { return false; }
   }
+  const OWN_PHRASES_STATUS = 'Your own phrase changes are in use on this computer only.';
   const STYLE_ID = 'kn-notes-style';
   const PALETTE_ID = 'kn-notes-palette';
   const LAUNCHER_SECTION_ID = 'kn-notes-launcher-section';
-  const UI_PREFIX = 'kn-';
 
   const state = {
     config: null,
@@ -43,9 +43,7 @@
     remoteSignature: '',
     configStatus: 'Loading phrases...',
     target: null,
-    targetLabel: null,
     postClosureTarget: null,
-    postClosureLabel: null,
     targetHadFocus: false,
     lastSelection: null,
     launcherSection: null,
@@ -53,6 +51,7 @@
     palette: null,
     observer: null,
     scanTimer: null,
+    scanDueBy: 0,
     open: false,
     view: 'main',
     activeCategory: 'all',
@@ -157,9 +156,9 @@
   }
 
   function validateConfig(input) {
-    if (!input || typeof input !== 'object') throw new Error('Configuration must be an object.');
+    if (!input || typeof input !== 'object') throw new Error('The phrase list must be an object.');
     if (!Array.isArray(input.categories) || !Array.isArray(input.phrases)) {
-      throw new Error('Configuration must contain categories and phrases.');
+      throw new Error('The phrase list must contain categories and phrases.');
     }
 
     const categories = input.categories
@@ -221,7 +220,7 @@
       });
     });
 
-    if (!categories.length || !phrases.length) throw new Error('Configuration contains no usable phrases.');
+    if (!categories.length || !phrases.length) throw new Error('The phrase list contains no usable phrases.');
     return {
       schemaVersion: 1,
       name: String(input.name || 'Konnect Notes'),
@@ -233,7 +232,7 @@
   function setWorkingConfig(config, dirty, message) {
     state.config = validateConfig(config);
     state.dirty = Boolean(dirty);
-    state.configStatus = message || (state.dirty ? 'Local changes not yet published.' : 'Using GitHub phrases.');
+    state.configStatus = message || (state.dirty ? OWN_PHRASES_STATUS : 'Using the standard phrases.');
     writeStored();
     if (state.open) renderPalette();
   }
@@ -244,26 +243,55 @@
     return validateConfig(await response.json());
   }
 
+  /* Brings new and changed standard phrases into a phrase list the user has
+     edited, by phrase id. "base" is the standard list as it was last seen:
+     a phrase the user changed or added keeps their version, a phrase they
+     deleted stays deleted, and everything they left alone follows the
+     standard list (including removals). Pure. */
+  function mergeRemoteConfig(local, remote, base) {
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    const byId = (config) => new Map(((config && config.phrases) || []).map((phrase) => [phrase.id, phrase]));
+    const localById = byId(local);
+    const remoteById = byId(remote);
+    const baseById = byId(base);
+    const phrases = [];
+    local.phrases.forEach((phrase) => {
+      const was = baseById.get(phrase.id);
+      const now = remoteById.get(phrase.id);
+      const untouched = was && same(was, phrase);
+      if (untouched && !now) return;
+      phrases.push(clone(untouched && now ? now : phrase));
+    });
+    remote.phrases.forEach((phrase) => {
+      if (!localById.has(phrase.id) && !baseById.has(phrase.id)) phrases.push(clone(phrase));
+    });
+    const categoryIds = new Set(remote.categories.map((category) => category.id));
+    const categories = clone(remote.categories)
+      .concat(clone(local.categories.filter((category) => !categoryIds.has(category.id))));
+    return { schemaVersion: 1, name: remote.name || local.name, categories, phrases };
+  }
+
   async function refreshRemoteConfig(options) {
     const settings = options || {};
     try {
       const remote = await fetchRemoteConfig();
       const remoteSig = signature(remote);
+
+      let base = null;
+      try { base = state.remoteSignature ? JSON.parse(state.remoteSignature) : null; } catch (error) { base = null; }
       state.remoteSignature = remoteSig;
 
       if (settings.force || !state.config || !state.dirty) {
-        setWorkingConfig(remote, false, 'Using the latest GitHub phrases.');
-      } else if (signature(state.config) === remoteSig) {
-        setWorkingConfig(state.config, false, 'Local phrases now match GitHub.');
+        setWorkingConfig(remote, false, 'Using the latest standard phrases.');
       } else {
-        state.configStatus = 'Local changes are active and have not yet been published.';
-        writeStored();
-        if (state.open) renderPalette();
+        const merged = validateConfig(mergeRemoteConfig(state.config, remote, base));
+        if (signature(merged) === remoteSig) setWorkingConfig(merged, false, 'Using the latest standard phrases.');
+        else setWorkingConfig(merged, true, OWN_PHRASES_STATUS);
       }
       return remote;
     } catch (error) {
       state.configStatus = state.config
-        ? 'Could not check GitHub; cached/local phrases remain active.'
+        ? 'Could not check for phrase updates. Your saved phrases are still in use.'
         : `Could not load phrases: ${error.message}`;
       if (state.open) renderPalette();
       return null;
@@ -278,8 +306,8 @@
         state.dirty = Boolean(stored.dirty);
         state.remoteSignature = String(stored.remoteSignature || '');
         state.configStatus = state.dirty
-          ? 'Local changes are active and have not yet been published.'
-          : 'Using cached GitHub phrases while checking for updates.';
+          ? OWN_PHRASES_STATUS
+          : 'Using your saved phrases while checking for updates.';
       } catch (error) {
         state.config = null;
       }
@@ -407,18 +435,31 @@
     return false;
   }
 
+  /* The lead a notes pane belongs to, from the page's own data. Empty when
+     the page does not say, and then nothing is assumed about the pane. */
+  function paneLeadId(notes) {
+    const node = notes?.call?.editor || notes?.initial?.editor || notes?.panel;
+    const activity = node ? leadScopeActivity(node) : null;
+    return activity && activity.ID != null ? String(activity.ID) : '';
+  }
+
+  /* Konnect can mount the same lead twice. A second pane only counts as this
+     lead when the page gives both the same lead ID: matching Initial Notes
+     is not proof, as two leads can carry the same web enquiry text. */
   function findMountedDuplicateNoteSet(activeNotes) {
     if (!activeNotes?.panel || !activeNotes.initial?.editor) return null;
     const tabContent = activeNotes.panel.parentElement;
     if (!tabContent?.classList?.contains('tab-content')) return null;
 
+    const activeLeadId = paneLeadId(activeNotes);
     const activeInitialKey = noteValueKey(activeNotes.initial.editor.value);
-    if (!activeInitialKey) return null;
+    if (!activeLeadId || !activeInitialKey) return null;
 
     const candidates = Array.from(tabContent.children)
       .filter((panel) => panel !== activeNotes.panel && panel.classList?.contains('tab-pane'))
       .map(panelNoteSet)
       .filter((notes) => notes?.initial?.editor && notes.call?.editor)
+      .filter((notes) => paneLeadId(notes) === activeLeadId)
       .filter((notes) => noteValueKey(notes.initial.editor.value) === activeInitialKey);
 
     candidates.sort((a, b) => {
@@ -529,6 +570,8 @@
   }
 
   function scanPage() {
+    clearTimeout(state.scanTimer);
+    state.scanDueBy = 0;
     const found = findCallNotesTarget();
     const postClosure = findPostClosureNotesTarget();
     const nextTarget = found?.editor || null;
@@ -537,9 +580,7 @@
     const postClosureChanged = nextPostClosureTarget !== state.postClosureTarget;
     if (targetChanged || postClosureChanged) {
       state.target = nextTarget;
-      state.targetLabel = found?.label || null;
       state.postClosureTarget = nextPostClosureTarget;
-      state.postClosureLabel = postClosure?.label || null;
       state.targetHadFocus = false;
       state.lastSelection = null;
       state.lastPostClosureTransaction = null;
@@ -555,31 +596,32 @@
     else if (state.open && targetChanged) positionPalette();
   }
 
+  /* Waits for the page to settle, but never longer than SCAN_MAX_WAIT: a
+     page that keeps changing would otherwise never be scanned. */
+  const SCAN_SETTLE = 120;
+  const SCAN_MAX_WAIT = 600;
   function scheduleScan() {
+    const now = Date.now();
+    if (!state.scanDueBy) state.scanDueBy = now + SCAN_MAX_WAIT;
     clearTimeout(state.scanTimer);
-    state.scanTimer = setTimeout(scanPage, 120);
+    state.scanTimer = setTimeout(scanPage, Math.max(0, Math.min(SCAN_SETTLE, state.scanDueBy - now)));
   }
 
   function injectStyles() {
     if (document.getElementById(STYLE_ID)) return;
     const style = document.createElement('style');
     style.id = STYLE_ID;
-    /* Same visual language as SLA-Manager.js/Konnect-Lead-Checker.js's
-    own redesign this session - dark #1c1c1e header, light #f2f2f7 body,
-    white cards with soft shadows instead of 1px borders, fully-rounded
-    pills for small interactive elements, destructive actions as plain
-    colored text. Every class name below is unchanged from before, only
-    restyled - none of the render* functions needed to change. */
     style.textContent = `
       .kn-launcher-section { height: 75px; text-align: center; }
       .kn-launcher { position: relative; display: inline-flex !important; align-items: center; justify-content: center; width: 60px !important; height: 60px !important; border-radius: 30px !important; background: #1c1c1e !important; color: #fff !important; box-shadow: 0 4px 14px rgba(0,0,0,0.3) !important; border: none !important; text-decoration: none !important; }
       .kn-launcher:hover, .kn-launcher:focus { background: #2c2c2e !important; color: #fff !important; }
       .kn-launcher-clipboard { position: relative; width: 24px; height: 29px; border: 3px solid #fff; border-radius: 3px; display: block; }
       .kn-launcher-clipboard::before { content: ''; position: absolute; width: 12px; height: 5px; border: 2px solid #fff; border-radius: 3px; background: #1c1c1e; top: -7px; left: 3px; }
-      .kn-launcher-bolt { position: absolute; right: -10px; bottom: -8px; display: flex; align-items: center; justify-content: center; width: 19px; height: 19px; border-radius: 50%; background: #f9772e; color: #fff; font: 900 14px/1 -apple-system, sans-serif; }
+      .kn-launcher-bolt { position: absolute; right: -10px; bottom: -8px; display: flex; align-items: center; justify-content: center; width: 19px; height: 19px; border-radius: 50%; background: #f9772e; color: #1c1c1e; font: 900 14px/1 -apple-system, sans-serif; }
       .kn-ui, .kn-ui * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
       #${PALETTE_ID} { position: fixed; top: 0; left: 0; width: 240px; max-height: 380px; z-index: 2147483000; display: none; flex-direction: column; overflow: hidden; color: #1c1c1e; background: #f2f2f7; border: none; border-radius: 20px; box-shadow: 0 20px 50px -12px rgba(0,0,0,0.3); }
       #${PALETTE_ID}.kn-open { display: flex; }
+      #${PALETTE_ID}:focus { outline: none; }
       .kn-header { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 11px 14px; background: #1c1c1e; border-radius: 20px 20px 0 0; }
       .kn-title { flex: 1; font-size: 15px; font-weight: 600; color: #fff; letter-spacing: -0.1px; }
       .kn-body { flex: 1 1 auto; min-height: 0; padding: 12px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
@@ -587,29 +629,32 @@
       .kn-icon-button { min-width: 30px; height: 30px; padding: 3px 8px; border-radius: 8px; background: rgba(255,255,255,0.12); color: #fff; font-weight: 600; }
       .kn-icon-button:hover { background: rgba(255,255,255,0.2); }
       .kn-button { padding: 8px 12px; border-radius: 999px; background: white; color: #1c1c1e; font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.06); }
-      .kn-button.kn-primary { background: #f9772e; color: #fff; }
-      .kn-button.kn-danger { background: transparent; color: #ff3b30; box-shadow: none; padding: 8px 6px; }
+      .kn-button.kn-primary { background: #f9772e; color: #1c1c1e; }
+      .kn-button:disabled, .kn-button.kn-primary:disabled { background: #e5e5ea; color: #636366; box-shadow: none; cursor: not-allowed; }
+      .kn-ui button:focus-visible, .kn-ui a:focus-visible { outline: 2px solid #1c1c1e; outline-offset: 2px; }
+      .kn-header button:focus-visible { outline-color: #fff; }
+      .kn-button.kn-danger { background: transparent; color: #c9251c; box-shadow: none; padding: 8px 6px; }
       .kn-search, .kn-input, .kn-textarea, .kn-select { width: 100%; padding: 8px 10px; color: #1c1c1e; background: #fff; border: none; border-radius: 10px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
       .kn-search { margin-bottom: 10px; font-size: 14px; }
-      .kn-search::placeholder, .kn-input::placeholder, .kn-textarea::placeholder { color: #8e8e93; }
+      .kn-search::placeholder, .kn-input::placeholder, .kn-textarea::placeholder { color: #6e6e73; }
       .kn-quick-grid { display: grid; grid-template-columns: 1fr; gap: 7px; margin-bottom: 10px; }
       .kn-quick { position: relative; min-height: 48px; padding: 8px 9px 8px 33px; border-radius: 12px; background: #fff; color: #1c1c1e; text-align: left; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); }
-      .kn-quick-key { position: absolute; top: 50%; left: 8px; transform: translateY(-50%); width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: #f9772e; color: #fff; font-weight: 700; font-size: 10.5px; }
+      .kn-quick-key { position: absolute; top: 50%; left: 8px; transform: translateY(-50%); width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center; border-radius: 999px; background: #f9772e; color: #1c1c1e; font-weight: 700; font-size: 11px; }
       .kn-categories { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 3px; }
       .kn-chip { flex: 0 0 auto; padding: 5px 10px; border-radius: 999px; color: #1c1c1e; background: #fff; font-size: 12px; font-weight: 500; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-      .kn-chip.kn-active { background: #f9772e; color: #fff; font-weight: 600; box-shadow: none; }
+      .kn-chip.kn-active { background: #f9772e; color: #1c1c1e; font-weight: 700; box-shadow: none; }
       .kn-results { display: flex; flex-direction: column; gap: 6px; }
       .kn-result { padding: 10px 12px; border-radius: 12px; background: #fff; color: #1c1c1e; text-align: left; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); }
       .kn-result.kn-selected, .kn-result:hover { background: #fff3ea; box-shadow: 0 0 0 1.5px #f9772e; }
       .kn-result-label { display: block; font-size: 14px; font-weight: 600; }
-      .kn-result-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: #8e8e93; font-size: 10px; }
-      .kn-result-shortcut { display: inline-flex; padding: 2px 7px; border-radius: 999px; background: #f9772e18; color: #f9772e; font-weight: 700; }
+      .kn-result-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; color: #6e6e73; font-size: 11px; }
+      .kn-result-shortcut { display: inline-flex; padding: 2px 7px; border-radius: 999px; background: #f9772e18; color: #b23a0a; font-weight: 700; }
       .kn-result-preview { display: -webkit-box; margin-top: 5px; color: #6e6e73; font-size: 11px; line-height: 1.35; white-space: normal; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-      .kn-alias { display: inline-block; margin: 4px 4px 0 0; padding: 1px 6px; border-radius: 999px; background: #f2f2f7; color: #6e6e73; font-size: 10px; }
+      .kn-alias { display: inline-block; margin: 4px 4px 0 0; padding: 1px 6px; border-radius: 999px; background: #f2f2f7; color: #636366; font-size: 11px; }
       .kn-browse-controls { position: sticky; top: -12px; z-index: 2; margin-top: -12px; padding-top: 12px; background: #f2f2f7; }
       .kn-muted { color: #6e6e73; font-size: 12px; }
       .kn-status { margin: 0 0 9px; padding: 8px 10px; background: #fff; border-radius: 10px; color: #6e6e73; font-size: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
-      .kn-status.kn-status-error { background: #ff3b3012; color: #ff3b30; font-weight: 600; }
+      .kn-status.kn-status-error { background: #ff3b3012; color: #c9251c; font-weight: 600; }
       .kn-attempt-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 14px 0; }
       .kn-attempt { min-height: 52px; border-radius: 12px; background: #fff; color: #1c1c1e; font-size: 16px; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.05), 0 1px 1px rgba(0,0,0,0.03); }
       .kn-settings-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
@@ -628,40 +673,38 @@
       .kn-export { min-height: 260px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
       .kn-browse-button { width: 100%; margin-bottom: 8px; }
       .kn-shortcut-hint { text-align: center; }
-      .kn-stop-button { padding: 3px 10px !important; font-size: 12px; font-weight: 700 !important; background: #ff3b30 !important; color: #fff !important; }
-      .kn-stop-button:hover { background: #d70015 !important; }
       .kn-bk-body { padding: 10px; background: #e9e9ee; }
       .kn-bk-section { margin-bottom: 8px; background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); overflow: hidden; border-left: 4px solid transparent; }
       .kn-bk-section.kn-bk-open { border-left-color: #f9772e; box-shadow: 0 2px 10px rgba(0,0,0,0.12); }
       .kn-bk-head { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 12px; border: none; background: transparent; cursor: pointer; text-align: left; }
       .kn-bk-head-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
       .kn-bk-badge { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; margin-top: 1px; border-radius: 50%; font-size: 12px; font-weight: 800; }
-      .kn-bk-badge-done { background: #34c759; color: #fff; }
-      .kn-bk-badge-needed { background: #f9772e; color: #fff; }
+      .kn-bk-badge-done { background: #1f7a35; color: #fff; }
+      .kn-bk-badge-needed { background: #f9772e; color: #1c1c1e; }
       .kn-bk-badge-optional { background: #e5e5ea; color: #6e6e73; }
-      .kn-bk-optional { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #f2f2f7; color: #8e8e93; font-size: 10px; font-weight: 600; vertical-align: 2px; }
+      .kn-bk-optional { margin-left: 6px; padding: 1px 6px; border-radius: 999px; background: #f2f2f7; color: #636366; font-size: 11px; font-weight: 600; vertical-align: 2px; }
       .kn-bk-prompt { margin-bottom: 9px; font-size: 13px; font-weight: 700; color: #c2410c; }
       .kn-bk-needed { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-bottom: 8px; padding: 8px 10px; border-radius: 12px; background: #fff4ec; box-shadow: inset 0 0 0 1.5px #f9772e; }
       .kn-bk-needed.kn-bk-ready { background: #eafaf0; box-shadow: inset 0 0 0 1.5px #34c759; }
       .kn-bk-needed-title { font-size: 12.5px; font-weight: 800; color: #1c1c1e; margin-right: 2px; }
       .kn-bk-ready .kn-bk-needed-title { color: #248a3d; }
-      .kn-bk-needed-chip { border: none; cursor: pointer; padding: 4px 10px; border-radius: 999px; background: #f9772e; color: #fff; font-size: 12px; font-weight: 700; }
+      .kn-bk-needed-chip { border: none; cursor: pointer; padding: 4px 10px; border-radius: 999px; background: #f9772e; color: #1c1c1e; font-size: 12px; font-weight: 700; }
       .kn-bk-head:hover { background: #fafafa; }
       .kn-bk-head-top { display: flex; align-items: center; justify-content: space-between; }
       .kn-bk-head-title { font-size: 14px; font-weight: 700; color: #1c1c1e; }
-      .kn-bk-chevron { font-size: 13px; color: #8e8e93; }
+      .kn-bk-chevron { font-size: 13px; color: #6e6e73; }
       .kn-bk-head-summary { margin-top: 2px; font-size: 12.5px; font-weight: 500; color: #3a3a3c; line-height: 1.35; }
       .kn-bk-head-summary.kn-bk-missing { color: #c2410c; font-weight: 600; }
       .kn-bk-open .kn-bk-head { background: #fff3ea; border-bottom: 1px solid #fde0cc; }
       .kn-bk-content { padding: 10px 12px 12px; }
       .kn-bk-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
       .kn-bk-chips .kn-chip { max-width: 100%; white-space: normal; text-align: left; padding: 6px 11px; font-size: 12.5px; background: #fff; box-shadow: inset 0 0 0 1px #d1d1d6; }
-      .kn-bk-chips .kn-chip.kn-active { background: #f9772e; color: #fff; box-shadow: none; font-weight: 600; }
+      .kn-bk-chips .kn-chip.kn-active { background: #f9772e; color: #1c1c1e; box-shadow: none; font-weight: 700; }
       .kn-bk-chips .kn-chip:disabled { opacity: 0.4; cursor: default; }
       .kn-bk-sub .kn-chip { font-size: 11px; padding: 4px 9px; }
       .kn-bk-field { display: block; flex: 1 1 0; min-width: 0; margin-bottom: 7px; }
       .kn-bk-label { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; font-size: 12px; font-weight: 700; color: #1c1c1e; }
-      .kn-bk-tag { padding: 0 6px; border-radius: 999px; background: #34c75922; color: #248a3d; font-size: 9.5px; font-weight: 700; }
+      .kn-bk-tag { padding: 0 6px; border-radius: 999px; background: #34c75922; color: #1f7a35; font-size: 11px; font-weight: 700; }
       .kn-bk-field .kn-input { padding: 7px 9px; font-size: 13.5px; background: #fff; box-shadow: inset 0 0 0 1px #c7c7cc; }
       .kn-bk-field .kn-input:focus { outline: none; box-shadow: inset 0 0 0 2px #f9772e; }
       .kn-bk-notes { min-height: 90px; resize: vertical; font-family: inherit; }
@@ -669,21 +712,22 @@
       .kn-bk-small { flex: 1 1 0; }
       .kn-bk-days { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 6px; margin-bottom: 6px; }
       .kn-bk-day { display: flex !important; flex-direction: column; align-items: center; min-width: 42px; padding: 5px 6px !important; background: #fff !important; box-shadow: inset 0 0 0 1px #d1d1d6 !important; }
-      .kn-bk-day.kn-active { background: #f9772e !important; color: #fff !important; box-shadow: none !important; }
+      .kn-bk-day.kn-active { background: #f9772e !important; color: #1c1c1e !important; box-shadow: none !important; }
       .kn-bk-day:disabled { opacity: 0.35; cursor: default; }
-      .kn-bk-day-name { font-size: 9.5px; font-weight: 600; opacity: 0.8; }
+      .kn-bk-day-name { font-size: 10.5px; font-weight: 600; }
       .kn-bk-day-num { font-size: 14px; font-weight: 700; }
       .kn-bk-readout { margin: 2px 0 8px; padding: 7px 9px; border-radius: 10px; background: #1c1c1e; color: #fff; font-size: 13px; font-weight: 700; }
-      .kn-bk-readout.kn-bk-error { background: #ff3b30; color: #fff; }
+      .kn-bk-readout.kn-bk-error { background: #c9251c; color: #fff; }
+      .kn-bk-confirm-year { display: block; margin-top: 6px; padding: 5px 10px; font-size: 12px; }
       .kn-bk-times { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 8px; }
       .kn-bk-times .kn-chip { padding: 6px 0; font-size: 12.5px; font-weight: 600; background: #fff; box-shadow: inset 0 0 0 1px #d1d1d6; text-align: center; }
-      .kn-bk-times .kn-chip.kn-active { background: #f9772e; color: #fff; }
+      .kn-bk-times .kn-chip.kn-active { background: #f9772e; color: #1c1c1e; }
       .kn-bk-card { margin-bottom: 8px; padding: 10px; border-radius: 10px; background: #f7f7f9; box-shadow: inset 0 0 0 1px #e5e5ea; }
       .kn-bk-card-head { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 12.5px; font-weight: 700; color: #1c1c1e; }
-      .kn-bk-remove { border: none; background: none; color: #ff3b30; font-size: 11px; font-weight: 600; cursor: pointer; }
+      .kn-bk-remove { border: none; background: none; color: #c9251c; font-size: 11px; font-weight: 600; cursor: pointer; }
       .kn-bk-add { width: 100%; margin-bottom: 8px; font-size: 12px; background: #f2f2f7; box-shadow: none; }
       .kn-bk-gap { margin-bottom: 8px; }
-      .kn-bk-error { color: #ff3b30; font-size: 12px; font-weight: 600; }
+      .kn-bk-error { color: #c9251c; font-size: 12px; font-weight: 600; }
       .kn-bk-warn { color: #b25000; font-size: 12px; }
       .kn-bk-notice { margin-bottom: 8px; padding: 9px 10px; border-radius: 12px; background: #fff4d6; box-shadow: 0 0 0 1.5px #ffcc00; }
       .kn-bk-notice-text { font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
@@ -696,18 +740,17 @@
       .kn-bk-status { margin-bottom: 6px; font-size: 12px; font-weight: 600; }
       .kn-bk-status-ok { color: #248a3d; }
       .kn-bk-status-warn { color: #b25000; }
-      .kn-bk-status-error { color: #ff3b30; }
+      .kn-bk-status-error { color: #c9251c; }
       .kn-bk-actions { display: flex; gap: 6px; align-items: center; }
       .kn-bk-actions .kn-primary { flex: 1; }
       .kn-bk-actions .kn-bk-small { padding: 6px 8px; font-size: 11px; white-space: nowrap; }
-      .kn-bk-blocked { opacity: 0.55; }
       .kn-inbound-launcher { position: fixed; left: 20px; bottom: 20px; z-index: 2147482999; padding: 10px 16px; border: none; border-radius: 999px; background: #1c1c1e; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; box-shadow: 0 6px 18px rgba(0,0,0,0.3); }
       .kn-inbound-launcher:hover { background: #2c2c2e; }
       .kn-phone-launcher { display: block; background: #1c1c1e !important; color: #fff !important; border: none !important; font-size: 18px; font-weight: 900; line-height: 1; cursor: pointer; }
-      .kn-phone-launcher:hover { background: #f9772e !important; }
+      .kn-phone-launcher:hover { background: #f9772e !important; color: #1c1c1e !important; }
       .kn-bk-search-row { align-items: flex-end; }
       .kn-bk-search-button { flex: 0 0 auto; margin-bottom: 7px; padding: 7px 16px; }
-      .kn-bk-version { margin-top: 6px; text-align: right; font-size: 10px; color: #aeaeb2; }
+      .kn-bk-version { margin-top: 6px; text-align: right; font-size: 11px; color: #6e6e73; }
       .kn-bk-report { color: #6e6e73; text-decoration: underline; cursor: pointer; }
       .kn-update { margin: 0 0 8px; padding: 8px 10px; border-radius: 12px; background: #e8f0fe; color: #1c1c1e; font-size: 12px; font-weight: 600; }
       @media (max-width: 720px) {
@@ -735,6 +778,9 @@
     if (state.palette && state.palette.isConnected) return state.palette;
     const palette = element('div', 'kn-ui');
     palette.id = PALETTE_ID;
+    palette.setAttribute('role', 'dialog');
+    palette.setAttribute('aria-label', 'Konnect Notes');
+    palette.tabIndex = -1;
     document.body.appendChild(palette);
     state.palette = palette;
     return palette;
@@ -806,6 +852,7 @@
       const back = element('button', 'kn-icon-button', '‹');
       back.type = 'button';
       back.title = 'Back';
+      back.setAttribute('aria-label', 'Back');
       back.addEventListener('click', backAction);
       header.appendChild(back);
     }
@@ -814,6 +861,7 @@
       const settings = element('button', 'kn-icon-button', '⚙');
       settings.type = 'button';
       settings.title = 'Phrase settings';
+      settings.setAttribute('aria-label', 'Phrase settings');
       settings.addEventListener('click', () => {
         state.view = 'settings';
         state.statusMessage = '';
@@ -821,14 +869,10 @@
       });
       header.appendChild(settings);
     }
-    const stop = element('button', 'kn-icon-button kn-stop-button', '■ Stop');
-    stop.type = 'button';
-    stop.title = 'Stop Konnect Notes without refreshing the page. Click the bookmark again to load the latest version. Booking drafts are kept.';
-    stop.addEventListener('click', stopKonnectNotes);
-    header.appendChild(stop);
     const close = element('button', 'kn-icon-button', '×');
     close.type = 'button';
     close.title = 'Close';
+    close.setAttribute('aria-label', 'Close');
     close.addEventListener('click', closePalette);
     header.appendChild(close);
     return header;
@@ -921,7 +965,7 @@
         renderPalette();
       });
       body.appendChild(browse);
-      body.appendChild(element('div', 'kn-muted kn-shortcut-hint', 'Keys 1–5 select a quick option'));
+      body.appendChild(element('div', 'kn-muted kn-shortcut-hint', 'Keys 1 to 5 select a quick option'));
       const report = element('a', 'kn-bk-report kn-muted', 'Report a problem');
       report.href = '#';
       report.style.cssText = 'display:block;margin-top:6px;font-size:11px;text-align:right;';
@@ -929,7 +973,7 @@
       body.appendChild(report);
     } else {
       if (state.configStatus) body.appendChild(element('div', 'kn-status', state.configStatus));
-      body.appendChild(element('div', 'kn-muted', 'Phrase configuration has not loaded yet.'));
+      body.appendChild(element('div', 'kn-muted', 'Phrases have not loaded yet.'));
     }
 
     palette.appendChild(body);
@@ -971,7 +1015,7 @@
       controls.appendChild(categories);
       renderResults(body, search);
     } else {
-      body.appendChild(element('div', 'kn-muted', 'Phrase configuration has not loaded yet.'));
+      body.appendChild(element('div', 'kn-muted', 'Phrases have not loaded yet.'));
     }
 
     search.addEventListener('input', () => {
@@ -1082,14 +1126,17 @@
       state.view = 'import';
       renderPalette();
     }));
-    actions.appendChild(button('Restore GitHub', '', async () => {
-      if (!confirm('Replace local phrase changes with the current GitHub configuration?')) return;
-      state.configStatus = 'Restoring GitHub phrases...';
+    actions.appendChild(button('Reset to standard phrases', '', async () => {
+      if (!confirm('Remove your own phrase changes on this computer and go back to the standard phrases?')) return;
+      state.configStatus = 'Loading the standard phrases...';
       renderPalette();
       const remote = await refreshRemoteConfig({ force: true });
-      state.statusMessage = remote ? 'GitHub phrases restored.' : 'GitHub phrases could not be loaded.';
+      state.statusMessage = remote ? 'Standard phrases are back in use.' : 'The standard phrases could not be loaded.';
       renderPalette();
     }));
+    const stop = button('Stop Konnect Notes', 'kn-danger', () => stopKonnectNotes());
+    stop.title = 'Stops Konnect Notes without refreshing the page. Click the bookmark again to load the latest version. Booking drafts are kept.';
+    actions.appendChild(stop);
     body.appendChild(actions);
 
     const list = element('div', 'kn-phrase-list');
@@ -1110,7 +1157,7 @@
         if (!confirm(`Delete “${phrase.label}” from local settings?`)) return;
         state.config.phrases = state.config.phrases.filter((item) => item.id !== phrase.id);
         state.dirty = true;
-        state.configStatus = 'Local changes are active and have not yet been published.';
+        state.configStatus = OWN_PHRASES_STATUS;
         writeStored();
         renderPalette();
       }));
@@ -1253,9 +1300,9 @@
       else state.config.phrases.push(phrase);
       state.config = validateConfig(state.config);
       state.dirty = true;
-      state.configStatus = 'Local changes are active and have not yet been published.';
+      state.configStatus = OWN_PHRASES_STATUS;
       writeStored();
-      state.statusMessage = 'Phrase saved locally.';
+      state.statusMessage = 'Phrase saved on this computer.';
       state.view = 'settings';
       renderPalette();
     }));
@@ -1292,14 +1339,14 @@
       renderPalette();
     }, false));
     const body = element('div', 'kn-body');
-    body.appendChild(element('div', 'kn-muted', 'Copy this complete configuration into Konnect-Notes-Phrases.json on GitHub.'));
+    body.appendChild(element('div', 'kn-muted', 'For whoever looks after the standard phrases: this is the full phrase list, ready to copy into Konnect-Notes-Phrases.json.'));
     const output = element('textarea', 'kn-textarea kn-export');
     output.readOnly = true;
     output.value = JSON.stringify(state.config, null, 2);
     body.appendChild(output);
     const status = element('div', 'kn-status', 'Local customer or lead data is never included.');
     body.appendChild(status);
-    body.appendChild(button('Copy configuration', 'kn-primary', () => copyText(output.value, status)));
+    body.appendChild(button('Copy phrase list', 'kn-primary', () => copyText(output.value, status)));
     palette.appendChild(body);
     requestAnimationFrame(() => output.setSelectionRange(0, 0));
   }
@@ -1312,15 +1359,15 @@
     }, false));
     const body = element('div', 'kn-body');
     const input = element('textarea', 'kn-textarea kn-export');
-    input.placeholder = 'Paste a Konnect Notes JSON configuration';
+    input.placeholder = 'Paste an exported Konnect Notes phrase list';
     body.appendChild(input);
-    const status = element('div', 'kn-status', 'Imported phrases will be saved locally first.');
+    const status = element('div', 'kn-status', 'Imported phrases are saved on this computer only.');
     body.appendChild(status);
-    body.appendChild(button('Import configuration', 'kn-primary', () => {
+    body.appendChild(button('Import phrase list', 'kn-primary', () => {
       try {
         const parsed = JSON.parse(input.value);
-        setWorkingConfig(parsed, true, 'Imported configuration saved locally.');
-        state.statusMessage = 'Configuration imported successfully.';
+        setWorkingConfig(parsed, true, 'Imported phrases are in use on this computer only.');
+        state.statusMessage = 'Phrase list imported.';
         state.view = 'settings';
         renderPalette();
       } catch (error) {
@@ -1341,7 +1388,8 @@
      ====================================================================== */
 
   const BOOKING_DRAFTS_KEY = 'konnectNotes:bookingDrafts:v1';
-  const BOOKING_DRAFT_MAX_AGE = 3 * 24 * 60 * 60 * 1000;
+  /* One shift, the same rule the other tools use for customer data. */
+  const BOOKING_DRAFT_MAX_AGE = 12 * 60 * 60 * 1000;
 
   const BOOKING_TYPES = [
     { value: 'testdrive', label: 'Test drive' },
@@ -1442,6 +1490,7 @@
       subtype: '',
       day: '',
       month: '',
+      year: '',
       time: '',
       timeQualifier: '',
       vehicles: [{ make: '', model: '', reg: '', descriptor: '', condition: '' }],
@@ -1485,13 +1534,40 @@
     return state.target?.closest('.tab-pane') || null;
   }
 
+  function shortHash(text) {
+    let hash = 5381;
+    for (let i = 0; i < text.length; i += 1) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
+    return hash.toString(36);
+  }
+
+  /* Text beside a "Name" label at the top of the page, for telling one
+     customer from the next. */
+  function findTopName() {
+    const label = Array.from(document.querySelectorAll('b,strong,label,th'))
+      .find((node) => isVisible(node) && !node.closest(`#${PALETTE_ID}`) && /^(customer )?name:?$/i.test(ownText(node)));
+    if (!label) return '';
+    const row = label.closest('.row') || label.parentElement;
+    return normaliseText((row?.textContent || '').replace(label.textContent, '')).slice(0, 80);
+  }
+
+  /* A draft belongs to one lead. Tab ids such as "salesTab-1" come round
+     again for the next customer, so the key is the lead's own ID where the
+     page gives it, and otherwise the tab plus a fingerprint of the customer
+     shown (never the name itself, as the key is stored). */
+  let leadKeyCache = null;
   function leadKey() {
     if (!state.target && (inboundScreen() || inbound.pending)) return INBOUND_KEY;
+    const activity = leadScopeActivity(state.target);
+    if (activity && activity.ID != null) return `lead-${activity.ID}`;
+    if (leadKeyCache && leadKeyCache.target === state.target && Date.now() - leadKeyCache.at < 2000) return leadKeyCache.key;
     const pane = activeLeadPane();
     const tabs = pane?.closest('.tab-content')?.parentElement;
     const active = tabs?.querySelector('li.active[id^="salesTab-"]') ||
       document.querySelector('li.active[id^="salesTab-"]');
-    return active?.id || 'lead';
+    const who = normaliseText(`${findTopName()} ${findTopEmail()}`).toLowerCase();
+    const key = `${active?.id || 'lead'}${who ? `:${shortHash(who)}` : ''}`;
+    leadKeyCache = { target: state.target, key, at: Date.now() };
+    return key;
   }
 
   function currentDraft() {
@@ -1625,7 +1701,6 @@
       fields['v.reg'] = inputByPlaceholder(voi, 'Reg Number');
       fields['v.make'] = inputByPlaceholder(voi, 'Vehicle Brand');
       fields['v.model'] = inputByPlaceholder(voi, 'Vehicle Model');
-      /* Fuel type only matters for cars without a reg; a reg already pins the car down. */
       /* Fuel only describes a car the lead actually names, and only when there is no reg. */
       const named = fields['v.make'] || fields['v.model'];
       fields['v.descriptor'] = named && !fields['v.reg'] ? inputByPlaceholder(voi, 'Fuel Type') : '';
@@ -1784,7 +1859,8 @@
     const engine = bookingEngine();
     if (!engine || !request || !request.day) return false;
     const date = engine.resolveDate({ day: request.day, month: request.month, year: request.year }, new Date());
-    return Boolean(date.error);
+    /* A date that is only far ahead has not passed. */
+    return Boolean(date.error) && !(date.needsYear && !date.passed);
   }
 
   function describeRequest(request) {
@@ -1804,6 +1880,7 @@
     if (request.day) {
       d.day = request.day;
       d.month = request.month;
+      d.year = request.year ? String(request.year) : '';
     }
     if (request.time) d.time = request.time;
     draft.fromLead.when = true;
@@ -1877,7 +1954,7 @@
       fao: d.fao,
       type: d.type,
       subtype: d.subtype,
-      date: { day: d.day, month: d.month },
+      date: { day: d.day, month: d.month, year: d.year },
       time: d.time,
       timeQualifier: d.timeQualifier,
       vehicles: d.type === 'valuation' ? [] : d.vehicles,
@@ -2090,6 +2167,7 @@
     const at = engine.nationalReservationDate(new Date());
     d.day = String(at.day).padStart(2, '0');
     d.month = String(at.month).padStart(2, '0');
+    d.year = '';
     d.time = at.time || '12:00';
     d.timeQualifier = '';
   }
@@ -2651,10 +2729,18 @@
     if (!d.day && !d.time) return { text: 'Pick a day and time', error: false };
     const parts = [];
     let error = false;
+    let confirmYear = 0;
     if (d.day) {
-      const date = engine.resolveDate({ day: d.day, month: d.month }, new Date());
-      if (date.error) { parts.push(date.error); error = true; } else {
-        parts.push(`${WEEKDAYS_LONG[date.dateObj.getDay()]} ${date.day} ${MONTHS_LONG[date.month - 1]}`);
+      const date = engine.resolveDate({ day: d.day, month: d.month, year: d.year }, new Date());
+      if (date.error) {
+        parts.push(date.error);
+        error = true;
+        if (date.needsYear) confirmYear = date.needsYear;
+      } else {
+        /* The year is only shown when it is not this year, so a booking a
+           year out cannot be mistaken for this month. */
+        const otherYear = date.year !== new Date().getFullYear();
+        parts.push(`${WEEKDAYS_LONG[date.dateObj.getDay()]} ${date.day} ${MONTHS_LONG[date.month - 1]}${otherYear ? ` ${date.year}` : ''}`);
       }
     } else {
       parts.push('Day not set');
@@ -2665,7 +2751,7 @@
         parts.push(`at ${time.text}${d.timeQualifier ? ` or ${d.timeQualifier}` : ''}`);
       }
     }
-    return { text: parts.join(' '), error };
+    return { text: parts.join(' '), error, confirmYear };
   }
 
   function vehicleDisplayName(rawMake, rawModel) {
@@ -2824,6 +2910,7 @@
       chip.addEventListener('click', () => {
         d.day = String(day.getDate()).padStart(2, '0');
         d.month = String(day.getMonth() + 1).padStart(2, '0');
+        d.year = '';
         untag(draft, 'when');
         changed(draft, true);
       });
@@ -2844,11 +2931,13 @@
         d.day = value.replace(/\D/g, '').slice(0, 2);
         if (d.day.length === 2 && monthInput) monthInput.focus();
       }
+      d.year = '';
       untag(draft, 'when');
       changed(draft);
     }, { placeholder: 'DD', maxLength: 5, inputMode: 'numeric', className: 'kn-bk-small', fromLead: draft.fromLead.when });
     const monthField = bkInput('Month', d.month, (value) => {
       d.month = value.replace(/\D/g, '').slice(0, 2);
+      d.year = '';
       untag(draft, 'when');
       changed(draft);
     }, { placeholder: 'MM', maxLength: 2, inputMode: 'numeric', className: 'kn-bk-small' });
@@ -2864,7 +2953,7 @@
     readout.dataset.role = 'date-readout';
     body.appendChild(readout);
 
-    const chosen = d.day ? engine.resolveDate({ day: d.day, month: d.month }, new Date()) : null;
+    const chosen = d.day ? engine.resolveDate({ day: d.day, month: d.month, year: d.year }, new Date()) : null;
     if (chosen && !chosen.error) {
       const hours = engine.openingHours[chosen.dateObj.getDay()];
       const length = engine.appointmentLength(typeInput);
@@ -2886,9 +2975,7 @@
     } else {
       body.appendChild(element('div', 'kn-muted kn-bk-gap', 'Pick a day to see the available times'));
     }
-    const isCall = d.type === 'call' || (d.type === 'motability' && d.subtype === 'call') ||
-      (d.type === 'onlinestore' && /call/.test(d.subtype)) || (d.type === 'valuation' && d.subtype === 'call');
-    if (isCall) {
+    if (engine.isCallBooking({ type: d.type, subtype: d.subtype })) {
       body.appendChild(bkChips([
         { value: '', label: 'Exact time' },
         { value: 'before', label: 'or before' },
@@ -3174,6 +3261,15 @@
       const readout = dateReadout(draft);
       bookingRefs.readout.textContent = readout.text;
       bookingRefs.readout.classList.toggle('kn-bk-error', readout.error);
+      if (readout.confirmYear) {
+        const d = draft.data;
+        const dated = `${String(d.day).padStart(2, '0')}/${String(d.month).padStart(2, '0')}/${readout.confirmYear}`;
+        const confirmYear = button(`Yes, book ${dated}`, 'kn-bk-small kn-bk-confirm-year', () => {
+          d.year = String(readout.confirmYear);
+          changed(draft, true);
+        });
+        bookingRefs.readout.appendChild(confirmYear);
+      }
     }
     bookingRefs.preview.textContent = result.text;
     bookingRefs.issues.textContent = '';
@@ -3185,9 +3281,17 @@
     bookingRefs.insert.textContent = waitingForLead ? 'Insert after the lead is created'
       : withDiary ? (draft.inserted ? 'Update notes + book diary' : 'Insert + book diary')
       : draft.inserted ? 'Update Call Notes' : 'Insert into Call Notes';
-    if (bookingRefs.notesOnly) bookingRefs.notesOnly.classList.toggle('kn-bk-blocked', result.errors.length > 0);
-    bookingRefs.insert.classList.toggle('kn-bk-blocked', waitingForLead || result.errors.length > 0);
-    if (bookingRefs.diary) bookingRefs.diary.classList.toggle('kn-bk-blocked', !!diaryRun || result.errors.length > 0 || !diaryPlan(draft));
+    const why = result.errors.length ? `Fix first: ${result.errors[0]}` : '';
+    const block = (node, blocked, reason) => {
+      if (!node) return;
+      if (node.dataset.title == null) node.dataset.title = node.title;
+      node.disabled = blocked;
+      node.title = blocked ? reason : node.dataset.title;
+    };
+    block(bookingRefs.notesOnly, result.errors.length > 0, why);
+    block(bookingRefs.insert, waitingForLead || result.errors.length > 0, why || 'Create the lead first');
+    block(bookingRefs.diary, !!diaryRun || result.errors.length > 0 || !plan,
+      why || (diaryRun ? 'A diary booking is running' : 'Needs a date and time first'));
   }
 
   function renderBooking() {
@@ -3300,7 +3404,10 @@
       bookingRefs.diary = diary;
       actions.appendChild(diary);
     }
-    const clear = button('Clear', 'kn-danger', () => {
+    const clearsNotes = draft.key !== INBOUND_KEY;
+    const clear = button(clearsNotes ? 'Clear notes + form' : 'Clear form', 'kn-danger kn-bk-small', () => {
+      const notesLength = clearsNotes ? String(callNotesBox()?.value || '').length : 0;
+      if (notesLength && !confirm(`Empty the whole Call Notes box (${notesLength} characters, not only the booking) and reset this booking form?`)) return;
       const removed = draft.key === INBOUND_KEY ? 0 : clearCallNotes();
       if (draft.key === INBOUND_KEY) {
         forgetInboundCustomer();
@@ -3315,7 +3422,9 @@
         : { kind: 'ok', text: removed ? `Cleared Call Notes (${removed} characters). Ctrl+Z in Call Notes undoes it.` : 'Call Notes was already empty. Booking form reset.' };
       renderPalette();
     });
-    clear.title = 'Empties the whole Call Notes box and resets this booking (Ctrl+Z in Call Notes undoes it)';
+    clear.title = clearsNotes
+      ? 'Empties the whole Call Notes box and resets this booking form. Asks first; Ctrl+Z in Call Notes undoes it.'
+      : 'Resets this booking form and the customer details typed here';
     actions.appendChild(clear);
     footer.appendChild(actions);
     const versionRow = element('div', 'kn-bk-version', `Konnect Notes v${KN.version} · `);
@@ -3323,6 +3432,12 @@
     report.href = '#';
     report.addEventListener('click', (event) => { event.preventDefault(); reportProblem(); });
     versionRow.appendChild(report);
+    versionRow.appendChild(document.createTextNode(' · '));
+    const stopLink = element('a', 'kn-bk-report', 'Stop Konnect Notes');
+    stopLink.href = '#';
+    stopLink.title = 'Stops Konnect Notes without refreshing the page. Booking drafts are kept.';
+    stopLink.addEventListener('click', (event) => { event.preventDefault(); stopKonnectNotes(); });
+    versionRow.appendChild(stopLink);
     footer.appendChild(versionRow);
     palette.appendChild(footer);
 
@@ -3352,6 +3467,7 @@
       }).catch(() => {});
     }
     renderPalette();
+    focusPalette();
   }
 
   /* ---------- inbound calls ----------
@@ -3783,10 +3899,19 @@
   function updateInboundLauncher() {
     let launcher = document.getElementById(INBOUND_LAUNCHER_ID);
     if (!inboundContext() || !bookingAllowed()) {
-      if (launcher) launcher.style.display = 'none';
+      if (launcher && launcher.style.display !== 'none') launcher.style.display = 'none';
       return;
     }
     const anchor = phoneColumnAnchor();
+    /* Only what differs is written: every write here is seen by the page
+       observer, which would otherwise scan again and loop for good. */
+    const look = (className, text, width, height) => {
+      if (launcher.className !== className) launcher.className = className;
+      if (launcher.textContent !== text) launcher.textContent = text;
+      if (launcher.style.width !== width) launcher.style.width = width;
+      if (launcher.style.height !== height) launcher.style.height = height;
+      if (launcher.style.display !== '') launcher.style.display = '';
+    };
     if (!launcher) {
       launcher = element('button', 'kn-ui kn-inbound-launcher');
       launcher.id = INBOUND_LAUNCHER_ID;
@@ -3804,19 +3929,12 @@
       if (launcher.nextElementSibling !== anchor) anchor.insertAdjacentElement('beforebegin', launcher);
       /* Same size and shape as the Phone buttons, without their colour or actions. */
       const keep = Array.from(anchor.classList).filter((name) => !/^btn-(danger|success|info|warning|primary|default|switch)$/.test(name) && !/^ng-/.test(name));
-      launcher.className = `${keep.join(' ')} kn-ui kn-phone-launcher`;
-      launcher.textContent = '\u26A1';
       const size = anchor.getBoundingClientRect();
-      launcher.style.width = `${Math.round(size.width)}px`;
-      launcher.style.height = `${Math.round(size.height)}px`;
+      look(`${keep.join(' ')} kn-ui kn-phone-launcher`, '\u26A1', `${Math.round(size.width)}px`, `${Math.round(size.height)}px`);
     } else {
       if (launcher.parentElement !== document.body) document.body.appendChild(launcher);
-      launcher.className = 'kn-ui kn-inbound-launcher';
-      launcher.textContent = '\u26A1 Booking';
-      launcher.style.width = '';
-      launcher.style.height = '';
+      look('kn-ui kn-inbound-launcher', '\u26A1 Booking', '', '');
     }
-    launcher.style.display = '';
   }
 
   function renderPalette() {
@@ -3846,14 +3964,30 @@
     state.attemptPhrase = null;
     state.otherAttemptOpen = false;
     renderPalette();
+    focusPalette();
+  }
+
+  /* Focus moves into the palette when it opens, so its keys (1 to 5, B,
+     Escape) are typed at the palette and never into a box on the page. */
+  function focusPalette() {
+    const palette = state.palette;
+    if (!palette || !state.open || palette.contains(document.activeElement)) return;
+    palette.focus({ preventScroll: true });
   }
 
   function closePalette() {
     if (state.booking) saveDraftNow();
+    const hadFocus = !!state.palette && state.palette.contains(document.activeElement);
     state.open = false;
     state.attemptPhrase = null;
     state.otherAttemptOpen = false;
     if (state.palette) state.palette.classList.remove('kn-open');
+    /* Hand the caret back to the notes box it came from. */
+    const last = state.lastSelection;
+    if (hadFocus && last && last.target.isConnected && isVisible(last.target)) {
+      last.target.focus({ preventScroll: true });
+      last.target.setSelectionRange(last.start, last.end);
+    }
   }
 
   function togglePalette() {
@@ -3964,21 +4098,24 @@
     return '';
   }
 
-  function whitespaceFlexiblePattern(value) {
-    const tokens = normaliseText(value).split(' ').filter(Boolean);
-    if (!tokens.length) return null;
-    return new RegExp(tokens
-      .map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-      .join('\\s+'), 'ig');
-  }
-
+  /* Takes a known block (the Initial Notes, say) out of other notes only
+     where it appears as the same whole lines in the same order. Words inside
+     a longer line are never touched. */
   function removeKnownNoteBlocks(value, knownValues) {
-    let output = String(value || '').replace(/\r\n?/g, '\n');
+    let lines = cleanNoteLines(value);
     knownValues.forEach((known) => {
-      const pattern = whitespaceFlexiblePattern(known);
-      if (pattern) output = output.replace(pattern, '\n');
+      const knownKeys = cleanNoteLines(known).map(noteLineKey);
+      if (!knownKeys.length) return;
+      const kept = [];
+      for (let index = 0; index < lines.length;) {
+        const matches = index + knownKeys.length <= lines.length &&
+          knownKeys.every((key, offset) => noteLineKey(lines[index + offset]) === key);
+        if (matches) index += knownKeys.length;
+        else { kept.push(lines[index]); index += 1; }
+      }
+      lines = kept;
     });
-    return output;
+    return lines.join('\n');
   }
 
   function splitEmbeddedCatchAll(line) {
@@ -4037,24 +4174,26 @@
     );
     const selectedLines = meaningfulNoteLines(input?.selectedText || '', ignoredLineKeys);
 
+    /* A line is dropped only when an earlier box already gave it. Lines
+       repeated inside one box ("No" under two questions, the same attempt
+       twice) are real and stay. */
     const output = [];
     const seen = new Set();
-
     [initialLines, canonicalCallLines, existingLines, migratedCallLines, selectedLines].forEach((source) => {
+      const keys = [];
       source.forEach((line) => {
         const key = noteLineKey(line);
         if (!key || seen.has(key)) return;
-        seen.add(key);
+        keys.push(key);
         output.push(line);
       });
+      keys.forEach((key) => seen.add(key));
     });
     return {
       postClosureValue: output.join('\n'),
       cleanCallValue: canonicalCallLines.join('\n'),
       shouldCleanCall: hasCanonicalCall &&
-        noteValueKey(activeCallText) !== noteValueKey(canonicalCallLines.join('\n')),
-      usedMountedDuplicate: hasCanonicalCall,
-      migratedLineCount: migratedCallLines.length
+        noteValueKey(activeCallText) !== noteValueKey(canonicalCallLines.join('\n'))
     };
   }
 
@@ -4132,55 +4271,55 @@
     return { start: target.value.length, end: target.value.length };
   }
 
+  /* Nothing was written: say why where the agent is looking, as the
+     palette is usually closed when a shorthand is typed. */
+  function notWritten(message) {
+    state.statusMessage = message;
+    showToast(message);
+    if (state.open) {
+      state.view = 'browse';
+      renderPalette();
+    }
+    return false;
+  }
+
+  /* Returns true when the phrase was written. */
   function insertPhrase(phrase, attempt, rangeOverride) {
     scanPage();
     const isCatchAll = phrase?.category === 'catch-all';
     const target = isCatchAll ? state.postClosureTarget : state.target;
     if (isCatchAll && !(target instanceof HTMLTextAreaElement)) {
-      state.statusMessage = 'Post Closure Notes is not available on this lead.';
-      state.view = 'browse';
-      renderPalette();
-      return;
+      return notWritten('Post Closure Notes is not available on this lead.');
     }
-    if (!(target instanceof HTMLTextAreaElement) || !phrase) return;
+    if (!(target instanceof HTMLTextAreaElement) || !phrase) return false;
     state.statusMessage = '';
 
     let text = String(phrase.text || '');
     if (phrase.requiresAttempt) {
       const number = Number(attempt);
-      if (!Number.isInteger(number) || number < 1) return;
+      if (!Number.isInteger(number) || number < 1) return false;
       text = text.replaceAll('{{attempt}}', String(number));
     }
 
     if (text.includes('{{agent}}')) {
       const agent = ensureAgentName();
-      if (!agent) return;
+      if (!agent) return notWritten('No name is saved for signing notes, so nothing was written.');
       text = text.replaceAll('{{agent}}', agent);
     }
 
     let emailMissing = false;
-    const usesTopEmail = phrase.id === 'email-only-full' ||
-      phrase.emailSource === 'top' || text.includes('{{email}}');
+    const usesTopEmail = phrase.emailSource === 'top' || text.includes('{{email}}');
     if (usesTopEmail) {
       const email = findTopEmail();
       emailMissing = !email;
-      if (text.includes('{{email}}')) {
-        text = text.replaceAll('{{email}}', email ? ` ${email}` : '');
-      } else if (phrase.id === 'email-only-full') {
-        text = text.replace(/(EMAIL ADDRESS\s*-\s*)$/im, (line) =>
-          `${line.trimEnd()}${email ? ` ${email}` : ''}`
-        );
-      }
+      text = text.replaceAll('{{email}}', email ? ` ${email}` : '');
     }
 
     if (isCatchAll) {
       const postBefore = valueWithoutRange(target.value, rangeOverride);
       const plan = buildPostClosureNotes(text, postBefore);
       if (plan == null) {
-        state.statusMessage = 'Initial Notes could not be read, so Post Closure Notes was not changed.';
-        state.view = 'browse';
-        renderPalette();
-        return;
+        return notWritten('Initial Notes is empty or could not be read, so Post Closure Notes was not changed.');
       }
 
       const transaction = {
@@ -4210,7 +4349,7 @@
       };
       state.lastPostClosureTransaction = transaction;
       closePalette();
-      return;
+      return true;
     }
 
     state.lastPostClosureTransaction = null;
@@ -4233,6 +4372,7 @@
     state.targetHadFocus = true;
     state.lastSelection = { target, start: caret, end: caret };
     closePalette();
+    return true;
   }
 
   function abbreviationMatch(token) {
@@ -4254,14 +4394,24 @@
   function handleAbbreviation(event) {
     if (event.key !== ' ' && event.key !== 'Enter') return;
     const target = event.target;
-    if (!(target instanceof HTMLTextAreaElement) ||
-        (target !== state.target && target !== state.postClosureTarget)) return;
+    if (!(target instanceof HTMLTextAreaElement)) return;
     if (target.selectionStart !== target.selectionEnd) return;
     const before = target.value.slice(0, target.selectionStart);
-    const match = before.match(/(^|\s)([a-z][a-z0-9_-]*)$/i);
+    /* A shorthand only counts when it is the only thing on its line, so an
+       ordinary word in a sentence ("book", "fin") is left alone. Lead Re
+       setup presses the key itself after putting the word at the end of the
+       box, which can follow a trailing space: its key presses (not trusted
+       by the browser) keep the looser rule. */
+    const match = event.isTrusted
+      ? (/^[ \t]*(?:\n|$)/.test(target.value.slice(target.selectionStart))
+        ? before.match(/(^|\n)[ \t]*([a-z][a-z0-9_-]*)$/i) : null)
+      : before.match(/(^|\s)([a-z][a-z0-9_-]*)$/i);
     if (!match) return;
     const found = abbreviationMatch(match[2]);
     if (!found) return;
+    /* The page may have changed lead since the last scan. */
+    scanPage();
+    if (target !== state.target && target !== state.postClosureTarget) return;
     const expectedTarget = found.phrase.category === 'catch-all'
       ? state.postClosureTarget
       : state.target;
@@ -4270,6 +4420,11 @@
     const end = target.selectionStart;
     const start = end - match[2].length;
     insertPhrase(found.phrase, found.attempt, { start, end });
+  }
+
+  function typingOutsidePalette(node) {
+    if (!(node instanceof Element) || state.palette?.contains(node)) return false;
+    return node.isContentEditable || /^(input|textarea|select)$/i.test(node.tagName);
   }
 
   function handleGlobalKey(event) {
@@ -4281,7 +4436,9 @@
       event.stopImmediatePropagation();
       state.applyingPostClosureTransaction = true;
       try {
-        setValueAndNotify(undo.callTarget, undo.callBefore);
+        if (undo.callTarget instanceof HTMLTextAreaElement && undo.callTarget.value !== undo.callBefore) {
+          setValueAndNotify(undo.callTarget, undo.callBefore);
+        }
         setValueAndNotify(undo.postTarget, undo.postBefore);
       } finally {
         state.applyingPostClosureTransaction = false;
@@ -4319,12 +4476,15 @@
       closePalette();
       return;
     }
+    /* The single-key shortcuts below must never take a character typed into
+       a field on the page while the palette happens to be open. */
+    if (typingOutsidePalette(event.target)) return;
     if (state.view === 'main' && event.key.toLowerCase() === 'b' && !event.altKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
       openBooking();
       return;
     }
-    if (state.view === 'main' && /^[1-5]$/.test(event.key)) {
+    if (state.view === 'main' && /^[1-5]$/.test(event.key) && !event.altKey && !event.ctrlKey && !event.metaKey) {
       const phrase = state.config?.phrases.find((item) => item.quickOrder === Number(event.key));
       if (phrase) {
         event.preventDefault();
@@ -4385,13 +4545,15 @@
     document.addEventListener('click', onLeadActivity, true);
   }
 
-  /* Fully unloads Konnect Notes from the page (UI, listeners, observer and
-     the cached booking engine) so the bookmark can load a fresh copy
-     without a page refresh. Drafts and settings stay in localStorage. */
   /* ---------- update notice ----------
      The page keeps running whichever version was loaded, so a newer one on
-     main is announced instead of going unnoticed. */
+     main is announced instead of going unnoticed. The check revalidates the
+     browser's cached copy, so an unchanged file costs a short "not modified"
+     reply and not the whole script. */
+  const UPDATE_CHECK_EVERY = 60 * 60 * 1000;
+  const UPDATE_CHECK_ON_OPEN = 15 * 60 * 1000;
   let updateTimer = null;
+  let firstUpdateCheck = null;
   let lastUpdateCheck = 0;
   function newerVersion(a, b) {
     const pa = String(a).split('.').map(Number);
@@ -4402,13 +4564,14 @@
     return false;
   }
   async function checkForUpdate(force) {
-    if (!force && Date.now() - lastUpdateCheck < 5 * 60 * 1000) return;
+    if (state.updateAvailable || document.hidden) return;
+    if (!force && Date.now() - lastUpdateCheck < UPDATE_CHECK_ON_OPEN) return;
     lastUpdateCheck = Date.now();
     try {
-      const response = await fetch(`${BASE_URL}Konnect-Notes.js?_=${Date.now()}`, { cache: 'no-store' });
+      const response = await fetch(`${BASE_URL}Konnect-Notes.js`, { cache: 'no-cache' });
       if (!response.ok) return;
-      const match = (await response.text()).match(/version:\s*'([\d.]+)'/);
-      if (match && newerVersion(match[1], KN.version) && state.updateAvailable !== match[1]) {
+      const match = (await response.text()).slice(0, 4000).match(/version:\s*'([\d.]+)'/);
+      if (match && newerVersion(match[1], KN.version)) {
         state.updateAvailable = match[1];
         if (state.open) renderPalette();
       }
@@ -4418,10 +4581,9 @@
   }
   function renderUpdateNotice(body) {
     if (!state.updateAvailable) return;
-    const card = element('div', 'kn-update', `Konnect Notes v${state.updateAvailable} is out (you have v${KN.version}). Press Stop, then your bookmark, to load it.`);
+    const card = element('div', 'kn-update', `Konnect Notes v${state.updateAvailable} is out (you have v${KN.version}). Stop it here, then press your bookmark to load the new one.`);
     const stop = button('Stop now', 'kn-bk-small', () => {
-      stopKonnectNotes();
-      showToast(`Konnect Notes stopped. Press your bookmark to load v${state.updateAvailable}`);
+      stopKonnectNotes(`Konnect Notes stopped. Press your bookmark to load v${state.updateAvailable}`);
     });
     stop.style.marginTop = '6px';
     card.appendChild(element('div', '', ''));
@@ -4429,8 +4591,12 @@
     body.appendChild(card);
   }
 
-  function stopKonnectNotes() {
+  /* Fully unloads Konnect Notes from the page (UI, listeners, observer and
+     the cached booking engine) so the bookmark can load a fresh copy
+     without a page refresh. Drafts and settings stay in localStorage. */
+  function stopKonnectNotes(message) {
     clearInterval(updateTimer);
+    clearTimeout(firstUpdateCheck);
     try { if (state.booking) saveDraftNow(); } catch (error) { /* keep going */ }
     clearTimeout(state.scanTimer);
     clearTimeout(bookingSaveTimer);
@@ -4447,14 +4613,8 @@
     forgetInboundCustomer();
     [PALETTE_ID, STYLE_ID, LAUNCHER_SECTION_ID, INBOUND_LAUNCHER_ID].forEach((id) => document.getElementById(id)?.remove());
     try { delete window.KonnectNotes; } catch (error) { window.KonnectNotes = undefined; }
-    /* Confirmation, styled inline because the stylesheet has just been removed. */
-    const toast = document.createElement('div');
-    toast.textContent = 'Konnect Notes stopped. Click the bookmark to load the latest version.';
-    toast.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483000;' +
-      'padding:10px 16px;border-radius:12px;background:#1c1c1e;color:#fff;font:600 13px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
-      'box-shadow:0 10px 30px rgba(0,0,0,0.3);pointer-events:none';
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 4000);
+    showToast(typeof message === 'string' && message
+      ? message : 'Konnect Notes stopped. Click the bookmark to load the latest version.');
     try { delete window.KonnectBookingEngine; } catch (error) { window.KonnectBookingEngine = undefined; }
   }
 
@@ -4468,8 +4628,11 @@
   KN.state = state;
   KN.openBooking = openBooking;
   KN.readLead = readLead;
+  /* Pure builders, exposed for the tests. */
+  KN.buildPostClosurePlan = buildPostClosurePlan;
+  KN.mergeRemoteConfig = mergeRemoteConfig;
 
   init();
-  updateTimer = setInterval(() => checkForUpdate(true), 15 * 60 * 1000);
-  setTimeout(() => checkForUpdate(true), 20000);
+  updateTimer = setInterval(() => checkForUpdate(true), UPDATE_CHECK_EVERY);
+  firstUpdateCheck = setTimeout(() => checkForUpdate(true), 20000);
 })();

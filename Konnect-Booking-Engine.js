@@ -17,7 +17,7 @@
        - Same make, different models: "Peugeot 3008 and 2008"
      No UI and no page access: pure input -> output, so it can be tested. */
 
-  const VERSION = '1.0.0';
+  const VERSION = '1.1.0';
 
   const PRIORITY_LINES = [
     '*** PRIORITY ACCEPTANCE REQUIRED ***',
@@ -224,17 +224,24 @@
     return null;
   }
 
+  /* Bookings are made days or a few weeks ahead. A date further off than
+     this with no year given is almost always a slip (a day that has just
+     passed would otherwise quietly become next year), so it is an error
+     until the year is confirmed. */
+  const FAR_AHEAD_DAYS = 60;
+
   function resolveDate(date, now) {
     if (!date || !date.day) return { error: 'Pick a day for the appointment' };
     const day = Number(date.day);
     if (!Number.isInteger(day) || day < 1 || day > 31) return { error: 'Day must be between 1 and 31' };
     let resolved;
+    let rolled = false;
     if (date.month) {
       const month = Number(date.month);
       if (!Number.isInteger(month) || month < 1 || month > 12) return { error: 'Month must be between 1 and 12' };
       let year = date.year ? Number(date.year) : now.getFullYear();
       const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      if (!date.year && new Date(year, month - 1, day) < startOfToday) year += 1;
+      if (!date.year && new Date(year, month - 1, day) < startOfToday) { year += 1; rolled = true; }
       resolved = { day, month, year };
     } else {
       resolved = inferMonth(day, now);
@@ -245,6 +252,20 @@
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const when = new Date(resolved.year, resolved.month - 1, resolved.day);
     if (when < startOfToday) return { error: 'That date is in the past' };
+    const text = `${pad(resolved.day)}/${pad(resolved.month)}`;
+    const daysAhead = Math.round((when - startOfToday) / 86400000);
+    if (!date.year && daysAhead > FAR_AHEAD_DAYS) {
+      /* "Passed" when this year's date is the nearer one, as with yesterday. */
+      const passed = rolled &&
+        Math.round((startOfToday - new Date(resolved.year - 1, resolved.month - 1, resolved.day)) / 86400000) <= FAR_AHEAD_DAYS;
+      return {
+        error: passed
+          ? `${text} has already passed this year. Confirm the year if you mean ${text}/${resolved.year}`
+          : `${text}/${resolved.year} is more than ${FAR_AHEAD_DAYS} days away. Confirm the date if that is right`,
+        needsYear: resolved.year,
+        passed
+      };
+    }
     return { ...resolved, text: `${pad(resolved.day)}/${pad(resolved.month)}`, dateObj: when };
   }
 
