@@ -417,5 +417,26 @@ test('Placeholder values such as "-" are not a vehicle or PX', () => {
   assert.strictEqual(r2.lines[4], 'PX: Ford Focus');
 });
 
+test('bank holidays are worked out for any year', () => {
+  const name = (y, m, d) => E.bankHolidayName(new Date(y, m - 1, d));
+  assert.strictEqual(name(2026, 12, 25), 'Christmas Day');
+  assert.strictEqual(name(2026, 12, 28), 'Boxing Day'); // 26th is a Saturday
+  assert.strictEqual(name(2027, 3, 26), 'Good Friday');
+  assert.strictEqual(name(2027, 3, 29), 'Easter Monday');
+  assert.strictEqual(name(2027, 5, 3), 'Early May bank holiday');
+  assert.strictEqual(name(2027, 5, 31), 'Spring bank holiday');
+  assert.strictEqual(name(2027, 8, 30), 'Summer bank holiday');
+  assert.strictEqual(name(2027, 12, 27), 'Christmas Day'); // 25th is a Saturday
+  assert.strictEqual(name(2027, 12, 28), 'Boxing Day');
+  assert.strictEqual(name(2028, 1, 3), "New Year's Day"); // 1st is a Saturday
+  assert.strictEqual(name(2026, 11, 10), '');
+});
+
+test('a booking on a bank holiday is flagged, not blocked', () => {
+  const r = build({ type: 'testdrive', date: { day: 28, month: 12 }, time: '11:00', vehicles: [{ make: 'Peugeot', model: '208', reg: 'AB12CDE' }] });
+  assert.ok(r.warnings.some((w) => /bank holiday \(Boxing Day\)/.test(w)), r.warnings.join(' / '));
+  assert.ok(!r.errors.some((e) => /holiday/i.test(e)));
+});
+
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

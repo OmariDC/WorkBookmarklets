@@ -31,6 +31,9 @@ function toolForPage(host, path) {
 return toolsForPage(host, path).find((t) => !t.loaded) || null;
 }
 window.WorkTools = { toolsForPage, toolForPage };
+// The Booking Builder in Konnect Notes is still being tested, so only this
+// bookmark switches it on; the Konnect Tools bookmark leaves it off.
+window.KonnectNotesBooking = true;
 
 const tools = toolsForPage(location.hostname, location.pathname);
 if (tools.length === 0) {

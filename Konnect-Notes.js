@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.10.0'
+    version: '1.11.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -21,6 +21,17 @@
   const ENGINE_URL = `${BASE_URL}Konnect-Booking-Engine.js`;
   const STORAGE_KEY = 'konnectNotes:workingConfig:v1';
   const AGENT_NAME_KEY = 'konnectNotes:agentName:v1';
+  /* The Booking Builder is still being tested, so it is only switched on in
+     browsers where the Work Tools bookmark has been used. The Konnect Tools
+     bookmark other agents use loads this same file without it. */
+  const BOOKING_ACCESS_KEY = 'konnectNotes:bookingAccess:v1';
+  try {
+    if (window.KonnectNotesBooking === true) localStorage.setItem(BOOKING_ACCESS_KEY, 'on');
+  } catch (error) { /* storage blocked: the flag on window still works this session */ }
+  function bookingAllowed() {
+    if (window.KonnectNotesBooking === true) return true;
+    try { return localStorage.getItem(BOOKING_ACCESS_KEY) === 'on'; } catch (error) { return false; }
+  }
   const STYLE_ID = 'kn-notes-style';
   const PALETTE_ID = 'kn-notes-palette';
   const LAUNCHER_SECTION_ID = 'kn-notes-launcher-section';
@@ -697,6 +708,8 @@
       .kn-bk-search-row { align-items: flex-end; }
       .kn-bk-search-button { flex: 0 0 auto; margin-bottom: 7px; padding: 7px 16px; }
       .kn-bk-version { margin-top: 6px; text-align: right; font-size: 10px; color: #aeaeb2; }
+      .kn-bk-report { color: #6e6e73; text-decoration: underline; cursor: pointer; }
+      .kn-update { margin: 0 0 8px; padding: 8px 10px; border-radius: 12px; background: #e8f0fe; color: #1c1c1e; font-size: 12px; font-weight: 600; }
       @media (max-width: 720px) {
         #${PALETTE_ID} { width: 200px; }
       }
@@ -886,8 +899,8 @@
     const palette = ensurePalette();
     palette.appendChild(renderHeader('Konnect Notes', null, true));
     const body = element('div', 'kn-body');
-
-    body.appendChild(button('Booking  (B)', 'kn-primary kn-browse-button', openBooking));
+    renderUpdateNotice(body);
+    if (bookingAllowed()) body.appendChild(button('Booking  (B)', 'kn-primary kn-browse-button', openBooking));
     if (state.config) {
       const quickGrid = element('div', 'kn-quick-grid');
       state.config.phrases
@@ -909,6 +922,11 @@
       });
       body.appendChild(browse);
       body.appendChild(element('div', 'kn-muted kn-shortcut-hint', 'Keys 1–5 select a quick option'));
+      const report = element('a', 'kn-bk-report kn-muted', 'Report a problem');
+      report.href = '#';
+      report.style.cssText = 'display:block;margin-top:6px;font-size:11px;text-align:right;';
+      report.addEventListener('click', (event) => { event.preventDefault(); reportProblem(); });
+      body.appendChild(report);
     } else {
       if (state.configStatus) body.appendChild(element('div', 'kn-status', state.configStatus));
       body.appendChild(element('div', 'kn-muted', 'Phrase configuration has not loaded yet.'));
@@ -1495,6 +1513,9 @@
       notices: stored.notices || [],
       inserted: stored.inserted || null,
       diaryBooked: stored.diaryBooked || null,
+      leadRequestUsed: !!stored.leadRequestUsed,
+      typedUsed: Array.isArray(stored.typedUsed) ? stored.typedUsed : [],
+      typedIgnored: stored.typedIgnored || '',
       openSection: stored.openSection || 'type',
       updated: stored.updated || Date.now()
     } : {
@@ -1527,6 +1548,9 @@
       notices: draft.notices,
       inserted: draft.inserted,
       diaryBooked: draft.diaryBooked || null,
+      leadRequestUsed: !!draft.leadRequestUsed,
+      typedUsed: draft.typedUsed || [],
+      typedIgnored: draft.typedIgnored || '',
       openSection: draft.openSection,
       updated: draft.updated
     };
@@ -1665,6 +1689,31 @@
     draft.notices.push(notice);
   }
 
+  /* The lead's Lead Request picks the appointment type once, on a booking
+     with no type yet. It is tagged "from lead", and clicking any other type
+     replaces it as normal. */
+  function leadRequestType(text) {
+    const t = String(text || '').toLowerCase();
+    if (!t || /^\(?select/.test(t)) return '';
+    if (/motability/.test(t)) return 'motability';
+    if (/test ?drive/.test(t)) return 'testdrive';
+    if (/video|call ?back|phone call/.test(t)) return 'call';
+    return '';
+  }
+
+  function preselectFromLeadRequest(draft) {
+    if (draft.data.type || draft.leadRequestUsed) return false;
+    const type = leadRequestType(draft.leadHints?.leadRequest);
+    if (!type) return false;
+    draft.leadRequestUsed = true;
+    draft.data.type = type;
+    draft.data.subtype = BOOKING_SUBTYPE_DEFAULT[type] || '';
+    draft.fromLead.type = true;
+    if (!draft.openSection || draft.openSection === 'type') draft.openSection = nextMissingSection(draft);
+    logActivity(`Type ${type} picked from the Lead Request`);
+    return true;
+  }
+
   /* Empty booking fields are filled from the lead (and tagged "from lead").
      A lead value that differs from something already in the booking only
      raises a notice; the agent decides with Use it / Keep mine. */
@@ -1721,6 +1770,7 @@
     }
 
     draft.leadHints = { leadRequest: lead.leadRequest, source: lead.source, request: lead.request };
+    if (preselectFromLeadRequest(draft)) changed = true;
     if (syncRequestedSlot(draft, lead.request)) changed = true;
     if (changed) saveDraftSoon();
     return changed;
@@ -1898,9 +1948,19 @@
       replacement = `${value && !value.endsWith('\n') ? '\n' : ''}${text}`;
       if (previous) note = 'The earlier booking in Call Notes was edited by hand, so the new one was added at the end. Delete the old one.';
     }
-    const nextValue = value.slice(0, start) + replacement + value.slice(end);
+    let nextValue = value.slice(0, start) + replacement + value.slice(end);
+    const moved = withoutTypedLines(nextValue, draft.typedUsed, text);
+    if (moved !== nextValue) {
+      // The typed lines now live in the booking, so the originals go and the
+      // whole box is replaced in one edit (Ctrl+Z still undoes it).
+      nextValue = moved;
+      start = 0;
+      end = value.length;
+      replacement = nextValue;
+    }
     replaceTextUndoably(target, start, end, replacement, nextValue);
     draft.inserted = text;
+    draft.typedUsed = [];
     saveDraftNow();
     writeBookingToLead(draft).then((updated) => {
       if (updated.length) showToast(`Lead updated: ${updated.join(', ')}`);
@@ -1913,6 +1973,61 @@
     state.bookingStatus = null;
     if (!keepOpen) closePalette();
     return true;
+  }
+
+  /* ---------- notes typed straight into Call Notes ----------
+     Lines the agent typed during the call are offered to the booking's notes,
+     where the engine tidies them. Attempt lines ("2 - VM left -- Omari"),
+     earlier booking blocks and lines with an agent signature are left out. */
+  function typedLines(draft) {
+    const target = callNotesBox();
+    if (!(target instanceof HTMLTextAreaElement)) return [];
+    let value = target.value;
+    if (draft.inserted && value.includes(draft.inserted)) value = value.replace(draft.inserted, '');
+    const existing = String(draft.data.notesText || '').toLowerCase();
+    return value.split('\n').map((line) => line.trim()).filter((line) => line &&
+      !/^\d+\s*-\s/.test(line) && !/\s--\s/.test(line) &&
+      !/priority acceptance|booked in on|confirm provisional|calendar event for an appointment|^(PX|Vehicle):/i.test(line) &&
+      !existing.includes(line.replace(/^-+\s*/, '').toLowerCase()));
+  }
+
+  function offerTypedNotes(draft) {
+    if (draft.key === INBOUND_KEY) { state.typedOffer = null; return; }
+    const lines = typedLines(draft);
+    const signature = lines.join('\n');
+    state.typedOffer = lines.length && draft.typedIgnored !== signature ? { lines, signature } : null;
+  }
+
+  function useTypedNotes(draft, use) {
+    const offer = state.typedOffer;
+    state.typedOffer = null;
+    if (!offer) return;
+    if (!use) {
+      draft.typedIgnored = offer.signature;
+    } else {
+      const d = draft.data;
+      d.notesText = [String(d.notesText || '').trim(), ...offer.lines].filter(Boolean).join('\n');
+      draft.typedUsed = offer.lines;
+      logActivity(`Moved ${offer.lines.length} typed line(s) into the booking notes`);
+      changed(draft, true);
+    }
+    saveDraftNow();
+    renderPalette();
+  }
+
+  /* Removes each moved line once, outside the new booking block. */
+  function withoutTypedLines(value, lines, block) {
+    if (!lines || !lines.length) return value;
+    const at = value.indexOf(block);
+    const before = at >= 0 ? value.slice(0, at) : value;
+    const after = at >= 0 ? value.slice(at) : '';
+    const kept = before.split('\n');
+    lines.forEach((line) => {
+      const index = kept.findIndex((item) => item.trim() === line);
+      if (index >= 0) kept.splice(index, 1);
+    });
+    const head = kept.join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+/, '');
+    return head && after && !head.endsWith('\n') ? `${head}\n${after}` : head + after;
   }
 
   /* The main button: notes into Call Notes, then the diary and outcome.
@@ -2258,7 +2373,34 @@
 
   /* ---------- writing the booking's car details back to the lead ---------- */
 
+  /* Recent steps for Report a problem. Only the tool's own messages go in,
+     and Diagnostics masks emails, phones and regs again before showing them. */
+  const activityLog = [];
+  function logActivity(text) {
+    const line = normaliseText(text);
+    if (!line || activityLog[activityLog.length - 1]?.endsWith(line)) return;
+    activityLog.push(`${new Date().toTimeString().slice(0, 8)} ${line}`);
+    if (activityLog.length > 60) activityLog.shift();
+  }
+
+  async function reportProblem() {
+    const draft = state.booking;
+    window.__wbDiagnosticsExtra = {
+      tool: `Konnect Notes v${KN.version}`,
+      state: `view ${state.view}; type ${draft?.data?.type || 'none'}; section ${draft?.openSection || 'none'}; inserted ${draft?.inserted ? 'yes' : 'no'}; diary ${draft?.diaryBooked ? 'booked' : 'no'}`,
+      log: activityLog.slice()
+    };
+    try {
+      const response = await fetch(`${BASE_URL}Diagnostics.js?_=${Date.now()}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      Function(await response.text())();
+    } catch (error) {
+      showToast(`Could not open Diagnostics: ${error.message}`);
+    }
+  }
+
   function showToast(text) {
+    logActivity(text);
     const toast = document.createElement('div');
     toast.className = 'kn-toast';
     toast.textContent = text;
@@ -2416,7 +2558,14 @@
     if (settings.maxLength) input.maxLength = settings.maxLength;
     if (settings.inputMode) input.inputMode = settings.inputMode;
     input.addEventListener('input', () => onInput(input.value, input));
-    input.addEventListener('keydown', (event) => event.stopPropagation());
+    input.addEventListener('keydown', (event) => {
+      event.stopPropagation();
+      // Typing stays inside the box, except Ctrl+Enter, which presses the main button.
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        event.preventDefault();
+        bookingRefs?.insert?.click();
+      }
+    });
     wrap.appendChild(input);
     return wrap;
   }
@@ -2557,6 +2706,11 @@
     const d = draft.data;
     const hint = draft.leadHints?.leadRequest;
     if (hint && !d.type) body.appendChild(element('div', 'kn-muted kn-bk-gap', `Lead request: ${hint}`));
+    if (hint && d.type && draft.fromLead.type) {
+      const note = element('div', 'kn-muted kn-bk-gap', `Picked from the Lead Request (${hint}). Click another to change it. `);
+      note.appendChild(element('span', 'kn-bk-tag', 'from lead'));
+      body.appendChild(note);
+    }
     body.appendChild(bkChips(BOOKING_TYPES, d.type, (value) => {
       d.type = value;
       d.subtype = BOOKING_SUBTYPE_DEFAULT[value] || '';
@@ -2603,7 +2757,9 @@
         chip.disabled = true;
         chip.title = 'No times left today';
       }
-      chip.appendChild(element('span', 'kn-bk-day-name', i === 0 ? 'Today' : WEEKDAYS[day.getDay()]));
+      const holiday = engine.bankHolidayName ? engine.bankHolidayName(day) : '';
+      chip.appendChild(element('span', 'kn-bk-day-name', holiday ? 'Bank hol' : i === 0 ? 'Today' : WEEKDAYS[day.getDay()]));
+      if (holiday && !chip.disabled) chip.title = `${holiday}: site hours may differ`;
       chip.appendChild(element('span', 'kn-bk-day-num', String(day.getDate())));
       chip.addEventListener('click', () => {
         d.day = String(day.getDate()).padStart(2, '0');
@@ -2994,6 +3150,17 @@
     const draft = currentDraft();
     const d = draft.data;
 
+    if (state.typedOffer) {
+      const card = element('div', 'kn-bk-notice');
+      card.appendChild(element('div', 'kn-bk-notice-text', `Found ${state.typedOffer.lines.length} line${state.typedOffer.lines.length === 1 ? '' : 's'} you typed in Call Notes. Move into the booking notes? They are tidied, and the originals are replaced when you insert.`));
+      const preview = element('div', 'kn-muted kn-bk-gap', state.typedOffer.lines.slice(0, 6).join(' / ') + (state.typedOffer.lines.length > 6 ? ' / ...' : ''));
+      card.appendChild(preview);
+      const actions = element('div', 'kn-bk-notice-actions');
+      actions.appendChild(button('Use these', 'kn-primary', () => useTypedNotes(draft, true)));
+      actions.appendChild(button('Ignore', '', () => useTypedNotes(draft, false)));
+      card.appendChild(actions);
+      body.appendChild(card);
+    }
     draft.notices.forEach((notice) => {
       const card = element('div', 'kn-bk-notice');
       card.appendChild(element('div', 'kn-bk-notice-text', notice.label));
@@ -3006,6 +3173,7 @@
     });
 
     bookingRefs = { summaries: {}, badges: {}, needed: null, readout: null, preview: null, issues: null, insert: null };
+    renderUpdateNotice(body);
     renderMobileCard(draft, body);
     renderNeededBar(draft, body);
     visibleSections(d).forEach((section, index) => {
@@ -3053,6 +3221,7 @@
     bookingRefs.issues = issues;
     footer.appendChild(issues);
     if (state.bookingStatus) {
+      if (!state.bookingStatus.private) logActivity(state.bookingStatus.text);
       footer.appendChild(element('div', `kn-bk-status kn-bk-status-${state.bookingStatus.kind}`, state.bookingStatus.text));
     }
     const actions = element('div', 'kn-bk-actions');
@@ -3078,7 +3247,7 @@
         inbound.pending = false;
       }
       const isInbound = draft.key === INBOUND_KEY;
-      state.booking = { ...draft, data: blankBooking(), fromLead: {}, notices: [], inserted: null, diaryBooked: null, diaryRepeat: false, leadSeen: {}, openSection: isInbound ? 'customer' : 'type' };
+      state.booking = { ...draft, data: blankBooking(), fromLead: {}, notices: [], inserted: null, diaryBooked: null, diaryRepeat: false, typedUsed: [], leadRequestUsed: true, leadSeen: {}, openSection: isInbound ? 'customer' : 'type' };
       syncLead(state.booking);
       saveDraftNow();
       state.bookingStatus = isInbound ? { kind: 'ok', text: 'Booking and customer details cleared.' } : removed < 0
@@ -3089,7 +3258,12 @@
     clear.title = 'Empties the whole Call Notes box and resets this booking (Ctrl+Z in Call Notes undoes it)';
     actions.appendChild(clear);
     footer.appendChild(actions);
-    footer.appendChild(element('div', 'kn-bk-version', `Konnect Notes v${KN.version}`));
+    const versionRow = element('div', 'kn-bk-version', `Konnect Notes v${KN.version} · `);
+    const report = element('a', 'kn-bk-report', 'Report a problem');
+    report.href = '#';
+    report.addEventListener('click', (event) => { event.preventDefault(); reportProblem(); });
+    versionRow.appendChild(report);
+    footer.appendChild(versionRow);
     palette.appendChild(footer);
 
     updateBookingLive(draft);
@@ -3098,6 +3272,8 @@
   }
 
   function openBooking() {
+    if (!bookingAllowed()) return;
+    checkForUpdate(false);
     scanPage();
     if (!state.target && !inboundContext()) return;
     state.open = true;
@@ -3106,6 +3282,7 @@
     state.bookingScroll = 0;
     const draft = currentDraft();
     if (!draft.openSection && bookingEngine()) draft.openSection = nextMissingSection(draft);
+    offerTypedNotes(draft);
     if (bookingEngine()) {
       syncLead(draft);
     } else {
@@ -3322,6 +3499,39 @@
       await runKonnectSearch(freshInput, freshButton, query);
     }
     showToast(`Searched Konnect for ${query}`);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const matches = searchMatches();
+    if (matches) {
+      state.bookingStatus = matchesStatus(matches);
+      if (state.open && state.view === 'booking') renderPalette();
+    }
+  }
+
+  /* The customers Konnect found, as "Name (Dealer)". One number can belong to
+     several customers under different names or dealers, so every match is
+     listed for the agent to check rather than one being picked. */
+  function searchMatches() {
+    const table = Array.from(document.querySelectorAll('table'))
+      .find((node) => isVisible(node) && /best number/i.test(node.tHead?.textContent || node.textContent.slice(0, 400)));
+    if (!table) return null;
+    const headers = Array.from(table.querySelectorAll('thead th')).map((th) => normaliseText(th.textContent).toLowerCase());
+    const col = (pattern) => headers.findIndex((h) => pattern.test(h));
+    const nameCol = col(/name/);
+    const dealerCol = col(/dealer|site/);
+    return Array.from(table.tBodies[0]?.rows || []).filter(isVisible).map((row) => {
+      const cells = Array.from(row.cells).map((cell) => normaliseText(cell.innerText));
+      const name = (nameCol >= 0 ? cells[nameCol] : cells.find((c) => c && !/\d{5,}/.test(c))) || 'Unnamed';
+      const dealer = dealerCol >= 0 ? cells[dealerCol] : '';
+      return dealer ? `${name} (${dealer})` : name;
+    }).filter(Boolean);
+  }
+
+  function matchesStatus(matches) {
+    if (!matches.length) return { kind: 'ok', text: 'No existing customer has this number. Create a new customer.' };
+    const unique = Array.from(new Set(matches));
+    const list = unique.slice(0, 5).join(', ') + (unique.length > 5 ? ` and ${unique.length - 5} more` : '');
+    if (matches.length === 1) return { kind: 'warn', private: true, text: `1 existing customer has this number: ${list}. Check it is the same person and dealer before using it.` };
+    return { kind: 'warn', private: true, text: `${matches.length} existing customers have this number: ${list}. Check the name and dealer before picking one.` };
   }
 
   async function fillCustomerForm() {
@@ -3512,7 +3722,7 @@
 
   function updateInboundLauncher() {
     let launcher = document.getElementById(INBOUND_LAUNCHER_ID);
-    if (!inboundContext()) {
+    if (!inboundContext() || !bookingAllowed()) {
       if (launcher) launcher.style.display = 'none';
       return;
     }
@@ -3566,6 +3776,7 @@
   }
 
   function openPalette() {
+    checkForUpdate(false);
     scanPage();
     if (!state.target) return;
     const active = document.activeElement;
@@ -4038,6 +4249,11 @@
       return;
     }
     if (!state.open) return;
+    if (state.view === 'booking' && (event.ctrlKey || event.metaKey) && !event.altKey && event.key === 'Enter') {
+      event.preventDefault();
+      bookingRefs?.insert?.click();
+      return;
+    }
     if (event.key === 'Escape') {
       event.preventDefault();
       closePalette();
@@ -4112,7 +4328,49 @@
   /* Fully unloads Konnect Notes from the page (UI, listeners, observer and
      the cached booking engine) so the bookmark can load a fresh copy
      without a page refresh. Drafts and settings stay in localStorage. */
+  /* ---------- update notice ----------
+     The page keeps running whichever version was loaded, so a newer one on
+     main is announced instead of going unnoticed. */
+  let updateTimer = null;
+  let lastUpdateCheck = 0;
+  function newerVersion(a, b) {
+    const pa = String(a).split('.').map(Number);
+    const pb = String(b).split('.').map(Number);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+      if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+    }
+    return false;
+  }
+  async function checkForUpdate(force) {
+    if (!force && Date.now() - lastUpdateCheck < 5 * 60 * 1000) return;
+    lastUpdateCheck = Date.now();
+    try {
+      const response = await fetch(`${BASE_URL}Konnect-Notes.js?_=${Date.now()}`, { cache: 'no-store' });
+      if (!response.ok) return;
+      const match = (await response.text()).match(/version:\s*'([\d.]+)'/);
+      if (match && newerVersion(match[1], KN.version) && state.updateAvailable !== match[1]) {
+        state.updateAvailable = match[1];
+        if (state.open) renderPalette();
+      }
+    } catch (error) {
+      // Offline or blocked: try again at the next check.
+    }
+  }
+  function renderUpdateNotice(body) {
+    if (!state.updateAvailable) return;
+    const card = element('div', 'kn-update', `Konnect Notes v${state.updateAvailable} is out (you have v${KN.version}). Press Stop, then your bookmark, to load it.`);
+    const stop = button('Stop now', 'kn-bk-small', () => {
+      stopKonnectNotes();
+      showToast(`Konnect Notes stopped. Press your bookmark to load v${state.updateAvailable}`);
+    });
+    stop.style.marginTop = '6px';
+    card.appendChild(element('div', '', ''));
+    card.appendChild(stop);
+    body.appendChild(card);
+  }
+
   function stopKonnectNotes() {
+    clearInterval(updateTimer);
     try { if (state.booking) saveDraftNow(); } catch (error) { /* keep going */ }
     clearTimeout(state.scanTimer);
     clearTimeout(bookingSaveTimer);
@@ -4152,4 +4410,6 @@
   KN.readLead = readLead;
 
   init();
+  updateTimer = setInterval(() => checkForUpdate(true), 15 * 60 * 1000);
+  setTimeout(() => checkForUpdate(true), 20000);
 })();

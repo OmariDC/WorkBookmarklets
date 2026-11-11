@@ -309,6 +309,58 @@
     return `${pad(Math.floor(total / 60))}:${pad(total % 60)}`;
   }
 
+  /* England and Wales bank holidays, worked out from the year so no list
+     needs updating. Site hours vary on these days, so a booking on one is
+     only flagged. Returns the holiday's name, or ''. */
+  function easterSunday(year) {
+    const a = year % 19;
+    const b = Math.floor(year / 100);
+    const c = year % 100;
+    const d = Math.floor(b / 4);
+    const e = b % 4;
+    const f = Math.floor((b + 8) / 25);
+    const g = Math.floor((b - f + 1) / 3);
+    const h = (19 * a + b - d - g + 15) % 30;
+    const i = Math.floor(c / 4);
+    const k = c % 4;
+    const l = (32 + 2 * e + 2 * i - h - k) % 7;
+    const m = Math.floor((a + 11 * h + 22 * l) / 451);
+    const month = Math.floor((h + l - 7 * m + 114) / 31);
+    const day = ((h + l - 7 * m + 114) % 31) + 1;
+    return new Date(year, month - 1, day);
+  }
+
+  function bankHolidays(year) {
+    const at = (month, day) => new Date(year, month - 1, day);
+    const firstMonday = (month) => { const d = at(month, 1); d.setDate(1 + ((8 - d.getDay()) % 7)); return d; };
+    const lastMonday = (month) => { const d = new Date(year, month, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; };
+    const shift = (date, days) => { const d = new Date(date); d.setDate(d.getDate() + days); return d; };
+    const easter = easterSunday(year);
+    const list = [];
+    // A holiday on a weekend moves to the next weekday.
+    const newYear = at(1, 1);
+    list.push(['New Year\'s Day', newYear.getDay() === 6 ? shift(newYear, 2) : newYear.getDay() === 0 ? shift(newYear, 1) : newYear]);
+    list.push(['Good Friday', shift(easter, -2)]);
+    list.push(['Easter Monday', shift(easter, 1)]);
+    list.push(['Early May bank holiday', firstMonday(5)]);
+    list.push(['Spring bank holiday', lastMonday(5)]);
+    list.push(['Summer bank holiday', lastMonday(8)]);
+    const christmas = at(12, 25);
+    const christmasDay = christmas.getDay() === 6 ? shift(christmas, 2) : christmas.getDay() === 0 ? shift(christmas, 2) : christmas;
+    const boxing = at(12, 26);
+    const boxingDay = boxing.getDay() === 6 || boxing.getDay() === 0 ? shift(boxing, 2) : boxing;
+    list.push(['Christmas Day', christmasDay]);
+    list.push(['Boxing Day', boxingDay]);
+    return list;
+  }
+
+  function bankHolidayName(dateObj) {
+    if (!(dateObj instanceof Date) || isNaN(dateObj)) return '';
+    const found = bankHolidays(dateObj.getFullYear()).find(([, d]) =>
+      d.getMonth() === dateObj.getMonth() && d.getDate() === dateObj.getDate());
+    return found ? found[0] : '';
+  }
+
   function appointmentLength(input) {
     return isCallBooking(input || {}) ? 30 : 60;
   }
@@ -703,6 +755,8 @@
           }
         }
       }
+      const holiday = date.dateObj ? bankHolidayName(date.dateObj) : '';
+      if (holiday) warnings.push(`${date.text} is a bank holiday (${holiday}). Check the site is open at that time`);
       const qualifier = input.timeQualifier === 'before' ? ' or before' : input.timeQualifier === 'after' ? ' or after' : '';
       if (qualifier && !isCallBooking(input)) warnings.push('"or before / or after" is normally only used on calls');
       const tail = sentenceTail({ ...input, px: effectivePx }, vehicles, warnings, errors);
@@ -789,6 +843,7 @@
     defaultTime,
     nationalReservationDate,
     availableSlots,
+    bankHolidayName,
     appointmentLength,
     isCallBooking,
     parseRequestedSlot,
