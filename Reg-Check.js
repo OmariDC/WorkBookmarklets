@@ -63,5 +63,5 @@
     window.open(CHECKER_BASE + encodeURIComponent(reg), "_blank");
   });
 
-  notice("Reg Check is on.", "", GREEN);
+  notice("Reg Check is on.", "Highlight a registration and press Alt+R.", GREEN);
 })();
