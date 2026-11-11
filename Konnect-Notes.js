@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.11.0'
+    version: '1.12.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2070,15 +2070,53 @@
     const engine = bookingEngine();
     if (!engine || draft.key === INBOUND_KEY) return null;
     const input = bookingInput(draft);
-    if (!input.type || input.type === 'national') return null;
+    if (!input.type) return null;
     const date = engine.resolveDate(input.date, new Date());
-    const time = engine.resolveTime(input.time);
+    const time = engine.resolveTime(input.time || (input.type === 'national' ? '12:00' : ''));
     if (date.error || time.error) return null;
     return {
       year: date.year, month: date.month, day: date.day, time: time.text, label: `${date.text} at ${time.text}`,
       length: engine.appointmentLength(input) === 30 ? '30 minutes' : '60 minutes',
       type: diaryType(input)
     };
+  }
+
+  /* A National Reservation goes in the diary 6 working days ahead at 12:00
+     as Face To Face. Choosing the type sets that day and time; changing them
+     in the When step afterwards is kept. */
+  function setNationalDefaults(d) {
+    const engine = bookingEngine();
+    if (!engine) return;
+    const at = engine.nationalReservationDate(new Date());
+    d.day = String(at.day).padStart(2, '0');
+    d.month = String(at.month).padStart(2, '0');
+    d.time = at.time || '12:00';
+    d.timeQualifier = '';
+  }
+
+  /* The open lead's dealer. The lead's own drop downs are matched to the
+     lead the same way Lead Re setup does it (through its Angular scope),
+     so another lead's tab is never read. A drop down choice not saved yet
+     is read before the stored dealer name. */
+  function leadScopeActivity(node) {
+    try {
+      for (let scope = window.angular?.element(node).scope(), depth = 0; scope && depth < 8; scope = scope.$parent, depth += 1) {
+        if (scope.theActivity) return scope.theActivity;
+      }
+    } catch (error) { /* not an Angular page */ }
+    return null;
+  }
+
+  function leadDealer() {
+    const pane = callNotesBox()?.closest('.tab-pane') || document.querySelector('.tab-pane.active');
+    if (!pane) return '';
+    const activity = leadScopeActivity(pane.querySelector('button[ng-click^="manageSalesEventBookings"]') || callNotesBox());
+    const select = Array.from(pane.querySelectorAll('select[ng-model]')).find((node) =>
+      /dealer/i.test(node.getAttribute('ng-model')) && !/badge|brand/i.test(node.getAttribute('ng-model')) &&
+      (!activity || leadScopeActivity(node) === activity));
+    const chosen = select ? normaliseText(select.options[select.selectedIndex]?.textContent) : '';
+    if (chosen && !/^\(?select/i.test(chosen)) return chosen;
+    return normaliseText(activity?.SalesLead?.DealerName || '');
   }
 
   function diaryModal() {
@@ -2257,6 +2295,21 @@
       return false;
     }
     if (diaryRun) return false;
+    if (draft.data.type === 'national') {
+      const dealer = leadDealer();
+      if (!dealer || /national/i.test(dealer)) {
+        state.bookingStatus = { kind: 'error', text: `The lead's dealer is ${dealer ? `"${dealer}"` : 'not set'}. Change it in the lead's dealer drop down first (the diary follows it), then press again.` };
+        draft.nationalDealerOk = '';
+        renderPalette();
+        return false;
+      }
+      if (draft.nationalDealerOk !== dealer) {
+        draft.nationalDealerOk = dealer;
+        state.bookingStatus = { kind: 'warn', text: `National Reservation: book it at ${dealer} on ${plan.label}? Press again to confirm.` };
+        renderPalette();
+        return false;
+      }
+    }
     if (diaryAlreadyBooked(draft, plan) && !draft.diaryRepeat) {
       draft.diaryRepeat = true;
       state.bookingStatus = { kind: 'warn', text: `This booking is already in the diary for ${plan.label}. Press Diary only again to add a second appointment.` };
@@ -2315,7 +2368,10 @@
       const who = free.person ? ` with ${free.person}` : '';
       draft.diaryBooked = diaryKey(plan);
       saveDraftNow();
-      const outcomeProblem = closed ? await setLeadOutcome(draft, plan) : 'the diary did not close';
+      // Which outcome a National Reservation takes is not confirmed yet, so it is left to the agent.
+      const outcomeProblem = !closed ? 'the diary did not close'
+        : draft.data.type === 'national' ? 'National Reservations have their outcome set by hand for now'
+          : await setLeadOutcome(draft, plan);
       if (outcomeProblem) {
         say('warn', `Diary booked: ${plan.label}, ${plan.type}${who}. Outcome not set: ${outcomeProblem}.${moved}`);
         showToast(`Diary booked. Set the outcome by hand: ${outcomeProblem}`);
@@ -2587,7 +2643,10 @@
     const d = draft.data;
     if (draft.data.type === 'national') {
       const cal = engine.nationalReservationDate(new Date());
-      return { text: `Calendar: ${cal.text} at ${cal.time} (6 working days)`, error: false };
+      if (!d.day) return { text: `Diary: ${cal.text} at ${cal.time} (6 working days)`, error: false };
+      const text = `${String(d.day).padStart(2, '0')}/${String(d.month || cal.month).padStart(2, '0')} at ${d.time || '12:00'}`;
+      const isDefault = Number(d.day) === cal.day && Number(d.month) === cal.month && (d.time || '12:00') === '12:00';
+      return { text: `Diary: ${text}${isDefault ? ' (6 working days)' : ' (changed by you)'}`, error: false };
     }
     if (!d.day && !d.time) return { text: 'Pick a day and time', error: false };
     const parts = [];
@@ -2716,6 +2775,7 @@
       d.subtype = BOOKING_SUBTYPE_DEFAULT[value] || '';
       untag(draft, 'type');
       if (value === 'onlinestore' || value === 'national') d.vehicles = d.vehicles.slice(0, 1);
+      if (value === 'national') setNationalDefaults(d);
       if (!BOOKING_SUBTYPES[value]) advanceIfDone(draft, 'type');
       changed(draft, true);
     }));
@@ -2735,10 +2795,10 @@
   function renderWhenSection(draft, body) {
     const d = draft.data;
     if (d.type === 'national') {
-      body.appendChild(element('div', 'kn-muted', 'National Reservation has no booking sentence. Create the calendar event for the date below.'));
-      return;
+      body.appendChild(element('div', 'kn-muted kn-bk-gap', 'National Reservation: the diary date is 6 working days ahead at 12:00, Face To Face. Change the day or time below if needed. It is not in the notes.'));
+      if (!d.day) setNationalDefaults(d);
     }
-    const request = draft.leadHints?.request;
+    const request = d.type === 'national' ? null : draft.leadHints?.request;
     if (request) {
       const past = requestIsPast(request);
       const text = `Initial notes: ${describeRequest(request)}${request.rounded ? ' (rounded up to a :00 or :30 slot)' : ''}${past ? ' (this date has passed)' : ''}`;
@@ -3225,7 +3285,7 @@
       footer.appendChild(element('div', `kn-bk-status kn-bk-status-${state.bookingStatus.kind}`, state.bookingStatus.text));
     }
     const actions = element('div', 'kn-bk-actions');
-    const canDiary = draft.key !== INBOUND_KEY && draft.data.type !== 'national';
+    const canDiary = draft.key !== INBOUND_KEY;
     const insert = button('Insert into Call Notes', 'kn-primary', () => (canDiary ? insertAndBook(draft) : insertBooking(draft)));
     insert.title = canDiary ? 'Puts the booking into Call Notes, books it in the diary and sets the outcome' : '';
     bookingRefs.insert = insert;
