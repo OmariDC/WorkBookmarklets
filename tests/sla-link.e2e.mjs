@@ -399,8 +399,50 @@ async function olderLeadChecker() {
   await context.close();
 }
 
+async function openedAndReview() {
+  console.log('\nOpen on Konnect Live answers and review decisions');
+  const { context, manager, errors } = await open();
+  const toast = () => manager.evaluate(() => (document.getElementById('_slaLinkToast') || {}).textContent || '');
+  await ready(manager);
+  await fromLive(manager, { type: 'workTools:opened', ok: true, text: 'Opened Sam Buyer.' });
+  check('the answer to an open request is shown', (await toast()) === 'Opened Sam Buyer.', await toast());
+  await fromLive(manager, { type: 'workTools:opened', ok: false, text: 'The Lead Checker is busy with a batch.' });
+  check('a refusal is shown as the Lead Checker worded it', (await toast()) === 'The Lead Checker is busy with a batch.', await toast());
+  check('an open answer sends nothing back', (await toLive(manager)).length === 0, await toLive(manager));
+  const header = 'Name\tCreated\tDecision\tNote';
+  await fromLive(manager, { type: 'workTools:review', tsv: `${header}\nSam Buyer\tSat, 26 Sep 2026 10:00\tTier 2\t\nPat Closure\tSat, 26 Sep 2026 11:00\tTier 4\tquote only` });
+  await fromLive(manager, { type: 'workTools:review', tsv: `${header}\nSam Buyer\tSat, 26 Sep 2026 10:00\tTier 1\tgave a time\nJo Example\tSat, 26 Sep 2026 12:00\tTier 5\t` });
+  const store = await stored(manager, '_slaReviewDecisions');
+  check('review decisions merge across messages, newer replacing older', store && !!store.savedAt && store.rows.map((r) => `${r.cells.Name}:${r.cells.Decision}`).join() === 'Sam Buyer:Tier 1,Pat Closure:Tier 4,Jo Example:Tier 5', store);
+  const copied = await manager.evaluate(async () => { let text = null; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (t) => { text = t; return Promise.resolve(); } } }); const b = document.createElement('button'); window._copyReviewDecisions(b); await new Promise((r) => setTimeout(r, 50)); return { text, label: b.textContent }; });
+  check('Copy review decisions copies the merged set under the same header', copied.text === `${header}\nSam Buyer\tSat, 26 Sep 2026 10:00\tTier 1\tgave a time\nPat Closure\tSat, 26 Sep 2026 11:00\tTier 4\tquote only\nJo Example\tSat, 26 Sep 2026 12:00\tTier 5\t`, copied);
+  check('and says how many', /Copied 3/.test(copied.label), copied.label);
+  // The agent desktop records its own decisions; SLA Manager only reads them.
+  const deskAt = new Date().toISOString();
+  await manager.evaluate((at) => localStorage.setItem('_workToolsDeskDecisions', JSON.stringify({ savedAt: at, rows: [
+    { at, run: 'Post Closure', name: 'Pat Closure', detail: 'Peugeot - Enquiry - New', outcome: 'Skipped', step: 'Update Outcomes', why: 'already worked' },
+    { at, run: 'Email Only', name: 'Jo Example', detail: '', outcome: 'Done', step: '' },
+    { at: new Date(Date.now() - 13 * 3600000).toISOString(), run: 'Re setup', name: 'Old Example', detail: '', outcome: 'Stopped', step: 'Add lead', why: '' }] })), deskAt);
+  const DESK_BLOCK = `Run\tCustomer\tDetail\tOutcome\tStep\tWhy\tAt\nPost Closure\tPat Closure\tPeugeot - Enquiry - New\tSkipped\tUpdate Outcomes\talready worked\t${deskAt}\nEmail Only\tJo Example\t\tDone\t\t\t${deskAt}`;
+  const copyAll = () => manager.evaluate(async () => { let text = null; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (t) => { text = t; return Promise.resolve(); } } }); const b = document.createElement('button'); window._copyReviewDecisions(b); await new Promise((r) => setTimeout(r, 50)); return { text, label: b.textContent }; });
+  const both = await copyAll();
+  check('with desk decisions the copy has both blocks, a blank line between, fresh rows only', both.text === `${copied.text}\n\n${DESK_BLOCK}` && /Copied 5/.test(both.label), both);
+  await manager.evaluate(() => localStorage.removeItem('_slaReviewDecisions'));
+  const deskOnly = await copyAll();
+  check('with only desk decisions just that block is copied', deskOnly.text === DESK_BLOCK && /Copied 2/.test(deskOnly.label), deskOnly);
+  await manager.evaluate(() => localStorage.setItem('_slaReviewDecisions', JSON.stringify({ savedAt: new Date(Date.now() - 13 * 3600000).toISOString(), header: ['Name'], rows: [{ at: new Date(Date.now() - 13 * 3600000).toISOString(), cells: { Name: 'Old Example' } }] })));
+  await fromLive(manager, { type: 'workTools:review', tsv: 'Name\nNew Example' });
+  check('decisions a shift old are dropped', (await stored(manager, '_slaReviewDecisions')).rows.map((r) => r.cells.Name).join() === 'New Example', await stored(manager, '_slaReviewDecisions'));
+  await manager.evaluate(() => window._slaResetBookmarklet());
+  check('Clear & Stop removes them', (await stored(manager, '_slaReviewDecisions')) === null);
+  check('Clear & Stop leaves the desk\'s decisions alone', ((await stored(manager, '_workToolsDeskDecisions')) || { rows: [] }).rows.length === 3);
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
 const started = Date.now();
 try {
+  await openedAndReview();
   await idsAreRouted();
   await endedReasons();
   await lostBatch();

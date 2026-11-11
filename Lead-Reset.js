@@ -242,6 +242,10 @@ return typeof lead.fields.HasPartExchange === 'boolean' ? lead.fields.HasPartExc
 // assigned today.
 const EMAIL_ONLY_ASSIGNED_KEY = '_workToolsEmailOnlyAssigned';
 const DESK_PROGRESS_KEY = '_leadResetDeskProgress';
+// What the agent decided on each lead in the three runs (done, skipped or
+// stopped, and why), for SLA Manager's "Copy review decisions".
+const DESK_DECISIONS_KEY = '_workToolsDeskDecisions';
+const DESK_DECISIONS_MAX = 300;
 // Per send back reason: the Konnect Notes shorthand typed in Post Closure
 // Notes and the lead outcome under Customer Hub Team > No Opportunity.
 const SEND_BACK_STEPS = {
@@ -391,6 +395,21 @@ return leftAfterThis > 0 ? STATUS_AVAILABLE : STATUS_WHILE_RESETTING;
 // SELF-TESTS
 // ===================================================================
 
+// Pure. The decision rows still inside one shift, newest 300 at most.
+function freshDecisions(rows, now) {
+return (Array.isArray(rows) ? rows : [])
+.filter((r) => { const age = r && r.at ? now - new Date(r.at).getTime() : NaN; return age >= 0 && age <= STORED_MAX_AGE_MS; })
+.slice(-DESK_DECISIONS_MAX);
+}
+
+// Pure. One decision row. confirmed: what the agent said yes to on the way.
+function decisionRow(mode, lead, outcome, step, confirmed, typedWhy, at) {
+const run = mode === 'pc' ? 'Post Closure' : mode === 'eo' ? 'Email Only' : 'Re setup';
+const detail = mode === 'pc' ? [String(lead.shorthand || '').toUpperCase(), lead.reason].filter(Boolean).join(' · ') : (lead.campaign || '');
+const why = Array.from(new Set(confirmed || [])).concat(String(typedWhy || '').trim()).filter(Boolean).join('. ');
+return { at, run, name: lead.name || '', detail, outcome, step: outcome === 'Done' ? '' : (step || ''), why };
+}
+
 const selfTestFailures = [];
 (function runSelfTests() {
 const failures = [];
@@ -491,6 +510,11 @@ check('link line: no state or an old one means SLA Manager is not running', [lin
 check('link line: wording per state', ['none', 'idle', 'paused', 'loggedOut'].map((state) => linkLineText({ state, at: '2026-11-11T10:00:20Z' }, linkNow)), ['Konnect Live: not open. Press Open Konnect Live in SLA Manager.', 'Konnect Live: linked, ready.', 'Konnect Live: paused.', 'Konnect Live: logged out, logging back in.']);
 check('link line: progress, and SLA Manager\'s own text first', [linkLineText({ state: 'running', done: 12, total: 40, at: '2026-11-11T10:00:20Z' }, linkNow), linkLineText({ state: 'running', text: 'Konnect Live: checking 3 of 9.', at: '2026-11-11T10:00:20Z' }, linkNow)], ['Konnect Live: checking 12 of 40.', 'Konnect Live: checking 3 of 9.']);
 check('age of a result', [ageText('2026-11-11T10:00:10Z', linkNow), ageText('2026-11-11T09:55:00Z', linkNow), ageText('2026-11-11T07:50:00Z', linkNow)], ['just now', '5 min ago', '2 h 10 min ago']);
+const dNow = new Date('2026-11-11T10:00:00Z').getTime();
+check('decisions older than 12 hours are dropped', freshDecisions([{ at: '2026-11-10T21:59:00Z', name: 'Old' }, { at: '2026-11-10T22:01:00Z', name: 'Kept' }, { name: 'No time' }], dNow).map((r) => r.name), ['Kept']);
+check('decisions are capped at the newest 300', [freshDecisions(Array.from({ length: 305 }, (_, i) => ({ at: '2026-11-11T09:00:00Z', name: String(i) })), dNow).length, freshDecisions(Array.from({ length: 305 }, (_, i) => ({ at: '2026-11-11T09:00:00Z', name: String(i) })), dNow)[0].name], [300, '5']);
+check('a Done row has no step and keeps what was confirmed', decisionRow('pc', { name: 'Jo Example', shorthand: 'cad', reason: 'Actioned by dealership' }, 'Done', 'Press Finished', ['Said this is the right customer', 'Said this is the right customer'], '', 'T'), { at: 'T', run: 'Post Closure', name: 'Jo Example', detail: 'CAD · Actioned by dealership', outcome: 'Done', step: '', why: 'Said this is the right customer' });
+check('a Skipped row has the step and the typed reason', decisionRow('batch', { name: 'Jo Example', campaign: 'Vauxhall - Enquiry - Used' }, 'Skipped', 'Check before parking', [], ' already rang in ', 'T'), { at: 'T', run: 'Re setup', name: 'Jo Example', detail: 'Vauxhall - Enquiry - Used', outcome: 'Skipped', step: 'Check before parking', why: 'already rang in' });
 check('Available until the last Email Only lead', [statusAfterEmailOnly(2), statusAfterEmailOnly(0)], ['Available', 'Shift Start']);
 } catch (error) {
 failures.push('threw: ' + (error && error.message));
@@ -530,6 +554,17 @@ return p && isFresh(p.savedAt) && p.byActivity ? p : { savedAt: new Date().toISO
 function saveProgress(progress) {
 progress.savedAt = new Date().toISOString();
 writeJson(PROGRESS_KEY, progress);
+}
+
+function loadDecisions() {
+const saved = readJson(DESK_DECISIONS_KEY);
+return freshDecisions(saved && saved.rows, Date.now());
+}
+function saveDecisions(rows) {
+try {
+if (rows.length) writeJson(DESK_DECISIONS_KEY, { savedAt: new Date().toISOString(), rows });
+else localStorage.removeItem(DESK_DECISIONS_KEY);
+} catch (error) { /* storage blocked */ }
 }
 
 function loadSettings() {
@@ -722,6 +757,8 @@ constructor(message, options) {
 super(message);
 const o = options || {};
 this.carryOnLabel = o.carryOnLabel || 'Done it, carry on';
+// A safety question: carrying on is noted against the lead's decision.
+this.confirms = o.confirms || '';
 // A pause that asks for a decision, not a step done by hand: carrying on
 // records the answer and runs the step again, so the step still does its
 // work. Try again asks the same question again.
@@ -855,14 +892,14 @@ const closed = entries.find(({ activity }) => isLeadNumber(activity, lead.activi
 // forward so its Initial Notes box can be read.
 if (closed) await bringLeadIntoView(closed.activity);
 if (lead.activityId && activities.length && !closed && !ctx.allowOtherCustomer) {
-throw new NeedsYou(`The closed lead is not on this customer, so this may be the wrong ${lead.name}. Go back and pick the right customer, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on', onConfirm: () => { ctx.allowOtherCustomer = true; } });
+throw new NeedsYou(`The closed lead is not on this customer, so this may be the wrong ${lead.name}. Go back and pick the right customer, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on', confirms: 'Said this is the right customer', onConfirm: () => { ctx.allowOtherCustomer = true; } });
 }
 const adopted = adoptClosedLead(lead, closed && closed.activity, closedLeadPageNotes(closed && closed.activity));
 Object.assign(lead, adopted.lead);
 ctx.notesFrom = adopted.notesFrom;
 const earlier = findEarlierReset(activities, lead);
 if (earlier && !ctx.allowExisting) {
-throw new NeedsYou(`This customer already has a ${lead.campaign} lead added by hand after the closed one, so it may already be set up again. Press Skip lead to leave it, or carry on to add another.`, { carryOnLabel: 'Add another lead', onConfirm: () => { ctx.allowExisting = true; } });
+throw new NeedsYou(`This customer already has a ${lead.campaign} lead added by hand after the closed one, so it may already be set up again. Press Skip lead to leave it, or carry on to add another.`, { carryOnLabel: 'Add another lead', confirms: 'Added another lead as asked', onConfirm: () => { ctx.allowExisting = true; } });
 }
 if (earlier) return 'Adding another lead as asked';
 if (closed) return `Closed ${lead.campaign} lead found on this customer, not set up again yet`;
@@ -911,7 +948,7 @@ if (ctx.savePressed && createWindow()) {
 throw new NeedsYou('Save was pressed but the Create Activity window is still open. Check it, press Save yourself if it has not saved, then carry on once the new lead shows.');
 }
 if (ctx.savePressed) {
-throw new NeedsYou('Save was pressed but no new lead has shown. Look at the customer\'s leads: only add it again if there is no new one.', { carryOnLabel: 'No new lead there, add it again', onConfirm: () => { ctx.savePressed = false; } });
+throw new NeedsYou('Save was pressed but no new lead has shown. Look at the customer\'s leads: only add it again if there is no new one.', { carryOnLabel: 'No new lead there, add it again', confirms: 'Said no new lead was there, so it was added again', onConfirm: () => { ctx.savePressed = false; } });
 }
 }
 let modal = createWindow();
@@ -1376,7 +1413,7 @@ if (!found) throw new NeedsYou('No open Post Closure lead on this customer. Skip
 const activity = found.length === 1 ? found[0] : leadPickedByAgent(ctx, found, 'This customer has more than one open Post Closure lead.');
 const email = normalise(activity.SalesLead && activity.SalesLead.EmailAddress);
 if (lead.email && email && email !== normalise(lead.email) && !ctx.allowOtherEmail) {
-throw new NeedsYou(`This customer's email is not the one the Lead Checker checked, so this may be the wrong ${lead.name}. Skip them, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on', onConfirm: () => { ctx.allowOtherEmail = true; } });
+throw new NeedsYou(`This customer's email is not the one the Lead Checker checked, so this may be the wrong ${lead.name}. Skip them, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on', confirms: 'Said this is the right customer', onConfirm: () => { ctx.allowOtherEmail = true; } });
 }
 ctx.activity = activity;
 if (!await bringLeadIntoView(activity)) throw new NeedsYou('Open the Post Closure lead\'s tab yourself, then carry on.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
@@ -1491,7 +1528,7 @@ note = emailOnlyNoteState(box.value, lead.email, ctx.noteEmailAccepted);
 if (note.state === 'ok') return 'EO written in Call Notes with this lead\'s email';
 }
 if (note.state === 'other') {
-throw new NeedsYou(`The EO note in Call Notes has ${note.found}, but the assigned lead's email is ${lead.email}. Check which is right and correct the note.`, { carryOnLabel: 'The note is right, carry on', onConfirm: () => { ctx.noteEmailAccepted = note.found; } });
+throw new NeedsYou(`The EO note in Call Notes has ${note.found}, but the assigned lead's email is ${lead.email}. Check which is right and correct the note.`, { carryOnLabel: 'The note is right, carry on', confirms: 'Said the email in the EO note is right', onConfirm: () => { ctx.noteEmailAccepted = note.found; } });
 }
 throw new NeedsYou(`The EO note in Call Notes has no email address. Add ${lead.email || 'the customer\'s email'} after "EMAIL ONLY LEAD:" yourself.`, { carryOnLabel: 'Added it, check again', onConfirm: () => {} });
 }
@@ -1577,6 +1614,8 @@ return parts.length ? `Left as it is: ${parts.join('; ')}.` : '';
 async function runLeadSteps(lead, steps) {
 state.steps = steps;
 let outcome = 'Done';
+const confirmed = [];
+if (ui) ui.skipWhy = '';
 for (state.stepIndex = 0; state.stepIndex < steps.length;) {
 if (halted) return null;
 if (state.stopRequested) { outcome = null; break; }
@@ -1594,6 +1633,7 @@ addLog(needsYou.review ? 'Waiting for your check' : `Stopped at "${step.label}"`
 const answer = await waitForUser(needsYou, true);
 if (answer === 'retry') continue;
 if (answer === 'carry') {
+if (needsYou.confirms) confirmed.push(needsYou.confirms);
 if (needsYou.onConfirm) needsYou.onConfirm(); else state.stepIndex++;
 continue;
 }
@@ -1603,6 +1643,12 @@ state.stopRequested = true;
 break;
 }
 }
+// Clear & Stop returned above: it removes the decisions, so adds none.
+const step = steps[state.stepIndex];
+const rows = loadDecisions();
+rows.push(decisionRow(state.mode, lead, outcome || 'Stopped', step ? step.label : '', confirmed, ui ? ui.skipWhy : '', new Date().toISOString()));
+saveDecisions(freshDecisions(rows, Date.now()));
+if (ui) ui.skipWhy = '';
 return outcome;
 }
 
@@ -2024,8 +2070,10 @@ const STYLE = `
 .needs-card { border: 2px solid #f59e0b; background: #fffbeb; }
 .needs-card .who { font-size: 11.5px; color: #78350f; overflow-wrap: anywhere; }
 .needs-card h3 { margin: 0 0 4px; font-size: 14px; color: #7c2d12; }
-.needs-card p { margin: 0 0 10px; color: #451a03; font-size: 13px; }
-.needs-card .others { margin-top: 8px; justify-content: space-between; }
+.needs-card p { margin: 0 0 8px; color: #451a03; font-size: 13px; }
+.needs-card .others { margin-top: 6px; justify-content: space-between; }
+.needs-card .why { display: block; width: 100%; margin: 6px 0 0; font: inherit; font-size: 11.5px; line-height: 1.3; color: var(--text); background: #fff; border: 1px solid #e5c98b; border-radius: 8px; padding: 2px 9px; }
+.needs-card .why::placeholder { color: #8a6d3b; }
 details { background: var(--surface); border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
 summary { cursor: pointer; padding: 10px 12px; font-weight: 600; font-size: 12.5px; display: flex; justify-content: space-between; align-items: center; list-style: none; border-radius: 12px; }
 summary::-webkit-details-marker { display: none; }
@@ -2326,12 +2374,16 @@ const paused = state.paused;
 const step = paused.inLead && state.steps ? state.steps[state.stepIndex] : null;
 const who = [info.steps ? info.name : '', step ? step.label : ''].filter(Boolean).join(' · ');
 const others = [];
+const canSkip = paused.inLead && state.mode !== 'here';
 if (paused.inLead && !paused.review) others.push(btn('retry', 'Try again', 'ghost', 'small'));
-if (paused.inLead && state.mode !== 'here') others.push(btn('skip', 'Skip lead', 'ghost', 'small'));
+if (canSkip) others.push(btn('skip', 'Skip lead', 'ghost', 'small'));
+// Its text is kept in ui.skipWhy and put back by render(), so it is not
+// part of the html that decides whether the panel is redrawn.
+const whyBox = canSkip ? '<input type="text" class="why" data-role="skipWhy" maxlength="200" autocomplete="off" placeholder="Why are you skipping? (optional)" aria-label="Why are you skipping? (optional)">' : '';
 return [`<div class="card needs-card">
 <div role="alert">${who ? `<div class="who">${escapeHtml(who)}</div>` : ''}<h3>Needs you</h3><p>${escapeHtml(paused.message)}</p></div>
 ${paused.noCarry ? '' : btn('carry', paused.carryOnLabel, 'primary', 'wide')}
-<div class="row others"><span class="row">${others.join('')}</span>${btn('stop', 'Stop', 'danger', 'small')}</div>
+${whyBox}<div class="row others"><span class="row">${others.join('')}</span>${btn('stop', 'Stop', 'danger', 'small')}</div>
 </div>`,
 `<details data-section="more"${ui.moreOpen ? ' open' : ''}><summary>Steps and activity</summary><div class="fold">${info.steps ? renderSteps() : ''}</div><div class="log">${state.log.slice().reverse().map((l) => `<div>${escapeHtml(l)}</div>`).join('')}</div></details>`];
 }
@@ -2403,10 +2455,16 @@ if (html !== ui.html) {
 const body = ui.root.querySelector('.body');
 const active = ui.root.activeElement;
 const key = active && body.contains(active) ? focusKey(active) : null;
+const inWhy = !!active && body.contains(active) && active.getAttribute('data-role') === 'skipWhy';
 const scroll = body.scrollTop;
 body.innerHTML = html;
 ui.html = html;
 body.scrollTop = scroll;
+const whyBox = body.querySelector('[data-role="skipWhy"]');
+if (whyBox) {
+whyBox.value = ui.skipWhy || '';
+if (inWhy) whyBox.focus({ preventScroll: true });
+}
 // Keyboard focus stays on the same control when it is still there. A
 // carry on button with another label is another question, so it does
 // not get the focus by itself.
@@ -2512,6 +2570,7 @@ try {
 const saved = readJson(key);
 if (saved && !isFresh(saved.savedAt)) localStorage.removeItem(key);
 });
+if (readJson(DESK_DECISIONS_KEY)) saveDecisions(loadDecisions());
 // A withdrawn request stays its ten minutes, so SLA Manager sees it.
 const request = readJson(LIVE_REQUEST_KEY);
 if (request && !(Date.now() - new Date(request.at).getTime() <= REQUEST_MAX_AGE_MS)) localStorage.removeItem(LIVE_REQUEST_KEY);
@@ -2577,7 +2636,7 @@ const available = wasRunning && isAvailable();
 halted = true;
 state.stopRequested = true;
 if (resolvePause) answerPause('stop');
-try { [PROGRESS_KEY, PASTED_RESULTS_KEY, DESK_PROGRESS_KEY, DESK_RESULTS_KEY].forEach((key) => localStorage.removeItem(key)); } catch (error) { /* ignore */ }
+try { [PROGRESS_KEY, PASTED_RESULTS_KEY, DESK_PROGRESS_KEY, DESK_RESULTS_KEY, DESK_DECISIONS_KEY].forEach((key) => localStorage.removeItem(key)); } catch (error) { /* ignore */ }
 withdrawRequest();
 unload();
 window._leadResetState = null;
@@ -2696,6 +2755,9 @@ if (event.target.getAttribute && event.target.getAttribute('data-action') === 'e
 writeJson(SETTINGS_KEY, { ...(readJson(SETTINGS_KEY) || {}), emailOnlyAgent: event.target.value });
 render();
 }
+});
+root.addEventListener('input', (event) => {
+if (event.target.getAttribute && event.target.getAttribute('data-role') === 'skipWhy') ui.skipWhy = event.target.value;
 });
 root.addEventListener('toggle', (event) => {
 const section = event.target.getAttribute && event.target.getAttribute('data-section');

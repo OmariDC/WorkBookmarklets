@@ -5,11 +5,11 @@
 //
 //   node tests/lead-checker-link.e2e.mjs
 //
-// The mock page answers the real search and timeline steps, but every lead
-// ends as "customer not found" or "no sales leads": reading a lead window
-// is not mocked, so classification is covered by the built-in self-tests
-// only. GitHub calls are blocked, so no network is needed. Exit 1 on any
-// failure.
+// The mock page answers the real search and timeline steps. Every lead in
+// these batches ends as "customer not found" or "no sales leads"; the
+// customers with leads and a lead window are used by
+// tests/lead-checker-open.e2e.mjs. GitHub calls are blocked, so no network
+// is needed. Exit 1 on any failure.
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';

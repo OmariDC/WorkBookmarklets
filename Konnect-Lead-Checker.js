@@ -3163,7 +3163,7 @@ const body = lines.filter(([, v]) => v).map(([k, v]) => `<div><strong>${escapeHt
 const open = ui.isCustomerOpen(r.inputIndex);
 return `
 <div class="customer${open ? ' open' : ''}" data-key="${r.inputIndex}">
-<div class="customer-summary" role="button" tabindex="0" aria-expanded="${open}"><span style="display: flex; align-items: center; gap: 8px; overflow: hidden;">${detailsChevronIcon()}${ui.avatar(r.name, color)}<span class="customer-name" title="${escapeHtmlForUi(reason)}">${escapeHtmlForUi(r.name)}</span></span><span class="category-badge" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(verdict)}</span></div>
+<div class="customer-summary" role="button" tabindex="0" aria-expanded="${open}">${detailsChevronIcon()}${ui.avatar(r, color)}<span class="customer-main"><span class="customer-name" title="${escapeHtmlForUi(reason)}">${escapeHtmlForUi(r.name)}</span><span class="customer-badges"><span class="category-badge" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(verdict)}</span></span>${ui.openNote ? ui.openNote(r) : ''}</span></div>
 <div class="customer-body" style="display: ${open ? 'block' : 'none'};">${body}</div>
 </div>`;
 }).join('');
@@ -4065,6 +4065,158 @@ if (candidates.length === 0) return finalizeResult(result, { status: 'EXCEPTION'
 return classifyCandidates(row, session, result, candidates);
 }
 
+// ===================================================================
+// OPEN A CUSTOMER BY HAND (the initials button on a result)
+//
+// Opens one result's customer and lead on the page for a person to read.
+// It uses the run's own search and lead finding, records nothing and
+// leaves the lead window open. token stands in for the session: only its
+// cancelled flag is read.
+// ===================================================================
+
+// Set when a customer was opened by hand, so the next run step knows the
+// page is no longer on its own customer.
+let pageMovedByHand = false;
+
+// Calls find() until it returns something, loading older timeline entries
+// in between, as the run does.
+async function findWithOlderEntries(find, token) {
+let found = find();
+for (let attempt = 0; found.length === 0 && attempt < 5; attempt++) {
+if (isCancelled(token)) break;
+const scroll = await loadOlderTimelineEntries();
+found = find();
+if (scroll.status !== 'OK' || !scroll.loadedNewEntries) break;
+}
+return found;
+}
+
+function leadCandidateFromEntry(entry, referenceNow) {
+const rawTimestamp = extractTimelineTimestamp(entry);
+return { row: entry, rawTimestamp, parsed: rawTimestamp ? parseTimelineTimestamp(rawTimestamp, referenceNow) : null, leadId: extractVisibleLeadId(entry) };
+}
+
+// Opens each candidate and keeps the window open only when exactly one is
+// the row's lead, by the same check the run makes. Never settles for a
+// lead that does not validate.
+async function openOnlyValidLead(candidates, row, token) {
+if (candidates.length === 0) return { status: 'NOT_FOUND', why: '' };
+const valid = [];
+let why = '';
+for (const candidate of candidates) {
+if (isCancelled(token)) return { status: 'CANCELLED' };
+const modalState = await openLeadModal(candidate.row);
+if (isCancelled(token)) { if (modalState) await closeLeadModal(); return { status: 'CANCELLED' }; }
+if (!modalState) { why = 'the lead window did not open'; continue; }
+const ok = validateLeadCandidate(extractLeadPanelFields(modalState.panel), candidate.parsed, row).ok;
+if (ok) valid.push(candidate); else why = 'the lead window that opened did not match';
+if (!ok || candidates.length > 1) await closeLeadModal();
+}
+if (valid.length > 1) return { status: 'NOT_FOUND', why: 'more than one lead matches' };
+if (valid.length === 0) return { status: 'NOT_FOUND', why };
+if (candidates.length > 1 && !(await openLeadModal(valid[0].row))) return { status: 'NOT_FOUND', why: 'the lead window did not open' };
+return { status: 'OPEN' };
+}
+
+async function openNationalLeadForRow(row, result, token) {
+let items = [];
+const knownId = result && result.leadId ? String(result.leadId) : '';
+const ids = await findWithOlderEntries(() => {
+items = readAllTimelineItems();
+if (knownId && items.some((i) => Number(i.TimelineItemType) === 1 && String(i.LeadID) === knownId)) return [knownId];
+return findNationalLeadIds(items, row.parsedCreated);
+}, token);
+if (isCancelled(token)) return { status: 'CANCELLED' };
+const found = ids.length > 0 ? ids : findNationalLeadIdsByContact(items, parseNationalCreated(row.lastContact));
+if (found.length > 1) return { status: 'NOT_FOUND', why: 'more than one lead was created at that time' };
+const leadItem = found.length === 1 ? items.find((i) => Number(i.TimelineItemType) === 1 && String(i.LeadID) === found[0]) : null;
+if (!leadItem || !leadItem.__row) return { status: 'NOT_FOUND', why: '' };
+const modalState = await openLeadModal(leadItem.__row);
+if (isCancelled(token)) { if (modalState) await closeLeadModal(); return { status: 'CANCELLED' }; }
+if (!modalState) return { status: 'NOT_FOUND', why: 'the lead window did not open' };
+// As in the run: a window on another campaign is a different lead.
+const campaign = extractCampaignField(modalState.panel).primary || '';
+if (!nationalCampaignsMatch(campaign, row.campaign)) {
+await closeLeadModal();
+return { status: 'NOT_FOUND', why: 'the lead window that opened did not match' };
+}
+return { status: 'OPEN' };
+}
+
+// The lead a row is about, on the open timeline: the one the run recorded
+// if it is there, else by created time, then the call fallback, then the
+// Post Closure heading.
+async function openLeadForRow(row, result, token) {
+if (row.mode === 'national') return openNationalLeadForRow(row, result, token);
+const referenceNow = new Date();
+const knownId = result && result.visibleLeadId ? String(result.visibleLeadId) : '';
+let candidates = await findWithOlderEntries(() => {
+const known = knownId ? findLeadEntryByLeadId(knownId) : null;
+if (known) return [leadCandidateFromEntry(known, referenceNow)];
+if (row.mode === 'postClosureList') return findNewestPostClosureCandidates(referenceNow);
+return findMatchingLeadCandidates(row.created, referenceNow).candidates;
+}, token);
+if (isCancelled(token)) return { status: 'CANCELLED' };
+if (candidates.length === 0 && row.mode !== 'postClosureList') {
+const callFallback = await findLeadCandidateViaCallFallback(row.created, token, referenceNow);
+if (callFallback.status === 'CANCELLED') return { status: 'CANCELLED' };
+if (callFallback.status === 'OK') candidates = [callFallback.candidate];
+}
+const postClosure = /post closure processing/i.test(String(row.source || ''));
+const byHeading = () => {
+const entry = postClosure ? findLeadEntryByLeadId(findUnambiguousPostClosureLeadId()) : null;
+return entry && !candidates.some((c) => c.row === entry) ? [leadCandidateFromEntry(entry, referenceNow)] : [];
+};
+if (candidates.length === 0) candidates = byHeading();
+let opened = await openOnlyValidLead(candidates, row, token);
+if (opened.status === 'NOT_FOUND' && candidates.length > 0) {
+const retry = byHeading();
+if (retry.length > 0) opened = await openOnlyValidLead(retry, row, token);
+}
+return opened;
+}
+
+// Searches for the row's customer as the run does, opens the timeline, then
+// the lead. group is the row's group in the batch.
+async function openRowOnPage(group, row, result, token) {
+const opened = await searchAndOpenCustomer(group, token);
+if (isCancelled(token)) return { status: 'CANCELLED' };
+if (opened.status !== 'OK') return { status: 'NO_CUSTOMER', exception: opened.exception };
+if (opened.noEligibleEvents) return { status: 'TIMELINE_ONLY', why: 'there are no sales leads on the timeline' };
+const lead = await openLeadForRow(row, result, token);
+if (lead.status === 'OPEN' || lead.status === 'CANCELLED') return lead;
+return { status: 'TIMELINE_ONLY', why: lead.why || '' };
+}
+
+// Pure. The state line for each outcome.
+function openOutcomeText(row, outcome) {
+const name = row.name || 'This customer';
+if (outcome.status === 'OPEN') return `${name} is open: timeline and lead.`;
+if (outcome.status === 'TIMELINE_ONLY') {
+const created = String(row.created || '').replace(/^[A-Za-z]{3},\s*/, '');
+const which = row.mode === 'postClosureList' ? 'the newest Post Closure lead' : (created ? `the lead for ${created}` : 'the lead');
+return `${name} is open, timeline only: ${which} was not found${outcome.why ? ` (${outcome.why})` : ''}.`;
+}
+if (outcome.status === 'NO_CUSTOMER') {
+if (!outcome.exception || outcome.exception === 'SEARCH_NO_RESULTS') return `No customer found for ${row.name || 'this lead'}.`;
+return `${name} could not be opened: ${exceptionLabel(outcome.exception).toLowerCase()}.`;
+}
+return `${name} could not be opened: the tool hit an error.`;
+}
+
+runSelfTest('openOutcomeTextSelfTest', function openOutcomeTextSelfTest() {
+const failures = [];
+const check = (label, actual, expected) => { if (actual !== expected) failures.push(`${label}: expected ${expected}, got ${actual}`); };
+const row = { name: 'Sam Buyer', created: 'Tue, 10 Nov 2026 09:05' };
+check('customer and lead', openOutcomeText(row, { status: 'OPEN' }), 'Sam Buyer is open: timeline and lead.');
+check('timeline only', openOutcomeText(row, { status: 'TIMELINE_ONLY', why: '' }), 'Sam Buyer is open, timeline only: the lead for 10 Nov 2026 09:05 was not found.');
+check('timeline only with a cause', openOutcomeText(row, { status: 'TIMELINE_ONLY', why: 'more than one lead matches' }), 'Sam Buyer is open, timeline only: the lead for 10 Nov 2026 09:05 was not found (more than one lead matches).');
+check('Post Closure list has no time', openOutcomeText({ name: 'Sam Buyer', mode: 'postClosureList', created: '' }, { status: 'TIMELINE_ONLY' }), 'Sam Buyer is open, timeline only: the newest Post Closure lead was not found.');
+check('nobody found', openOutcomeText(row, { status: 'NO_CUSTOMER', exception: 'SEARCH_NO_RESULTS' }), 'No customer found for Sam Buyer.');
+if (failures.length > 0) console.error('KonnectLeadChecker open-outcome self-test FAILED:\n' + failures.join('\n'));
+else console.info('KonnectLeadChecker open-outcome self-test passed');
+});
+
 // Pure. What kind of check a pasted batch is, shown above the status.
 const CHECK_SCENARIOS = {
 standard: { label: 'Normal check', detail: 'SLA and Pending leads, matched by created time', color: '#2563eb' },
@@ -4318,6 +4470,13 @@ async function runStep(session, uiHandle) {
 while (klcShared.stepBusy) await sleep(100);
 klcShared.stepBusy = true;
 try {
+// A customer opened by hand since the last step: its lead window is
+// closed and this run's own customer is opened again.
+if (pageMovedByHand) {
+pageMovedByHand = false;
+session.rowInGroupIndex = 0;
+await closeLeadModal();
+}
 return await stepOnce(session, uiHandle);
 } finally {
 klcShared.stepBusy = false;
@@ -4786,7 +4945,7 @@ const icon = svgIcon('warning', 10, ' margin-right: 3px;');
 return `<span class="category-badge" title="${escapeHtmlForUi(r.exception)}" style="background: ${color}1a; color: ${readableTextColor(color)};">${icon}${escapeHtmlForUi(exceptionLabel(r.exception))}</span>`;
 }
 if (r.postClosureAction) {
-return `<span class="category-badge" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(postClosureLabel(r))}</span>`;
+return `<span class="category-badge" title="${escapeHtmlForUi(postClosureLabel(r))}" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(postClosureLabel(r))}</span>`;
 }
 const tierPill = `<span class="category-badge" style="background: ${color}1a; color: ${readableTextColor(color)};">${escapeHtmlForUi(r.tierName || 'Pending')}</span>`;
 const subcat = r.subCategory ? `<span class="subcat-label" title="${escapeHtmlForUi(r.subCategory)}">${escapeHtmlForUi(r.subCategory)}</span>` : '';
@@ -5770,10 +5929,21 @@ button.primary:hover { background: #aab238; }
 .tier-left { display: flex; align-items: center; gap: 6px; }
 .tier-count { color: var(--wb-muted); font-weight: 400; }
 .customer { border-top: 1px solid var(--wb-border-soft); }
-.customer-summary { padding: 5px 8px 5px 20px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.customer-summary { padding: 5px 8px 5px 20px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+/* The name keeps its full width: a badge that does not fit beside it moves to a second line under it. */
+.customer-main { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; }
+.customer-badges { display: flex; align-items: center; min-width: 0; max-width: 100%; }
+.customer-badges .category-badge { white-space: normal; }
+.avatar-btn { border: none; padding: 0; margin: 0; border-radius: 50%; color: white; font-family: inherit; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0; cursor: pointer; }
+.avatar-btn:hover { filter: brightness(1.15); box-shadow: 0 0 0 2px var(--wb-surface), 0 0 0 4px var(--wb-border-strong); }
+.avatar-btn.opening { cursor: progress; box-shadow: 0 0 0 2px var(--wb-surface), 0 0 0 4px var(--wb-accent); animation: klcAvatarPulse 0.9s ease-in-out infinite alternate; }
+@keyframes klcAvatarPulse { from { opacity: 1; } to { opacity: 0.55; } }
+.open-note { flex-basis: 100%; display: block; font-size: 11px; font-weight: 600; color: var(--wb-text-2); margin-bottom: 2px; }
+.review-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.review-head .review-name { margin-bottom: 0; }
 .customer-summary .chev { transition: transform 0.15s ease; color: var(--wb-border-strong); flex-shrink: 0; }
 .customer:not(.open) > .customer-summary .chev { transform: rotate(-90deg); }
-.customer-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.customer-name { flex: 1 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .customer-body { padding: 4px 8px 8px 28px; background: var(--wb-bg); }
 .customer-body .field { margin-bottom: 3px; }
 .customer-body .field b { color: var(--wb-text-2); }
@@ -6045,6 +6215,130 @@ syncClearPasteStartVisibility();
 const detailsState = { tiers: new Set([-2, -1, 1, 2, 3, 4, 5, 6]), customers: new Set() };
 let reviewSectionOpen = false;
 
+// Opening a customer by hand from the initials on a result. openInFlight
+// is the press being worked ({ key, token }); openNote is what the state
+// line says about it. A refusal is shown for a few seconds (openNoteUntil),
+// an outcome until the next run or batch.
+let openInFlight = null;
+let openNote = '';
+let openNoteUntil = 0;
+// The result the note is about, so it also shows on that row or card: the
+// state line can be scrolled out of sight.
+let openNoteKey = null;
+const LOGGED_OUT_NOTE = 'Konnect Live is logged out. Log in, then try again.';
+const RUN_BUSY_NOTE = 'The Lead Checker is checking a batch. Pause it or wait, then try again.';
+
+function stopManualOpen() {
+if (openInFlight) { openInFlight.token.cancelled = true; openInFlight = null; }
+openNote = '';
+openNoteUntil = 0;
+}
+
+// Called at the end of every render, after the usual state label is set.
+function showOpenNote() {
+if (openNote && (openNoteUntil || (!(isRunning && !(session && session.paused)) && !manualStepBusy))) curStateEl.textContent = openNote;
+}
+
+function refuseManualOpen(text) {
+openNote = text;
+openNoteUntil = Date.now() + 5000;
+setTimeout(() => { if (!destroyed) render(); }, 5100);
+render();
+return { ok: false, lead: false, text };
+}
+
+// Opens one row's customer and lead on the page, for the initials button
+// and for SLA Manager's request alike. Refused while a run or Check one
+// lead is working. Holds the step lock while it drives the page, so it
+// never runs beside a run step, and a newer request replaces this one
+// rather than running with it. Changes no result and no position in the
+// batch. Resolves to { ok, lead, text }; text is what the state line says.
+async function openRowByHand(key, row, group, result) {
+const s = session;
+if (destroyed) return { ok: false, lead: false, text: '' };
+openNoteKey = key;
+if ((isRunning && !(s && s.paused)) || manualStepBusy || batchChangesWaiting > 0) return refuseManualOpen(RUN_BUSY_NOTE);
+if (klcShared.stepBusy && !openInFlight) return refuseManualOpen('The lead being checked is still finishing. Try again in a moment.');
+if (onLoginPage()) return refuseManualOpen(LOGGED_OUT_NOTE);
+if (openInFlight) { openInFlight.token.cancelled = true; openInFlight.token.replaced = true; }
+const mine = { key, token: { cancelled: false, loggedOut: false, replaced: false } };
+// Said when something else took the page before this one finished.
+const gaveWay = () => ({ ok: false, lead: false, text: mine.token.loggedOut ? LOGGED_OUT_NOTE : (mine.token.replaced ? 'Another customer was opened instead.' : RUN_BUSY_NOTE) });
+openInFlight = mine;
+openNote = `Opening ${row.name || 'the customer'}...`;
+openNoteUntil = 0;
+render();
+while (klcShared.stepBusy) await sleep(50);
+if (mine.token.cancelled || destroyed) return gaveWay();
+klcShared.stepBusy = true;
+pageMovedByHand = true;
+// A search on the login page would wait out every time limit, so a log
+// out ends the attempt and is said straight away.
+const loginWatch = setInterval(() => {
+if (!onLoginPage() || mine.token.cancelled) return;
+mine.token.cancelled = true;
+mine.token.loggedOut = true;
+if (openInFlight === mine) { openInFlight = null; openNote = LOGGED_OUT_NOTE; render(); }
+}, 300);
+let outcome;
+try {
+// A lead window left open by an earlier request.
+await closeLeadModal();
+outcome = await openRowOnPage(group, row, result, mine.token);
+} catch (error) {
+console.error('KonnectLeadChecker: the customer could not be opened:', errorText(error));
+outcome = { status: 'ERROR' };
+} finally {
+clearInterval(loginWatch);
+klcShared.stepBusy = false;
+}
+if (mine.token.cancelled || destroyed) return gaveWay();
+openInFlight = null;
+const loggedOut = onLoginPage();
+openNote = loggedOut ? LOGGED_OUT_NOTE : openOutcomeText(row, outcome);
+render();
+return { ok: !loggedOut && (outcome.status === 'OPEN' || outcome.status === 'TIMELINE_ONLY'), lead: !loggedOut && outcome.status === 'OPEN', text: openNote };
+}
+
+// The initials on a result. A second press on the same one while it is
+// opening does nothing.
+function openCustomerFromPanel(key) {
+const s = session;
+const row = s ? s.rows.find((r) => r.inputIndex === key) : null;
+if (!row || (openInFlight && openInFlight.key === key)) return;
+const group = s.groups.find((g) => g.rows.some((r) => r.inputIndex === key)) || { rows: [row] };
+openRowByHand(key, row, group, s.results[key] || null);
+}
+
+// SLA Manager asking for one customer to be opened. The row has a batch
+// row's fields and need not be in the batch loaded here. Answered once.
+let linkOpenCount = 0;
+function openCustomerFromLink(data) {
+const given = data.row && typeof data.row === 'object' ? data.row : {};
+const cell = (name) => String(given[name] == null ? '' : given[name]).replace(/[\t\r\n]+/g, ' ').trim();
+const fields = ['name', 'phone', 'email', 'source', 'campaign', 'created'].map(cell);
+const row = parseBatchInput(`${EXPECTED_BATCH_HEADER.join('\t')}\n${fields.join('\t')}`).rows[0];
+const answer = (reply) => linkPost(Object.assign({ type: 'workTools:opened' }, data.id == null ? {} : { id: data.id }, reply));
+if (!row || !fields.slice(0, 3).some(Boolean)) { answer({ ok: false, lead: false, text: 'No customer was given to open.' }); return; }
+openRowByHand(`link:${++linkOpenCount}`, row, { rows: [row] }, null)
+.then(answer, () => answer({ ok: false, lead: false, text: `${row.name || 'The customer'} could not be opened: the tool hit an error.` }));
+}
+
+// Capture phase, so a press on the initials never reaches the row around
+// them (which would fold it open or shut).
+[resultsBody, needsReviewSectionEl].forEach((container) => {
+container.addEventListener('click', (event) => {
+const btn = event.target && event.target.closest ? event.target.closest('.avatar-btn') : null;
+if (!btn) return;
+event.stopPropagation();
+openCustomerFromPanel(Number(btn.dataset.openKey));
+}, true);
+container.addEventListener('keydown', (event) => {
+const onAvatar = event.target && event.target.closest && event.target.closest('.avatar-btn');
+if (onAvatar && (event.key === 'Enter' || event.key === ' ')) event.stopPropagation();
+}, true);
+});
+
 function copyableField(value) {
 if (!value) return '';
 const display = escapeHtmlForUi(value);
@@ -6058,9 +6352,17 @@ if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
 return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-// Avatar uses categoryColor(r), so it always agrees with the badge.
-function renderAvatarCircle(name, colorHex, size) {
-return `<div aria-hidden="true" style="width: ${size}px; height: ${size}px; border-radius: 50%; background: ${readableTextColor(colorHex)}; color: white; font-size: ${Math.round(size * 0.4)}px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">${escapeHtmlForUi(initialsForKlc(name))}</div>`;
+// The initials are a button that opens the customer on the page. The colour
+// is categoryColor(r), so it always agrees with the badge.
+function avatarButton(r, colorHex, size) {
+const label = escapeHtmlForUi(`Open ${r.name || 'this customer'} on Konnect Live`);
+const busy = !!openInFlight && openInFlight.key === r.inputIndex;
+return `<button type="button" class="avatar-btn${busy ? ' opening' : ''}" data-open-key="${r.inputIndex}" title="${label}" aria-label="${label}"${busy ? ' aria-busy="true"' : ''} style="width: ${size}px; height: ${size}px; background: ${readableTextColor(colorHex)}; font-size: ${Math.round(size * 0.4)}px;">${escapeHtmlForUi(initialsForKlc(r.name))}</button>`;
+}
+
+function openNoteHtml(r) {
+if (!openNote || openNoteKey !== r.inputIndex) return '';
+return `<span class="open-note" role="status">${escapeHtmlForUi(openNote)}</span>`;
 }
 
 // Lets a checked lead be corrected by hand; the correction goes into
@@ -6108,9 +6410,17 @@ if (needsReview.length === 0) {
 needsReviewSectionEl.innerHTML = '';
 return;
 }
+// A redraw must not lose the place in the list or text typed in a card.
+const oldRows = needsReviewSectionEl.querySelector('.review-rows');
+const oldScroll = oldRows ? oldRows.scrollTop : 0;
+const typed = new Map();
+needsReviewSectionEl.querySelectorAll('.review-row').forEach((rowEl) => {
+typed.set(rowEl.dataset.key, [rowEl.querySelector('.review-subcategory').value, rowEl.querySelector('.review-reason').value]);
+});
 const rowsHtml = needsReview.map((r) => `
 <div class="review-row" data-key="${r.inputIndex}">
-<div class="review-name">${escapeHtmlForUi(r.name)}</div>
+<div class="review-head">${avatarButton(r, categoryColor({ tier: r.tier }), 28)}<div class="review-name">${escapeHtmlForUi(r.name)}</div></div>
+${openNoteHtml(r)}
 <div class="notes-block review-notes">${escapeHtmlForUi(r.initialNotes || '')}</div>
 ${r.tierName ? `<div class="reason">Suggested, not applied: Tier ${r.tier}, ${escapeHtmlForUi(r.tierName)}${r.subCategory ? ', ' + escapeHtmlForUi(r.subCategory) : ''}. ${escapeHtmlForUi(r.reason || '')}</div>` : ''}
 ${r.tierName ? `<div class="review-actions review-quick" role="group" aria-label="Quick decision for ${escapeHtmlForUi(r.name)}">
@@ -6132,10 +6442,14 @@ needsReviewSectionEl.innerHTML = `
 `;
 const detailsEl = needsReviewSectionEl.querySelector('details.review-section');
 if (detailsEl) detailsEl.addEventListener('toggle', () => { reviewSectionOpen = detailsEl.open; });
+const newRows = needsReviewSectionEl.querySelector('.review-rows');
+if (newRows && oldScroll) newRows.scrollTop = oldScroll;
 needsReviewSectionEl.querySelectorAll('.review-row').forEach((rowEl) => {
 const key = Number(rowEl.dataset.key);
 const subCategoryInput = rowEl.querySelector('.review-subcategory');
 const reasonInput = rowEl.querySelector('.review-reason');
+const kept = typed.get(rowEl.dataset.key);
+if (kept) { subCategoryInput.value = kept[0]; reasonInput.value = kept[1]; }
 rowEl.querySelectorAll('.review-actions button').forEach((btn) => {
 btn.addEventListener('click', () => {
 const result = session.results[key];
@@ -6152,6 +6466,12 @@ render();
 
 function render() {
 if (destroyed) return;
+if (openNote && openNoteUntil && Date.now() >= openNoteUntil) { openNote = ''; openNoteUntil = 0; }
+// The lists are rebuilt below, so the initials button that had focus is
+// found again afterwards.
+const active = root.activeElement;
+const focusedAvatar = active && active.classList && active.classList.contains('avatar-btn')
+? { key: active.dataset.openKey, scope: active.closest('.review-row') ? needsReviewSectionEl : resultsBody } : null;
 ensureBadgeAttached();
 renderNotices();
 renderVersionLine();
@@ -6174,6 +6494,7 @@ filterBarEl.classList.add('hidden');
 needsReviewSectionEl.innerHTML = '';
 updateBadgeProgress(badge, [], session);
 curStateEl.textContent = deriveRestStateLabel(session, isRunning);
+showOpenNote();
 syncButtonStates();
 renderRecentLog();
 return;
@@ -6191,7 +6512,8 @@ updateBadgeProgress(badge, orderedAll, session);
 resultsBody.innerHTML = renderNationalResultsHtml(orderedAll, nameFilterText, {
 isCustomerOpen: (key) => detailsState.customers.has(key),
 isTierOpen: (key, openByDefault) => detailsState.tiers.has(key) || openByDefault,
-avatar: (name, color) => renderAvatarCircle(name, color, 28)
+avatar: (r, color) => avatarButton(r, color, 28),
+openNote: openNoteHtml
 });
 } else {
 // Run on every render (idempotent) so duplicates show mid-run.
@@ -6266,7 +6588,7 @@ const customersHtml = rows.map((r) => {
 const open = detailsState.customers.has(r.inputIndex);
 return `
 <div class="customer${open ? ' open' : ''}" data-key="${r.inputIndex}">
-<div class="customer-summary" role="button" tabindex="0" aria-expanded="${open}"><span style="display: flex; align-items: center; gap: 8px; overflow: hidden;">${detailsChevronIcon()}${renderAvatarCircle(r.name, categoryColor(r), 28)}<span class="customer-name" title="${escapeHtmlForUi(r.initialNotes || 'No Initial Notes read yet.')}">${escapeHtmlForUi(r.name)}</span></span>${categoryBadge(r)}</div>
+<div class="customer-summary" role="button" tabindex="0" aria-expanded="${open}">${detailsChevronIcon()}${avatarButton(r, categoryColor(r), 28)}<span class="customer-main"><span class="customer-name" title="${escapeHtmlForUi(r.initialNotes || 'No Initial Notes read yet.')}">${escapeHtmlForUi(r.name)}</span><span class="customer-badges">${categoryBadge(r)}</span>${openNoteHtml(r)}</span></div>
 <div class="customer-body" style="display: ${open ? 'block' : 'none'};">${customerBodyHtml(r)}</div>
 </div>
 `;
@@ -6365,6 +6687,11 @@ totalCountEl.textContent = String(session.rows.length);
 const restStateLabel = deriveRestStateLabel(session, isRunning, klcShared.stepBusy);
 // "Done: results sent to SLA Manager" says more than "Done", so it stays.
 if (restStateLabel !== null && !(restStateLabel === 'Done' && /^Done/.test(curStateEl.textContent))) curStateEl.textContent = restStateLabel;
+showOpenNote();
+if (focusedAvatar) {
+const again = focusedAvatar.scope.querySelector(`.avatar-btn[data-open-key="${focusedAvatar.key}"]`);
+if (again) again.focus({ preventScroll: true });
+}
 syncButtonStates();
 renderRecentLog();
 }
@@ -6503,6 +6830,9 @@ return said;
 // A decision made by hand on a finished linked batch changes its results,
 // so the full set is sent again under the same id.
 function linkResendAfterDecision() {
+// The decisions made by hand go back too, for any batch: the same text as
+// Copy review decisions.
+if (session) linkPost({ type: 'workTools:review', tsv: buildManualReviewDecisionsExport(session) });
 if (session && session.fromManager && session.linkEnded === 'done') linkResults(session, false);
 }
 
@@ -6522,6 +6852,7 @@ const old = session;
 if (!old) return;
 old.cancelled = true;
 old.discarded = true;
+stopManualOpen();
 linkEnd(old, reason);
 if (isRunning || manualStepBusy) {
 uiHandle.setState('Stopping the current check...');
@@ -6573,6 +6904,7 @@ pauseResumeBtn.innerHTML = svgIcon(text === 'Pause' ? 'pause' : 'play', 11) + te
 function beginRun(s) {
 if (destroyed || !s || s !== session) return;
 if (!s.headerOk) { uiHandle.setState(`This batch could not be read: ${s.headerError}`); return; }
+stopManualOpen();
 s.paused = false;
 s.cancelled = false;
 // The page may have moved since the last lead, so the customer is reopened.
@@ -6603,6 +6935,7 @@ const s = await loadFromPasteBox();
 if (!s || destroyed) return;
 if (!s.headerOk) { uiHandle.setState(`This batch could not be read: ${s.headerError}`); return; }
 if (isRunning && !s.paused) return;
+stopManualOpen();
 if (klcShared.stepBusy) {
 uiHandle.setState('Waiting for the lead being checked to finish...');
 while (klcShared.stepBusy) await sleep(100);
@@ -6667,12 +7000,14 @@ function onLinkMessage(event) {
 const manager = managerWindow();
 if (destroyed || !manager || event.origin !== MANAGER_ORIGIN || event.source !== manager) return;
 const data = event.data;
+if (data && data.type === 'workTools:open') { openCustomerFromLink(data); return; }
 if (!data || data.type !== 'workTools:batch' || typeof data.tsv !== 'string') return;
 const id = data.id == null ? null : data.id;
 const current = linkedBatch();
 // The same batch sent twice (SLA Manager did not hear the first answer).
 if (id != null && current && current.linkId === id) { linkPost({ type: 'workTools:received', id, rows: current.rows.length }); return; }
-if (isRunning || manualStepBusy || klcShared.stepBusy || batchChangesWaiting > 0) {
+// A customer being opened by hand gives way to the batch (see retireSession).
+if (isRunning || manualStepBusy || (klcShared.stepBusy && !openInFlight) || batchChangesWaiting > 0) {
 linkPost({ type: 'workTools:busy', id, runningId: current ? current.linkId : null });
 return;
 }
@@ -6748,6 +7083,7 @@ showButtonFeedback(btn, 'Clipboard blocked: paste manually', true);
 // lead already being checked finishes first.
 pauseResumeBtn.addEventListener('click', () => {
 if (!session) return;
+stopManualOpen();
 if (session.paused) {
 session.paused = false;
 if (!klcShared.stepBusy) session.rowInGroupIndex = 0;
@@ -6782,6 +7118,7 @@ if (retryCount === 0) {
 showButtonFeedback(btn, 'Nothing to retry', true);
 return;
 }
+stopManualOpen();
 // A lead still being checked after Pause would be skipped or doubled.
 if (klcShared.stepBusy) {
 uiHandle.setState('Waiting for the lead being checked to finish...');
@@ -6841,6 +7178,7 @@ reportProblem('Lead Checker', state, lines);
 // (this tool's data only) and removes the panel.
 root.getElementById('btnClearStop').addEventListener('click', () => {
 if (session) { session.cancelled = true; session.discarded = true; linkEnd(session, 'cleared'); }
+stopManualOpen();
 destroyed = true;
 clearInterval(badgeTimer);
 clearTimeout(batchWaitTimer);

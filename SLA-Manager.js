@@ -140,6 +140,7 @@ checklist: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 
 copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
 focus: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>',
 check: '<polyline points="20 6 9 17 4 12"/>',
+openOut: '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
 x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'
 };
 
@@ -1848,13 +1849,13 @@ const resetStatus = resetProgress[r.ActivityID];
 const decided = r.Decision ? `<div style="color: var(--wb-muted, #5b6577);">Checked by hand: ${escapeHtml(r.Decision)}${r.DecisionNote ? ` (${escapeHtml(r.DecisionNote)})` : ''} <button type="button" data-activity="${activity}" onclick="window._undoNationalDecision(this.dataset.activity)" style="${nationalButtonStyle(false)} padding: 1px 8px;">Undo</button></div>` : '';
 const decide = r.Verdict === 'Check' && !r.Decision ? `
 <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px;">
-<input type="text" id="_slaNatNote_${activity}" data-national-note="${activity}" placeholder="Why (optional, helps me add a rule)" aria-label="Why" style="flex: 1; min-width: 140px; padding: 4px 8px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; font-size: 11.5px;">
+<input type="text" id="_slaNatNote_${activity}" data-national-note="${activity}" placeholder="Why (optional, helps me add a rule)" aria-label="Why" style="flex: 1 1 100%; min-width: 0; box-sizing: border-box; padding: 4px 8px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; font-size: 11.5px;">
 <button type="button" data-activity="${activity}" onclick="window._decideNational(this.dataset.activity, 'Valid')" style="${nationalButtonStyle(false)}">Valid</button>
 <button type="button" data-activity="${activity}" onclick="window._decideNational(this.dataset.activity, '${RE_SETUP}')" style="${nationalButtonStyle(true)}">Needs re setup</button>
 </div>` : '';
 const notes = r.FollowUpNotes ? `<div style="color: var(--wb-muted, #5b6577);">Notes: ${escapeHtml(r.FollowUpNotes.slice(0, 160))}${r.FollowUpNotes.length > 160 ? '…' : ''}</div>` : '';
 return `
-<div style="border: 1px solid var(--wb-border, #e2e8f0); border-left: 3px solid ${r.Verdict === RE_SETUP ? '#dc2626' : '#d97706'}; border-radius: 6px; padding: 6px 8px; margin-top: 6px;">
+<div style="border: 1px solid var(--wb-border, #e2e8f0); border-left: 3px solid ${r.Verdict === RE_SETUP ? '#dc2626' : '#d97706'}; border-radius: 6px; padding: 6px 8px; margin-top: 6px; font-size: 12px; line-height: 1.45; color: var(--wb-text, #1c1c1e);">
 <div><strong>${escapeHtml(r.Verdict)}</strong>: ${escapeHtml(r.Customer)} <span style="color: var(--wb-muted, #5b6577);">(lead ${escapeHtml(r.ActivityID)})</span></div>
 <div>${escapeHtml(r.Reason)}</div>
 ${r.FinalOutcome ? `<div style="color: var(--wb-muted, #5b6577);">Final outcome: ${escapeHtml(r.FinalOutcome)}</div>` : ''}
@@ -3065,6 +3066,8 @@ style.textContent = `
 #${PANEL_ID} { --wb-bg: #f2f2f7; --wb-surface: #ffffff; --wb-text: #1c1c1e; --wb-muted: #5b6577; --wb-border: #cbd5e1; --wb-accent: #22365D; --wb-danger: #dc2626; color: var(--wb-text); }
 #${PANEL_ID} :focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; box-shadow: 0 0 0 4px #ffffff; }
 #${PANEL_BOX_ID} { max-width: calc(100vw - 32px); }
+#${PANEL_BOX_ID} button, #${PANEL_BOX_ID} input, #${PANEL_BOX_ID} select, #${PANEL_BOX_ID} textarea { font-family: inherit; line-height: inherit; }
+#_slaAvatarAssignPopover button, #_slaAvatarAssignPopover select { font-family: inherit; line-height: inherit; }
 #leadCheckerPopover { max-width: calc(100vw - 64px); box-sizing: border-box; }
 #_slaAvatarAssignPopover { max-width: calc(100vw - 16px); }
 @media (prefers-reduced-motion: reduce) {
@@ -3642,9 +3645,10 @@ const importSummary = importState.results.length === 0
 : `<div style="font-size: 12px; color: var(--wb-muted, #5b6577); padding: 8px 0 0;">${importState.results.length} result${importState.results.length === 1 ? '' : 's'} held, ${matchedCount} matched to a lead in the list below.${importState.results.length !== matchedCount ? ' The rest are not in this list (already worked, expired, or in the other queue).' : ''}</div>`;
 
 return `
-<div id="leadCheckerPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 280px; background: var(--wb-surface, white); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px;">
+<div id="leadCheckerPopover" style="display: none; position: absolute; top: 46px; right: 14px; z-index: 5; width: 280px; background: var(--wb-surface, white); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 10px; box-shadow: 0 10px 24px -8px rgba(15,23,42,0.35); padding: 12px; box-sizing: border-box; max-height: calc(100% - 56px); overflow-y: auto;">
 <div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 8px;">SEND LEADS TO THE LEAD CHECKER</div>
 ${exportSectionHtml}
+<button id="_slaCopyReviewBtn" type="button" onclick="window._copyReviewDecisions(this)" title="Copies the review decisions the Lead Checker has sent this shift, to paste where new rules are written" style="margin-top: 8px; padding: 6px 10px; background: transparent; color: var(--wb-text, #1c1c1e); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">${reviewDecisionsButtonText()}</button>
 <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 14px 0;">
 <div style="font-size: 11px; font-weight: 600; color: var(--wb-muted, #5b6577); letter-spacing: 0.3px; margin-bottom: 8px;">BRING RESULTS BACK BY HAND</div>
 <div style="font-size: 11px; color: var(--wb-muted, #5b6577); margin-bottom: 6px;">Use the "Paste Lead Checker results" button above the list, or paste here if the browser blocks the clipboard:</div>
@@ -3660,6 +3664,9 @@ window._toggleLeadCheckerPopover = function() {
 const popover = document.getElementById('leadCheckerPopover');
 if (!popover) return;
 popover.style.display = popover.style.display === 'none' ? 'block' : 'none';
+// The desk may have recorded decisions since the panel was drawn.
+const reviewButton = document.getElementById('_slaCopyReviewBtn');
+if (reviewButton) reviewButton.textContent = reviewDecisionsButtonText();
 };
 
 
@@ -3706,6 +3713,9 @@ const LIVE_REQUEST_KEY = '_workToolsLiveRequest';
 const LIVE_STATUS_KEY = '_workToolsLiveStatus';
 const LIVE_LINK_KEY = '_workToolsLinkState';
 const DESK_RESULTS_KEY = '_workToolsDeskResults';
+const REVIEW_DECISIONS_KEY = '_slaReviewDecisions';
+// Written by Lead Re setup on the agent desktop; only read here.
+const DESK_DECISIONS_KEY = '_workToolsDeskDecisions';
 const DESK_REQUEST_MAX_AGE_MS = 10 * 60 * 1000;
 // resendMs: a batch not acknowledged in this time is sent again. downMs: no
 // "ready" for this long means the Live tab has gone. lostGraceMs: how long
@@ -4156,6 +4166,137 @@ pumpLiveQueue();
 linkChanged();
 }
 
+// Pure. One lead as the Lead Checker export writes it, for either page.
+function leadCheckerRowFor(c, pageType) {
+const pending = pageType === PAGE_PENDING;
+return {
+name: tsvClean(stripTitle(c.name || '')),
+phone: tsvClean(pending ? (c.mobile || c.landline) : c.phone),
+email: tsvClean(c.email),
+source: pending ? (c.callbackType === 'Post Closure' ? 'Post Closure Processing' : '') : tsvClean(c.source),
+campaign: tsvClean(c.campaign),
+created: tsvClean(pending ? c.lastActionText : c.createdText)
+};
+}
+
+// Asks the Lead Checker to open one lead. Never opens a tab itself; the
+// focus call has to stay inside the click.
+window._openLeadOnLive = function(buttonEl) {
+if (!buttonEl) return;
+const pageType = buttonEl.dataset.pageType;
+const lead = (pageType === PAGE_PENDING ? currentPendingCustomers : currentCustomers).find((c) => c.key === buttonEl.dataset.leadKey);
+if (!lead) return;
+const avatarPopover = document.getElementById('_slaAvatarAssignPopover');
+if (avatarPopover) avatarPopover.style.display = 'none';
+if (!isLiveLinked()) { showToast('Konnect Live is not open. Press Open Konnect Live first.'); return; }
+const row = leadCheckerRowFor(lead, pageType);
+liveLink.win.postMessage({ type: 'workTools:open', row }, LIVE_ORIGIN);
+try { liveLink.win.focus(); } catch (error) { /* still sent */ }
+showToast(`Asked Konnect Live to open ${row.name}.`);
+};
+
+// ---- Review decisions the Lead Checker sends as they are made ----
+
+// Pure. Header line plus rows, each row keyed by its header.
+function parseReviewTsv(tsv) {
+const lines = String(tsv || '').split(/\r?\n/).filter((line) => line.trim() !== '');
+if (!lines.length) return { header: [], rows: [] };
+const header = lines[0].split('\t').map((h) => h.trim());
+const rows = lines.slice(1).map((line) => {
+const cells = line.split('\t');
+const row = {};
+header.forEach((h, i) => { if (h) row[h] = (cells[i] || '').trim(); });
+return row;
+});
+return { header: header.filter(Boolean), rows };
+}
+
+// Pure. Name and Created when the header has them, else the first columns.
+function reviewRowIdentity(cells, header) {
+const clean = (value) => String(value == null ? '' : value).toLowerCase().replace(/\s+/g, ' ').trim();
+const column = (wanted) => header.find((h) => h.toLowerCase() === wanted);
+const name = column('name'); const created = column('created');
+if (name && created && (cells[name] || cells[created])) return `${clean(stripTitle(cells[name] || ''))}|${clean(cells[created])}`;
+return header.slice(0, 3).map((h) => clean(cells[h])).join('|');
+}
+
+// Pure. A newer decision for the same lead replaces the older one in place;
+// rows older than a shift are dropped.
+function mergeReviewDecisions(stored, incoming, nowIso) {
+const now = new Date(nowIso).getTime();
+const header = (stored && Array.isArray(stored.header) ? stored.header : []).slice();
+incoming.header.forEach((h) => { if (!header.includes(h)) header.push(h); });
+const rows = (stored && Array.isArray(stored.rows) ? stored.rows : [])
+.filter((r) => r && r.cells && now - new Date(r.at).getTime() <= STORED_CUSTOMER_DATA_MAX_AGE_MS);
+const index = new Map(rows.map((r, i) => [reviewRowIdentity(r.cells, header), i]));
+incoming.rows.forEach((cells) => {
+const key = reviewRowIdentity(cells, header);
+const entry = { at: nowIso, cells };
+if (index.has(key)) rows[index.get(key)] = entry;
+else { index.set(key, rows.length); rows.push(entry); }
+});
+return { savedAt: nowIso, header, rows };
+}
+
+// Pure. The merged set as the Lead Checker sent it: same header, one line each.
+function reviewDecisionsTsv(store) {
+return [store.header.join('\t')].concat(store.rows.map((r) => store.header.map((h) => tsvClean(r.cells[h])).join('\t'))).join('\n');
+}
+
+function loadReviewDecisions() {
+const stored = readStoredJson(REVIEW_DECISIONS_KEY);
+if (!stored || !Array.isArray(stored.rows) || !Array.isArray(stored.header)) return { header: [], rows: [] };
+if (!isStoredTimeFresh(stored.savedAt)) { removeStoredKey(REVIEW_DECISIONS_KEY); return { header: [], rows: [] }; }
+return { header: stored.header, rows: stored.rows.filter((r) => r && r.cells && isStoredTimeFresh(r.at)) };
+}
+
+function loadDeskDecisions() {
+const stored = readStoredJson(DESK_DECISIONS_KEY);
+return stored && Array.isArray(stored.rows) ? stored.rows.filter((r) => r && isStoredTimeFresh(r.at)) : [];
+}
+
+// Pure. The Lead Checker's block, a blank line, then the desk's block; a
+// side with nothing to copy is left out.
+function combinedDecisionsText(store, deskRows) {
+const blocks = [];
+if (store.rows.length) blocks.push(reviewDecisionsTsv(store));
+if (deskRows.length) blocks.push(['Run\tCustomer\tDetail\tOutcome\tStep\tWhy\tAt'].concat(deskRows.map((r) => [r.run, r.name, r.detail, r.outcome, r.step, r.why, r.at].map(tsvClean).join('\t'))).join('\n'));
+return blocks.join('\n\n');
+}
+
+function reviewDecisionsButtonText() {
+return `Copy review decisions (${loadReviewDecisions().rows.length + loadDeskDecisions().length})`;
+}
+
+function saveReviewDecisions(tsv) {
+const incoming = parseReviewTsv(tsv);
+if (!incoming.header.length) return;
+try {
+localStorage.setItem(REVIEW_DECISIONS_KEY, JSON.stringify(mergeReviewDecisions(readStoredJson(REVIEW_DECISIONS_KEY), incoming, new Date().toISOString())));
+} catch (error) { /* storage full: the Lead Checker still holds them */ }
+const button = document.getElementById('_slaCopyReviewBtn');
+if (button) button.textContent = reviewDecisionsButtonText();
+}
+
+window._copyReviewDecisions = function(buttonEl) {
+const store = loadReviewDecisions();
+const deskRows = loadDeskDecisions();
+const count = store.rows.length + deskRows.length;
+const restore = () => { buttonEl.textContent = reviewDecisionsButtonText(); };
+if (!count) {
+buttonEl.textContent = 'No review decisions yet';
+setTimeout(restore, 1200);
+return;
+}
+navigator.clipboard.writeText(combinedDecisionsText(store, deskRows)).then(() => {
+buttonEl.textContent = `✓ Copied ${count}`;
+setTimeout(restore, 1200);
+}).catch(() => {
+buttonEl.textContent = '✗ Failed';
+setTimeout(restore, 1500);
+});
+};
+
 function onLiveMessage(event) {
 if (event.origin !== LIVE_ORIGIN) return;
 const data = event.data;
@@ -4215,6 +4356,10 @@ if (!progress && id === null) { if (liveLink.running === batch) endLiveBatch(bat
 linkChanged();
 } else if (data.type === 'workTools:ended') {
 endLiveBatch(id, typeof data.reason === 'string' ? data.reason : 'done');
+} else if (data.type === 'workTools:opened') {
+showToast(typeof data.text === 'string' && data.text ? data.text : (data.ok ? 'Opened on Konnect Live.' : 'Konnect Live could not open the lead.'));
+} else if (data.type === 'workTools:review' && typeof data.tsv === 'string') {
+saveReviewDecisions(data.tsv);
 }
 }
 
@@ -4293,6 +4438,23 @@ const merged = mergeDeskResults(stored, pc.concat([{ name: 'Al Sample', email: '
 check('desk results merge by email, else the last 10 phone digits; newer wins; a shift old is dropped',
 merged.map((r) => [r.name, r.postClosureAction]), [['Jo Example', 'send back through'], ['Al Sample', 'check: needs contact?']]);
 check('with no email or phone the name is the key, title ignored', deskResultKey({ name: 'Mr  Jo Example' }) === deskResultKey({ name: 'jo example' }), true);
+check('open on Konnect Live: an SLA lead as the export writes it', leadCheckerRowFor({ name: 'Mrs Jo Example', phone: '07700 900101', email: 'jo@example.com', source: 'Customer First', campaign: 'Citroen - Enquiry - New', createdText: 'Wed, 11 Nov 2026 09:00' }, PAGE_SLA),
+{ name: 'Jo Example', phone: '07700 900101', email: 'jo@example.com', source: 'Customer First', campaign: 'Citroen - Enquiry - New', created: 'Wed, 11 Nov 2026 09:00' });
+check('open on Konnect Live: a Pending Post Closure lead, landline when there is no mobile', leadCheckerRowFor({ name: 'Al Sample', mobile: '', landline: '01632 960001', email: '', callbackType: 'Post Closure', campaign: 'General', lastActionText: 'Wed, 11 Nov 2026 08:00' }, PAGE_PENDING),
+{ name: 'Al Sample', phone: '01632 960001', email: '', source: 'Post Closure Processing', campaign: 'General', created: 'Wed, 11 Nov 2026 08:00' });
+check('open on Konnect Live: a lead not read yet sends its name', leadCheckerRowFor({ name: 'Dr Al Sample' }, PAGE_SLA).name, 'Al Sample');
+const reviewHeader = 'Name\tCreated\tDecision\tNote';
+const first = mergeReviewDecisions(null, parseReviewTsv(`${reviewHeader}\nJo Example\tWed, 11 Nov 2026 09:00\tTier 2\t\nAl Sample\tWed, 11 Nov 2026 08:00\tTier 4\tasked for a quote`), '2026-11-11T09:00:00.000Z');
+const second = mergeReviewDecisions(first, parseReviewTsv(`${reviewHeader}\nMr jo  example\tWed, 11 Nov 2026 09:00\tTier 1\tgave a time\nJo Example\tWed, 11 Nov 2026 10:30\tTier 5\t`), '2026-11-11T10:00:00.000Z');
+check('review decisions merge by name and created; newer replaces older in place', second.rows.map((r) => [r.cells.Name, r.cells.Decision]), [['Mr jo  example', 'Tier 1'], ['Al Sample', 'Tier 4'], ['Jo Example', 'Tier 5']]);
+check('review decisions copy with the same header', reviewDecisionsTsv(second).split('\n')[0] + '|' + reviewDecisionsTsv(second).split('\n').length, reviewHeader + '|4');
+const deskRow = { at: '2026-11-11T10:05:00.000Z', run: 'Post Closure', name: 'Jo Example', detail: 'Citroen - Enquiry - New', outcome: 'Skipped', step: 'Update Outcomes', why: 'already\tworked' };
+const deskBlock = 'Run\tCustomer\tDetail\tOutcome\tStep\tWhy\tAt\nPost Closure\tJo Example\tCitroen - Enquiry - New\tSkipped\tUpdate Outcomes\talready worked\t2026-11-11T10:05:00.000Z';
+check('both kinds of decision copy as two blocks with a blank line between', combinedDecisionsText(second, [deskRow]), `${reviewDecisionsTsv(second)}\n\n${deskBlock}`);
+check('desk decisions alone copy as just their block', combinedDecisionsText({ header: [], rows: [] }, [deskRow]), deskBlock);
+check('Lead Checker decisions alone copy as before', combinedDecisionsText(second, []), reviewDecisionsTsv(second));
+check('review decisions a shift old are dropped', mergeReviewDecisions(first, parseReviewTsv(`${reviewHeader}\nEve Evans\tx\tTier 3\t`), '2026-11-12T09:00:00.000Z').rows.map((r) => r.cells.Name), ['Eve Evans']);
+check('with no Name or Created the first columns are the identity', mergeReviewDecisions(mergeReviewDecisions(null, parseReviewTsv('Lead\tDecision\nA1\tValid'), '2026-11-11T09:00:00.000Z'), parseReviewTsv('Lead\tDecision\nA1\tValid\nA2\tValid'), '2026-11-11T09:05:00.000Z').rows.length, 2);
 if (failures.length > 0) {
 reportSelfTestFailure('SLA Manager live-link self-test FAILED:\n' + failures.join('\n'));
 } else {
@@ -5697,7 +5859,11 @@ console.info('SLA Manager today-summary self-test passed');
 });
 
 // Shared chrome for both pages; only the title, counts, assign section and
-// body differ.
+// body differ. The header, link line and footer never shrink; Overview and
+// Assign scroll in their own area so the list always keeps a usable height.
+// The box sets its own type so nothing is inherited from the host page.
+// The search bar's negative offset and margins cancel the list's padding, so
+// it sticks flush to the top and sides and no card shows around it.
 function renderPanelShell({ title, count, newCount, removedCount, summaryHtml, assignSectionHtml, bodyHtml, hideSearch, onTitleClick, showLeadChecker }) {
 const panelSize = getPanelSize();
 const isFull = panelSize === 'full';
@@ -5713,6 +5879,7 @@ return `
 <div id="${PANEL_BOX_ID}" data-view="${escapeHtml(title)}" style="position: fixed; ${positionStyle}
 background: var(--wb-bg, #f2f2f7); box-shadow: 0 20px 50px -12px rgba(0,0,0,0.25);
 z-index: 100000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+font-size: 13px; font-weight: 400; font-style: normal; line-height: 1.43; letter-spacing: normal; text-align: left; text-transform: none; color: var(--wb-text, #1c1c1e);
 display: flex; flex-direction: column; transition: transform 0.3s ease; ${isMinimized ? 'transform: translateX(150%);' : ''}">
 
 <div style="position: sticky; top: 0; background: #1e293b; color: white; padding: 10px 14px;
@@ -5759,16 +5926,18 @@ title="Hide the panel (click the badge in the top bar to bring it back)" aria-la
 </div>
 
 ${showLeadChecker ? renderLeadCheckerPopover() : ''}
+${((summaryHtml || '') + (assignSectionHtml || '')).trim() ? `<div id="_slaTopArea" style="flex: 0 1 auto; min-height: 0; overflow-y: auto; border-bottom: 1px solid var(--wb-border, #cbd5e1);">
 ${summaryHtml || ''}
-${assignSectionHtml}
+${assignSectionHtml || ''}
+</div>` : ''}
 
-<div class="panelContent" style="flex: 1; overflow-y: auto; padding: 20px; padding-right: 12px;">
+<div class="panelContent" style="flex: 1 1 160px; min-height: min(160px, 30vh); box-sizing: border-box; overflow-y: auto; padding: 20px; padding-right: 12px;">
 ${renderSelfTestBanner()}
 ${renderVersionLine()}
 ${renderTodaySummary()}
 ${hideSearch ? '' : `
 ${showLeadChecker ? `<button onclick="window._pasteAndClassifyLeadChecker(this)" style="width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 7px 12px; background: #eef2ff; color: #4338ca; border: 1px solid #c7d2fe; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; margin-bottom: 10px;" title="Reads the results copied from the Lead Checker off the clipboard and shows them on the lead cards">${svgIcon('copy', 13)}Paste Lead Checker results</button>` : ''}
-<div style="position: sticky; top: 0; z-index: 2; background: var(--wb-bg, #f2f2f7); padding-bottom: 10px; margin-bottom: 10px;">
+<div id="_slaSearchBar" style="position: sticky; top: -20px; z-index: 2; background: var(--wb-bg, #f2f2f7); margin: -10px -12px 10px -20px; padding: 10px 12px 10px 20px;">
 <input type="text" id="customerSearchInput" placeholder="Search by name…" oninput="window._filterCustomerSearch(this.value)"
 style="width: 100%; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; font-size: 13px; color: var(--wb-text, #1c1c1e); background: var(--wb-surface, white);">
 </div>`}
@@ -5833,6 +6002,7 @@ focusedId: active ? active.id : '',
 caret,
 scrollTop: q('.panelContent') ? q('.panelContent').scrollTop : 0,
 assignScrollTop: q('#assignSectionBody') ? q('#assignSectionBody').scrollTop : 0,
+topAreaScrollTop: q('#_slaTopArea') ? q('#_slaTopArea').scrollTop : 0,
 search: q('#customerSearchInput') ? q('#customerSearchInput').value : '',
 popoverOpen: shown(q('#leadCheckerPopover')),
 historyOpen: shown(q('#assignHistoryPanel')),
@@ -5869,6 +6039,7 @@ q('#customerSearchInput').value = state.search;
 window._filterCustomerSearch(state.search);
 }
 if (q('#assignSectionBody')) q('#assignSectionBody').scrollTop = state.assignScrollTop;
+if (q('#_slaTopArea')) q('#_slaTopArea').scrollTop = state.topAreaScrollTop || 0;
 if (q('.panelContent')) q('.panelContent').scrollTop = state.scrollTop;
 }
 
@@ -5952,7 +6123,7 @@ window._manualAssignLead(el.dataset.pageType, el.dataset.leadKey, el.value, el);
 // the next mountPanel removes it.
 const avatarPopover = document.createElement('div');
 avatarPopover.id = '_slaAvatarAssignPopover';
-avatarPopover.style.cssText = 'display: none; position: fixed; z-index: 100001; width: 190px; background: var(--wb-surface, white); border-radius: 12px; box-shadow: 0 10px 30px -6px rgba(0,0,0,0.25); padding: 10px;';
+avatarPopover.style.cssText = 'display: none; position: fixed; z-index: 100001; width: 190px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; line-height: 1.43; text-align: left; color: var(--wb-text, #1c1c1e); background: var(--wb-surface, white); border-radius: 12px; box-shadow: 0 10px 30px -6px rgba(0,0,0,0.25); padding: 10px;';
 panelElement.appendChild(avatarPopover);
 
 function closeAvatarPopover() {
@@ -5972,9 +6143,12 @@ return;
 // The avatar dropdown only assigns unassigned leads; for an assigned lead it
 // shows who has it, read-only.
 const assigned = card.dataset.assigned === '1';
-avatarPopover.innerHTML = assigned
+// The picker has its own wrapper: a failed assign redraws only that, so the
+// Open on Konnect Live entry below stays, with or without agents online.
+const assignHtml = assigned
 ? `<div style="font-size: 11px; font-weight: 700; color: var(--wb-muted, #5b6577); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 4px;">Assigned to</div><div style="font-size: 13px; color: var(--wb-text, #1c1c1e); padding: 4px 2px;">${escapeHtml(card.dataset.agentName || 'Unknown')}</div>`
-: `<div style="font-size: 11px; font-weight: 700; color: var(--wb-muted, #5b6577); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px;">Assign to</div>${renderManualAssignPicker(card.dataset.leadKey, card.dataset.pageType)}`;
+: `<div style="font-size: 11px; font-weight: 700; color: var(--wb-muted, #5b6577); text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 6px;">Assign to</div><div>${renderManualAssignPicker(card.dataset.leadKey, card.dataset.pageType)}</div>`;
+avatarPopover.innerHTML = `${assignHtml}<button type="button" class="open-on-live" data-lead-key="${escapeHtml(card.dataset.leadKey)}" data-page-type="${escapeHtml(card.dataset.pageType)}" onclick="window._openLeadOnLive(this);" title="Asks the Lead Checker to open this lead in the Konnect Live tab" style="display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box; margin-top: 10px; padding: 6px 8px; background: transparent; color: var(--wb-text, #1c1c1e); border: 1px solid var(--wb-border, #cbd5e1); border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;">${svgIcon('openOut', 13)}Open on Konnect Live</button>`;
 avatarPopover.dataset.forCard = card.dataset.leadKey;
 const rect = el.getBoundingClientRect();
 avatarPopover.style.display = 'block';
@@ -6387,6 +6561,7 @@ if (liveLink.sent && liveLink.sent.batch.from === 'manager') liveLink.sent = nul
 // its per-agent counts for the day but loses the customer names.
 removeStoredKey(LEAD_CHECKER_IMPORT_KEY);
 removeStoredKey(AGENT_QUEUE_SNAPSHOT_KEY);
+removeStoredKey(REVIEW_DECISIONS_KEY);
 try {
 const log = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]');
 if (Array.isArray(log)) localStorage.setItem(ASSIGN_LOG_KEY, JSON.stringify(log.map((e) => ({ time: e.time, agent: e.agent }))));

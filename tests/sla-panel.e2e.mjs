@@ -303,8 +303,69 @@ async function nationalDecisions() {
   await t.context.close();
 }
 
+async function openOnLiveAndLayout() {
+  console.log('\nOpen on Konnect Live from the avatar control; the compact panel keeps its header, link line and footer');
+  const t = await open();
+  await openPanel(t.page);
+  await t.page.evaluate(() => { window.OPEN_CALLS = 0; const real = window.open; window.open = (...a) => { window.OPEN_CALLS++; return real(...a); }; });
+  const avatar = (name) => `.customer-card[data-customer-name="${name}"] .avatar-circle`;
+  const entry = '#_slaAvatarAssignPopover button.open-on-live';
+  const pop = () => t.page.evaluate(() => { const p = document.getElementById('_slaAvatarAssignPopover'); const b = p.querySelector('button.open-on-live'); return { open: p.style.display !== 'none', text: p.textContent.replace(/\s+/g, ' ').trim(), select: !!p.querySelector('select.manual-assign-select'), entry: b ? b.textContent.trim() : null }; });
+  check('the cards carry no extra button', await t.page.evaluate(() => document.querySelectorAll('.customer-card button.open-on-live').length === 0));
+  await t.page.click(avatar('mrs sam buyer'));
+  let p = await pop();
+  check('the avatar still opens the assign control, now with Open on Konnect Live', p.open && p.select && /^Assign to/.test(p.text) && p.entry === 'Open on Konnect Live', p);
+  await t.page.click(entry);
+  check('not linked: says so, sends nothing and opens no tab', (await toast(t.page)) === 'Konnect Live is not open. Press Open Konnect Live first.' && await t.page.evaluate(() => window.toLive.length === 0 && window.OPEN_CALLS === 0), await toast(t.page));
+  await t.page.evaluate(() => window.fromLive({ type: 'workTools:ready', state: 'idle', batchId: null, done: 0, total: 0 }));
+  await t.page.evaluate(() => { const live = document.getElementById('live').contentWindow; window.FOCUSED = 0; live.focus = () => { window.FOCUSED++; }; });
+  await t.page.click(avatar('mrs sam buyer'));
+  await t.page.click(entry);
+  const sent = await t.page.evaluate(() => ({ messages: window.toLive.slice(), created: window.LEADS[1][4], focused: window.FOCUSED, opened: window.OPEN_CALLS }));
+  check('linked: posts the lead as the export writes it', sent.messages.length === 1 && JSON.stringify(sent.messages[0]) === JSON.stringify({ type: 'workTools:open', row: { name: 'Sam Buyer', phone: '07700900002', email: 'sam@example.com', source: 'Robins & Day Website', campaign: 'Peugeot - Test Drive Request - New (pcr_new_test_drive)', created: sent.created } }), sent.messages);
+  check('and brings the Live tab forward, opens no other tab and closes the control', sent.focused === 1 && sent.opened === 0 && !(await pop()).open, sent);
+  await t.page.evaluate(() => window.fromLive({ type: 'workTools:opened', ok: true, text: 'Opened Sam Buyer.' }));
+  check('the Lead Checker\'s answer is shown', (await toast(t.page)) === 'Opened Sam Buyer.', await toast(t.page));
+  await t.page.evaluate(() => window.fromLive({ type: 'workTools:opened', ok: false, text: 'The Lead Checker is busy with a batch. Try again when it has finished.' }));
+  check('a busy answer is shown as it is', /busy with a batch/.test(await toast(t.page)), await toast(t.page));
+  await t.page.click(avatar('miss fay fields'));
+  p = await pop();
+  check('an assigned lead: who has it, and the entry', p.open && !p.select && /^Assigned to\s*Agent Alpha/.test(p.text) && p.entry === 'Open on Konnect Live', p);
+  await t.page.click(entry);
+  check('an assigned lead opens too', await t.page.evaluate(() => window.toLive.length === 2 && window.toLive[1].row.name === 'Fay Fields'), await t.page.evaluate(() => window.toLive));
+  await t.page.evaluate(() => window._toggleZenMode());
+  await sleep(500);
+  await t.page.click(avatar('mrs sam buyer'));
+  check('List only view has the entry too', (await pop()).entry === 'Open on Konnect Live', await pop());
+  await t.page.evaluate(() => window._toggleZenMode());
+  await sleep(500);
+  await t.page.evaluate(() => { localStorage.setItem('_workToolsDeskDecisions', JSON.stringify({ savedAt: new Date().toISOString(), rows: [{ at: new Date().toISOString(), run: 'Email Only', name: 'Jo Example', detail: '', outcome: 'Done', step: '' }] })); window._toggleLeadCheckerPopover(); });
+  check('the popover counts the desk\'s decisions when it opens', await t.page.evaluate(() => document.getElementById('_slaCopyReviewBtn').textContent) === 'Copy review decisions (1)', await t.page.evaluate(() => document.getElementById('_slaCopyReviewBtn').textContent));
+  await t.page.evaluate(() => window._toggleLeadCheckerPopover());
+  // Compact size with Overview and Assign open: nothing is pushed out of the box.
+  await t.page.evaluate(() => { if (document.getElementById('_slaPanelBox').getBoundingClientRect().height >= window.innerHeight) window._togglePanelSize(); if (document.getElementById('statSummaryBody').style.display === 'none') window._toggleStatSummary(); });
+  await sleep(300);
+  const box = await t.page.evaluate(() => { const r = (el) => { const b = el.getBoundingClientRect(); return { top: Math.round(b.top), bottom: Math.round(b.bottom), height: Math.round(b.height) }; }; const panel = document.getElementById('_slaPanelBox'); const list = panel.querySelector('.panelContent'); list.scrollTop = 300; const search = document.getElementById('customerSearchInput').parentElement;
+    return { panel: r(panel), list: r(list), link: r(document.getElementById('_slaLinkLine')), footer: r(panel.lastElementChild), top: r(document.getElementById('_slaTopArea')), search: r(search), size: getComputedStyle(panel).fontSize }; });
+  check('compact: the link line and footer stay inside the panel', box.link.top >= box.list.bottom && box.footer.bottom <= box.panel.bottom && box.footer.height > 20, box);
+  check('compact: the list keeps at least 160px and Overview scrolls instead', box.list.height >= 160 && box.top.bottom <= box.list.top, box);
+  check('the search box sticks flush to the top of the list', box.search.top === box.list.top, box);
+  check('the panel sets its own type size', box.size === '13px', box.size);
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.context.close();
+  // No agents online: the picker falls back to a plain badge, the entry stays.
+  const n = await open(() => { window.angular = { element: () => ({ scope: () => ({ agents: [] }) }) }; });
+  await openPanel(n.page);
+  await n.page.evaluate(() => window.fromLive({ type: 'workTools:ready', state: 'idle', batchId: null, done: 0, total: 0 }));
+  await n.page.click('.customer-card[data-customer-name="mrs sam buyer"] .avatar-circle');
+  const none = await n.page.evaluate(() => { const p = document.getElementById('_slaAvatarAssignPopover'); const b = p.querySelector('button.open-on-live'); const state = { open: p.style.display !== 'none', select: !!p.querySelector('select'), entry: b ? b.textContent.trim() : null }; if (b) b.click(); return { ...state, sent: window.toLive.filter((m) => m.type === 'workTools:open').map((m) => m.row.name) }; });
+  check('with no agents online the entry is still there and sends', none.open && !none.select && none.entry === 'Open on Konnect Live' && none.sent.join() === 'Sam Buyer', none);
+  await n.context.close();
+}
+
 const started = Date.now();
 try {
+  await openOnLiveAndLayout();
   await popUps();
   await busyGuard();
   await resultsAndState();

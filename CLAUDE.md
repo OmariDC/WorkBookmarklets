@@ -12,6 +12,7 @@ Browser bookmarklets used by staff inside the Konnect CRM. The main tools are:
 
 - Konnect Live only answers the tab that opened it, so SLA Manager holds the one link to the Lead Checker (postMessage, every batch carries an id). Send and "Open Konnect Live" in SLA Manager open that tab.
 - Konnect Manager and the agent desktop are the same site in separate tabs. Lead Re setup asks SLA Manager for a check, and reads its progress, the link state and the Post Closure results, through shared localStorage. The key names are constants with the same name in both files.
+- SLA Manager can ask the Lead Checker to open one customer (from the control behind a lead card's initials), and the Lead Checker sends each review decision back as it is made. Lead Re setup records its own decisions in shared storage, and SLA Manager's "Copy review decisions" gathers both.
 - Each tool's Clear & Stop clears only its own data. Customer data in storage is kept for one shift (12 hours).
 - The agent desktop page must never be reloaded by a tool.
 
@@ -33,7 +34,7 @@ Where Playwright with Chromium is available, also run the browser suites for wha
 
 - `lead-reset` and `desk-runs`: Lead Re setup (Re setup, Post Closure, Email Only) on mock agent desktop pages in `tests/agent-desktop-mock/`.
 - `sla-link` and `sla-panel`: SLA Manager's side of the link and its panel.
-- `lead-checker-link`: the Lead Checker's side of the link and its run controls, on `tests/konnect-live-mock/`.
+- `lead-checker-link` and `lead-checker-open`: the Lead Checker's side of the link, its run controls and opening a customer from their initials, on `tests/konnect-live-mock/`.
 - `konnect-notes`: the real Konnect Notes script on `tests/konnect-notes-mock/`.
 - `link-all`: the three real scripts linked together on their real addresses. Run it after any change to the link.
 

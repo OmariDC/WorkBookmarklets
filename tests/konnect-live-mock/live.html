@@ -8,12 +8,18 @@ body { margin: 0; font-family: sans-serif; background: #fff; }
 nav { background: #222; height: 50px; }
 .ng-hide { display: none !important; }
 #searchForm, #loginForm { padding: 70px 20px 10px; }
+.tl-row { padding: 6px 20px; border-bottom: 1px solid #eee; }
+.modal { position: fixed; left: 40px; top: 90px; width: 440px; background: #fff; border: 1px solid #999; box-shadow: 0 8px 30px rgba(0,0,0,0.3); padding: 12px; }
 </style>
 </head>
 <body>
 <!-- A stand-in for Konnect Live, enough for the Lead Checker to search for
      a customer and open a timeline. Fictional data only.
      - An email containing "none" finds nobody.
+     - A search containing "reedwell" finds Morgan Reedwell, whose timeline
+       has two leads (one Post Closure) and a call. A search containing
+       "tavistock" finds Jo Tavistock, with one lead. Clicking a lead's icon
+       opens a lead window the Lead Checker can read; Escape closes it.
      - Any other search finds one customer whose timeline has no sales leads.
      window.mock.logOut() swaps the page for the login form; pressing Login
      brings it back. -->
@@ -31,7 +37,72 @@ nav { background: #222; height: 50px; }
 <div ng-view></div>
 <script>
 (function () {
-  const mock = window.mock = { searches: [], opened: 0, searchDelay: 120, timelineDelay: 120, loginClicks: 0 };
+  const mock = window.mock = { searches: [], opened: 0, searchDelay: 120, timelineDelay: 120, modalDelay: 80, loginClicks: 0, openedIds: [], modalOpens: [], modalCloses: 0 };
+  // The Lead Checker reads each timeline row's data the way it does on the
+  // real page, through angular.element(row).scope().item.
+  window.angular = { element: (el) => ({ scope: () => (el && el.__scope) || null }) };
+  const lead = (id, shown, iso, source, campaign, request, notes) => ({ kind: 'lead', id, shown, iso, source, campaign, request, notes });
+  const CUSTOMERS = {
+    reedwell: { id: 700200, name: 'Morgan Reedwell', phone: '07700 900321', reg: 'AB12CDE', entries: [
+      { kind: 'call', id: 1386301, shown: '10 Nov 2026 11:42', iso: '2026-11-10T11:42:00', title: 'Agent A called the customer' },
+      lead(1386301, '10 Nov 2026 09:05', '2026-11-10T09:05:00', 'Customer First', 'Enquiry - New', 'Test Drive', 'Would like to test drive a 2008 this coming Saturday.'),
+      lead(1386302, '9 Nov 2026 14:00', '2026-11-09T14:00:00', 'Post Closure Processing', 'Enquiry - Used', '', 'Customer Comments: -')
+    ] },
+    tavistock: { id: 700300, name: 'Jo Tavistock', phone: '07700 900322', reg: 'CD34EFG', entries: [
+      lead(1386400, '8 Nov 2026 11:30', '2026-11-08T11:30:00', 'Robins & Day Website', 'Peugeot - Enquiry - New', '', 'Can I come in on Saturday at 10am to see it? Also I need to ask about my warranty on the old car')
+    ] }
+  };
+  const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  // "Tue 10th Nov 2026 09:05", as the lead window shows it.
+  function windowDate(iso) {
+    const d = new Date(iso);
+    const n = d.getDate();
+    const th = n % 10 === 1 && n !== 11 ? 'st' : n % 10 === 2 && n !== 12 ? 'nd' : n % 10 === 3 && n !== 13 ? 'rd' : 'th';
+    return `${DAYS[d.getDay()]} ${n}${th} ${MONTHS[d.getMonth()]} ${d.getFullYear()} ${iso.slice(11, 16)}`;
+  }
+  function customerFor(text) {
+    const key = Object.keys(CUSTOMERS).find((k) => text.toLowerCase().includes(k));
+    return key ? CUSTOMERS[key] : { id: 700123, name: 'Sam Example', reg: 'AB12CDE', entries: [] };
+  }
+  function closeLeadWindow() {
+    const open = document.querySelector('.modal');
+    if (!open) return;
+    open.remove();
+    mock.modalCloses++;
+  }
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape') closeLeadWindow(); });
+  function showLeadWindow(customer, entry) {
+    mock.modalOpens.push(entry.id);
+    setTimeout(() => {
+      closeLeadWindow();
+      const modal = document.createElement('div');
+      modal.className = 'modal in';
+      modal.setAttribute('role', 'dialog');
+      modal.dataset.leadId = entry.id;
+      modal.innerHTML = '<ul><li><a class="nav-link">Lead Details</a></li></ul><div class="tab-pane active">'
+        + `<div><div>Date</div><footer><strong class="ng-binding">${windowDate(entry.iso)}</strong></footer></div>`
+        + `<div><div>Source</div><footer><strong class="ng-binding">${entry.source}</strong></footer></div>`
+        + `<div>Campaign<span>${entry.campaign}</span>${entry.request ? `<span>(${entry.request})</span>` : ''}</div>`
+        + `<a ng-click="navToConnectedCustomer()"><strong class="ng-binding">${customer.name}</strong> <strong class="ng-binding">(${customer.phone})</strong></a>`
+        + `<div id="txtInitialNotes">${entry.notes}</div></div>`;
+      document.body.appendChild(modal);
+    }, mock.modalDelay);
+  }
+  function timelineRow(customer, entry) {
+    const row = document.createElement('div');
+    row.className = 'row ng-scope tl-row';
+    row.setAttribute('ng-repeat', 'item in customerTimeLine');
+    if (entry.kind === 'call') {
+      row.innerHTML = `<a class="connected-customer-timeline-centre-lightblue"><i class="fa fa-phone">c</i></a> <span class="connected-customer-timeline-heading-left-lightblue">${entry.shown}</span> <span class="connected-customer-title-lightblue">${entry.title}</span>`;
+      row.__scope = { item: { TimelineItemType: 3, LeadID: entry.id, EventTime: entry.iso, Description: '', BelowLineTitle: '' } };
+      return row;
+    }
+    row.innerHTML = `<a class="connected-customer-timeline-centre-pink"><i ng-click="showDetails(item)" class="fa fa-car">o</i></a> <span class="connected-customer-timeline-heading-left-pink">${entry.shown} <span title="This is the Konnect Lead ID">(${entry.id})</span></span> <span class="connected-customer-title-pink">New Sales Lead from ${entry.source}</span>`;
+    row.__scope = { item: { TimelineItemType: 1, LeadID: entry.id, EventTime: entry.iso, Description: `New Sales Lead from ${entry.source}` } };
+    row.querySelector('i').addEventListener('click', () => showLeadWindow(customer, entry));
+    return row;
+  }
   const view = document.querySelector('[ng-view]');
   const grid = document.getElementById('grid');
   const input = document.querySelector('input[ng-model="uiSettings.searchText"]');
@@ -46,18 +117,22 @@ nav { background: #222; height: 50px; }
       grid.innerHTML = '';
       const none = /none/i.test(text);
       if (!none) {
-        grid.innerHTML = '<div role="row" row-index="0"><div col-id="CustomerName"><a ng-click="navToConnectedCustomer(700123)">Sam Example</a></div><div col-id="DealerName">Preston</div><div col-id="RegistrationNumber">AB12CDE</div><div col-id="Summary"></div></div>';
-        grid.querySelector('a').addEventListener('click', openCustomer);
+        const customer = customerFor(text);
+        grid.innerHTML = `<div role="row" row-index="0"><div col-id="CustomerName"><a ng-click="navToConnectedCustomer(${customer.id})">${customer.name}</a></div><div col-id="DealerName">Preston</div><div col-id="RegistrationNumber">${customer.reg}</div><div col-id="Summary"></div></div>`;
+        grid.querySelector('a').addEventListener('click', () => openCustomer(customer));
       }
       found.textContent = none ? '0' : '1';
       spinner.classList.add('ng-hide');
     }, mock.searchDelay);
   });
 
-  function openCustomer() {
+  function openCustomer(customer) {
     mock.opened++;
-    location.hash = '#/connectedCustomer/700123?redirectRoute=%2Fsearch';
-    view.innerHTML = '<div class="ng-scope"><div class="row timeline-editing-header">Sam Example <i title="Refreshing..." ng-show="loading" class="fa ng-hide">.</i><i title="Refresh" ng-show="!loading" class="fa ng-hide">R</i></div><div style="margin-top:80px;"></div></div>';
+    mock.openedIds.push(customer.id);
+    location.hash = `#/connectedCustomer/${customer.id}?redirectRoute=%2Fsearch`;
+    view.innerHTML = '<div class="ng-scope"><div class="row timeline-editing-header">' + customer.name + ' <i title="Refreshing..." ng-show="loading" class="fa ng-hide">.</i><i title="Refresh" ng-show="!loading" class="fa ng-hide">R</i></div><div style="margin-top:80px;"></div></div>';
+    const timeline = view.querySelector('div[style="margin-top:80px;"]');
+    customer.entries.forEach((entry) => timeline.appendChild(timelineRow(customer, entry)));
     setTimeout(() => {
       const ready = view.querySelector('i[title="Refresh"]');
       if (ready) ready.classList.remove('ng-hide');

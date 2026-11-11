@@ -291,6 +291,8 @@ async function emailOnly() {
   check('status ends on Shift Start', await page.evaluate(() => document.getElementById('statusBtn').textContent) === 'Shift Start');
   check('log says all done', out.log.some((l) => /All your Email Only leads are done/.test(l)), out.log);
   const progress = await page.evaluate(() => JSON.parse(localStorage.getItem('_leadResetDeskProgress') || 'null'));
+  const eoRows = ((await stored(page, '_workToolsDeskDecisions')) || {}).rows || [];
+  check('decisions: Dan and Eve Done, and the unassigned lead left to the agent is not one', eoRows.map((r) => [r.run, r.name, r.outcome, r.step, r.why].join('|')).join() === 'Email Only|Dan Davis|Done||,Email Only|Eve Evans|Done||', eoRows);
   check('progress saved for Dan and Eve only', progress && JSON.stringify(progress.eo) === JSON.stringify({ 'dan.davis@example.com': 'Done', 'eve.evans@example.com': 'Done' }), progress);
   check('no page errors', errors.length === 0, errors);
   await context.close();
@@ -314,6 +316,12 @@ async function postClosureOtherEmail() {
   check('carries on to the check before Finished', /Carry on to press Finished/.test(review.paused || ''), review.paused || review.log);
   check('the outcome is on the Post Closure lead only', review.events.includes('level3:jo-2:Catch All - Ongoing / Actioned by Dealer') && !review.events.some((e) => /^level\d:jo-1:/.test(e)), review.events);
   check('the note went in Post Closure Notes', review.events.includes('konnect-notes:cad'), review.events);
+  await carryOn(page);
+  await settle(page);
+  const decisions = ((await stored(page, '_workToolsDeskDecisions')) || {}).rows || [];
+  const { at, ...done } = decisions[0] || {};
+  check('the decision is recorded as Done, noting "this is the right customer"', decisions.length === 1 && !Number.isNaN(Date.parse(at)) &&
+    JSON.stringify(done) === JSON.stringify({ run: 'Post Closure', name: 'Jo Example', detail: 'CAD · Actioned by dealership', outcome: 'Done', step: '', why: 'Said this is the right customer' }), decisions);
   check('no page errors', errors.length === 0, errors);
   await context.close();
 }
@@ -337,6 +345,14 @@ async function secondLoadSkipAndStop() {
   const noNotes = await settle(page);
   check('pauses when Konnect Notes is not on the page', /Konnect Notes is not on this page/.test(noNotes.paused || ''), noNotes.paused || noNotes.log);
   check('that pause can only be tried again, skipped or stopped', noNotes.buttons.join() === 'retry,skip,stop', noNotes.buttons);
+  const whyBox = () => page.evaluate(() => {
+    const root = document.querySelector('#_leadResetPanel').shadowRoot;
+    const box = root.querySelector('.needs-card [data-role=skipWhy]');
+    return box ? { value: box.value, placeholder: box.placeholder, focused: root.activeElement === box } : null;
+  });
+  const emptyBox = await whyBox();
+  check('the pause has the optional "why" box, and it does not take the focus', emptyBox && emptyBox.placeholder === 'Why are you skipping? (optional)' && !emptyBox.focused, emptyBox);
+  await page.fill('#_leadResetPanel [data-role=skipWhy]', 'already rang in');
 
   // A fast double click of the Work Tools bookmark.
   fetched.length = 0;
@@ -363,12 +379,16 @@ async function secondLoadSkipAndStop() {
   const review = await settle(page);
   check('Try again carries on now Konnect Notes is there', /Carry on to press Finished/.test(review.paused || '') && review.events.includes('konnect-notes:cad'), review.paused || review.log);
   check('the note was written once', count(review.events, 'konnect-notes:cad') === 1, review.events);
+  check('the typed reason is still in the box after the panel was redrawn', ((await whyBox()) || {}).value === 'already rang in', await whyBox());
 
   await press(page, 'skip');
   const skipped = await settle(page);
   check('Skip lead says what was left changed', /Lead skipped\. Left as it is: the call is still open; the call outcome is "Update Outcomes \(No Call Made\)"; the CAD note was written; the lead outcome is set to Customer Hub Team > No Opportunity > Catch All - Ongoing \/ Actioned by Dealer; the next status is Shift Start\./.test(skipped.paused || ''), skipped.paused || skipped.log);
   check('Finished not pressed for the skipped lead', !skipped.events.some((e) => /^FINISH/.test(e)), skipped.events);
   check('that pause is not about a step: carry on and Stop only', skipped.buttons.join() === 'carry,stop', skipped.buttons);
+  check('no "why" box when Skip is not offered', await whyBox() === null, await whyBox());
+  const skipRows = (((await stored(page, '_workToolsDeskDecisions')) || {}).rows || []).map(({ at, ...r }) => r);
+  check('the skip is recorded with its step and the typed reason', JSON.stringify(skipRows) === JSON.stringify([{ run: 'Post Closure', name: 'Jo Example', detail: 'CAD · Actioned by dealership', outcome: 'Skipped', step: 'Check before Finished', why: 'already rang in' }]), skipRows);
   await page.click('#park');
   await carryOn(page);
   const second = await settle(page);
@@ -381,6 +401,8 @@ async function secondLoadSkipAndStop() {
   check('nothing was Finished', !stopped.events.some((e) => /^FINISH/.test(e)), stopped.events);
   const progress = await stored(page, '_leadResetDeskProgress');
   check('progress: Jo skipped, Al not marked', progress && JSON.stringify(progress.pc) === JSON.stringify({ 'jo.example@example.com': 'Skipped' }), progress);
+  const stopRow = ((((await stored(page, '_workToolsDeskDecisions')) || {}).rows || []).map(({ at, ...r }) => r))[1];
+  check('the stop is recorded against Al with its step, and no reason carried over', JSON.stringify(stopRow) === JSON.stringify({ run: 'Post Closure', name: 'Al Sample', detail: 'CAH · Email only', outcome: 'Stopped', step: 'Check before Finished', why: '' }), stopRow);
   check('no page errors', errors.length === 0, errors);
   await context.close();
 }
@@ -576,8 +598,11 @@ async function sharedStorage() {
     _slaNationalCheckResults: { results: [] },
     _workToolsDeskResults: { results: [{ ...sendBack('Jo Example', 'jo.example@example.com', '', 'Actioned by dealership'), checkedAt }, { ...sendBack('Old One', 'old.one@example.com', '', 'Email only'), checkedAt: old }] },
     _leadResetDeskProgress: { savedAt: old, pc: { 'gone@example.com': 'Done' }, eo: {} },
-    _leadResetProgress: { savedAt: old, byActivity: { 1: 'Done' } }
+    _leadResetProgress: { savedAt: old, byActivity: { 1: 'Done' } },
+    _workToolsDeskDecisions: { rows: [{ at: old, run: 'Re setup', name: 'Old One', detail: '', outcome: 'Done', step: '', why: '' }, { at: checkedAt, run: 'Re setup', name: 'Kept One', detail: '', outcome: 'Done', step: '', why: '' }] }
   });
+  const keptRows = ((await stored(page, '_workToolsDeskDecisions')) || {}).rows || [];
+  check('decisions older than 12 hours are dropped on load, newer ones kept', keptRows.map((r) => r.name).join() === 'Kept One', keptRows);
   check('its own data older than a shift is removed on load', await stored(page, '_leadResetDeskProgress') === null && await stored(page, '_leadResetProgress') === null);
   const linkLine = () => shadowText(page, '.link');
   const setLink = (value) => page.evaluate((v) => {
@@ -633,6 +658,7 @@ async function sharedStorage() {
   const withdrawn = after._workToolsLiveRequest;
   check('Clear & Stop withdraws the request: { id, at, cancelled: true }', withdrawn && withdrawn.id === request.id && withdrawn.cancelled === true && !Number.isNaN(Date.parse(withdrawn.at)) && Object.keys(withdrawn).sort().join() === 'at,cancelled,id', withdrawn);
   check('Clear & Stop clears the desk results', after._workToolsDeskResults === null);
+  check('Clear & Stop removes the decisions', await stored(page, '_workToolsDeskDecisions') === null);
   check('Clear & Stop leaves SLA Manager\'s data alone', !!after._slaLeadCheckerImportState && !!after._slaNationalCheckResults && !!after._workToolsLinkState && !!after._workToolsLiveStatus, Object.keys(after).filter((k) => !after[k]));
   await page.addScriptTag({ content: script });
   await page.waitForSelector('#_leadResetPanel [data-action=view]', { timeout: 5000 });

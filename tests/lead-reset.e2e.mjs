@@ -100,6 +100,7 @@ async function batchRun() {
     events: window.events,
     log: window._leadResetState.log,
     progress: JSON.parse(localStorage.getItem('_leadResetProgress') || 'null'),
+    decisions: (JSON.parse(localStorage.getItem('_workToolsDeskDecisions') || 'null') || {}).rows || [],
     notesAfter: window.afterClose ? window.afterClose() : undefined,
     hash: location.hash,
   }));
@@ -123,6 +124,7 @@ async function batchRun() {
   check('call parked', ev.includes('park') && out.hash === '#!/idle', { ev, hash: out.hash });
   check('Finished never pressed', !ev.includes('FINISHED-PRESSED'), ev);
   check('progress saved as Done', out.progress && out.progress.byActivity && out.progress.byActivity['70000002'] === 'Done', out.progress);
+  check('the decision is recorded: Re setup, Done, with the campaign', out.decisions.map(({ at, ...r }) => JSON.stringify(r)).join() === JSON.stringify({ run: 'Re setup', name: out.decisions[0] && out.decisions[0].name, detail: 'Vauxhall - Offer Request - Used', outcome: 'Done', step: '', why: '' }) && /Sam Buyer/.test(out.decisions[0].name), out.decisions);
   check('only the Re setup row was worked', out.progress && Object.keys(out.progress.byActivity).length === 1, out.progress);
   check('no page errors', errors.length === 0, errors);
   await context.close();
@@ -179,6 +181,7 @@ async function clearAndStop() {
   const { context, page, errors } = await openPage('index.html', '#!/idle');
   await page.evaluate((r) => localStorage.setItem('_leadResetPastedResults', JSON.stringify({ savedAt: new Date().toISOString(), results: [r] })),
     row(['national', 'Mr. Sam Buyer', '70000002', '1', 'Re setup', '', '', '', '', '', 'Vauxhall - Offer Request - Used', 'AB12CDE']));
+  await page.evaluate(() => localStorage.setItem('_workToolsDeskDecisions', JSON.stringify({ savedAt: new Date().toISOString(), rows: [{ at: new Date().toISOString(), run: 'Re setup', name: 'Jo Example', detail: '', outcome: 'Done', step: '', why: '' }] })));
   await inject(page);
   await page.click('#_leadResetPanel [data-action=start]');
   await page.waitForFunction(() => window.events.length > 1, null, { timeout: 5000 }).catch(() => {});
@@ -196,6 +199,7 @@ async function clearAndStop() {
   check('panel removed', after.panel === false);
   check('_leadResetProgress gone', after.progress === null, after.progress);
   check('_leadResetPastedResults gone', after.pasted === null, after.pasted);
+  check('_workToolsDeskDecisions gone, and the stopped run added none', await page.evaluate(() => localStorage.getItem('_workToolsDeskDecisions')) === null);
   check('window._leadResetState is null', after.state === null, after.state);
 
   await inject(page);

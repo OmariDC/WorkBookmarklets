@@ -112,6 +112,15 @@ try {
   check('SLA Manager\'s own lead card results are still its three', ((await stored(manager, '_slaLeadCheckerImportState')) || { results: [] }).results.length === 3);
   check('desk panel shows the request finished', /done|checked|finished|ended/i.test((await shadowText(desk, '.hub-status')) || ''), await shadowText(desk, '.hub-status'));
 
+  console.log('\nSLA Manager asks the Lead Checker to open a customer');
+  await manager.evaluate(() => {
+    window.__opened = [];
+    window.addEventListener('message', (event) => { if (event.data && event.data.type === 'workTools:opened') window.__opened.push(event.data); });
+    window.__workToolsLiveLink.win.postMessage({ type: 'workTools:open', row: { name: 'Nobody Here', phone: '', email: 'nobody.here@example.com', source: 'Customer First', campaign: 'Enquiry - New', created: 'Tue, 10 Nov 2026 09:05' } }, 'https://carbot.ai');
+  });
+  check('the Lead Checker answers once, in plain words', await until(manager, () => window.__opened.length === 1 && typeof window.__opened[0].text === 'string' && window.__opened[0].text.length > 0, null, 60000), await manager.evaluate(() => window.__opened));
+  check('opening a customer leaves the finished batch and the link alone', await live.evaluate(() => { const s = window.__konnectLeadChecker.getSession(); return !!(s && s.done); }) && ((await stored(manager, '_workToolsLinkState')) || {}).state === 'idle', await stored(manager, '_workToolsLinkState'));
+
   console.log('\nSLA Manager refreshed: it links back to the open Live tab');
   await manager.reload();
   await manager.addScriptTag({ content: slaScript });
