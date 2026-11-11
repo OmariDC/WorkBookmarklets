@@ -622,6 +622,10 @@ class NeedsYou extends Error {
 constructor(message, options) {
 super(message);
 this.carryOnLabel = (options && options.carryOnLabel) || 'Done it, carry on';
+// A pause that asks for a decision, not a step done by hand: carrying on
+// records the answer and runs the step again, so the step still does its
+// work. Try again asks the same question again.
+this.onConfirm = (options && options.onConfirm) || null;
 }
 }
 
@@ -745,16 +749,14 @@ const closed = entries.find(({ activity }) => isLeadNumber(activity, lead.activi
 // forward so its Initial Notes box can be read.
 if (closed) await bringLeadIntoView(closed.activity);
 if (lead.activityId && activities.length && !closed && !ctx.allowOtherCustomer) {
-ctx.allowOtherCustomer = true;
-throw new NeedsYou(`The closed lead is not on this customer, so this may be the wrong ${lead.name}. Go back and pick the right customer, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on' });
+throw new NeedsYou(`The closed lead is not on this customer, so this may be the wrong ${lead.name}. Go back and pick the right customer, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on', onConfirm: () => { ctx.allowOtherCustomer = true; } });
 }
 const adopted = adoptClosedLead(lead, closed && closed.activity, closedLeadPageNotes(closed && closed.activity));
 Object.assign(lead, adopted.lead);
 ctx.notesFrom = adopted.notesFrom;
 const earlier = findEarlierReset(activities, lead);
 if (earlier && !ctx.allowExisting) {
-ctx.allowExisting = true;
-throw new NeedsYou(`This customer already has a ${lead.campaign} lead added by hand after the closed one, so it may already be set up again. Press Skip lead to leave it, or carry on to add another.`, { carryOnLabel: 'Add another lead' });
+throw new NeedsYou(`This customer already has a ${lead.campaign} lead added by hand after the closed one, so it may already be set up again. Press Skip lead to leave it, or carry on to add another.`, { carryOnLabel: 'Add another lead', onConfirm: () => { ctx.allowExisting = true; } });
 }
 if (earlier) return 'Adding another lead as asked';
 return closed ? `Closed ${lead.campaign} lead found on this customer, not set up again yet` : 'Closed lead not checked on this customer';
@@ -833,6 +835,9 @@ return false;
 }
 
 function controlsOf(activity, selector) {
+// No lead means no controls: an unset lead would otherwise match every
+// control on the page.
+if (!activity) return [];
 return Array.from(document.querySelectorAll(selector)).filter((el) => {
 // Widgets with their own scope reach the lead through their parents.
 for (let scope = scopeOf(el), depth = 0; scope && depth < 8; scope = scope.$parent, depth++) {
@@ -1005,9 +1010,8 @@ return 'Manage Appointments opened and closed';
 async function reviewBeforePark(ctx) {
 if (!ctx.settings.reviewBeforePark) return 'Review skipped (setting off)';
 if (ctx.reviewed) return 'Checked';
-ctx.reviewed = true;
 const missed = ctx.missedFields && ctx.missedFields.length ? ` Check these by hand: ${ctx.missedFields.join(', ')}.` : '';
-throw new NeedsYou(`Check the new lead.${missed} Carry on to clear the call outcome, set Shift Start and park the call.`, { carryOnLabel: 'Looks right, park it' });
+throw new NeedsYou(`Check the new lead.${missed} Carry on to clear the call outcome, set Shift Start and park the call.`, { carryOnLabel: 'Looks right, park it', onConfirm: () => { ctx.reviewed = true; } });
 }
 
 async function parkCall() {
@@ -1122,6 +1126,7 @@ return controlsOf(activity, 'select[ng-model^="theActivity.SelectedOutcomeLevel"
 // Chooses the lead outcome one level at a time; each level's options load
 // after the one above is chosen.
 async function setLeadOutcome(activity, path) {
+if (!activity) throw new NeedsYou(`The lead was not found, so its outcome was left alone. Set it to ${path.join(' > ')} yourself, or skip this one.`);
 const first = controlsOf(activity, 'select[ng-model^="theActivity.SelectedOutcomeLevel"]')[0];
 if (first) revealSection(first);
 for (let level = 0; level < path.length; level++) {
@@ -1149,8 +1154,7 @@ return `Next status: ${status}`;
 async function reviewBeforeFinish(ctx) {
 if (!ctx.settings.reviewBeforeFinish) return 'Check skipped (setting off)';
 if (ctx.reviewed) return 'Checked';
-ctx.reviewed = true;
-throw new NeedsYou(`Check the notes and the lead outcome. Carry on to press Finished.`, { carryOnLabel: 'Looks right, press Finished' });
+throw new NeedsYou(`Check the notes and the lead outcome. Carry on to press Finished.`, { carryOnLabel: 'Looks right, press Finished', onConfirm: () => { ctx.reviewed = true; } });
 }
 
 async function pressFinished() {
@@ -1213,8 +1217,7 @@ if (found.length > 1) throw new NeedsYou('This customer has more than one open P
 const activity = found[0];
 const email = normalise(activity.SalesLead && activity.SalesLead.EmailAddress);
 if (lead.email && email && email !== normalise(lead.email) && !ctx.allowOtherEmail) {
-ctx.allowOtherEmail = true;
-throw new NeedsYou(`This customer's email is not the one the Lead Checker checked, so this may be the wrong ${lead.name}. Skip them, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on' });
+throw new NeedsYou(`This customer's email is not the one the Lead Checker checked, so this may be the wrong ${lead.name}. Skip them, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on', onConfirm: () => { ctx.allowOtherEmail = true; } });
 }
 ctx.activity = activity;
 if (!await bringLeadIntoView(activity)) throw new NeedsYou('Open the Post Closure lead\'s tab yourself, then carry on.', { carryOnLabel: 'Done, carry on' });
@@ -1386,7 +1389,10 @@ const needsYou = error instanceof NeedsYou ? error : new NeedsYou(`${step.label}
 addLog(step.run === reviewBeforePark ? 'Waiting for your check' : `Stopped at "${step.label}"`);
 const answer = await waitForUser(needsYou);
 if (answer === 'retry') continue;
-if (answer === 'carry') { state.stepIndex++; continue; }
+if (answer === 'carry') {
+if (needsYou.onConfirm) needsYou.onConfirm(); else state.stepIndex++;
+continue;
+}
 if (answer === 'skip') { outcome = 'Skipped'; break; }
 outcome = null;
 state.stopRequested = true;

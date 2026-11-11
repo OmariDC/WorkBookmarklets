@@ -175,6 +175,11 @@ async function postClosureWithReview() {
     check(`${id}: pauses before Finished`, /Carry on to press Finished/.test(paused.paused || '') && paused.carryOnLabel === 'Looks right, press Finished', paused.paused || paused.log);
     check(`${id}: Finished not pressed at the pause`, !paused.events.includes(`FINISHED:${id}`), paused.events);
     check(`${id}: outcome already set at the pause`, paused.events.includes(`level3:${id}-2:${outcome}`), paused.events);
+    // Try again at the check is not an approval: it asks again.
+    await page.click('#_leadResetPanel [data-action=retry]');
+    await page.waitForTimeout(1500);
+    const again = await settle(page);
+    check(`${id}: Try again at the check does not press Finished`, /Carry on to press Finished/.test(again.paused || '') && !again.events.includes(`FINISHED:${id}`), again.paused || again.events);
     await carryOn(page);
     await page.waitForFunction((cid) => window.events.includes(`FINISHED:${cid}`), id, { timeout: 15000 }).catch(() => {});
     check(`${id}: Finished pressed after carry on`, await page.evaluate((cid) => window.events.filter((e) => e === `FINISHED:${cid}`).length === 1, id));
@@ -258,6 +263,28 @@ async function emailOnly() {
   check('log says all done', out.log.some((l) => /All your Email Only leads are done/.test(l)), out.log);
   const progress = await page.evaluate(() => JSON.parse(localStorage.getItem('_leadResetDeskProgress') || 'null'));
   check('progress saved for Dan and Eve only', progress && JSON.stringify(progress.eo) === JSON.stringify({ 'dan.davis@example.com': 'Done', 'eve.evans@example.com': 'Done' }), progress);
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
+// A customer found by phone whose email differs: "This is them" must still
+// find the Post Closure lead, so the outcome never lands on another lead.
+async function postClosureOtherEmail() {
+  console.log('\nPost Closure, customer found by phone with another email');
+  const { context, page, errors } = await openDesk({
+    status: 'Shift Start',
+    customers: [postClosureCustomer('jo', 'Jo Example', 'jo.new@example.com', '07700 900101', '')]
+  }, { _slaLeadCheckerImportState: { results: [sendBack('Jo Example', 'jo.old@example.com', '07700 900101', 'Actioned by dealership')] } });
+  await page.click('#_leadResetPanel [data-action=view][data-view=pc]');
+  await page.click('#_leadResetPanel [data-action=startPc]');
+  const asked = await settle(page);
+  check('asks whether this is the right customer', /may be the wrong Jo Example/.test(asked.paused || '') && asked.carryOnLabel === 'This is them, carry on', asked.paused || asked.log);
+  check('nothing changed on any lead yet', !asked.events.some((e) => /^(level\d|outcome|next|FINISHED)/.test(e)), asked.events);
+  await carryOn(page);
+  const review = await settle(page);
+  check('carries on to the check before Finished', /Carry on to press Finished/.test(review.paused || ''), review.paused || review.log);
+  check('the outcome is on the Post Closure lead only', review.events.includes('level3:jo-2:Catch All - Ongoing / Actioned by Dealer') && !review.events.some((e) => /^level\d:jo-1:/.test(e)), review.events);
+  check('the note went in Post Closure Notes', review.events.includes('konnect-notes:cad'), review.events);
   check('no page errors', errors.length === 0, errors);
   await context.close();
 }
@@ -365,6 +392,7 @@ const started = Date.now();
 try {
   await postClosureNoReview();
   await postClosureWithReview();
+  await postClosureOtherEmail();
   await emailOnly();
   await parkedCallsThroughManager();
   await deskWaitsItsTurn();
