@@ -1867,6 +1867,8 @@ render();
 // make sense.
 function waitForUser(error, inLead) {
 if (halted) return Promise.resolve('stop');
+// Hidden with Alt+H: a pause brings the tools back so it is seen.
+if (window.WorkTools && window.WorkTools.show) window.WorkTools.show('Lead Re setup needs you.');
 state.paused = { message: error.message, carryOnLabel: error.carryOnLabel, noCarry: !!error.noCarry, review: !!error.review, inLead: !!inLead, choices: inLead && error.choices ? error.choices : null };
 if (ui) { ui.skipAsk = false; ui.choiceWhy = ''; }
 showPanel();

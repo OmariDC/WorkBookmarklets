@@ -44,6 +44,58 @@ if (tools.length === 0) {
 alert('Work Tools runs on Konnect Live, Konnect Manager or the agent desktop.');
 return;
 }
+// HIDE AND SHOW. Alt+H takes every tool's buttons and panels off the screen
+// and brings them back. Nothing is stopped: runs, the link and shortcuts
+// carry on. Kept for the tab in sessionStorage, as the tools redraw their
+// buttons when the page changes. A tool that needs the agent calls
+// WorkTools.show(), so a hidden pause is never missed.
+const HIDE_KEY = '_workToolsHidden';
+const HIDE_STYLE_ID = '_workToolsHideStyle';
+const HIDE_SELECTOR = ['#_slaBadge', '#_slaBadgeNavItem', '#_slaPanel', '#_slaAvatarAssignPopover', '#_slaLinkToast',
+'#_klcNavItem', '#_klcBadge', '#_klcPanelHost',
+'#_leadResetPanel', '#_leadResetButton', '#_leadResetRailSection', '#_leadResetNotice',
+'[id^="kn-"]:not(style)', '.kn-ui', '#_regCheckNotice'].join(', ');
+function toolsHidden() {
+try { return sessionStorage.getItem(HIDE_KEY) === '1'; } catch (error) { return !!document.getElementById(HIDE_STYLE_ID); }
+}
+function hideNote(text) {
+const old = document.getElementById('_workToolsHideNote');
+if (old) old.remove();
+const note = document.createElement('div');
+note.id = '_workToolsHideNote';
+note.setAttribute('role', 'status');
+note.textContent = text;
+note.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:2147483647;padding:8px 14px;border-radius:999px;background:#1c1c1e;color:#fff;font:600 12.5px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;box-shadow:0 6px 16px rgba(15,23,42,.25);';
+document.body.appendChild(note);
+setTimeout(() => note.remove(), 2500);
+}
+function setToolsHidden(hidden, quiet) {
+try { sessionStorage.setItem(HIDE_KEY, hidden ? '1' : '0'); } catch (error) { /* Still hidden for now, just not remembered. */ }
+let style = document.getElementById(HIDE_STYLE_ID);
+if (hidden && !style) {
+style = document.createElement('style');
+style.id = HIDE_STYLE_ID;
+style.textContent = `${HIDE_SELECTOR} { display: none !important; }`;
+document.head.appendChild(style);
+} else if (!hidden && style) style.remove();
+if (!quiet) hideNote(hidden ? 'Work Tools hidden. Still running. Alt+H brings them back.' : 'Work Tools showing.');
+}
+window.WorkTools.hidden = toolsHidden;
+window.WorkTools.hide = () => setToolsHidden(true);
+window.WorkTools.show = (why) => { if (toolsHidden()) { setToolsHidden(false, true); hideNote(why || 'Work Tools showing.'); } };
+window.__workToolsToggleHide = () => setToolsHidden(!toolsHidden());
+if (!window.__workToolsHideKey) {
+window.__workToolsHideKey = true;
+document.addEventListener('keydown', (event) => {
+if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (event.code === 'KeyH' || String(event.key).toLowerCase() === 'h')) {
+event.preventDefault();
+window.__workToolsToggleHide();
+}
+}, true);
+}
+// Clicking the bookmark again always brings the tools back.
+if (toolsHidden()) setToolsHidden(false, true);
+
 // A fast double click must not load anything twice: the second click is
 // dropped while the first is still fetching.
 if (Date.now() - (window.__workToolsLoadingAt || 0) < 15000) return;
