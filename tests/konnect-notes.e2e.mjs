@@ -49,21 +49,27 @@ const base = `http://localhost:${server.address().port}/`;
 const browser = await chromium.launch();
 const CAD = '**** Catch All Return Lead **** Lead has been **actioned by dealer**';
 
-// A fresh page with the real script loaded. options.booking loads it the way
-// Work Tools does; without it, the way the Konnect Tools bookmark does.
+// A fresh page with the real script loaded. options.booking (or owner) loads
+// it the way Work Tools does, with the owner flag; without it, the way the
+// Konnect Tools bookmark other staff use does.
 async function fresh(options = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
   page.errors = [];
   page.on('pageerror', (e) => page.errors.push(e.message));
+  page.consoleText = [];
+  page.on('console', (m) => page.consoleText.push(m.text()));
   page.on('dialog', (d) => d.accept());
   await page.goto(`${base}index.html${options.hash || ''}`);
   await page.evaluate(([b, o]) => {
     localStorage.setItem('konnectNotes:agentName:v1', 'Sam Tester');
     if (o.stored) localStorage.setItem('konnectNotes:workingConfig:v1', JSON.stringify(o.stored));
     window.KonnectNotesBaseUrl = b;
-    if (o.booking) window.KonnectNotesBooking = true;
-  }, [base, { stored: options.stored || null, booking: !!options.booking }]);
+    if (o.booking || o.owner) window.KonnectNotesOwner = true;
+    // The copied text is kept here, so the tests need no clipboard permission.
+    window.copied = [];
+    try { navigator.clipboard.writeText = async (text) => { window.copied.push(text); }; } catch (e) {}
+  }, [base, { stored: options.stored || null, booking: !!options.booking, owner: !!options.owner }]);
   if (options.before) await page.evaluate(options.before);
   await page.addScriptTag({ url: `${base}Konnect-Notes.js` });
   await page.waitForFunction(() => window.KonnectNotes && window.KonnectNotes.state.config, null, { timeout: 5000 });
@@ -510,6 +516,414 @@ async function layout() {
   check('no page errors on the layout pages', page.errors.length === 0, page.errors);
 }
 
+// Loaded without the owner flag, as the Konnect Tools bookmark loads it.
+async function otherStaff() {
+  console.log('\nother staff: call notes only');
+  const bookingThings = (page) => page.evaluate(() => ({
+    launcher: !!document.getElementById('kn-inbound-launcher'),
+    sheet: !!document.getElementById('kn-sheet-row-toast'),
+    buttons: Array.from(document.querySelectorAll('button')).filter((b) => /booking|diary/i.test(`${b.textContent} ${b.title} ${b.getAttribute('aria-label') || ''}`)).map((b) => b.textContent),
+    engine: !!window.KonnectBookingEngine,
+    storage: Object.keys(localStorage).filter((k) => /booking|draft|owner|inbound|diary/i.test(k)),
+    state: !!KonnectNotes.state.booking
+  }));
+  const nothing = (t) => !t.launcher && !t.sheet && t.buttons.length === 0 && !t.engine && t.storage.length === 0 && !t.state;
+  const altB = (page) => page.evaluate(() => {
+    const key = new KeyboardEvent('keydown', { key: 'b', altKey: true, bubbles: true, cancelable: true });
+    (document.activeElement || document.body).dispatchEvent(key);
+    return key.defaultPrevented;
+  });
+
+  // On a lead, with the switch an earlier version stored still in the browser.
+  let page = await fresh({ before: () => localStorage.setItem('konnectNotes:bookingAccess:v1', 'on') });
+  await page.fill('#initA', 'Web enquiry');
+  await page.click('#callA');
+  await page.keyboard.type('vm1 ');
+  await page.keyboard.type('ni ');
+  check('shorthand expands in Call Notes', await page.inputValue('#callA') === '1 - VM left -- Sam Tester\nNot interested -- Sam Tester\n', await page.inputValue('#callA'));
+  const eo = await leadResetTypes(page, '#callA', 'eo');
+  const cad = await leadResetTypes(page, '#pcA', 'cad');
+  check('the words Lead Re setup types still expand', eo.prevented && /EMAIL ONLY LEAD: jo@example\.com/.test(eo.value) && cad.prevented && /actioned by dealer/i.test(cad.value), [eo, cad]);
+  check('the call outcome is never touched', await page.evaluate(() => document.querySelector('#callOutcome').selectedIndex === 0 && window.outcomeChanges === 0) && !/Call outcome/.test(await toastText(page)));
+  await page.click('#callA');
+  check('Alt+B does nothing and is left to the page', await altB(page) === false && await page.evaluate(() => !KonnectNotes.state.open));
+  await page.click('#kn-notes-launcher-section .kn-launcher');
+  await sleep(150);
+  const panel = await page.evaluate(() => {
+    const palette = document.getElementById('kn-notes-palette');
+    return { open: KonnectNotes.state.open, view: KonnectNotes.state.view, booking: /booking/i.test(palette.textContent), quick: palette.querySelectorAll('.kn-quick').length, search: /Search all phrases/.test(palette.textContent) };
+  });
+  check('the rail button opens the phrases, with no booking entry', panel.open && panel.view === 'main' && !panel.booking && panel.quick === 5 && panel.search, panel);
+  await page.keyboard.press('b');
+  await sleep(150);
+  check('the B key in the panel opens nothing', await page.evaluate(() => KonnectNotes.state.view === 'main'));
+  await page.keyboard.press('2');
+  await sleep(100);
+  await page.keyboard.press('3');
+  await sleep(150);
+  check('a phrase picked from the list is written', (await page.inputValue('#callA')).includes('3 - Line ringing -- Sam Tester'), await page.inputValue('#callA'));
+  await page.keyboard.press('Alt+n');
+  await sleep(150);
+  await page.click('[aria-label="Phrase settings"]');
+  await sleep(150);
+  const settings = await page.evaluate(() => {
+    const palette = document.getElementById('kn-notes-palette');
+    return { names: Array.from(palette.querySelectorAll('.kn-settings-actions .kn-button')).map((b) => b.textContent), booking: Array.from(palette.querySelectorAll('*')).filter((n) => !n.closest('.kn-phrase-list')).some((n) => /booking|diary/i.test(`${n.title || ''} ${n.children.length ? '' : n.textContent}`)) };
+  });
+  check('phrase settings are all there and say nothing about booking', settings.names.join() === 'Change name,Add phrase,Export,Import,Reset to standard phrases,Stop Konnect Notes' && !settings.booking, settings);
+  await page.keyboard.press('Escape');
+  await sleep(2000);
+  let things = await bookingThings(page);
+  check('on a lead: no booking button, engine, draft or stored booking data (the old stored switch is cleared)', nothing(things), things);
+  check('KonnectNotes.openBooking() does nothing either', await page.evaluate(() => { KonnectNotes.openBooking(); return !KonnectNotes.state.open && !KonnectNotes.state.booking; }));
+  check('no page errors on a lead', page.errors.length === 0, page.errors);
+
+  // The inbound screens, with and without the Phone column button.
+  for (const withPhone of [true, false]) {
+    page = await fresh({ hash: '#!/present-inbound-call', before: `(() => {
+      document.querySelector('.tab-content').remove();
+      if (${withPhone}) {
+        const phone = document.createElement('button');
+        phone.setAttribute('ng-click', 'manualCallClick()');
+        phone.className = 'btn btn-success';
+        phone.textContent = 'Call';
+        document.body.appendChild(phone);
+      }
+    })()` });
+    await sleep(700);
+    const prevented = await altB(page);
+    await sleep(300);
+    things = await bookingThings(page);
+    check(`inbound screen ${withPhone ? 'with' : 'without'} the Phone column: no booking button, Alt+B does nothing, nothing stored`,
+      prevented === false && nothing(things) && await page.evaluate(() => !KonnectNotes.state.open), things);
+    check('no page errors on the inbound screen', page.errors.length === 0, page.errors);
+  }
+
+  // The flag is read live and never stored: set, the builder is there; gone, it is not.
+  page = await fresh();
+  await page.click('#callA');
+  await page.evaluate(() => { window.KonnectNotesOwner = true; });
+  await page.keyboard.press('Alt+b');
+  await page.waitForFunction(() => window.KonnectBookingEngine && document.querySelector('.kn-bk-actions'), null, { timeout: 5000 });
+  await page.evaluate(() => { KonnectNotes.closePalette(); delete window.KonnectNotesOwner; });
+  check('the flag is not stored anywhere', await page.evaluate(() => Object.keys(localStorage).every((k) => !/owner|bookingAccess/i.test(k))));
+  await page.click('#callA');
+  check('with the flag gone again Alt+B does nothing', await altB(page) === false && await page.evaluate(() => !KonnectNotes.state.open));
+}
+
+// The owner's helpers: on only when Work Tools has set KonnectNotesOwner.
+async function ownerHelpers() {
+  console.log('\nOwner helpers');
+  const outcome = (page) => page.evaluate(() => {
+    const select = document.querySelector('#callOutcome');
+    return { text: select ? select.options[select.selectedIndex].textContent : null, changes: window.outcomeChanges };
+  });
+  const typeNote = async (page, word) => {
+    await page.click('#callA');
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type(`${word} `);
+    await sleep(150);
+  };
+  // A weekday at least a week ahead, so the booking has no date problems.
+  const when = new Date();
+  when.setDate(when.getDate() + 7);
+  while (when.getDay() !== 2) when.setDate(when.getDate() + 1);
+  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const sheetDate = `${when.getDate()} ${months[when.getMonth()]} ${when.getFullYear()}`;
+  const appointment = { day: String(when.getDate()).padStart(2, '0'), month: String(when.getMonth() + 1).padStart(2, '0') };
+  // The lead's dealer and Vehicle of Interest, as the real lead pane has them.
+  const addLeadDetails = (dealer, purchase) => `(() => {
+    const pane = document.querySelector('#paneA');
+    pane.insertAdjacentHTML('afterbegin', '<div class="form-group"><label>Dealer</label><select ng-model="theActivity.SalesLead.DealerID"><option>(Select a Dealer)</option>${dealer ? `<option selected>${dealer}</option>` : ''}</select></div>' +
+      '<div class="panel"><div class="panel-heading">Vehicle of Interest</div><select><option>(Select)</option>${purchase ? `<option selected>${purchase}</option>` : ''}</select></div>');
+  })()`;
+  const fillBooking = (page, type) => page.evaluate(([a, t]) => {
+    const data = KonnectNotes.state.booking.data;
+    Object.assign(data, { type: t, day: a.day, month: a.month, year: '', time: '14:00' });
+    data.vehicles[0] = { make: 'Peugeot', model: '208', reg: '', descriptor: '', condition: 'used' };
+    KonnectNotes.openBooking();
+  }, [appointment, type]);
+  const openBuilder = async (page) => {
+    await page.click('#callA');
+    await page.keyboard.press('Alt+b');
+    await page.waitForFunction(() => window.KonnectBookingEngine && document.querySelector('.kn-bk-actions'), null, { timeout: 5000 });
+  };
+  const notesOnly = async (page) => {
+    await page.click('.kn-bk-actions .kn-button:has-text("Notes only")');
+    await sleep(300);
+  };
+  const sheetButtons = (page) => page.evaluate(() => ({
+    toast: !!document.getElementById('kn-sheet-row-toast'),
+    builder: !!document.querySelector('.kn-bk-sheet-row'),
+    anywhere: Array.from(document.querySelectorAll('button')).some((b) => /booking sheet/i.test(b.textContent))
+  }));
+
+  let page;
+  let now;
+  let shown;
+  // Helper 1: the call outcome follows the note.
+  page = await fresh({ owner: true });
+  await typeNote(page, 'vm1');
+  now = await outcome(page);
+  check('owner: vm sets No Answer Message Left through a change event', now.text === 'No Answer - Message Left' && now.changes === 1, now);
+  check('owner: the toast says what was set', /Call outcome set: No Answer Message Left/.test(await toastText(page)), await toastText(page));
+  await typeNote(page, 'cnr2');
+  now = await outcome(page);
+  check('owner: an outcome already chosen is not overwritten', now.text === 'No Answer - Message Left' && now.changes === 1 && /Call outcome left as No Answer - Message Left/.test(await toastText(page)), [now, await toastText(page)]);
+  await page.click('.kn-toast button:has-text("Change to No Answer No Message Left")');
+  await sleep(150);
+  now = await outcome(page);
+  check('owner: the toast button changes it', now.text === 'No Answer - No Message Left' && now.changes === 2 && /Call outcome set: No Answer No Message Left/.test(await toastText(page)), [now, await toastText(page)]);
+  await sleep(4600);
+  await typeNote(page, 'vm3');
+  check('owner: left alone again without a press', (await outcome(page)).changes === 2 && /Call outcome left as/.test(await toastText(page)), await toastText(page));
+  await page.evaluate(() => { document.querySelectorAll('.kn-toast').forEach((n) => n.remove()); document.querySelector('#callOutcome').selectedIndex = 2; window.outcomeChanges = 1; });
+  await sleep(4600);
+  await typeNote(page, 'vm3');
+  check('owner: the same outcome again says nothing', !/Call outcome/.test(await toastText(page)) && (await outcome(page)).changes === 1, await toastText(page));
+
+  page = await fresh({ owner: true });
+  await page.click('#callA');
+  await page.keyboard.press('Alt+n');
+  await sleep(150);
+  await page.keyboard.press('3');
+  await sleep(100);
+  await page.keyboard.press('1');
+  await sleep(150);
+  now = await outcome(page);
+  check('owner: Could not reach lead picked from the list sets No Answer No Message Left',
+    (await page.inputValue('#callA')).includes('1 - Could not reach lead -- Sam Tester') && now.text === 'No Answer - No Message Left' && now.changes === 1, [now, await page.inputValue('#callA')]);
+
+  for (const [word, want] of [['ring1', 'No Answer - No Message Left'], ['eng1', 'No Answer - No Message Left'], ['rf1', 'No Answer - No Message Left'],
+    ['mbf1', 'No Answer - No Message Left'], ['dvm1', 'No Answer - No Message Left'], ['lfe', 'No Answer - No Message Left'], ['book', 'No Answer - Message Left'],
+    ['ni', '(Select a Call Outcome)'], ['eo', '(Select a Call Outcome)'], ['ec', '(Select a Call Outcome)'], ['es', '(Select a Call Outcome)']]) {
+    page = await fresh({ owner: true });
+    await typeNote(page, word);
+    now = await outcome(page);
+    check(`owner: "${word}" gives ${want}`, now.text === want && (await page.inputValue('#callA')).trim() !== word, [now, await page.inputValue('#callA')]);
+  }
+  check('owner: Update Outcomes (No Call Made) is never chosen by a note', now.text !== 'Update Outcomes (No Call Made)');
+
+  page = await fresh({ owner: true, before: () => {
+    const select = document.querySelector('#callOutcome');
+    select.selectedIndex = 1;
+  } });
+  await typeNote(page, 'vm1');
+  now = await outcome(page);
+  check('owner: Spoke to Customer is kept and said', now.text === 'Spoke to Customer' && now.changes === 0 && /Call outcome left as Spoke to Customer/.test(await toastText(page)), [now, await toastText(page)]);
+
+  page = await fresh({ owner: true, before: () => document.querySelector('#callOutcome').closest('.row').remove() });
+  await typeNote(page, 'vm1');
+  check('owner: no call outcome box on the page does nothing', (await page.inputValue('#callA')).includes('1 - VM left') && !/Call outcome/.test(await toastText(page)) && page.errors.length === 0, [await toastText(page), page.errors]);
+
+  page = await fresh({ owner: true, before: () => {
+    document.querySelectorAll('#callOutcome option').forEach((o) => { if (/No Answer/.test(o.textContent)) o.remove(); });
+  } });
+  await typeNote(page, 'vm1');
+  now = await outcome(page);
+  check('owner: an outcome the box does not offer is not set', now.text === '(Select a Call Outcome)' && now.changes === 0 && !/Call outcome/.test(await toastText(page)), now);
+  await page.evaluate(() => { document.querySelector('#callOutcome').selectedIndex = 1; });
+  await typeNote(page, 'vm2');
+  check('owner: no Change button for an outcome the box does not offer', /Call outcome left as Spoke to Customer/.test(await toastText(page)) && await page.evaluate(() => !document.querySelector('.kn-toast button')), await toastText(page));
+
+  page = await fresh({ owner: true });
+  await page.fill('#initA', 'Web enquiry');
+  await page.fill('#callA', '1 - VM left -- Sam Tester');
+  await page.click('#pcA');
+  await page.keyboard.type('ca1 ');
+  await sleep(150);
+  now = await outcome(page);
+  check('owner: a Post Closure phrase leaves the call outcome alone', /Attempt 1/.test(await page.inputValue('#pcA')) && now.text === '(Select a Call Outcome)' && now.changes === 0, now);
+
+  // Helper 2: the booking sheet row, on a lead.
+  const failures = await page.evaluate(() => KonnectNotes.sheetRowSelfTest());
+  check('the sheet row self-test passes', Array.isArray(failures) && failures.length === 0, failures);
+  check('the owner example row', await page.evaluate(() => KonnectNotes.buildSheetRow({ dealer: 'Stellantis &You Preston', name: 'Jo Example', year: 2026, month: 11, day: 14,
+    diaryType: 'Face To Face', condition: 'used', inDiary: true })) === 'Preston\tJo Example\t14 November 2026\tFace to Face\tOutbound lead\tUsed\t\tY');
+
+  page = await fresh({ booking: true, owner: true, before: addLeadDetails('Stellantis &You Preston', 'Used') });
+  await openBuilder(page);
+  await fillBooking(page, 'view');
+  shown = await sheetButtons(page);
+  check('row: no button before the booking is written', !shown.toast && !shown.builder, shown);
+  await notesOnly(page);
+  shown = await sheetButtons(page);
+  check('row: the button is offered once the booking is in Call Notes', /Customer is booked in on/.test(await page.inputValue('#callA')) && shown.toast, [shown, await page.inputValue('#callA')]);
+  check('row: nothing is copied until the button is pressed', await page.evaluate(() => window.copied.length === 0));
+  await page.click('#kn-sheet-row-toast button:has-text("Copy booking sheet row")');
+  await sleep(200);
+  let copied = await page.evaluate(() => window.copied);
+  check('row: in lead booking, not in the diary', copied.length === 1 && copied[0] === `Preston\tJo Example\t${sheetDate}\tFace to Face\tOutbound lead\tUsed\t\tN`, copied);
+  check('row: one line, eight cells, no header', copied.length === 1 && !/\n/.test(copied[0]) && copied[0].split('\t').length === 8, copied);
+  check('row: the button says it was copied', /Copied/.test(await page.evaluate(() => document.querySelector('#kn-sheet-row-toast')?.textContent || '')));
+  check('row: the Source switch starts on what the tool worked out', /Source: Outbound lead/.test(await page.evaluate(() => document.querySelector('#kn-sheet-row-toast [role="switch"]')?.textContent || '')));
+  // The diary itself is not mocked: the draft is marked the way a diary run marks it.
+  await page.evaluate(([a, year]) => {
+    KonnectNotes.state.booking.diaryBooked = `${year}-${Number(a.month)}-${Number(a.day)} 14:00 Face To Face`;
+  }, [appointment, when.getFullYear()]);
+  await openBuilder(page);
+  shown = await sheetButtons(page);
+  await page.click('.kn-bk-sheet-row');
+  await sleep(200);
+  check('row: the builder button brings the toast back without copying', shown.builder && (await sheetButtons(page)).toast && await page.evaluate(() => window.copied.length === 1));
+  await page.click('#kn-sheet-row-toast button:has-text("Copy booking sheet row")');
+  await sleep(200);
+  copied = await page.evaluate(() => window.copied);
+  check('row: a booking the tool put in the diary says Y', copied.length === 2 &&
+    copied[1] === `Preston\tJo Example\t${sheetDate}\tFace to Face\tOutbound lead\tUsed\t\tY`, copied);
+  await page.click('.kn-bk-sheet-row');
+  await page.click('#kn-sheet-row-toast [role="switch"]');
+  await page.click('#kn-sheet-row-toast button:has-text("Copy booking sheet row")');
+  await sleep(200);
+  copied = await page.evaluate(() => window.copied);
+  check('row: the Source switch flips the cell and is remembered', copied.length === 3 && copied[2].split('\t')[4] === 'Inbound Call' &&
+    await page.evaluate(() => KonnectNotes.state.booking.fromInbound === true), copied);
+  await page.evaluate(() => KonnectNotes.stop());
+  check('row: Stop takes the button away', !(await sheetButtons(page)).toast);
+  check('row: never written to the console', !page.consoleText.some((t) => /Jo Example|Preston\t/.test(t)), page.consoleText);
+  check('no page errors on the lead flow', page.errors.length === 0, page.errors);
+
+  // Motability wins, a dealer not on the sheet is left empty.
+  page = await fresh({ booking: true, owner: true, before: addLeadDetails('Stellantis &You Brentford', 'Motability') });
+  await openBuilder(page);
+  await fillBooking(page, 'testdrive');
+  await notesOnly(page);
+  await page.click('#kn-sheet-row-toast button:has-text("Copy booking sheet row")');
+  await sleep(200);
+  copied = await page.evaluate(() => window.copied);
+  check('row: Motability lead, unknown dealer left empty, test drive', copied[0] === `\tJo Example\t${sheetDate}\tTest Drive\tOutbound lead\tMotability\t\tN`, copied);
+
+  // A title on the name, the lead's purchase type over a registration, and
+  // the dealers a booking is never made for.
+  for (const [dealer, message] of [['Stellantis &You Brentford', 'Brentford is service only. Change the lead\'s dealer first.'],
+    ['National', 'National is not a dealership. Change the lead\'s dealer first.'], ['Stellantis &You General Sales', 'General Sales is not a dealership. Change the lead\'s dealer first.']]) {
+    page = await fresh({ booking: true, owner: true, before: addLeadDetails(dealer, 'New') });
+    await page.evaluate(() => {
+      document.querySelector('#custName').textContent = 'Mrs. Jo Example';
+      window.diaryClicks = 0;
+      const open = document.createElement('button');
+      open.setAttribute('ng-click', 'manageSalesEventBookings(theActivity)');
+      open.textContent = 'Manage Appointments';
+      open.addEventListener('click', () => { window.diaryClicks += 1; });
+      document.querySelector('#paneA').appendChild(open);
+    });
+    await openBuilder(page);
+    await fillBooking(page, 'view');
+    await page.evaluate(() => { KonnectNotes.state.booking.data.vehicles[0].reg = 'AB12CDE'; KonnectNotes.openBooking(); });
+    await page.click('.kn-bk-actions .kn-button.kn-primary');
+    await sleep(500);
+    const status = await page.evaluate(() => ({ text: document.querySelector('.kn-bk-status-error')?.textContent || '', clicks: window.diaryClicks, booked: KonnectNotes.state.booking.diaryBooked || null }));
+    check(`guard: ${dealer} is stopped before the diary, with the reason`, status.text.includes(message) && status.clicks === 0 && !status.booked && /Customer is booked in on/.test(await page.inputValue('#callA')), status);
+    await page.click('.kn-bk-actions .kn-button:has-text("Diary only")');
+    await sleep(300);
+    check(`guard: ${dealer} is stopped on Diary only too`, await page.evaluate(() => window.diaryClicks === 0 && /Change the lead's dealer first/.test(document.querySelector('.kn-bk-status-error')?.textContent || '')));
+    if (/Brentford/.test(dealer)) {
+      await page.click('#kn-sheet-row-toast button:has-text("Copy booking sheet row")');
+      await sleep(200);
+      copied = await page.evaluate(() => window.copied);
+      check('row: title taken off the name, the lead says New although the car has a reg', copied[0] === `\tJo Example\t${sheetDate}\tFace to Face\tOutbound lead\tNew\t\tN`, copied);
+    }
+  }
+  // A National Reservation on a National dealer keeps its own message.
+  page = await fresh({ booking: true, owner: true, before: addLeadDetails('National', 'New') });
+  await openBuilder(page);
+  await fillBooking(page, 'national');
+  await page.evaluate(() => { KonnectNotes.state.booking.data.vehicles[0].reg = 'AB12CDE'; KonnectNotes.openBooking(); });
+  await page.click('.kn-bk-actions .kn-button:has-text("Diary only")');
+  await sleep(300);
+  let national = await page.evaluate(() => document.querySelector('.kn-bk-status-error')?.textContent || '');
+  check('guard: a National Reservation on National still asks for the dealer to be changed', /The lead's dealer is "National"\. Change it in the lead's dealer drop down first/.test(national), national);
+  await page.evaluate(() => { const o = document.querySelector('#paneA select[ng-model*="Dealer"] option[selected]'); o.textContent = 'Stellantis &You Brentford'; });
+  await page.click('.kn-bk-actions .kn-button:has-text("Diary only")');
+  await sleep(300);
+  national = await page.evaluate(() => document.querySelector('.kn-bk-status')?.textContent || '');
+  check('guard: a National Reservation moved to Brentford is stopped, not offered for confirmation', /Brentford is service only/.test(national) && !/Press again to confirm/.test(national), national);
+  await page.evaluate(() => { const o = document.querySelector('#paneA select[ng-model*="Dealer"] option[selected]'); o.textContent = 'Stellantis &You Preston'; });
+  await page.click('.kn-bk-actions .kn-button:has-text("Diary only")');
+  await sleep(300);
+  national = await page.evaluate(() => document.querySelector('.kn-bk-status')?.textContent || '');
+  check('guard: a National Reservation moved to a real dealer goes on to its confirmation', /National Reservation: book it at Stellantis &You Preston/.test(national), national);
+  // An inbound call carried on in a lead the customer already had: the
+  // builder was opened on the inbound screen, then an existing lead opened.
+  page = await fresh({ booking: true, owner: true, hash: '#!/present-inbound-call', before: `(() => {
+    ${addLeadDetails('Stellantis &You Preston', 'Used')};
+    window.heldTabs = document.querySelector('.tab-content').parentElement;
+    window.heldTabs.remove();
+    const phone = document.createElement('button');
+    phone.setAttribute('ng-click', 'manualCallClick()');
+    phone.className = 'btn btn-success';
+    phone.textContent = 'Call';
+    document.body.appendChild(phone);
+  })()` });
+  await sleep(400);
+  await page.click('#kn-inbound-launcher');
+  await page.waitForSelector('.kn-bk-content', { timeout: 5000 });
+  await page.evaluate(() => KonnectNotes.closePalette());
+  await page.evaluate(() => { document.body.appendChild(window.heldTabs); location.hash = '#!/call/1'; });
+  await sleep(1200);
+  await openBuilder(page);
+  await fillBooking(page, 'view');
+  await notesOnly(page);
+  check('existing lead after an inbound: the switch starts on Inbound Call', /Source: Inbound Call/.test(await page.evaluate(() => document.querySelector('#kn-sheet-row-toast [role="switch"]')?.textContent || '')));
+  await page.click('#kn-sheet-row-toast button:has-text("Copy booking sheet row")');
+  await sleep(200);
+  copied = await page.evaluate(() => window.copied);
+  check('row: an inbound call carried on in an existing lead says Inbound Call', copied[0] === `Preston\tJo Example\t${sheetDate}\tFace to Face\tInbound Call\tUsed\t\tN`, copied);
+  // The next customer on that tab is an ordinary outbound lead again.
+  await page.evaluate(() => { KonnectNotes.closePalette(); document.querySelector('#custName').textContent = 'Sam Sample'; document.querySelector('#custEmail').textContent = 'sam@example.com'; document.querySelector('#callA').value = ''; });
+  await sleep(2200);
+  await openBuilder(page);
+  await fillBooking(page, 'view');
+  await notesOnly(page);
+  check('the lead after that is outbound again', /Source: Outbound lead/.test(await page.evaluate(() => document.querySelector('#kn-sheet-row-toast [role="switch"]')?.textContent || '')));
+
+  // The inbound flow: built with no lead open, carried onto the new lead.
+  page = await fresh({ booking: true, owner: true, hash: '#!/present-inbound-call', before: `(() => {
+    window.heldTabs = document.querySelector('.tab-content').parentElement;
+    window.heldTabs.remove();
+    const phone = document.createElement('button');
+    phone.setAttribute('ng-click', 'manualCallClick()');
+    phone.className = 'btn btn-success';
+    phone.textContent = 'Call';
+    document.body.appendChild(phone);
+  })()` });
+  await sleep(400);
+  await page.click('#kn-inbound-launcher');
+  await page.waitForSelector('.kn-bk-content', { timeout: 5000 });
+  await page.fill('.kn-bk-content input[placeholder="07700 900123"]', '07700 900123');
+  await page.selectOption('.kn-bk-content select >> nth=0', { label: 'Preston' }).catch(() => page.selectOption('.kn-bk-content select >> nth=0', { index: 1 }));
+  await fillBooking(page, 'testdrive');
+  await sleep(500);
+  const inboundDealer = await page.evaluate(() => document.querySelectorAll('.kn-bk-content select')[0]?.selectedOptions[0]?.textContent || '');
+  await page.evaluate(() => KonnectNotes.closePalette());
+  check('inbound: no sheet row button while there is no lead', !(await sheetButtons(page)).anywhere);
+  await page.evaluate(() => { document.body.appendChild(window.heldTabs); location.hash = '#!/call/1'; });
+  await sleep(1200);
+  await openBuilder(page);
+  const carried = await page.evaluate(() => ({ key: KonnectNotes.state.booking.key, type: KonnectNotes.state.booking.data.type, from: KonnectNotes.state.booking.fromInbound }));
+  check('inbound: the booking is carried onto the new lead', carried.key !== 'inbound' && carried.type === 'testdrive' && carried.from === true, carried);
+  await notesOnly(page);
+  await page.click('#kn-sheet-row-toast button:has-text("Copy booking sheet row")');
+  await sleep(200);
+  copied = await page.evaluate(() => window.copied);
+  const wantDealer = /Birmingham Central/.test(inboundDealer) ? 'Birmingham Central' : 'Preston';
+  check('row: inbound booking says Inbound Call, dealer from the Customer step', copied.length === 1 &&
+    copied[0] === `${wantDealer}\tJo Example\t${sheetDate}\tTest Drive\tInbound Call\tUsed\t\tN`, [copied, inboundDealer]);
+  await page.reload();
+  await page.evaluate((b) => { window.KonnectNotesBaseUrl = b; window.KonnectNotesOwner = true; }, base);
+  await page.addScriptTag({ url: `${base}Konnect-Notes.js` });
+  await page.waitForFunction(() => window.KonnectNotes && window.KonnectNotes.state.config, null, { timeout: 5000 });
+  await sleep(300);
+  await openBuilder(page);
+  check('inbound: the source is remembered with the draft', await page.evaluate(() => KonnectNotes.state.booking.fromInbound === true && !!KonnectNotes.state.booking.inserted));
+  check('no page errors on the inbound flow', page.errors.length === 0, page.errors);
+
+  // Work Tools sets the flag before Konnect Notes loads.
+  const workTools = readFileSync(join(repo, 'Work-Tools.js'), 'utf8');
+  const flagAt = workTools.indexOf('window.KonnectNotesOwner = true');
+  check('Work Tools sets the owner flag before it loads the tools, and no other switch', flagAt > 0 && flagAt < workTools.indexOf('for (const tool of tools)') && !/KonnectNotesBooking/.test(workTools));
+}
+
 const started = Date.now();
 try {
   await layout();
@@ -518,6 +932,8 @@ try {
   await leadResetContract();
   await bookingAndRoutes();
   await pureBuilders();
+  await otherStaff();
+  await ownerHelpers();
 } catch (e) {
   failures++;
   console.log(`FAIL  test crashed: ${e && e.stack || e}`);

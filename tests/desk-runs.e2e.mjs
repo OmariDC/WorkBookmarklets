@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Browser tests for the Post Closure send back and Email Only runs in
-// Lead-Reset.js, against the mock agent desktop in
+// Browser tests for the Post Closure send back, Email Only and Send through
+// runs in Lead-Reset.js, against the mock agent desktop in
 // tests/agent-desktop-mock/desk.html. Needs Playwright with Chromium. Run
 // from the repo root:
 //
@@ -113,7 +113,7 @@ async function settle(page, timeout = 60000) {
 }
 // Clear & Stop and the stop settings are in the More menu, and Skip lead asks
 // why before it skips.
-const IN_MORE = ['clearStop', 'review', 'reviewFinish', 'changeMe'];
+const IN_MORE = ['clearStop', 'review', 'reviewFinish', 'changeMe', 'clearSt'];
 const press = async (page, action) => {
   if (IN_MORE.includes(action)) await page.click('#_leadResetPanel [data-action=more]');
   await page.click(`#_leadResetPanel [data-action=${action}]`);
@@ -977,8 +977,282 @@ async function buttonBesideKonnectNotes() {
   await context.close();
 }
 
+// ---- Send through to the dealership ----
+// SLA Manager's side is not needed: the list it saves is seeded directly.
+const SHOT_DIR = process.env.SHOT_DIR || '';
+const shot = async (page, name) => { if (SHOT_DIR) await page.screenshot({ path: join(SHOT_DIR, name) }); };
+const throughLead = (name, email, phone, subCategory, agent = 'Agent One', campaign = 'Vauxhall - Enquiry - Used') => ({ name, email, phone, campaign, created: 'Sat, 26 Sep 2026 10:00', subCategory, checkedAt: new Date().toISOString(), agent });
+const openLead = (ID, CampaignName, SourceName = 'AA Cars') => ({ ID, CampaignName, OutcomeFullHierarchy: 'None', SourceName, notes: 'Notes as they were.' });
+// A customer with one open lead, as presented (call) or parked.
+function throughCustomer(id, name, email, phone, extra = {}) {
+  const [forename, surname] = name.split(' ');
+  return { id, name, email, phone, call: { CallID: 1, Customer: { Forename: forename, Surname: surname, EmailAddress: email, MobilePhone: phone }, Dealer: { Name: 'Preston', Email: 'dealer@example.com' } },
+    leads: [openLead(`${id}-1`, 'Vauxhall - Enquiry - Used')], ...extra };
+}
+const decisionRows = async (page) => ((((await stored(page, '_workToolsDeskDecisions')) || {}).rows || []).map(({ at, ...r }) => r));
+const levelsOf = (out, customer, lead) => (((out.snapshots.find((s) => s.customer === customer) || { leads: [] }).leads.find((l) => l.ID === lead) || {}).levels || []).join(' > ');
+const DEALER = 'Customer Hub Team > Ongoing > In Progress with Dealer';
+const DEFER = 'Customer Hub Team > Ongoing > Defer to Site';
+
+// Only the owner's leads are listed; one that presents and is on the list
+// is done, one that is not is rejected, reset and left alone.
+async function sendThroughPresents() {
+  console.log('\nSend through: only my leads listed; a lead on the list, and one that is not');
+  const { context, page, errors } = await openDesk({
+    status: 'Shift Start', queue: ['ann', 'uma', 'bob'],
+    customers: [
+      throughCustomer('ann', 'Ann Able', 'ann.able@example.com', '07700 900201'),
+      throughCustomer('uma', 'Uma Unlisted', 'uma.unlisted@example.com', '07700 900299'),
+      // The Lead Checker had no email for Bob: found by phone.
+      throughCustomer('bob', 'Bob Baker', 'bob.baker@example.com', '07700 900202')
+    ]
+  }, { _workToolsSendThrough: { leads: [
+    throughLead('Ann Able', 'ann.able@example.com', '', 'Already Booked'),
+    throughLead('Bob Baker', '', '07700900202', 'Fleet'),
+    throughLead('Cat Other', 'cat.other@example.com', '', 'Send to Dealer', 'Agent Two'),
+    throughLead('Del Nobody', 'del.nobody@example.com', '', 'Complaint', '')
+  ] } });
+  await press(page, 'view][data-view=st');
+  const asked = await page.evaluate(() => { const r = document.querySelector('#_leadResetPanel').shadowRoot; return { title: (r.querySelector('.ask-me strong') || {}).textContent, names: Array.from(r.querySelectorAll('[data-action=iAm]')).map((b) => b.textContent).join(), start: !!r.querySelector('[data-action=startSt]'), rows: r.querySelectorAll('.r').length }; });
+  check('with two agents recorded it asks "Which agent are you?" before listing anything', asked.title === 'Which agent are you?' && asked.names === 'Agent One,Agent Two' && !asked.start && asked.rows === 0, asked);
+  await page.click('#_leadResetPanel [data-action=iAm][data-agent="Agent One"]');
+  const mine = await page.evaluate(() => { const r = document.querySelector('#_leadResetPanel').shadowRoot; return {
+    count: r.querySelector('.big-count').textContent.replace(/\s+/g, ' ').trim(), tab: (r.querySelector('[data-view=st] em') || {}).textContent, tabs: Array.from(r.querySelectorAll('.tab')).map((t) => t.firstChild.textContent).join(),
+    rows: Array.from(r.querySelectorAll('.r')).map((row) => `${row.querySelector('.nm').textContent}|${row.querySelector('.meta').textContent}`), text: r.querySelector('.panel').textContent, foot: r.querySelector('.foot').textContent,
+    fits: r.querySelector('.tabs').scrollWidth <= r.querySelector('.tabs').clientWidth
+  }; });
+  check('a fourth tab "Send through" with its count, and the four tabs fit the panel', mine.tabs === 'Re setup,Post Closure,Email Only,Send through' && mine.tab === '2' && mine.fits, mine);
+  check('only my two leads are listed: name, then the reason and the outcome it will set', /^2\s*to send through to the dealership$/.test(mine.count) && JSON.stringify(mine.rows) === JSON.stringify(['Ann Able|Already Booked · In Progress with Dealer', 'Bob Baker|Fleet · Defer to Site']), mine);
+  check('no other agent or their lead is mentioned, nor the unassigned one', !/Agent One|Agent Two|Cat Other|Del Nobody|Assigned to\b/.test(mine.text), mine.text);
+  check('the footer says it stops before Finished by default', /Stops before Finished on each one/.test(mine.foot), mine.foot);
+  await page.click('#_leadResetPanel [data-action=how]');
+  check('How it works says what the run does', /rejected \(so it does not dial\).*No note is written.*Post Closure tab/.test(await shadowText(page, '.how') || ''), await shadowText(page, '.how'));
+  await shot(page, 'send-through-tab-simple.png');
+  await press(page, 'reviewFinish');
+  await page.click('#_leadResetPanel [data-action=startSt]');
+
+  const atUma = await settle(page);
+  const ev1 = atUma.events;
+  check('status set to Available first', ev1[0] === 'status:Available', ev1);
+  const annCall = ev1.slice(ev1.indexOf('reject:ann'), ev1.indexOf('FINISHED:ann') + 1);
+  check('Ann: rejected, not accepted, so it does not dial', ev1.includes('reject:ann') && !ev1.includes('ACCEPT:ann'), ev1);
+  check('Ann: call outcome reset, then Update Outcomes', after(annCall, 'outcome:(Select a Call Outcome)', 'outcome:Update Outcomes (No Call Made)'), annCall);
+  check('Ann: lead outcome from the table, level by level', after(annCall, 'level1:ann-1:Customer Hub Team', 'level2:ann-1:Ongoing') && after(annCall, 'level2:ann-1:Ongoing', 'level3:ann-1:In Progress with Dealer'), annCall);
+  check('Ann: next status Available, as more are to come', annCall.includes('next:Available') && !annCall.includes('next:Shift Start'), annCall);
+  check('Ann: Finished once, with the outcome and her notes as they were', count(ev1, 'FINISHED:ann') === 1 && levelsOf(atUma, 'ann', 'ann-1') === DEALER && atUma.snapshots[0].leads[0].callNotes === 'Notes as they were.' && atUma.snapshots[0].callOutcome === 'Update Outcomes (No Call Made)', atUma.snapshots);
+  check('no note is written', !ev1.some((e) => /^konnect-notes/.test(e)), ev1);
+  check('pauses when a lead that is not on the list presents', /This lead is not one of your send through leads\. It has been rejected so it does not dial, and the call outcome is back to \(Select a Call Outcome\)/.test(atUma.paused || ''), atUma.paused || atUma.log);
+  const umaCall = ev1.slice(ev1.indexOf('presented:uma'));
+  check('Uma rejected so it cannot dial, then the call outcome reset', after(umaCall, 'reject:uma', 'outcome:(Select a Call Outcome)'), umaCall);
+  check('Uma otherwise left alone: no outcome, status or Finished', !umaCall.some((e) => /ACCEPT:uma|FINISHED:uma|:uma-|level\d|next:|Update Outcomes/.test(e)), umaCall);
+  await page.evaluate(() => window.mock.agentHandlesPresented());
+  await carryOn(page);
+  const out = await settle(page);
+  check('run ended after the last listed lead', !out.running && !out.paused, out.paused || out.log);
+  const bobCall = out.events.slice(out.events.indexOf('reject:bob'), out.events.indexOf('FINISHED:bob') + 1);
+  check('Bob: found by phone, Defer to Site, next status Shift Start as the last one', levelsOf(out, 'bob', 'bob-1') === DEFER && bobCall.includes('next:Shift Start') && !bobCall.includes('next:Available'), bobCall);
+  check('Finished pressed once each for Ann and Bob only', out.events.filter((e) => /^FINISH/.test(e)).join() === 'FINISHED:ann,FINISHED:bob', out.events);
+  check('status ends on Shift Start', await page.evaluate(() => document.getElementById('statusBtn').textContent) === 'Shift Start');
+  const rows = await decisionRows(page);
+  check('decisions: Ann and Bob Done under Send through; the unlisted lead is not one', rows.map((r) => [r.run, r.name, r.detail, r.outcome, r.step, r.why].join('|')).join() === 'Send through|Ann Able|Already Booked · In Progress with Dealer|Done||,Send through|Bob Baker|Fleet · Defer to Site|Done||', rows);
+  const progress = await stored(page, '_leadResetDeskProgress');
+  check('progress saved for Ann and Bob only', progress && JSON.stringify(progress.st) === JSON.stringify({ 'ann.able@example.com': 'Done', 7700900202: 'Done' }), progress);
+  await press(page, 'clearStop');
+  check('Clear & Stop leaves the list SLA Manager saved', !!(await stored(page, '_workToolsSendThrough')) && await stored(page, '_leadResetDeskProgress') === null);
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
+// The stop for the owner's decision: a recommended outcome is never set by
+// itself, and what was recommended and chosen is recorded.
+async function sendThroughStop() {
+  console.log('\nSend through: stops for the owner, who picks another outcome than the recommended one');
+  const { context, page, errors } = await openDesk({
+    status: 'Shift Start', queue: ['amy', 'sid', 'ned'],
+    customers: [
+      throughCustomer('amy', 'Amy After', 'amy.after@example.com', '07700 900211'),
+      throughCustomer('sid', 'Sid Spam', 'sid.spam@example.com', '07700 900212'),
+      throughCustomer('ned', 'Ned New', 'ned.new@example.com', '07700 900213')
+    ]
+  }, { _workToolsSendThrough: { leads: [
+    throughLead('Amy After', 'amy.after@example.com', '', 'Aftersales'),
+    throughLead('Sid Spam', 'sid.spam@example.com', '', 'Spam / Test'),
+    throughLead('Ned New', 'ned.new@example.com', '', 'A Sub Category Added Later'),
+    throughLead('Kim Kept', 'kim.kept@example.com', '', 'Already Booked')
+  ] } });
+  await press(page, 'view][data-view=st');
+  const list = await page.evaluate(() => Array.from(document.querySelector('#_leadResetPanel').shadowRoot.querySelectorAll('.r')).map((row) => `${row.querySelector('.nm').textContent}|${Array.from(row.querySelectorAll('.tag')).map((t) => t.textContent).join('+')}|${row.querySelector('.meta').textContent}`));
+  check('the ones that will stop carry a "Stops for you" tag and say what is recommended', JSON.stringify(list) === JSON.stringify([
+    'Amy After|Stops for you+Next|Aftersales · you choose (Misdirected recommended)', 'Sid Spam|Stops for you+Waiting|Spam / Test · you choose',
+    'Ned New|Stops for you+Waiting|A Sub Category Added Later · you choose', 'Kim Kept|Waiting|Already Booked · In Progress with Dealer']), list);
+  check('the card counts the stops', /3 stop for you/.test(await shadowText(page, '.cf') || ''), await shadowText(page, '.cf'));
+  await shot(page, 'send-through-tab.png');
+  await page.click('#_leadResetPanel [data-action=startSt]');
+
+  const amy = await settle(page);
+  check('Amy: stops with the Lead Checker\'s reason and the recommended outcome', amy.paused === 'The Lead Checker says: Aftersales. Recommended: Customer Hub Team > No Opportunity > Misdirected. Choose the lead outcome, or skip to leave the lead as it is.', amy.paused || amy.log);
+  const offer = await page.evaluate(() => { const r = document.querySelector('#_leadResetPanel').shadowRoot; return { choices: Array.from(r.querySelectorAll('[data-action=choose]')).map((b) => `${b.getAttribute('data-key')}:${b.textContent}:${b.classList.contains('primary') ? 'filled' : 'outline'}`), head: r.querySelector('.head .name').textContent, colour: getComputedStyle(r.querySelector('.head')).backgroundColor, why: (r.querySelector('[data-role=choiceWhy]') || {}).placeholder, who: r.querySelector('.who').textContent }; });
+  check('it offers Defer to Site, In Progress with Dealer and Misdirected, the recommended one filled', JSON.stringify(offer.choices) === JSON.stringify(['defer:Defer to Site:outline', 'dealer:In Progress with Dealer:outline', 'misdirected:Misdirected (recommended):filled']), offer.choices);
+  check('in the amber "Needs you" style, with Skip lead and Stop and no carry on or Try again', offer.head === 'Needs you' && offer.colour === 'rgb(180, 83, 10)' && amy.buttons.join() === 'choose,choose,choose,skip,stop' && /Amy After · 1 of 4 · Choose the lead outcome/.test(offer.who), { offer, buttons: amy.buttons });
+  check('nothing is set at the stop: only the reject and the call outcome reset', !amy.events.some((e) => /^(level\d|next:|FINISH)|Update Outcomes/.test(e)) && after(amy.events, 'reject:amy', 'outcome:(Select a Call Outcome)'), amy.events);
+  await shot(page, 'send-through-stop.png');
+  await page.fill('#_leadResetPanel [data-role=choiceWhy]', 'Wants a sales call back');
+  await page.click('#_leadResetPanel [data-action=choose][data-key=defer]');
+  const amyReview = await settle(page);
+  check('Amy: the owner\'s choice is applied, not the recommended one, then it stops before Finished', /Carry on to press Finished/.test(amyReview.paused || '') && amyReview.events.includes('level3:amy-1:Defer to Site') && !amyReview.events.some((e) => /Mis-directed/.test(e)) && !amyReview.events.includes('FINISHED:amy'), amyReview.paused || amyReview.events);
+  await carryOn(page);
+
+  const sid = await settle(page);
+  check('Sid: stops with no recommendation', sid.paused === 'Not sure where this one goes. The Lead Checker says: Spam / Test. Choose the lead outcome, or skip to leave the lead as it is.' && sid.events.includes('FINISHED:amy'), sid.paused || sid.log);
+  check('Sid: no button is filled when nothing is recommended', await page.evaluate(() => Array.from(document.querySelector('#_leadResetPanel').shadowRoot.querySelectorAll('[data-action=choose]')).map((b) => b.className.includes('primary') + ':' + b.textContent).join()) === 'false:Defer to Site,false:In Progress with Dealer,false:Misdirected');
+  await page.click('#_leadResetPanel [data-action=choose][data-key=misdirected]');
+  const sidReview = await settle(page);
+  check('Sid: Misdirected is found on the page by letters only', /Carry on to press Finished/.test(sidReview.paused || '') && after(sidReview.events, 'level2:sid-1:No Opportunity', 'level3:sid-1:Mis-directed'), sidReview.paused || sidReview.events);
+  await carryOn(page);
+
+  const ned = await settle(page);
+  check('Ned: a sub category that is not in the table stops too', /^Not sure where this one goes\. The Lead Checker says: A Sub Category Added Later\./.test(ned.paused || ''), ned.paused || ned.log);
+  await page.click('#_leadResetPanel [data-action=skip]');
+  await page.fill('#_leadResetPanel [data-role=skipWhy]', 'will ring them');
+  await page.click('#_leadResetPanel [data-action=skipConfirm]');
+  const nedSkipped = await settle(page);
+  check('Ned: Skip leaves the lead as it is', /Lead skipped\. Left as it is: the call is still open; the next status is/.test(nedSkipped.paused || '') && !nedSkipped.events.some((e) => /:ned-1:|FINISHED:ned/.test(e)), nedSkipped.paused || nedSkipped.events);
+  await press(page, 'stop');
+  const out = await settle(page);
+  check('Stop ends the run', !out.running && !out.paused, out.paused || out.log);
+  const rows = await decisionRows(page);
+  check('decisions record what was recommended, what was chosen and why', JSON.stringify(rows) === JSON.stringify([
+    { run: 'Send through', name: 'Amy After', detail: 'Aftersales · Defer to Site', outcome: 'Done', step: '', why: 'Recommended: Misdirected. Chose: Defer to Site. Why: Wants a sales call back' },
+    { run: 'Send through', name: 'Sid Spam', detail: 'Spam / Test · Misdirected', outcome: 'Done', step: '', why: 'Recommended: nothing. Chose: Misdirected' },
+    { run: 'Send through', name: 'Ned New', detail: 'A Sub Category Added Later · you choose', outcome: 'Skipped', step: 'Choose the lead outcome', why: 'will ring them' }]), rows);
+  check('outcomes at Finished', levelsOf(out, 'amy', 'amy-1') === DEFER && levelsOf(out, 'sid', 'sid-1') === 'Customer Hub Team > No Opportunity > Mis-directed', out.snapshots);
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
+async function sendThroughStayAvailable() {
+  console.log('\nSend through: Stay Available between leads switched off');
+  const { context, page, errors } = await openDesk({
+    status: 'Shift Start', queue: ['ann', 'bob'],
+    customers: [throughCustomer('ann', 'Ann Able', 'ann.able@example.com', '07700 900201'), throughCustomer('bob', 'Bob Baker', 'bob.baker@example.com', '07700 900202')]
+  }, { _workToolsSendThrough: { leads: [throughLead('Ann Able', 'ann.able@example.com', '', 'Already Booked'), throughLead('Bob Baker', 'bob.baker@example.com', '', 'Fleet')] }, _leadResetSettings: { reviewBeforeFinish: false } });
+  await press(page, 'view][data-view=st');
+  const toggle = () => page.evaluate(() => { const r = document.querySelector('#_leadResetPanel').shadowRoot; const t = r.querySelector('[data-action=stayAvailable]'); return { role: t.getAttribute('role'), on: t.getAttribute('aria-checked'), label: t.textContent.trim(), line: r.querySelector('.stay-line').textContent }; });
+  const before = await toggle();
+  check('the tab has a "Stay Available between leads" switch, on by default', before.role === 'switch' && before.on === 'true' && before.label === 'Stay Available between leads' && /stay Available until the last one, then Shift Start/.test(before.line), before);
+  await press(page, 'stayAvailable');
+  const off = await toggle();
+  check('switched off, it is remembered and says what happens', off.on === 'false' && /Shift Start after each one/.test(off.line) && ((await stored(page, '_leadResetSettings')) || {}).stayAvailable === false, off);
+  await page.click('#_leadResetPanel [data-action=startSt]');
+  const rest = await settle(page);
+  const annCall = rest.events.slice(rest.events.indexOf('reject:ann'));
+  check('Ann: next status Shift Start although Bob is still to come', annCall.includes('next:Shift Start') && !annCall.includes('next:Available') && annCall.includes('FINISHED:ann'), annCall);
+  check('it then waits on Shift Start and asks before going Available', /You are on Shift Start, as Stay Available between leads is off/.test(rest.paused || '') && rest.carryOnLabel === 'Go Available for the next' && !rest.events.includes('presented:bob') && await page.evaluate(() => document.getElementById('statusBtn').textContent) === 'Shift Start', rest.paused || rest.log);
+  await carryOn(page);
+  const out = await settle(page);
+  check('carrying on sets Available, and Bob is done', !out.running && !out.paused && after(out.events, 'FINISHED:ann', 'status:Available') && after(out.events, 'status:Available', 'presented:bob') && count(out.events, 'FINISHED:bob') === 1, out.paused || out.events);
+  check('status ends on Shift Start', await page.evaluate(() => document.getElementById('statusBtn').textContent) === 'Shift Start');
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
+// The right lead on a customer with several open ones.
+async function sendThroughTwoOpenLeads() {
+  console.log('\nSend through: a customer with two open leads');
+  const { context, page, errors } = await openDesk({
+    status: 'Shift Start', queue: ['ann', 'gus'],
+    customers: [
+      // An open Post Closure lead on the checked campaign is never the one.
+      throughCustomer('ann', 'Ann Able', 'ann.able@example.com', '07700 900201', { leads: [openLead('ann-1', 'Vauxhall - Enquiry - Used', 'Post Closure Processing'), openLead('ann-2', 'Peugeot - Enquiry - New'), openLead('ann-3', 'Vauxhall - Enquiry - Used')] }),
+      // Two open leads and neither is on the checked campaign.
+      throughCustomer('gus', 'Gus Green', 'gus.green@example.com', '07700 900203', { leads: [openLead('gus-1', 'Peugeot - Enquiry - New'), openLead('gus-2', 'Citroen - Enquiry - Used')] })
+    ]
+  }, { _workToolsSendThrough: { leads: [throughLead('Ann Able', 'ann.able@example.com', '', 'Already Booked'), throughLead('Gus Green', 'gus.green@example.com', '', 'Fleet')] } });
+  await press(page, 'view][data-view=st');
+  await page.click('#_leadResetPanel [data-action=startSt]');
+  const ann = await settle(page);
+  check('Ann: the lead on the checked campaign that is not Post Closure is the one worked', /Carry on to press Finished/.test(ann.paused || '') && ann.log.some((l) => /Lead to send through found \(Vauxhall - Enquiry - Used\)/.test(l)) && ann.events.includes('level3:ann-3:In Progress with Dealer'), ann.paused || ann.log);
+  check('Ann: her other open leads are untouched', !ann.events.some((e) => /:ann-[12]:/.test(e)), ann.events);
+  await press(page, 'skip');
+  await settle(page);
+  await page.evaluate(() => window.mock.agentHandlesPresented());
+  await carryOn(page);
+  const gus = await settle(page);
+  check('Gus: asks the owner when it is not clear which lead is meant', /This customer has 2 open leads and it is not clear which is the one to send through \(checked on Vauxhall - Enquiry - Used\)\. Open the right lead's tab yourself/.test(gus.paused || '') && gus.carryOnLabel === 'Its tab is open, carry on', gus.paused || gus.log);
+  check('Gus: nothing set on either lead yet', !gus.events.slice(gus.events.indexOf('reject:gus')).some((e) => /:gus-\d:|Update Outcomes/.test(e)), gus.events.slice(gus.events.indexOf('reject:gus')));
+  await page.click('#tabs li:nth-child(2) a');
+  await carryOn(page);
+  const gusReview = await settle(page);
+  check('Gus: the lead whose tab the owner opened is the one set', /Carry on to press Finished/.test(gusReview.paused || '') && gusReview.events.includes('level3:gus-2:Defer to Site') && !gusReview.events.some((e) => /:gus-1:/.test(e)), gusReview.paused || gusReview.events);
+  await press(page, 'stop');
+  await settle(page);
+  check('nothing was Finished', !(await page.evaluate(() => window.events)).some((e) => /^FINISH/.test(e)));
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
+// One Parked Calls pass over Post Closure send backs and send through leads.
+async function parkedMixedPass() {
+  console.log('\nPost Closure Parked Calls pass with send backs and send through leads mixed');
+  const parked = (customer) => ({ ...customer, parked: true });
+  // Vic is in both lists: an open Post Closure lead and an open lead to send through.
+  const vic = postClosureCustomer('vic', 'Vic Both', 'vic.both@example.com', '07700 900221', '');
+  vic.leads.push(openLead('vic-3', 'Vauxhall - Enquiry - Used'));
+  const { context, page, errors } = await openDesk({
+    status: 'Available',
+    customers: [
+      postClosureCustomer('jo', 'Jo Example', 'jo.example@example.com', '07700 900101', ''),
+      vic,
+      parked(throughCustomer('ann', 'Ann Able', 'ann.able@example.com', '07700 900201')),
+      parked(throughCustomer('amy', 'Amy After', 'amy.after@example.com', '07700 900211')),
+      throughCustomer('kim', 'Kim Kept', 'kim.kept@example.com', '07700 900231'),
+      parked(throughCustomer('pat', 'Pat Other', 'pat.other@example.com', '07700 900199'))
+    ]
+  }, {
+    _workToolsDeskResults: { results: [sendBack('Jo Example', 'jo.example@example.com', '', 'Actioned by dealership'), sendBack('Vic Both', 'vic.both@example.com', '', 'Email only')] },
+    _workToolsSendThrough: { leads: [
+      throughLead('Vic Both', 'vic.both@example.com', '', 'Cancelled / Withdrawn'), throughLead('Ann Able', 'ann.able@example.com', '', 'Send to Dealer'),
+      throughLead('Amy After', '', '07700 900211', 'Agreement Hand-back'), throughLead('Kim Kept', 'kim.kept@example.com', '', 'Existing Order')
+    ] },
+    _leadResetSettings: { reviewBeforeFinish: false }
+  });
+  await press(page, 'view][data-view=pc');
+  const view = await page.evaluate(() => { const r = document.querySelector('#_leadResetPanel').shadowRoot; return { count: r.querySelector('.big-count').textContent.replace(/\s+/g, ' ').trim(), chip: (r.querySelector('.through-chip') || {}).textContent, groups: Array.from(r.querySelectorAll('.grp')).map((g) => g.textContent.replace(/\s+/g, ' ').trim()), tabs: Array.from(r.querySelectorAll('.tab em')).map((e) => e.textContent).join() }; });
+  check('the Post Closure tab lists the send through leads under the send backs', /^2\s*to send back$/.test(view.count) && view.chip === '4 to send through' && JSON.stringify(view.groups) === JSON.stringify(['Send backs 0 of 2 done', 'Send through, if in Parked Calls 0 of 4 done']) && view.tabs === '2,4', view);
+  await page.click('#_leadResetPanel [data-action=startPc]');
+  // The log keeps its newest 40 lines, so this one is read as it is written.
+  const leftLine = await page.waitForFunction(() => window._leadResetState.log.some((l) => /1 send through lead not in your Parked Calls, left for when it presents/.test(l)), null, { timeout: 20000 }).then(() => true, () => false);
+  const amy = await settle(page);
+  check('the pass stops for the owner on the send through lead that needs a choice', /The Lead Checker says: Agreement Hand-back\. Recommended: Customer Hub Team > No Opportunity > Misdirected/.test(amy.paused || ''), amy.paused || amy.log);
+  await page.click('#_leadResetPanel [data-action=choose][data-key=misdirected]');
+  const out = await settle(page);
+  const ev = out.events;
+  check('run ended', !out.running && !out.paused, out.paused || out.log);
+  check('Shift Start is set before Parked Calls is used', ev[0] === 'status:Shift Start' && ev.indexOf('status:Shift Start') < ev.indexOf('open:jo'), ev);
+  check('one pass: each parked customer opened once, send backs first, Vic once for both', ev.filter((e) => e.startsWith('open:')).join() === 'open:jo,open:vic,open:ann,open:amy', ev.filter((e) => e.startsWith('open:')));
+  check('Finished once each, and never refused', ev.filter((e) => /^FINISH/.test(e)).join() === 'FINISHED:jo,FINISHED:vic,FINISHED:ann,FINISHED:amy', ev.filter((e) => /^FINISH/.test(e)));
+  check('Jo: the Post Closure send back as before', levelsOf(out, 'jo', 'jo-2') === 'Customer Hub Team > No Opportunity > Catch All - Ongoing / Actioned by Dealer' && ev.includes('konnect-notes:cad'), out.snapshots[0]);
+  const vicSnap = out.snapshots.find((s) => s.customer === 'vic') || { leads: [] };
+  check('Vic: both of his leads set on the one call, each with its own steps', levelsOf(out, 'vic', 'vic-2') === 'Customer Hub Team > No Opportunity > Catch All - Email Only Lead' && levelsOf(out, 'vic', 'vic-3') === DEFER && (vicSnap.leads.find((l) => l.ID === 'vic-2') || {}).pcNotes === CAH && (vicSnap.leads.find((l) => l.ID === 'vic-3') || {}).callNotes === 'Notes as they were.', vicSnap);
+  check('Ann and Amy: their send through outcomes, with no note written', levelsOf(out, 'ann', 'ann-1') === DEALER && levelsOf(out, 'amy', 'amy-1') === 'Customer Hub Team > No Opportunity > Mis-directed' && count(ev.filter((e) => /^konnect-notes/.test(e)), 'konnect-notes:cad') === 1 && ev.filter((e) => /^konnect-notes/.test(e)).length === 2, ev.filter((e) => /^konnect-notes/.test(e)));
+  check('every one finished with Update Outcomes and next status Shift Start', out.snapshots.length === 4 && out.snapshots.every((s) => s.callOutcome === 'Update Outcomes (No Call Made)' && s.next === 'Shift Start'), out.snapshots.map((s) => [s.customer, s.callOutcome, s.next]));
+  check('the send through lead that is not parked is left to present, and a parked customer on neither list is not opened', leftLine && !ev.some((e) => /:(kim|pat)/.test(e)), ev);
+  check('the log says both kinds are done', out.log.some((l) => /All Post Closure send backs and parked send through leads are done/.test(l)), out.log);
+  const rows = await decisionRows(page);
+  check('decisions: each item under its own run', rows.map((r) => [r.run, r.name, r.detail, r.outcome, r.why].join('|')).join('\n') === [
+    'Post Closure|Jo Example|CAD · Actioned by dealership|Done|', 'Post Closure|Vic Both|CAH · Email only|Done|', 'Send through|Vic Both|Cancelled / Withdrawn · Defer to Site|Done|',
+    'Send through|Ann Able|Send to Dealer · In Progress with Dealer|Done|', 'Send through|Amy After|Agreement Hand-back · Misdirected|Done|Recommended: Misdirected. Chose: Misdirected'].join('\n'), rows);
+  const progress = await stored(page, '_leadResetDeskProgress');
+  check('progress saved per kind', progress && JSON.stringify(progress.pc) === JSON.stringify({ 'jo.example@example.com': 'Done', 'vic.both@example.com': 'Done' }) && JSON.stringify(progress.st) === JSON.stringify({ 'vic.both@example.com': 'Done', 'ann.able@example.com': 'Done', 7700900211: 'Done' }), progress);
+  await press(page, 'view][data-view=st');
+  check('the Send through tab now has the one left, to present', /^1\s*to send through/.test(await shadowText(page, '.big-count') || '') && /3 done/.test(await shadowText(page, '.cf') || ''), await shadowText(page, '.card'));
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
 const tests = [postClosureNoReview, postClosureWithReview, postClosureOtherEmail, emailOnly, secondLoadSkipAndStop, slowPage, notesPutBack, emailOnlyChecks,
-  emailOnlyClearAndStop, pauseReopensThePanel, buttonBesideKonnectNotes, sharedStorage, realKonnectNotes, parkedCallsThroughManager, deskWaitsItsTurn, deskBeforeManager];
+  emailOnlyClearAndStop, pauseReopensThePanel, buttonBesideKonnectNotes, sharedStorage, realKonnectNotes, parkedCallsThroughManager, deskWaitsItsTurn, deskBeforeManager,
+  sendThroughPresents, sendThroughStop, sendThroughStayAvailable, sendThroughTwoOpenLeads, parkedMixedPass];
 const only = process.argv.slice(2);
 for (const test of tests) {
   if (only.length && !only.includes(test.name)) continue;

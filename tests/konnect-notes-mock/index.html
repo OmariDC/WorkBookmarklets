@@ -6,7 +6,8 @@
      and Post Closure Notes. All values are fictional. A pane with
      data-lead-id answers angular.element(node).scope() with that lead, the
      way the real page's scope does; a pane without one gives no proof of
-     which lead it is. -->
+     which lead it is. The call outcome box sits outside the lead panes, as
+     on the real page, and counts its change events. -->
 <style>
 body { font-family: Arial, sans-serif; margin: 0; padding: 10px 10px 10px 110px; background: #eee; }
 .userQuotesAffix { position: fixed; left: 10px; top: 60px; width: 80px; }
@@ -22,6 +23,7 @@ textarea { display: block; width: 520px; height: 90px; }
 <div class="row"><b>Name</b> <span id="custName">Jo Example</span></div>
 <div class="row" id="emailRow"><b>Email</b> <span class="ng-scope" id="custEmail">jo@example.com</span></div>
 <div class="row"><label>Mileage</label> <input id="other" type="text"></div>
+<div class="row"><label>Call Outcome</label> <select ng-model="selected.CallOutcome" id="callOutcome"><option>(Select a Call Outcome)</option><option>Spoke to Customer</option><option>No Answer - Message Left</option><option>No Answer - No Message Left</option><option>Update Outcomes (No Call Made)</option></select></div>
 <ul><li class="active" id="salesTab-1"><a>Lead A</a></li><li id="salesTab-2"><a>Lead B</a></li></ul>
 <div><div class="tab-content">
  <div class="tab-pane active" id="paneA">
@@ -36,6 +38,8 @@ textarea { display: block; width: 520px; height: 90px; }
  </div>
 </div></div>
 <script>
+window.outcomeChanges = 0;
+document.querySelector('#callOutcome').addEventListener('change', () => { window.outcomeChanges += 1; });
 window.angular = {
   element(node) {
     return {

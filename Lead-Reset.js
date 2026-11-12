@@ -7,8 +7,10 @@
 // parks the call; it never presses Finished. Post Closure sends the Lead
 // Checker's "send back through" leads back from Parked Calls, and Email
 // Only works the Email Only leads assigned in SLA Manager as they present;
-// both press Finished. When a step cannot be done safely it stops and says
-// what to do by hand.
+// both press Finished. Send through sets the lead outcome on the agent's own
+// leads the Lead Checker says need no call, as they present or from Parked
+// Calls, so they go through to the dealership; it presses Finished too.
+// When a step cannot be done safely it stops and says what to do by hand.
 
 // One copy per page. A second click of the bookmark shows the panel that is
 // already there: a second copy would share the page but not the paused run,
@@ -392,6 +394,148 @@ return leftAfterThis > 0 ? STATUS_AVAILABLE : STATUS_WHILE_RESETTING;
 }
 
 // ===================================================================
+// SEND THROUGH TO THE DEALERSHIP (pure parts)
+// ===================================================================
+
+// The leads the Lead Checker says need no call (tier 6, not Post Closure),
+// saved by SLA Manager with the agent each was assigned to.
+const SEND_THROUGH_KEY = '_workToolsSendThrough';
+// The lead outcomes this run can set. The option wording is not confirmed
+// against the real page, so options are matched by letters only.
+const SEND_THROUGH_OUTCOMES = {
+dealer: { label: 'In Progress with Dealer', path: ['Customer Hub Team', 'Ongoing', 'In Progress with Dealer'] },
+defer: { label: 'Defer to Site', path: ['Customer Hub Team', 'Ongoing', 'Defer to Site'] },
+misdirected: { label: 'Misdirected', path: ['Customer Hub Team', 'No Opportunity', 'Misdirected'] }
+};
+// Lead Checker sub category -> what to do. set: the outcome is chosen by the
+// tool. recommend: the run stops and the owner chooses, with this one put
+// first. Neither: the run stops with nothing recommended. A sub category
+// that is not here stops too.
+const SEND_THROUGH_MAP = {
+'Already Booked': { set: 'dealer' },
+'Send to Dealer': { set: 'dealer' },
+'Existing Order': { set: 'dealer' },
+'Inbound: Already Handled': { set: 'defer' },
+Fleet: { set: 'defer' },
+Complaint: { set: 'defer' },
+'Cancelled / Withdrawn': { set: 'defer' },
+Aftersales: { recommend: 'misdirected' },
+'Agreement Hand-back': { recommend: 'misdirected' },
+'Spam / Test': {},
+'Non-Customer / Admin': {}
+};
+
+function lettersOnly(value) {
+return String(value == null ? '' : value).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+// Pure. As chooseOptionIndex, but by letters and digits only, so case,
+// spaces and punctuation in the page's wording do not matter.
+function chooseOptionByLetters(optionTexts, wanted) {
+const w = lettersOnly(wanted);
+if (!w) return -1;
+const exact = optionTexts.findIndex((t) => lettersOnly(t) === w);
+if (exact >= 0) return exact;
+const loose = optionTexts.map((t, i) => (lettersOnly(t).includes(w) ? i : -1)).filter((i) => i >= 0);
+return loose.length === 1 ? loose[0] : -1;
+}
+
+// Pure. What the run does for a sub category: { stop, outcome, recommend },
+// outcome and recommend being keys of SEND_THROUGH_OUTCOMES or ''.
+function sendThroughPlan(subCategory) {
+const wanted = lettersOnly(subCategory);
+const name = wanted ? Object.keys(SEND_THROUGH_MAP).find((k) => lettersOnly(k) === wanted) : '';
+const entry = name ? SEND_THROUGH_MAP[name] : {};
+const outcome = SEND_THROUGH_OUTCOMES[entry.set] ? entry.set : '';
+return { stop: !outcome, outcome, recommend: !outcome && SEND_THROUGH_OUTCOMES[entry.recommend] ? entry.recommend : '' };
+}
+
+// Pure. The outcome to set: the owner's choice when there is one, else the
+// table's. '' means stop and ask: a recommendation is never applied by itself.
+function sendThroughOutcome(lead, chosen) {
+if (SEND_THROUGH_OUTCOMES[chosen]) return chosen;
+return lead.stop ? '' : (lead.outcome || '');
+}
+
+// Pure. "Aftersales · you choose (Misdirected recommended)".
+function sendThroughDetail(lead) {
+const key = sendThroughOutcome(lead, lead.chosen);
+const what = key ? SEND_THROUGH_OUTCOMES[key].label : lead.recommend ? `you choose (${SEND_THROUGH_OUTCOMES[lead.recommend].label} recommended)` : 'you choose';
+return `${lead.subCategory || 'No sub category'} · ${what}`;
+}
+
+// Pure. The saved leads that are this agent's, each with its plan. A lead
+// with no agent recorded is nobody's yet, so it is left out.
+function sendThroughLeadsFrom(leads, me) {
+const seen = new Set();
+return (leads || []).filter((l) => l && me && l.agent === me).map((l) => ({
+kind: 'st', key: personKey(l), name: l.name || '', email: l.email || '', phone: l.phone || '', campaign: l.campaign || '', created: l.created || '',
+subCategory: l.subCategory || '', checkedAt: l.checkedAt || '', ...sendThroughPlan(l.subCategory)
+})).filter((l) => l.key && !seen.has(l.key) && seen.add(l.key));
+}
+
+// Pure. Whose leads are shown: the one name recorded, or the name picked
+// when there are several. '' while that has not been asked.
+function agentAmong(agents, chosen) {
+if (agents.length <= 1) return agents[0] || '';
+return agents.includes(chosen) ? chosen : '';
+}
+
+// Pure. The open lead to send through, as an index into open ([{email,
+// campaign, source}]), or -1 when that is unclear or there is none. A Post
+// Closure lead is never it; then the email and the campaign decide, as for
+// an Email Only lead.
+function chooseSendThroughLead(open, lead) {
+const pool = open.filter((a) => !/post closure processing/i.test(String(a.source || '')));
+const index = chooseEmailOnlyLead(pool, lead);
+return index >= 0 ? open.indexOf(pool[index]) : -1;
+}
+
+// Pure. The listed lead a presented lead is, or null: by any email read
+// from it, then any phone number, then a name only one entry has.
+function matchPresented(list, presented) {
+for (const email of presented.emails || []) {
+const found = email ? matchPerson(list, { email }) : null;
+if (found) return found;
+}
+for (const phone of presented.phones || []) {
+const found = matchPerson(list, { phone });
+if (found) return found;
+}
+return matchPerson(list, { name: presented.name });
+}
+
+// Pure. One Parked Calls pass over the Post Closure send backs and the send
+// through leads: those not yet done that are in Parked Calls, send backs
+// first. A customer in both lists is two items, worked on one opening of
+// the call: opens is false on an item whose customer the item before
+// leaves open, and finishes is false on that item before.
+function parkedWorkList(sendBacks, sendThroughs, done, parkedRows) {
+const pending = (sendBacks || []).filter((l) => !(done.pc || {})[l.key]).map((lead) => ({ kind: 'pc', lead }))
+.concat((sendThroughs || []).filter((l) => !(done.st || {})[l.key]).map((lead) => ({ kind: 'st', lead })))
+.map((item) => ({ ...item, row: matchPerson(parkedRows || [], item.lead) }));
+const found = pending.filter((item) => item.row);
+const order = [];
+found.forEach((item) => {
+if (order.includes(item)) return;
+order.push(item, ...found.filter((other) => other !== item && other.row === item.row && !order.includes(other)));
+});
+const items = order.map((item, i) => ({
+kind: item.kind, lead: item.lead,
+opens: !(i > 0 && order[i - 1].row === item.row),
+finishes: !(i + 1 < order.length && order[i + 1].row === item.row)
+}));
+const missing = (kind) => pending.filter((item) => item.kind === kind && !item.row).length;
+return { items, missing: { pc: missing('pc'), st: missing('st') } };
+}
+
+// Pure. The next status in the presenting run: as Email Only while the
+// owner stays Available between leads, else Shift Start after each one.
+function statusAfterSendThrough(leftAfterThis, stayAvailable) {
+return stayAvailable ? statusAfterEmailOnly(leftAfterThis) : STATUS_WHILE_RESETTING;
+}
+
+// ===================================================================
 // SELF-TESTS
 // ===================================================================
 
@@ -404,8 +548,8 @@ return (Array.isArray(rows) ? rows : [])
 
 // Pure. One decision row. confirmed: what the agent said yes to on the way.
 function decisionRow(mode, lead, outcome, step, confirmed, typedWhy, at) {
-const run = mode === 'pc' ? 'Post Closure' : mode === 'eo' ? 'Email Only' : 'Re setup';
-const detail = mode === 'pc' ? [String(lead.shorthand || '').toUpperCase(), lead.reason].filter(Boolean).join(' · ') : (lead.campaign || '');
+const run = mode === 'st' ? 'Send through' : mode === 'pc' ? 'Post Closure' : mode === 'eo' ? 'Email Only' : 'Re setup';
+const detail = mode === 'st' ? sendThroughDetail(lead) : mode === 'pc' ? [String(lead.shorthand || '').toUpperCase(), lead.reason].filter(Boolean).join(' · ') : (lead.campaign || '');
 const why = Array.from(new Set(confirmed || [])).concat(String(typedWhy || '').trim()).filter(Boolean).join('. ');
 return { at, run, name: lead.name || '', detail, outcome, step: outcome === 'Done' ? '' : (step || ''), why };
 }
@@ -516,6 +660,50 @@ check('decisions are capped at the newest 300', [freshDecisions(Array.from({ len
 check('a Done row has no step and keeps what was confirmed', decisionRow('pc', { name: 'Jo Example', shorthand: 'cad', reason: 'Actioned by dealership' }, 'Done', 'Press Finished', ['Said this is the right customer', 'Said this is the right customer'], '', 'T'), { at: 'T', run: 'Post Closure', name: 'Jo Example', detail: 'CAD · Actioned by dealership', outcome: 'Done', step: '', why: 'Said this is the right customer' });
 check('a Skipped row has the step and the typed reason', decisionRow('batch', { name: 'Jo Example', campaign: 'Vauxhall - Enquiry - Used' }, 'Skipped', 'Check before parking', [], ' already rang in ', 'T'), { at: 'T', run: 'Re setup', name: 'Jo Example', detail: 'Vauxhall - Enquiry - Used', outcome: 'Skipped', step: 'Check before parking', why: 'already rang in' });
 check('Available until the last Email Only lead', [statusAfterEmailOnly(2), statusAfterEmailOnly(0)], ['Available', 'Shift Start']);
+// Send through to the dealership.
+const planOf = (sub) => { const p = sendThroughPlan(sub); return [p.stop, p.outcome, p.recommend].join('|'); };
+check('send through: these go to In Progress with Dealer', ['Already Booked', 'Send to Dealer', 'Existing Order'].map(planOf), ['false|dealer|', 'false|dealer|', 'false|dealer|']);
+check('send through: these go to Defer to Site', ['Inbound: Already Handled', 'Fleet', 'Complaint', 'Cancelled / Withdrawn'].map(planOf), ['false|defer|', 'false|defer|', 'false|defer|', 'false|defer|']);
+check('send through: these stop with Misdirected recommended', ['Aftersales', 'Agreement Hand-back'].map(planOf), ['true||misdirected', 'true||misdirected']);
+check('send through: these, and anything not in the table, stop with nothing recommended', ['Spam / Test', 'Non-Customer / Admin', 'Something New', '', undefined].map(planOf), ['true||', 'true||', 'true||', 'true||', 'true||']);
+check('send through: the sub category is matched by letters only', [planOf('cancelled/withdrawn'), planOf(' INBOUND - already handled ')], ['false|defer|', 'false|defer|']);
+check('send through: every path starts Customer Hub Team', Object.values(SEND_THROUGH_OUTCOMES).map((o) => o.path[0] + '|' + o.path.length), ['Customer Hub Team|3', 'Customer Hub Team|3', 'Customer Hub Team|3']);
+check('send through: every table entry names an outcome that exists', Object.values(SEND_THROUGH_MAP).every((e) => (!e.set || SEND_THROUGH_OUTCOMES[e.set]) && (!e.recommend || SEND_THROUGH_OUTCOMES[e.recommend]) && !(e.set && e.recommend)), true);
+const stops = Object.keys(SEND_THROUGH_MAP).concat('Something New').map((sub) => ({ subCategory: sub, ...sendThroughPlan(sub) })).filter((l) => l.stop);
+check('send through: a stop is never automatic, recommended or not', [stops.length, stops.map((l) => sendThroughOutcome(l, '')).join(''), stops.map((l) => sendThroughOutcome(l, 'nonsense')).join('')], [5, '', '']);
+check('send through: the owner\'s choice is what is set, over the recommendation', [sendThroughOutcome({ stop: true, outcome: '', recommend: 'misdirected' }, 'defer'), sendThroughOutcome({ stop: false, outcome: 'dealer' }, ''), sendThroughOutcome({ stop: false, outcome: 'dealer' }, 'defer')], ['defer', 'dealer', 'defer']);
+check('send through: options are matched by letters only', [chooseOptionByLetters(['', 'In-Progress With  dealer', 'Defer To Site'], 'In Progress with Dealer'), chooseOptionByLetters(['', 'Mis-directed'], 'Misdirected'), chooseOptionByLetters(['', 'Misdirected - Sales', 'Misdirected - Service'], 'Misdirected'), chooseOptionByLetters(['', 'Ongoing'], '')], [1, 1, -1, -1]);
+const saved = [
+{ name: 'Ann Able', email: 'ann.able@example.com', phone: '07700 900201', campaign: 'Vauxhall - Enquiry - Used', subCategory: 'Already Booked', checkedAt: 'T', agent: 'Agent One' },
+{ name: 'Bob Baker', email: '', phone: '07700 900202', campaign: 'Peugeot - Enquiry - New', subCategory: 'Aftersales', agent: 'Agent One' },
+{ name: 'Cat Other', email: 'cat.other@example.com', subCategory: 'Fleet', agent: 'Agent Two' },
+{ name: 'Del Nobody', email: 'del.nobody@example.com', subCategory: 'Fleet', agent: '' },
+{ name: 'Ann Able', email: 'ANN.ABLE@example.com', subCategory: 'Fleet', agent: 'Agent One' }
+];
+const through = sendThroughLeadsFrom(saved, 'Agent One');
+check('send through list: only this agent\'s leads, one per customer, with the plan', through.map((l) => [l.kind, l.key, l.name, l.stop, l.outcome, l.recommend].join('|')), ['st|ann.able@example.com|Ann Able|false|dealer|', 'st|7700900202|Bob Baker|true||misdirected']);
+check('send through list: nobody remembered, or no agent recorded, lists nothing', [sendThroughLeadsFrom(saved, '').length, sendThroughLeadsFrom(saved, 'Agent Three').length, sendThroughLeadsFrom(null, 'Agent One').length], [0, 0, 0]);
+check('send through list: the two lines per person', through.map(sendThroughDetail), ['Already Booked · In Progress with Dealer', 'Aftersales · you choose (Misdirected recommended)']);
+check('which agent: the one recorded, or the one picked among several', [agentAmong([], 'X'), agentAmong(['Agent One'], ''), agentAmong(['Agent One', 'Agent Two'], ''), agentAmong(['Agent One', 'Agent Two'], 'Agent Two'), agentAmong(['Agent One', 'Agent Two'], 'Agent Nine')], ['', 'Agent One', '', 'Agent Two', '']);
+const stOpen = [{ email: 'ann.able@example.com', campaign: 'Vauxhall - Post Closure', source: 'Post Closure Processing' }, { email: 'ann.able@example.com', campaign: 'Peugeot - Enquiry - New', source: 'AA Cars' }, { email: 'ann.able@example.com', campaign: 'Vauxhall - Enquiry - Used', source: 'AA Cars' }];
+check('send through lead: a Post Closure lead is never it', [chooseSendThroughLead(stOpen.slice(0, 2), through[0]), chooseSendThroughLead(stOpen.slice(0, 1), through[0]), chooseSendThroughLead([], through[0])], [1, -1, -1]);
+check('send through lead: the campaign picks among several, else it is unclear', [chooseSendThroughLead(stOpen, through[0]), chooseSendThroughLead(stOpen, { ...through[0], campaign: 'Citroen - Enquiry' }), chooseSendThroughLead(stOpen, { ...through[0], campaign: '' })], [2, -1, -1]);
+check('presented lead: by any email, then any phone, then a name only one has', [
+matchPresented(through, { name: 'Someone', emails: ['dealer@example.com', 'ANN.ABLE@example.com'], phones: [] }),
+matchPresented(through, { name: 'Someone', emails: ['dealer@example.com'], phones: ['01632 960000', '+44 7700 900202'] }),
+matchPresented(through, { name: 'Mr Bob Baker', emails: [], phones: [] }),
+matchPresented(through, { name: 'Uma Unlisted', emails: ['uma.unlisted@example.com'], phones: ['07700 900299'] })
+].map((l) => (l ? l.name : null)), ['Ann Able', 'Bob Baker', 'Bob Baker', null]);
+const parkedRows = [{ name: 'Jo Example', email: 'jo@example.com' }, { name: 'Bob Baker', phone: '07700900202' }, { name: 'Ann Able', email: 'ann.able@example.com' }];
+const backs = sendBack.concat(sendBackLeadsFrom([{ name: 'Ann Able', email: 'ann.able@example.com', postClosureAction: 'send back through', postClosureReason: 'Email only' }]));
+const mixed = parkedWorkList(backs, through, { pc: {}, st: {} }, parkedRows);
+check('parked pass: send backs and send through leads in one list, each with its kind', mixed.items.map((i) => `${i.kind}:${i.lead.name}`), ['pc:Jo Example', 'pc:Ann Able', 'st:Ann Able', 'st:Bob Baker']);
+check('parked pass: a customer in both lists is two items on one opening of the call', mixed.items.map((i) => `${i.opens ? 'opens' : 'open already'}/${i.finishes ? 'finishes' : 'stays open'}`), ['opens/finishes', 'opens/stays open', 'open already/finishes', 'opens/finishes']);
+check('parked pass: ones not in Parked Calls are counted and left alone', mixed.missing, { pc: 1, st: 0 });
+check('parked pass: ones already done are not listed again', parkedWorkList(backs, through, { pc: { 'jo@example.com': 'Done', 'ann.able@example.com': 'Skipped' }, st: { 7700900202: 'Done' } }, parkedRows).items.map((i) => `${i.kind}:${i.lead.name}:${i.opens}:${i.finishes}`), ['st:Ann Able:true:true']);
+check('parked pass: nothing parked, nothing to do', parkedWorkList(backs, through, {}, []), { items: [], missing: { pc: 3, st: 2 } });
+check('send through status: Available until the last, or Shift Start after each', [statusAfterSendThrough(2, true), statusAfterSendThrough(0, true), statusAfterSendThrough(2, false)], ['Available', 'Shift Start', 'Shift Start']);
+check('a send through decision row says what was chosen', decisionRow('st', { ...through[1], chosen: 'defer' }, 'Done', '', ['Recommended: Misdirected. Chose: Defer to Site'], '', 'T'), { at: 'T', run: 'Send through', name: 'Bob Baker', detail: 'Aftersales · Defer to Site', outcome: 'Done', step: '', why: 'Recommended: Misdirected. Chose: Defer to Site' });
 } catch (error) {
 failures.push('threw: ' + (error && error.message));
 }
@@ -569,7 +757,7 @@ else localStorage.removeItem(DESK_DECISIONS_KEY);
 
 function loadSettings() {
 const s = readJson(SETTINGS_KEY) || {};
-return { reviewBeforePark: s.reviewBeforePark !== false, reviewBeforeFinish: s.reviewBeforeFinish !== false, emailOnlyAgent: s.emailOnlyAgent || '' };
+return { reviewBeforePark: s.reviewBeforePark !== false, reviewBeforeFinish: s.reviewBeforeFinish !== false, emailOnlyAgent: s.emailOnlyAgent || '', stayAvailable: s.stayAvailable !== false };
 }
 
 // ===================================================================
@@ -767,6 +955,11 @@ this.onConfirm = o.onConfirm || null;
 this.noCarry = !!o.noCarry;
 // A check by eye before something is pressed: Try again has no meaning.
 this.review = !!o.review;
+// A decision between named answers ([{ key, label, recommended }]), each
+// offered as a button. onChoose is given the key pressed and returns what
+// to note against the lead's decision; the step then runs again.
+this.choices = o.choices || null;
+this.onChoose = o.onChoose || null;
 }
 }
 
@@ -1304,23 +1497,29 @@ return controlsOf(activity, 'select[ng-model^="theActivity.SelectedOutcomeLevel"
 
 // Chooses the lead outcome one level at a time; each level's options load
 // after the one above is chosen.
-async function setLeadOutcome(activity, path) {
+// pick: how an option is matched to the wanted text when it is not
+// chooseOptionIndex; the page's own wording then stands in for ours.
+async function setLeadOutcome(activity, path, pick) {
+const indexIn = pick || chooseOptionIndex;
+const picked = [];
 if (!activity) throw new NeedsYou(`The lead was not found, so its outcome was left alone. Set it to ${path.join(' > ')} yourself, or skip this one.`);
 const first = controlsOf(activity, 'select[ng-model^="theActivity.SelectedOutcomeLevel"]')[0];
 if (first) revealSection(first);
 for (let level = 0; level < path.length; level++) {
 const select = await waitFor(() => {
 const s = outcomeLevelSelects(activity)[level];
-return s && chooseOptionIndex(optionTexts(s), path[level]) >= 0 ? s : null;
+return s && indexIn(optionTexts(s), path[level]) >= 0 ? s : null;
 }, 8000);
 if (!select) throw new NeedsYou(`Could not choose "${path[level]}". Set the lead outcome to ${path.join(' > ')} yourself.`);
-if (normalise(selectedText(select)) !== normalise(path[level])) {
-if (!chooseByText(select, path[level])) throw new NeedsYou(`Could not choose "${path[level]}". Set the lead outcome to ${path.join(' > ')} yourself.`);
+const wanted = pick ? optionTexts(select)[pick(optionTexts(select), path[level])] : path[level];
+picked.push(wanted);
+if (normalise(selectedText(select)) !== normalise(wanted)) {
+if (!chooseByText(select, wanted)) throw new NeedsYou(`Could not choose "${path[level]}". Set the lead outcome to ${path.join(' > ')} yourself.`);
 await sleep(600);
 }
 }
 const chosen = outcomeLevelSelects(activity).slice(0, path.length).map(selectedText);
-if (chosen.map(normalise).join('|') !== path.map(normalise).join('|')) throw new NeedsYou(`The lead outcome did not stay as ${path.join(' > ')}. Set it yourself.`);
+if (chosen.map(normalise).join('|') !== picked.map(normalise).join('|')) throw new NeedsYou(`The lead outcome did not stay as ${path.join(' > ')}. Set it yourself.`);
 return `Lead outcome: ${path.join(' > ')}`;
 }
 
@@ -1438,15 +1637,15 @@ return `${lead.shorthand.toUpperCase()} written in Post Closure Notes`;
 }
 
 const SEND_BACK_RUN = [
-{ label: 'Go to Parked Calls', run: goToParked },
-{ label: 'Open the customer', run: openParkedCustomer },
+{ label: 'Go to Parked Calls', run: goToParked, part: 'open' },
+{ label: 'Open the customer', run: openParkedCustomer, part: 'open' },
 { label: 'Find the Post Closure lead', run: findPostClosureLead },
 { label: 'Write CAD or CAH in Post Closure Notes', run: writePostClosureNote },
 { label: 'Call outcome: Update Outcomes', run: () => chooseCallOutcome(OUTCOME_UPDATE_ONLY) },
 { label: 'Lead outcome: Customer Hub Team > No Opportunity > Catch All', run: (ctx, lead) => setLeadOutcome(ctx.activity, SEND_BACK_OUTCOME_PATH.concat(lead.outcome)) },
-{ label: 'Next status: Shift Start', run: () => setNextStatus(STATUS_WHILE_RESETTING) },
-{ label: 'Check before Finished', run: reviewBeforeFinish },
-{ label: 'Press Finished', run: pressFinished }
+{ label: 'Next status: Shift Start', run: () => setNextStatus(STATUS_WHILE_RESETTING), part: 'finish' },
+{ label: 'Check before Finished', run: reviewBeforeFinish, part: 'finish' },
+{ label: 'Press Finished', run: pressFinished, part: 'finish' }
 ];
 
 function onPresentPage() {
@@ -1462,6 +1661,7 @@ for (let depth = 0; scope && depth < 12; depth++, scope = scope.$parent) {
 if (scope.Call) { call = scope.Call; break; }
 }
 const emails = new Set();
+const phones = new Set();
 let name = '';
 const walk = (value, depth) => {
 if (!value || depth > 5) return;
@@ -1470,26 +1670,31 @@ if (typeof value !== 'object') return;
 if (Array.isArray(value)) { value.slice(0, 20).forEach((v) => walk(v, depth + 1)); return; }
 if (!name && typeof value.CustomerName === 'string') name = value.CustomerName;
 if (!name && typeof value.Forename === 'string') name = `${value.Forename} ${value.Surname || ''}`;
-Object.keys(value).filter((k) => !/^\$/.test(k)).slice(0, 80).forEach((k) => walk(value[k], depth + 1));
+Object.keys(value).filter((k) => !/^\$/.test(k)).slice(0, 80).forEach((k) => {
+if (/phone|mobile|tel|number/i.test(k) && /^(string|number)$/.test(typeof value[k]) && digitsOf(value[k]).length >= 10) phones.add(String(value[k]));
+walk(value[k], depth + 1);
+});
 };
 walk(call, 0);
 // The page's own text as well, in case the data sits elsewhere. Only an
 // assigned lead's email can match, so other emails on the page do no harm.
 const main = document.querySelector('[ng-view], .main-content, main') || document.body;
 (String(main.innerText || '').match(EMAIL_PATTERN) || []).forEach((e) => emails.add(e));
-return { name: name.trim(), emails: Array.from(emails) };
+return { name: name.trim(), emails: Array.from(emails), phones: Array.from(phones) };
 }
 
-async function ensureAvailable() {
+// yours: the leads the agent is going Available for, as the messages name them.
+async function ensureAvailable(yours) {
+const what = yours || 'Email Only leads';
 if (onPresentPage() || onCallPage()) return 'A lead is already open';
 if (isAvailable()) return 'Status already Available';
 const item = byText(document, '[ng-click^="setMakeBusy"], [ng-click^="setAvailable"], .dropdown-menu [ng-click]', /^available$/i)[0];
-if (!item) throw new NeedsYou('Set your status to Available yourself so your Email Only leads present.', { carryOnLabel: 'Done, wait for leads' });
+if (!item) throw new NeedsYou(`Set your status to Available yourself so your ${what} present.`, { carryOnLabel: 'Done, wait for leads' });
 item.click();
 // A lead may present straight away, which also shows it worked.
 if (!statusButton()) { await sleep(1000); return 'Available pressed (your status could not be read from the page to confirm it)'; }
 if (!await waitFor(() => isAvailable() || onPresentPage() || onCallPage(), 5000)) {
-throw new NeedsYou('Your status did not change to Available. Set it yourself so your Email Only leads present.', { carryOnLabel: 'Done, wait for leads' });
+throw new NeedsYou(`Your status did not change to Available. Set it yourself so your ${what} present.`, { carryOnLabel: 'Done, wait for leads' });
 }
 return 'Status set to Available';
 }
@@ -1549,6 +1754,91 @@ const EMAIL_ONLY_RUN = [
 { label: 'Press Finished', run: pressFinished }
 ];
 
+// The customer may have other open leads: a Post Closure lead is never the
+// one, the checked lead's email and campaign pick between the rest, and the
+// agent does when they cannot.
+async function findSendThroughLead(ctx, lead) {
+const open = (await settledLeads()).map(({ activity }) => activity).filter(isOpenLead);
+const source = (a) => String((a.SalesLead && a.SalesLead.SourceName) || '');
+const candidates = open.filter((a) => !/post closure processing/i.test(source(a)));
+if (!candidates.length) throw new NeedsYou('No open lead to send through was found on this customer. Do this one yourself and skip it.', { noCarry: true });
+const index = chooseSendThroughLead(open.map((a) => ({ email: a.SalesLead && a.SalesLead.EmailAddress, campaign: a.CampaignName, source: source(a) })), lead);
+const activity = index >= 0 ? open[index] : leadPickedByAgent(ctx, candidates, `This customer has ${candidates.length} open leads and it is not clear which is the one to send through${lead.campaign ? ` (checked on ${lead.campaign})` : ''}.`);
+ctx.activity = activity;
+if (!await bringLeadIntoView(activity)) throw new NeedsYou('Open the tab of the lead to send through yourself, then carry on.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
+return candidates.length > 1 ? `Lead to send through found (${activity.CampaignName || 'picked by you'})` : 'Lead to send through found';
+}
+
+// The outcome comes from the table, or the run stops here for the owner to
+// choose: nothing has been changed on the lead at this point. What was
+// recommended and what was chosen go on the lead's decision.
+function chooseSendThroughOutcome(ctx, lead) {
+const key = sendThroughOutcome(lead, lead.chosen);
+if (key) return `${lead.stop ? 'You chose' : 'Outcome for ' + (lead.subCategory || 'this lead') + ':'} ${SEND_THROUGH_OUTCOMES[key].path.join(' > ')}`;
+const recommended = lead.recommend ? SEND_THROUGH_OUTCOMES[lead.recommend] : null;
+const says = lead.subCategory ? `The Lead Checker says: ${lead.subCategory}.` : 'The Lead Checker gave no sub category.';
+const message = recommended
+? `${says} Recommended: ${recommended.path.join(' > ')}. Choose the lead outcome, or skip to leave the lead as it is.`
+: `Not sure where this one goes. ${says} Choose the lead outcome, or skip to leave the lead as it is.`;
+throw new NeedsYou(message, {
+noCarry: true,
+choices: ['defer', 'dealer', 'misdirected'].map((k) => ({ key: k, label: SEND_THROUGH_OUTCOMES[k].label, recommended: k === lead.recommend })),
+onChoose: (chosen) => {
+if (!SEND_THROUGH_OUTCOMES[chosen]) return '';
+lead.chosen = chosen;
+return `Recommended: ${recommended ? recommended.label : 'nothing'}. Chose: ${SEND_THROUGH_OUTCOMES[chosen].label}`;
+}
+});
+}
+
+function setSendThroughOutcome(ctx, lead) {
+return setLeadOutcome(ctx.activity, SEND_THROUGH_OUTCOMES[sendThroughOutcome(lead, lead.chosen)].path, chooseOptionByLetters);
+}
+
+function setSendThroughStatus(ctx) {
+ctx.nextStatus = statusAfterSendThrough(ctx.leftAfterThis, loadSettings().stayAvailable);
+return setNextStatus(ctx.nextStatus);
+}
+
+// No note is written for any of the outcomes. A note step would go here:
+// both runs below take these steps between the call outcome and the lead
+// outcome.
+const SEND_THROUGH_NOTE_STEPS = [];
+
+const SEND_THROUGH_CORE = [
+{ label: 'Find the lead to send through', run: findSendThroughLead },
+{ label: 'Choose the lead outcome', run: chooseSendThroughOutcome },
+{ label: 'Call outcome: Update Outcomes', run: () => chooseCallOutcome(OUTCOME_UPDATE_ONLY) },
+...SEND_THROUGH_NOTE_STEPS,
+{ label: 'Set the lead outcome under Customer Hub Team', run: setSendThroughOutcome }
+];
+
+// As they present.
+const SEND_THROUGH_RUN = [
+{ label: 'Press Reject (opens it without dialling)', run: rejectPresented },
+{ label: 'Call outcome back to (Select a Call Outcome)', run: () => chooseCallOutcome(OUTCOME_NONE) },
+...SEND_THROUGH_CORE,
+{ label: 'Next status', run: setSendThroughStatus },
+{ label: 'Check before Finished', run: reviewBeforeFinish },
+{ label: 'Press Finished', run: pressFinished }
+];
+
+// From Parked Calls, in the Post Closure pass.
+const SEND_THROUGH_PARKED_RUN = [
+{ label: 'Go to Parked Calls', run: goToParked, part: 'open' },
+{ label: 'Open the customer', run: openParkedCustomer, part: 'open' },
+...SEND_THROUGH_CORE,
+{ label: 'Next status: Shift Start', run: () => setNextStatus(STATUS_WHILE_RESETTING), part: 'finish' },
+{ label: 'Check before Finished', run: reviewBeforeFinish, part: 'finish' },
+{ label: 'Press Finished', run: pressFinished, part: 'finish' }
+];
+
+// The steps for one item of the Parked Calls pass. A customer with two
+// items is opened for the first and finished after the second.
+function parkedSteps(item) {
+return (item.kind === 'st' ? SEND_THROUGH_PARKED_RUN : SEND_BACK_RUN).filter((step) => (item.opens || step.part !== 'open') && (item.finishes || step.part !== 'finish'));
+}
+
 // ===================================================================
 // RUNNER AND PANEL
 // ===================================================================
@@ -1577,8 +1867,8 @@ render();
 // make sense.
 function waitForUser(error, inLead) {
 if (halted) return Promise.resolve('stop');
-state.paused = { message: error.message, carryOnLabel: error.carryOnLabel, noCarry: !!error.noCarry, review: !!error.review, inLead: !!inLead };
-if (ui) ui.skipAsk = false;
+state.paused = { message: error.message, carryOnLabel: error.carryOnLabel, noCarry: !!error.noCarry, review: !!error.review, inLead: !!inLead, choices: inLead && error.choices ? error.choices : null };
+if (ui) { ui.skipAsk = false; ui.choiceWhy = ''; }
 showPanel();
 render();
 return new Promise((resolve) => { resolvePause = resolve; });
@@ -1643,6 +1933,11 @@ const needsYou = error instanceof NeedsYou ? error : new NeedsYou(`${step.label}
 addLog(needsYou.review ? 'Waiting for your check' : `Stopped at "${step.label}"`);
 const answer = await waitForUser(needsYou, true);
 if (answer === 'retry') continue;
+if (answer && answer.choose) {
+const note = needsYou.onChoose ? needsYou.onChoose(answer.choose) : '';
+if (note) confirmed.push([note, answer.why ? `Why: ${answer.why}` : ''].filter(Boolean).join('. '));
+continue;
+}
 if (answer === 'carry') {
 if (needsYou.confirms) confirmed.push(needsYou.confirms);
 if (needsYou.onConfirm) needsYou.onConfirm(); else state.stepIndex++;
@@ -1657,7 +1952,7 @@ break;
 // Clear & Stop returned above: it removes the decisions, so adds none.
 const step = steps[state.stepIndex];
 const rows = loadDecisions();
-rows.push(decisionRow(state.mode, lead, outcome || 'Stopped', step ? step.label : '', confirmed, ui ? ui.skipWhy : '', new Date().toISOString()));
+rows.push(decisionRow(lead.kind === 'st' ? 'st' : state.mode, lead, outcome || 'Stopped', step ? step.label : '', confirmed, ui ? ui.skipWhy : '', new Date().toISOString()));
 saveDecisions(freshDecisions(rows, Date.now()));
 if (ui) { ui.skipWhy = ''; ui.skipAsk = false; }
 return outcome;
@@ -1894,9 +2189,33 @@ const me = emailOnlyMe();
 return emailOnlySaved().filter((l) => !me || l.agent === me).map((l) => ({ ...l, key: normalise(l.email) }));
 }
 
+function sendThroughSaved() {
+const saved = readJson(SEND_THROUGH_KEY);
+return saved && isFresh(saved.savedAt) && Array.isArray(saved.leads) ? saved.leads.filter((l) => l && isFresh(l.checkedAt || saved.savedAt)) : [];
+}
+
+// Every agent name SLA Manager recorded, so the one "which agent are you"
+// answer serves Email Only and Send through alike.
+function sendThroughAgents() {
+return Array.from(new Set(emailOnlyAgents().concat(sendThroughSaved().map((l) => l.agent).filter(Boolean))));
+}
+
+function sendThroughMe() {
+return agentAmong(sendThroughAgents(), loadSettings().emailOnlyAgent);
+}
+
+function sendThroughAsk() {
+return sendThroughSaved().length > 0 && sendThroughAgents().length > 1 && !sendThroughMe();
+}
+
+// Only this agent's own leads, with what the run will do for each.
+function sendThroughLeads() {
+return sendThroughLeadsFrom(sendThroughSaved(), sendThroughMe());
+}
+
 function loadDeskProgress() {
 const p = readJson(DESK_PROGRESS_KEY);
-return p && isFresh(p.savedAt) ? { savedAt: p.savedAt, pc: p.pc || {}, eo: p.eo || {} } : { savedAt: new Date().toISOString(), pc: {}, eo: {} };
+return p && isFresh(p.savedAt) ? { savedAt: p.savedAt, pc: p.pc || {}, eo: p.eo || {}, st: p.st || {} } : { savedAt: new Date().toISOString(), pc: {}, eo: {}, st: {} };
 }
 function saveDeskProgress(progress) {
 progress.savedAt = new Date().toISOString();
@@ -1910,26 +2229,28 @@ try {
 const settings = loadSettings();
 const progress = loadDeskProgress();
 if (!await outsideLead(goToParked, true)) return;
-const parked = readSearchRows().rows;
-const all = sendBackLeads().filter((l) => !progress.pc[l.key]);
-const todo = all.filter((l) => matchPerson(parked, l));
-if (all.length > todo.length) addLog(`${all.length - todo.length} not in your Parked Calls, left alone`);
-state.deskCount = { done: 0, total: todo.length };
-for (const lead of todo) {
+const { items, missing } = parkedWorkList(sendBackLeads(), sendThroughLeads(), progress, readSearchRows().rows);
+if (missing.pc) addLog(`${missing.pc} not in your Parked Calls, left alone`);
+if (missing.st) addLog(`${missing.st} send through lead${missing.st === 1 ? '' : 's'} not in your Parked Calls, left for when ${missing.st === 1 ? 'it presents' : 'they present'}`);
+state.deskCount = { done: 0, total: items.length };
+for (const item of items) {
+const lead = item.lead;
 if (state.stopRequested) break;
 state.deskLead = lead;
 state.ctx = { log: addLog, settings };
-addLog(`Started ${lead.name} (${lead.shorthand.toUpperCase()})`);
-const outcome = await runLeadSteps(lead, SEND_BACK_RUN);
+addLog(`Started ${lead.name} (${item.kind === 'st' ? 'send through' : lead.shorthand.toUpperCase()})`);
+// A customer the item before was meant to leave open is opened again
+// when the call is no longer there (that item was skipped and parked).
+const outcome = await runLeadSteps(lead, parkedSteps({ ...item, opens: item.opens || !onCallPage() }));
 if (!outcome) break;
-progress.pc[lead.key] = outcome;
+progress[item.kind][lead.key] = outcome;
 saveDeskProgress(progress);
 state.deskCount.done++;
 addLog(`${outcome}: ${lead.name}`);
 if (outcome === 'Skipped' && onCallPage() && !await askToCarryOn(skippedMessage('the next one can start'), 'Done, next one')) break;
 state.ctx = null;
 }
-if (!state.stopRequested && !halted) addLog('All Post Closure send backs are done');
+if (!state.stopRequested && !halted) addLog(items.some((item) => item.kind === 'st') ? 'All Post Closure send backs and parked send through leads are done' : 'All Post Closure send backs are done');
 } catch (error) {
 logRunError(error);
 } finally {
@@ -1947,26 +2268,42 @@ if (!await askToCarryOn(`No lead has presented for 3 minutes. Your status is ${c
 }
 }
 
-async function runEmailOnly() {
+// The two runs that take leads as they present, and how each names its leads.
+const PRESENT_RUNS = {
+eo: { leads: () => emailOnlyLeads(), match: matchEmailOnly, steps: EMAIL_ONLY_RUN, yours: 'Email Only leads', one: 'Email Only lead', listed: 'the Email Only leads you assigned' },
+st: { leads: () => sendThroughLeads(), match: matchPresented, steps: SEND_THROUGH_RUN, yours: 'send through leads', one: 'send through lead', listed: 'your send through leads' }
+};
+
+async function runPresenting(mode) {
 if (state.running) return;
-beginRun('eo');
+const run = PRESENT_RUNS[mode];
+beginRun(mode);
 try {
 const settings = loadSettings();
 const progress = loadDeskProgress();
-const left = () => emailOnlyLeads().filter((l) => !progress.eo[l.key]);
+const left = () => run.leads().filter((l) => !progress[mode][l.key]);
 state.deskCount = { done: 0, total: left().length };
-if (!left().length) { addLog('No Email Only leads left to do'); return; }
-if (!onPresentPage() && !onCallPage() && !await outsideLead(ensureAvailable, false)) return;
+if (!left().length) { addLog(`No ${run.yours} left to do`); return; }
+if (!onPresentPage() && !onCallPage() && !await outsideLead(() => ensureAvailable(run.yours), false)) return;
+// Send through with "Stay Available between leads" off: the lead just
+// finished left the agent on Shift Start, and the next is only asked for
+// when they say so.
+let resting = false;
 while (left().length && !state.stopRequested) {
 state.deskLead = null;
 render();
+if (resting && !onPresentPage() && !onCallPage()) {
+resting = false;
+if (!await askToCarryOn('You are on Shift Start, as Stay Available between leads is off. Carry on to go Available for the next one.', 'Go Available for the next')) break;
+if (!await outsideLead(() => ensureAvailable(run.yours), false)) break;
+}
 if (!onPresentPage() && !onCallPage() && !await waitForPresentedLead()) break;
 if (onCallPage() && !onPresentPage()) {
-if (!await askToCarryOn('A call is already open. Finish it yourself; your next Email Only lead will be picked up after.', 'Done, wait for the next')) break;
+if (!await askToCarryOn(`A call is already open. Finish it yourself; your next ${run.one} will be picked up after.`, 'Done, wait for the next')) break;
 continue;
 }
 const presented = presentedPerson();
-const lead = matchEmailOnly(left(), presented);
+const lead = run.match(left(), presented);
 if (!lead) {
 // Rejected and reset all the same, so it cannot dial unnoticed, then
 // left for the agent: nothing else on it is changed.
@@ -1978,33 +2315,37 @@ await chooseCallOutcome(OUTCOME_NONE);
 if (halted || error instanceof Halted) return;
 opened = false;
 }
-addLog(`A lead that is not one of your Email Only leads presented; ${opened ? 'rejected so it does not dial, and' : ''} left to you`);
+addLog(`A lead that is not one of your ${run.yours} presented; ${opened ? 'rejected so it does not dial, and' : ''} left to you`);
 const message = opened
-? 'This lead is not one of the Email Only leads you assigned. It has been rejected so it does not dial, and the call outcome is back to (Select a Call Outcome). Deal with it yourself and finish or park it, then carry on to wait for the next.'
-: 'This lead is not one of the Email Only leads you assigned, and it could not be rejected. Reject it yourself before it dials, deal with it, then carry on to wait for the next.';
+? `This lead is not one of ${run.listed}. It has been rejected so it does not dial, and the call outcome is back to (Select a Call Outcome). Deal with it yourself and finish or park it, then carry on to wait for the next.`
+: `This lead is not one of ${run.listed}, and it could not be rejected. Reject it yourself before it dials, deal with it, then carry on to wait for the next.`;
 if (!await askToCarryOn(message, 'Done, wait for the next')) break;
 continue;
 }
 state.deskLead = lead;
 state.ctx = { log: addLog, settings, leftAfterThis: left().length - 1 };
 addLog(`Started ${lead.name}`);
-const outcome = await runLeadSteps(lead, EMAIL_ONLY_RUN);
+const outcome = await runLeadSteps(lead, run.steps);
 if (!outcome) break;
-progress.eo[lead.key] = outcome;
+progress[mode][lead.key] = outcome;
 saveDeskProgress(progress);
 state.deskCount.done++;
 addLog(`${outcome}: ${lead.name}`);
 if (outcome === 'Skipped' && onCallPage() && !await askToCarryOn(skippedMessage('the next one can present'), 'Done, wait for the next')) break;
+resting = outcome === 'Done' && left().length > 0 && state.ctx.nextStatus === STATUS_WHILE_RESETTING;
 state.ctx = null;
 }
 // The status is read from the page: a skipped last lead leaves it Available.
-if (!state.stopRequested && !halted && !left().length) addLog(`All your Email Only leads are done; your status is ${currentStatus() || 'not readable from the page'}`);
+if (!state.stopRequested && !halted && !left().length) addLog(`All your ${run.yours} are done; your status is ${currentStatus() || 'not readable from the page'}`);
 } catch (error) {
 logRunError(error);
 } finally {
 endRun();
 }
 }
+
+const runEmailOnly = () => runPresenting('eo');
+const runSendThrough = () => runPresenting('st');
 
 // ===================================================================
 // PANEL
@@ -2119,6 +2460,14 @@ details.step-fold > summary { padding: 0; font-weight: 500; justify-content: fle
 .needs-card .others { justify-content: space-between; }
 .needs-card .why { display: block; width: 100%; font: inherit; font-size: 12px; color: var(--text); background: #fff; border: 1px solid #e5c98b; border-radius: 10px; padding: 6px 10px; }
 .needs-card .why::placeholder { color: #8a6d3b; }
+.needs-card .choices { display: flex; flex-direction: column; gap: 6px; }
+.tgs { display: inline-flex; gap: 4px; align-items: center; }
+.sw { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; font-weight: 600; font-size: 12.5px; padding: 7px 10px; border-radius: 10px; background: var(--bg); }
+.sw .knob { flex: none; width: 34px; height: 20px; border-radius: 999px; background: #b8bfcc; position: relative; transition: background .15s; }
+.sw .knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: left .15s; }
+.sw[aria-checked="true"] .knob { background: var(--pri); }
+.sw[aria-checked="true"] .knob::after { left: 16px; }
+.sw:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 details.fold { background: var(--surface); border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.05); }
 summary { cursor: pointer; padding: 9px 10px; font-weight: 700; font-size: 12.5px; display: flex; justify-content: space-between; align-items: center; list-style: none; border-radius: 12px; }
 summary::-webkit-details-marker { display: none; }
@@ -2271,14 +2620,15 @@ const desk = loadDeskProgress();
 return {
 re: leads.filter((l) => !progress.byActivity[l.activityId]).length,
 pc: sendBackLeads().filter((l) => !desk.pc[l.key]).length,
-eo: emailOnlyLeads().filter((l) => !desk.eo[l.key]).length
+eo: emailOnlyLeads().filter((l) => !desk.eo[l.key]).length,
+st: sendThroughLeads().filter((l) => !desk.st[l.key]).length
 };
 }
 
 function renderTabs(counts) {
 const view = ui.view || 're';
 const tab = (key, label) => `<button type="button" class="tab${view === key ? ' on' : ''}" role="tab" data-action="view" data-view="${key}" aria-selected="${view === key}">${label}${counts[key] ? `<em>${counts[key]}</em>` : ''}</button>`;
-return `<div class="tabs" role="tablist" aria-label="Choose a run">${tab('re', 'Re setup')}${tab('pc', 'Post Closure')}${tab('eo', 'Email Only')}</div>`;
+return `<div class="tabs" role="tablist" aria-label="Choose a run">${tab('re', 'Re setup')}${tab('pc', 'Post Closure')}${tab('eo', 'Email Only')}${tab('st', 'Send through')}</div>`;
 }
 
 // Which lead a list row stands for. The key is kept in the row so the
@@ -2289,19 +2639,21 @@ return `${lead.activityId}|${lead.name}`;
 function listLead(run, key) {
 if (run === 'pc') return sendBackLeads().find((l) => l.key === key) || null;
 if (run === 'eo') return emailOnlyLeads().find((l) => l.key === key) || null;
+if (run === 'st') return sendThroughLeads().find((l) => l.key === key) || null;
 return leadsToDo().find((l) => reKey(l) === key) || null;
 }
 
 // Two lines per person: name and state, then the detail. The initials open
 // the actions; the row itself opens for more.
-function listRow(run, key, name, detail, status, more) {
+// flag: a second tag before the state, for a row that needs saying more.
+function listRow(run, key, name, detail, status, more, flag) {
 const id = `${run}:${key}`;
 const open = ui.openRows.has(id);
 const attrs = `data-run="${run}" data-key="${escapeHtml(key)}"`;
 const kv = more.filter((pair) => pair[1]).map((pair) => `<dt>${escapeHtml(pair[0])}</dt><dd>${escapeHtml(pair[1])}</dd>`).join('');
 return `<div class="r${open ? ' open' : ''}">
 <button type="button" class="av ${AVATAR_CLASS[status] || ''}" data-action="who" ${attrs} title="Actions for ${escapeHtml(name)}" aria-haspopup="true">${escapeHtml(initials(name))}</button>
-<button type="button" class="rmain" data-action="row" ${attrs} aria-expanded="${open}" title="Show or hide details"><span class="nm">${escapeHtml(name)}</span><span class="tag ${TAG_CLASS[status] || 'wait'}">${escapeHtml(status)}</span><span class="meta">${escapeHtml(detail)}</span></button>
+<button type="button" class="rmain" data-action="row" ${attrs} aria-expanded="${open}" title="Show or hide details"><span class="nm">${escapeHtml(name)}</span>${flag ? `<span class="tgs"><span class="tag ck">${escapeHtml(flag)}</span>` : ''}<span class="tag ${TAG_CLASS[status] || 'wait'}">${escapeHtml(status)}</span>${flag ? '</span>' : ''}<span class="meta">${escapeHtml(detail)}</span></button>
 <div class="more"><dl class="kv">${kv}</dl></div>
 </div>`;
 }
@@ -2323,6 +2675,10 @@ return 'Next';
 
 const SEND_BACK_HOW = 'Each one is opened from your Parked Calls: CAD or CAH in Post Closure Notes, call outcome Update Outcomes, lead outcome Customer Hub Team &gt; No Opportunity &gt; the Catch All reason, next status Shift Start, then Finished. Ones not in your Parked Calls are left alone. To check your Parked Calls, SLA Manager passes them to its Konnect Live tab.';
 const EMAIL_ONLY_HOW = 'Sets you Available. Each of your leads that presents is rejected (so it does not dial), set to Update Outcomes, given EO in Call Notes and Customer Hub Team &gt; Ongoing &gt; Email Only Lead, then Finished. Any other lead that presents is left to you. You stay Available until the last one, then Shift Start.';
+
+const SEND_BACK_ALSO_HOW = ' Your send through leads that are in Parked Calls are done in the same pass: call outcome Update Outcomes, their lead outcome under Customer Hub Team, next status Shift Start, then Finished.';
+const SEND_THROUGH_HOW = 'Sets you Available. Each of your leads that presents is rejected (so it does not dial), set to Update Outcomes and given its lead outcome under Customer Hub Team: Ongoing &gt; In Progress with Dealer or Ongoing &gt; Defer to Site, from the Lead Checker result. No note is written. On the ones marked Stops for you it stops for you to choose the outcome. Then Finished. Any other lead that presents is left to you. The ones in your Parked Calls are done by Start on the Post Closure tab.';
+const STOPS_FOR_YOU = 'Stops for you';
 
 function howLink() {
 return `<button type="button" class="btn txt" data-action="how" aria-expanded="${!!ui.howOpen}">How it works</button>`;
@@ -2347,8 +2703,11 @@ const hubLine = hubStatusLine();
 const requestLine = hubLine ? `<div class="muted small hub-status" role="status">${escapeHtml(hubLine)}</div>` : '';
 const age = resultsAgeLine();
 const ageChip = age ? chip(age, '', 'results-age') : '';
-const how = `${SEND_BACK_HOW}${checks ? ` The ${checks} that need${checks === 1 ? 's' : ''} contact ${checks === 1 ? 'is' : 'are'} left for you to call.` : ''}`;
-if (!leads.length) {
+const through = sendThroughLeads();
+const throughDone = loadDeskProgress().st;
+const throughLeft = through.filter((l) => !throughDone[l.key]).length;
+const how = `${SEND_BACK_HOW}${checks ? ` The ${checks} that need${checks === 1 ? 's' : ''} contact ${checks === 1 ? 'is' : 'are'} left for you to call.` : ''}${through.length ? SEND_BACK_ALSO_HOW : ''}`;
+if (!leads.length && !through.length) {
 return [`<div class="card col empty"><strong>No send backs yet</strong><div class="muted small">Check your Parked Calls on the Lead Checker. The ones marked "send back through" show here.</div><div class="cf">${needCall}${ageChip}${howLink()}</div>${howText(how)}${btn('checkParked', 'Check my Parked Calls', 'primary', 'wide')}${requestLine}</div>`];
 }
 const now = Date.now();
@@ -2360,11 +2719,12 @@ const rows = leads.map((l, i) => listRow('pc', l.key, l.name, `${l.shorthand.toU
 ]));
 return [`<div class="card col">
 <div class="big-count"><strong>${left}</strong><span>to send back</span></div>
-<div class="cf">${needCall}${ageChip}${howLink()}</div>
+<div class="cf">${needCall}${throughLeft ? chip(`${throughLeft} to send through`, 'acc', 'through-chip') : ''}${ageChip}${howLink()}</div>
 ${howText(how)}
-${left ? `${startButton('startPc', 'Start')}<span class="quiet-line shift-line">Sets Shift Start before opening Parked Calls, every time.</span>` : '<div class="muted small">All done.</div>'}
+${left || throughLeft ? `${startButton('startPc', 'Start')}<span class="quiet-line shift-line">Sets Shift Start before opening Parked Calls, every time.</span>` : '<div class="muted small">All done.</div>'}
 ${btn('checkParked', 'Check my Parked Calls', 'sec', 'wide')}${requestLine}
-</div>`, listGroup('Send backs', leads.length - left, rows)];
+</div>`, leads.length ? listGroup('Send backs', leads.length - left, rows) : '',
+through.length ? listGroup('Send through, if in Parked Calls', through.length - throughLeft, sendThroughRows(through, throughDone, false)) : ''];
 }
 
 // Only ever this agent's own leads. With several agents recorded and no
@@ -2389,6 +2749,44 @@ return [`<div class="card col">
 ${howText(EMAIL_ONLY_HOW)}
 ${left ? startButton('startEo', 'Start') : '<div class="muted small">All done.</div>'}
 </div>`, listGroup('Email Only leads', doneCount, rows)];
+}
+
+// Two lines per person: the name, then the Lead Checker's reason and the
+// outcome that will be set. next: mark the first one still to do as Next.
+function sendThroughRows(leads, done, next) {
+const now = Date.now();
+const statuses = next ? withNext(leads, (l) => done[l.key] || 'Waiting') : leads.map((l) => done[l.key] || 'Waiting');
+return leads.map((l, i) => listRow('st', l.key, l.name, sendThroughDetail(l), statuses[i], [
+['Checked', l.checkedAt ? ageText(l.checkedAt, now) : ''],
+['Result', l.subCategory],
+['Sets', l.stop ? 'You choose the outcome' : SEND_THROUGH_OUTCOMES[l.outcome].path.join(' > ')],
+['Campaign', l.campaign], ['Phone', l.phone], ['Email', l.email]
+], l.stop && !done[l.key] ? STOPS_FOR_YOU : ''));
+}
+
+// Only ever this agent's own leads, as the Email Only tab.
+function renderSendThroughView() {
+if (sendThroughAsk()) {
+return [`<div class="card col ask-me"><strong>Which agent are you?</strong><div class="muted small">Pick your name once. It is remembered, and you can change it in More.</div>${sendThroughAgents().map((a) => `<button type="button" class="btn sec wide" data-action="iAm" data-agent="${escapeHtml(a)}">${escapeHtml(a)}</button>`).join('')}</div>`];
+}
+const leads = sendThroughLeads();
+if (!leads.length) {
+return [`<div class="card col empty"><strong>No leads to send through yet</strong><div class="muted small">Leads assigned to you in SLA Manager that the Lead Checker says need no call show here, to go through to the dealership.</div><div class="cf">${howLink()}</div>${howText(SEND_THROUGH_HOW)}</div>`];
+}
+const done = loadDeskProgress().st;
+const left = leads.filter((l) => !done[l.key]).length;
+const doneCount = leads.length - left;
+const stops = leads.filter((l) => l.stop && !done[l.key]).length;
+const stay = loadSettings().stayAvailable;
+return [`<div class="card col">
+<div class="big-count"><strong>${left}</strong><span>to send through to the dealership</span></div>
+<div class="cf">${chip('Sets you Available', 'info')}${stops ? chip(`${stops} stop${stops === 1 ? 's' : ''} for you`, 'warn') : ''}${doneCount ? chip(`${doneCount} done`, 'ok') : ''}${howLink()}</div>
+${howText(SEND_THROUGH_HOW)}
+<button type="button" class="sw" role="switch" aria-checked="${stay}" data-action="stayAvailable"><span>Stay Available between leads</span><span class="knob" aria-hidden="true"></span></button>
+<span class="quiet-line stay-line">${stay ? 'You stay Available until the last one, then Shift Start.' : 'Shift Start after each one. It asks before going Available for the next.'}</span>
+${left ? startButton('startSt', 'Start') : '<div class="muted small">All done.</div>'}
+${left ? btn('startPc', 'Do the ones in my Parked Calls', 'sec', 'wide') : ''}
+</div>`, listGroup('Send through', doneCount, sendThroughRows(leads, done, true))];
 }
 
 function leadStatus(lead, index, progress) {
@@ -2446,16 +2844,18 @@ if (state.mode === 'here') {
 const lead = state.hereLead;
 return { left: 'This customer', right: 'Stops in the new lead', percent: null, name: lead.name, meta: lead.campaign || '', steps: true, count: '', short: '' };
 }
-if (state.mode === 'pc' || state.mode === 'eo') {
+if (state.mode === 'pc' || state.mode === 'eo' || state.mode === 'st') {
 const lead = state.deskLead;
+const through = !!lead && lead.kind === 'st';
+const waiting = state.mode === 'eo' ? 'Waiting for your next Email Only lead' : state.mode === 'st' ? 'Waiting for your next send through lead' : 'Getting ready';
 const count = state.deskCount || { done: 0, total: 0 };
 const at = Math.min(count.done + 1, count.total);
 return {
-left: state.mode === 'pc' ? 'Post Closure send back' : 'Email Only',
+left: through ? 'Send through to the dealership' : state.mode === 'pc' ? 'Post Closure send back' : state.mode === 'st' ? 'Send through to the dealership' : 'Email Only',
 right: `${count.done} of ${count.total} done`,
 percent: count.total ? Math.round((100 * count.done) / count.total) : 0,
-name: lead ? lead.name : (state.mode === 'eo' ? 'Waiting for your next Email Only lead' : 'Getting ready'),
-meta: lead ? (state.mode === 'pc' ? `${lead.shorthand.toUpperCase()} · ${lead.reason}` : (lead.email || '')) : '',
+name: lead ? lead.name : waiting,
+meta: lead ? (through ? sendThroughDetail(lead) : state.mode === 'pc' ? `${lead.shorthand.toUpperCase()} · ${lead.reason}` : (lead.email || '')) : '',
 steps: !!lead,
 count: count.total ? `${at} of ${count.total}` : '',
 short: count.total ? `${at}/${count.total}` : ''
@@ -2494,7 +2894,12 @@ const step = paused.inLead && state.steps ? state.steps[state.stepIndex] : null;
 const who = [info.steps ? info.name : '', info.steps ? info.count : '', step ? step.label : ''].filter(Boolean).join(' · ');
 const canSkip = paused.inLead && state.mode !== 'here';
 const others = [];
-if (paused.inLead && !paused.review) others.push(btn('retry', 'Try again', 'sec', 'small'));
+if (paused.inLead && !paused.review && !paused.choices) others.push(btn('retry', 'Try again', 'sec', 'small'));
+// A decision: one button per answer, the recommended one filled, and an
+// optional reason that is kept with the decision.
+const choices = paused.choices && !ui.skipAsk
+? `<div class="choices">${paused.choices.map((c) => `<button type="button" class="btn ${c.recommended ? 'primary' : 'sec'} wide" data-action="choose" data-key="${escapeHtml(c.key)}">${escapeHtml(c.label)}${c.recommended ? ' (recommended)' : ''}</button>`).join('')}<input type="text" class="why" data-role="choiceWhy" maxlength="200" autocomplete="off" placeholder="Why this one? (optional)" aria-label="Why this one? (optional)"></div>`
+: '';
 if (canSkip) others.push(btn('skip', 'Skip lead', 'sec', 'small'));
 // The box's text is kept in ui.skipWhy and put back by render(), so it is
 // not part of the html that decides whether the panel is redrawn.
@@ -2504,7 +2909,7 @@ const lower = canSkip && ui.skipAsk
 return [`<div class="card needs-card">
 <div role="alert">${who ? `<div class="who">${escapeHtml(who)}</div>` : ''}<p class="ask">${escapeHtml(paused.message)}</p></div>
 ${paused.noCarry ? '' : btn('carry', paused.carryOnLabel, 'primary', 'wide')}
-${lower}
+${choices}${lower}
 </div>`,
 `<details class="fold" data-section="more"${ui.moreOpen ? ' open' : ''}><summary>Steps and activity <span class="count">${ui.moreOpen ? 'hide' : 'show'}</span></summary><div class="fold-body">${info.steps ? renderSteps() : ''}</div><div class="log">${logLines()}</div></details>`];
 }
@@ -2560,8 +2965,8 @@ line.classList.toggle('bad', state_ === 'bad');
 // True when the run in hand, or the tab on show, is one that presses
 // Finished; the others park.
 function stopsBeforeFinish() {
-if (state.running) return state.mode === 'pc' || state.mode === 'eo';
-return ui.view === 'pc' || ui.view === 'eo';
+if (state.running) return state.mode === 'pc' || state.mode === 'eo' || state.mode === 'st';
+return ui.view === 'pc' || ui.view === 'eo' || ui.view === 'st';
 }
 
 function footerText(settings) {
@@ -2590,13 +2995,14 @@ if (state.paused) parts.push(...renderPaused(info));
 else {
 if (versionState.newer) parts.push(`<div class="alert red version newer">${escapeHtml(versionLineText(versionState))}</div>`);
 if (selfTestFailures.length) parts.push(`<div class="alert red" role="alert"><span><strong>Self-test failed.</strong> Please send this on: ${escapeHtml(selfTestFailures[0])}</span></div>`);
-if (!onDesktop) parts.push(`<div class="alert amber"><span>Open this on the agent desktop: Re setup, Post Closure and Email Only only work there.</span></div>`);
+if (!onDesktop) parts.push(`<div class="alert amber"><span>Open this on the agent desktop: Re setup, Post Closure, Email Only and Send through only work there.</span></div>`);
 if (state.running) parts.push(...renderRunning(info));
 else {
 if (state.notice) parts.push(renderNotice());
 parts.push(renderTabs(counts));
 if (ui.view === 'pc') parts.push(...renderSendBackView());
 else if (ui.view === 'eo') parts.push(...renderEmailOnlyView());
+else if (ui.view === 'st') parts.push(...renderSendThroughView());
 else parts.push(...renderReSetupView(source, leads, progress));
 parts.push(activityFold());
 }
@@ -2615,6 +3021,8 @@ ui.html = html;
 body.scrollTop = scroll;
 const list = body.querySelector('.list');
 if (list && listScroll) list.scrollTop = listScroll;
+const choiceWhy = body.querySelector('[data-role="choiceWhy"]');
+if (choiceWhy) choiceWhy.value = ui.choiceWhy || '';
 const whyBox = body.querySelector('[data-role="skipWhy"]');
 if (whyBox) {
 whyBox.value = ui.skipWhy || '';
@@ -2721,10 +3129,10 @@ if (leads.length) acts.push(menuItem('copySummary', 'copy', 'Copy summary'));
 if (leads.some((l) => progress.byActivity[l.activityId])) acts.push(menuItem('clearRe', 'trash', 'Clear progress'));
 if (readJson(PASTED_RESULTS_KEY)) acts.push(menuItem('clearPasted', 'trash', 'Remove pasted results'));
 } else {
-if (Object.keys(desk[view] || {}).length) acts.push(menuItem(view === 'pc' ? 'clearPc' : 'clearEo', 'trash', 'Clear progress'));
+if (Object.keys(desk[view] || {}).length) acts.push(menuItem(view === 'pc' ? 'clearPc' : view === 'st' ? 'clearSt' : 'clearEo', 'trash', 'Clear progress'));
 acts.push(menuItem('how', 'help', 'How it works'));
 }
-if (emailOnlyAgents().length > 1 && emailOnlyMe()) acts.push(menuItem('changeMe', 'user', 'Change who I am'));
+if ((emailOnlyAgents().length > 1 && emailOnlyMe()) || (sendThroughAgents().length > 1 && sendThroughMe())) acts.push(menuItem('changeMe', 'user', 'Change who I am'));
 }
 if (acts.length) groups.push(acts.join(''));
 const version = versionState ? versionLineText(versionState) : '';
@@ -2737,18 +3145,19 @@ function whoMenuHtml(run, key) {
 const lead = listLead(run, key);
 if (!lead) return '';
 const attrs = `data-run="${run}" data-key="${escapeHtml(key)}"`;
-return `<div class="mh">${escapeHtml(lead.name)}</div>${run === 'pc' ? menuItem('openParked', 'phone', 'Open from Parked Calls', attrs) : ''}${menuItem('copyDetails', 'copy', 'Copy details', attrs)}`;
+return `<div class="mh">${escapeHtml(lead.name)}</div>${run === 'pc' || run === 'st' ? menuItem('openParked', 'phone', 'Open from Parked Calls', attrs) : ''}${menuItem('copyDetails', 'copy', 'Copy details', attrs)}`;
 }
 
 function detailsForClipboard(run, lead) {
 const lines = [lead.name];
 if (run === 'pc') lines.push(`Send back through: ${lead.reason} (${lead.shorthand.toUpperCase()})`, lead.phone, lead.email);
 else if (run === 'eo') lines.push(lead.campaign || 'Email Only', lead.email, lead.phone);
+else if (run === 'st') lines.push(`Send through: ${sendThroughDetail(lead)}`, lead.campaign, lead.phone, lead.email);
 else lines.push(lead.campaign, lead.reg ? `Reg ${lead.reg}` : '', lead.activityId ? `Lead ${lead.activityId}` : '');
 return lines.filter(Boolean).join('\n');
 }
 
-// Opens one send back lead from Parked Calls for the agent and stops there:
+// Opens one send back or send through lead from Parked Calls for the agent and stops there:
 // nothing is written and Finished is not pressed.
 async function openFromParked(lead) {
 if (state.running || state.checking) return;
@@ -3123,7 +3532,7 @@ return;
 if (action === 'clearStop') { clearAndStop(); return; }
 if (action === 'report') {
 // Names never leave the page: every known customer name is replaced.
-const names = leadsToDo().map((l) => l.name).concat(state.hereLead ? [state.hereLead.name] : [], sendBackLeads().map((l) => l.name), emailOnlySaved().map((l) => l.name)).filter(Boolean);
+const names = leadsToDo().map((l) => l.name).concat(state.hereLead ? [state.hereLead.name] : [], sendBackLeads().map((l) => l.name), emailOnlySaved().map((l) => l.name), sendThroughSaved().map((l) => l.name)).filter(Boolean);
 const redact = (line) => names.reduce((text, name) => text.split(name).join('<customer>'), String(line));
 const where = state.running ? `running ${state.mode || ''} step ${state.stepIndex + 1}${state.paused ? ', needs you: ' + state.paused.message : ''}` : 'idle';
 reportProblem('Lead Re setup', redact(where), state.log.map(redact));
@@ -3160,17 +3569,25 @@ if (action === 'skipCancel') { ui.skipAsk = false; ui.skipWhy = ''; render(); re
 if (action === 'skipConfirm') { answerPause('skip'); return; }
 // A reason typed and then not used for a skip is not kept.
 if (action === 'carry' || action === 'retry') { ui.skipAsk = false; ui.skipWhy = ''; answerPause(action); return; }
+if (action === 'choose') {
+const why = String(ui.choiceWhy || '').trim();
+ui.choiceWhy = '';
+answerPause({ choose: key, why });
+return;
+}
 // Everything below starts or changes something, so it waits for any run
 // to end.
 if (state.running || state.checking) return;
 if (action === 'iAm') { saveSetting('emailOnlyAgent', target.getAttribute('data-agent') || ''); render(); return; }
-if (action === 'changeMe') { saveSetting('emailOnlyAgent', ''); ui.view = 'eo'; ui.howOpen = false; render(); return; }
+if (action === 'changeMe') { saveSetting('emailOnlyAgent', ''); ui.view = ui.view === 'st' && sendThroughSaved().length ? 'st' : 'eo'; ui.howOpen = false; render(); return; }
+if (action === 'stayAvailable') { saveSetting('stayAvailable', !loadSettings().stayAvailable); render(); return; }
+if (action === 'startSt') { runSendThrough(); return; }
 if (action === 'start') { runAll(); return; }
 if (action === 'startPc') { runSendBack(); return; }
 if (action === 'startEo') { runEmailOnly(); return; }
 if (action === 'checkParked') { checkParkedOnLive(); return; }
 if (action === 'openParked') {
-const lead = listLead('pc', key);
+const lead = listLead(run || 'pc', key);
 if (lead) openFromParked(lead);
 return;
 }
@@ -3188,7 +3605,8 @@ return;
 if (action === 'clearRe') { try { localStorage.removeItem(PROGRESS_KEY); } catch (error) { /* ignore */ } render(); return; }
 if (action === 'clearPasted') { try { localStorage.removeItem(PASTED_RESULTS_KEY); } catch (error) { /* ignore */ } render(); return; }
 if (action === 'clearPc') { clearDeskProgress('pc'); return; }
-if (action === 'clearEo') { clearDeskProgress('eo'); }
+if (action === 'clearEo') { clearDeskProgress('eo'); return; }
+if (action === 'clearSt') { clearDeskProgress('st'); }
 }
 
 function onPanelKey(event) {
@@ -3230,6 +3648,7 @@ root.addEventListener('click', onPanelClick);
 root.addEventListener('keydown', onPanelKey);
 root.addEventListener('input', (event) => {
 if (event.target.getAttribute && event.target.getAttribute('data-role') === 'skipWhy') ui.skipWhy = event.target.value;
+if (event.target.getAttribute && event.target.getAttribute('data-role') === 'choiceWhy') ui.choiceWhy = event.target.value;
 });
 root.addEventListener('toggle', (event) => {
 const section = event.target.getAttribute && event.target.getAttribute('data-section');
@@ -3252,7 +3671,7 @@ if (ui && ui.menu && !(event.composedPath && event.composedPath().includes(ui.ho
 ui.onStorage = (event) => {
 if (!ui) return;
 if (event.key === LIVE_LINK_KEY) renderLinkLine();
-else if (!state.running && [EMAIL_ONLY_ASSIGNED_KEY, NATIONAL_RESULTS_KEY, DESK_RESULTS_KEY, LIVE_STATUS_KEY].includes(event.key)) render();
+else if (!state.running && [EMAIL_ONLY_ASSIGNED_KEY, SEND_THROUGH_KEY, NATIONAL_RESULTS_KEY, DESK_RESULTS_KEY, LIVE_STATUS_KEY].includes(event.key)) render();
 };
 // The button follows the page as leads open and close. The page is only
 // watched, never reloaded, and a burst of changes is answered once.

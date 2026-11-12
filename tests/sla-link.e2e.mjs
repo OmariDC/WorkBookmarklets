@@ -441,6 +441,72 @@ async function openedAndReview() {
   await context.close();
 }
 
+async function startMyDayAndTheLink() {
+  console.log('\nStart my day: opens the one Konnect Live tab, and Send follows the link');
+  const { context, manager, errors } = await open();
+  // An SLA table with one lead whose pop-up opens and closes, and the checks stood in for.
+  await manager.evaluate(() => {
+    window.openModal = () => { const m = document.createElement('div'); m.className = 'modal'; m.setAttribute('role', 'alertdialog'); m.innerHTML = '<div class="tab-pane active"><table class="table"><tr><td>Name</td><td>Sam Buyer</td></tr><tr><td>Mobiles</td><td></td></tr><tr><td>Landlines</td><td></td></tr><tr><td>Email</td><td>sam.buyer@example.com</td></tr></table></div><button class="close">x</button>'; m.querySelector('.close').onclick = () => m.remove(); document.body.appendChild(m); };
+    const table = document.createElement('table');
+    table.innerHTML = '<tbody><tr>' + ['Customer', 'Registration', 'Source', 'Campaign', 'Created', 'Received', 'SLA Date', 'Status', 'Assign'].map((h) => `<th>${h}</th>`).join('') + '</tr><tr><td><a href="javascript:void 0" onclick="openModal()">Sam Buyer</a></td><td>AB12CDE</td><td>Customer First</td><td>Peugeot - Enquiry - New</td><td>Sat, 26 Sep 2026 10:00</td><td>Sat, 26 Sep 2026 10:01</td><td>Sat, 26 Sep 2026 12:00</td><td>Pending</td><td>Agent Alpha</td></tr></tbody>';
+    document.body.appendChild(table);
+    window.CHECKS = 0;
+    window._runAllMorningChecks = () => new Promise((resolve) => { window.CHECKS++; window.FINISH_CHECKS = resolve; });
+  });
+  const strip = () => manager.evaluate(() => { const el = document.getElementById('_slaDayStrip'); return !el || el.hidden ? '' : el.querySelector('span:not(.sla-dot)').textContent.trim(); });
+  const opened = () => manager.evaluate(() => window.opened);
+  const batches = async () => (await toLive(manager)).filter((m) => m.type === 'workTools:batch');
+  const run = async (n) => {
+    manager.evaluate(() => { window._startMyDay(); });
+    await waitFor(() => manager.evaluate(() => window.CHECKS), (count) => count === n, 20000);
+    await manager.evaluate(() => window.FINISH_CHECKS());
+  };
+  const finishBatch = async () => { const last = (await batches()).pop(); await fromLive(manager, { type: 'workTools:received', id: last.id, rows: 1 }); await fromLive(manager, { type: 'workTools:ended', id: last.id, reason: 'done' }); };
+
+  // Not linked: the tab is opened at the click and the batch waits.
+  manager.evaluate(() => { window._startMyDay(); });
+  await waitFor(opened, (n) => n === 1);
+  check('not linked: the click opens the Konnect Live tab', (await opened()) === 1 && (await batches()).length === 0, await opened());
+  await waitFor(() => manager.evaluate(() => window.CHECKS), (count) => count === 1, 20000);
+  check('the scan and the checks run while the link comes up', (await strip()) === 'Start my day: 2 of 3, morning checks', await strip());
+  await manager.evaluate(() => window.FINISH_CHECKS());
+  await waitFor(strip, (text) => /waiting to send/.test(text));
+  check('the Lead Checker has not answered: the batch is queued and the strip says to click Work Tools', (await strip()) === 'Start my day: scan and checks done. Click Work Tools on the Konnect Live tab: the leads are waiting to send.' && (await batches()).length === 0 && (await link(manager)).queue.length === 1, { strip: await strip(), link: await link(manager) });
+  await ready(manager);
+  let sent = await waitSent(manager, 1);
+  check('when the Lead Checker says ready the batch goes, with the lead in it', sent.length === 1 && sent[0].kind === 'leads' && /sam\.buyer@example\.com/.test(sent[0].tsv) && (await opened()) === 1, sent.map((m) => m.kind));
+  await finishBatch();
+
+  // Linked and idle: sent at once, the tab left alone.
+  await run(2);
+  await waitFor(strip, (text) => /done/.test(text));
+  check('linked and idle: sent straight away', (await strip()) === 'Start my day: done. 1 lead sent to the Lead Checker.' && (await batches()).length === 2 && (await opened()) === 1, await strip());
+  await finishBatch();
+
+  // Logged out: wait for it to log back in.
+  await ready(manager, { state: 'loggedOut' });
+  await run(3);
+  await waitFor(strip, (text) => /logging back in/.test(text));
+  await new Promise((r) => setTimeout(r, 400));
+  check('logged out: it waits, saying Konnect Live is logging back in', (await strip()) === 'Start my day: 3 of 3, Konnect Live is logging back in' && (await batches()).length === 2, await strip());
+  await ready(manager);
+  await waitFor(strip, (text) => /done/.test(text));
+  check('back in: the batch is sent', (await strip()) === 'Start my day: done. 1 lead sent to the Lead Checker.' && (await waitSent(manager, 3)).length === 3, await strip());
+  await finishBatch();
+
+  // Logged out for longer than the wait.
+  await ready(manager, { state: 'loggedOut' });
+  await manager.evaluate(() => { window.__slaDayTiming = { loginWaitMs: 400 }; });
+  await run(4);
+  await waitFor(strip, (text) => /still logged out/.test(text));
+  check('still logged out after the wait: the batch is queued and the strip says to press Login', (await strip()) === 'Start my day: scan and checks done. Konnect Live is still logged out. Press Login on the Konnect Live tab: the leads are waiting to send.' && (await batches()).length === 3 && (await link(manager)).queue.length === 1, await strip());
+  await ready(manager);
+  check('it goes once Konnect Live is back in', (await waitSent(manager, 4)).length === 4);
+  check('only the one Konnect Live tab was ever opened', (await opened()) === 1, await opened());
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
 const started = Date.now();
 try {
   await openedAndReview();
@@ -453,6 +519,7 @@ try {
   await deskResultsMerge();
   await openWithNoLeads();
   await olderLeadChecker();
+  await startMyDayAndTheLink();
 } catch (e) {
   failures++;
   console.log(`FAIL  test crashed: ${e && e.stack || e}`);

@@ -164,7 +164,9 @@ list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
 sort: '<path d="M3 6h18M6 12h12M10 18h4"/>',
 clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
 mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
-paste: '<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V2h6v2"/>'
+paste: '<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V2h6v2"/>',
+bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>',
+sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'
 };
 
 function svgIcon(name, size, extraStyle, className) {
@@ -563,10 +565,14 @@ observer.observe(icon, { attributes: true, attributeFilter: ['class'] });
 
 // Clicking the panel title refreshes the leads list (via Konnect's own icon
 // when present), then re-scans so new leads are fully ingested.
-window._refreshLeadsAndPanel = async function() {
+// options.quiet: the missed lead watch. No overlay, and new leads' pop-ups
+// are only read while the tab is in view with the panel showing; otherwise
+// the table alone is refreshed, which is all the warning needs.
+window._refreshLeadsAndPanel = async function(options) {
 if (busyReason()) return;
+const quiet = !!(options && options.quiet === true);
 refreshingLeads = true;
-showPageFlashOverlay('Refreshing leads…');
+if (!quiet) showPageFlashOverlay('Refreshing leads…');
 try {
 const icon = findNativeLeadsRefreshIcon();
 if (icon) {
@@ -574,7 +580,7 @@ icon.click();
 await waitForRefreshIconSpinState(icon, true, 2000);
 await waitForRefreshIconSpinState(icon, false, 15000);
 }
-await runExtraction();
+if (!quiet || (panelElement && !document.hidden && localStorage.getItem(PANEL_STATE_KEY) !== 'hidden')) await runExtraction();
 } finally {
 refreshingLeads = false;
 hidePageFlashOverlay();
@@ -690,6 +696,7 @@ return live.length === 0 || !now ? { ...c, assigned: false, agentName: null } : 
 };
 if (live.length > 0) cachedLeadsSnapshot = { pageType: originatingPageType === PAGE_PENDING ? PAGE_PENDING : PAGE_SLA, leads: live, scannedAt: new Date() };
 else patchCachedLeadsCleared();
+followAssignments(originatingPageType, live);
 if (originatingPageType === PAGE_PENDING) {
 currentPendingCustomers = currentPendingCustomers.map(applyLive);
 displayPendingPanel(currentPendingCustomers, 0, 0, false);
@@ -749,6 +756,59 @@ function clearAgentQueueSnapshot() {
 removeStoredKey(AGENT_QUEUE_SNAPSHOT_KEY);
 }
 
+// DONE, FROM THE QUEUE. Queue by Agent draws a lead the agent has done in a
+// slightly greyer row. This is the one place that marker is read: if
+// Konnect changes how a done row looks, change it here.
+function isQueueRowDone(row) {
+return /background-color:\s*rgb\(244,\s*244,\s*244\)/.test(row.getAttribute('style') || '');
+}
+
+// Pure. A short fingerprint of a queue row's customer, so the same done row
+// read twice counts once and no contact detail is stored. '' when the row
+// shows neither an email nor a phone.
+function queueItemId(email, phone) {
+const text = `${String(email || '').toLowerCase().trim()}|${String(phone || '').replace(/\D/g, '').slice(-10)}`;
+if (text === '|') return '';
+let hash = 5381;
+for (let i = 0; i < text.length; i++) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
+return hash.toString(36);
+}
+
+const QUEUE_DONE_KEY = '_slaQueueDone';
+const QUEUE_DONE_MAX = 500;
+
+// Pure. Adds the done rows of one Queue read to the day's record, per agent
+// (by normalised name). Every agent the Queue shows gets an entry, so "none
+// done" can be told from "queue not read". It only ever grows: the page
+// shows each agent's last 10 rows, so earlier done rows have scrolled off.
+function mergeQueueDone(stored, agents, nowIso) {
+const byAgent = { ...((stored && stored.agents) || {}) };
+agents.forEach((a) => {
+const key = normalizeAgentName(a.agentName);
+if (!key) return;
+const ids = new Set((byAgent[key] && byAgent[key].ids) || []);
+(a.doneIds || []).forEach((id) => { if (id) ids.add(id); });
+byAgent[key] = { name: a.agentName, ids: Array.from(ids).slice(-QUEUE_DONE_MAX) };
+});
+return { savedAt: (stored && stored.savedAt) || nowIso, agents: byAgent };
+}
+
+// Today's record only, and only within one shift.
+function loadQueueDone() {
+const stored = readStoredJson(QUEUE_DONE_KEY);
+if (stored && stored.agents && isStoredTimeFresh(stored.savedAt) && new Date(stored.savedAt).toDateString() === new Date().toDateString()) return stored;
+if (stored) removeStoredKey(QUEUE_DONE_KEY);
+return null;
+}
+
+function recordQueueDone(agents) {
+try {
+localStorage.setItem(QUEUE_DONE_KEY, JSON.stringify(mergeQueueDone(loadQueueDone(), agents, new Date().toISOString())));
+} catch (error) {
+console.warn('[SLA Manager] Could not save the done counts from the queue.');
+}
+}
+
 function scrapeAgentQueuePositions() {
 const agentPanels = document.querySelectorAll('li[ng-repeat="agent in fullqueue | filter: filterMessages"]');
 const agents = [];
@@ -763,13 +823,14 @@ const infoSpan = [...row.querySelectorAll('span[title]')].find((el) => (el.getAt
 const title = infoSpan ? infoSpan.getAttribute('title') || '' : '';
 const parts = title.split('|').map((s) => s.trim());
 // Only what matching a lead needs is kept: no name.
-return { position: index + 1, email: parts[1] || '', phone: parts[2] || '', done: /background-color:\s*rgb\(244,\s*244,\s*244\)/.test(row.getAttribute('style') || '') };
+return { position: index + 1, email: parts[1] || '', phone: parts[2] || '', done: isQueueRowDone(row) };
 });
 
 agents.push({
 agentName,
 totalShown: queue.length,
 notDoneCount: queue.filter((item) => !item.done).length,
+doneIds: queue.filter((item) => item.done).map((item) => queueItemId(item.email, item.phone)),
 queue: queue.map(({ done, ...item }) => item)
 });
 });
@@ -798,7 +859,8 @@ const agents = scrapeAgentQueuePositions();
 if (isDebugLogging()) console.info(`[SLA Manager] Queue by Agent scan: ${agents.length} agent panel(s) found`, agents.map((a) => ({
 agent: a.agentName, notDone: a.notDoneCount, totalShown: a.totalShown, sample: a.queue.slice(0, 3)
 })));
-saveAgentQueueSnapshot(agents);
+recordQueueDone(agents);
+saveAgentQueueSnapshot(agents.map(({ doneIds, ...agent }) => agent));
 return true;
 } finally {
 window.location.hash = originalHash;
@@ -1382,13 +1444,26 @@ ${row.details.map(d => `<div>${escapeHtml(d)}</div>`).join('')}
 
 // Reached only via the header button, never the background poll, which would
 // otherwise pull the user out every time a check changes page.
+// Start my day leads the Checks view: the same checks with the scan before
+// them and Send after, in one press. Run all checks stays for the checks alone.
+function renderStartMyDayCard() {
+return `<div class="sla-card" style="margin-bottom: 10px;">
+<div class="sla-bar">
+<b class="sla-grow">Start my day</b>
+<button type="button" id="_slaStartDayBtn" class="sla-pri" onclick="window._startMyDay()" ${dayRun.running ? 'disabled' : ''} title="Scans the leads, runs the morning checks, then sends the leads to the Lead Checker">${svgIcon('sun', 14)}<span>${dayRun.running ? 'Running…' : 'Start my day'}</span></button>
+</div>
+<span class="sla-small">Scans the leads, runs the checks below, then sends the leads to the Lead Checker. Konnect Live must be linked first.</span>
+</div>`;
+}
+
 function renderMorningChecksBody() {
 if (morningChecksResults.length === 0) {
 return `
+${renderStartMyDayCard()}
 <div class="sla-zero">
 <div style="color: #cbd5e1; margin-bottom: 12px;">${svgIcon('checklist', 40, ' stroke-width: 1.5;')}</div>
 <p style="color: var(--wb-muted, #5b6577); margin: 0 0 20px 0; font-size: 13px; line-height: 1.6;">Runs the morning checks in order: SLA count, In progress, Lead type check, All leads are routed to, Voicemail and National leads, and reports each result here.</p>
-<button type="button" class="sla-pri" onclick="window._runAllMorningChecks();">Run all checks</button>
+<button type="button" class="sla-sec" onclick="window._runAllMorningChecks();" title="The checks alone, with no scan before or Send after">Run all checks</button>
 </div>`;
 }
 
@@ -1396,6 +1471,7 @@ const allDone = morningChecksResults.every(r => r.status === 'done');
 const nationalRow = morningChecksResults.find((r) => r.key === 'national');
 
 return `
+${renderStartMyDayCard()}
 ${renderMorningChecksSummaryBanner(morningChecksResults)}
 <div class="sla-list">
 ${morningChecksResults.map(renderMorningCheckRow).join('')}
@@ -2985,17 +3061,27 @@ await executeAssignmentRun(plan, locateCellFn, pageType);
 
 // Prunes anything not from today on every write, so History counts are
 // trustworthy and the cap is spent on today's entries.
-function appendAssignmentLog(results) {
+function appendAssignmentLog(results, pageType) {
 try {
 const today = new Date().toDateString();
 const existing = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]')
 .filter(e => new Date(e.time).toDateString() === today && isStoredTimeFresh(e.time));
 const now = new Date().toISOString();
-const entries = results.filter(r => r.ok).map(r => ({
+// The tier, page and lead key are kept for the fair share numbers (Pending
+// leads have no tier). shown is the name the Assign column now shows for
+// the agent, in case it differs from the roster's.
+const locate = pageType === PAGE_PENDING ? locatePendingAssignCell : locateAssignCell;
+const entries = results.filter(r => r.ok).map((r) => {
+const shown = pageType ? getAssignCellState(locate(r.lead)).agentName : null;
+return {
 time: now,
 lead: r.lead.name,
-agent: r.agent.name
-}));
+agent: r.agent.name,
+...(r.lead.tier ? { tier: r.lead.tier } : {}),
+...(pageType && r.lead.key ? { key: r.lead.key, page: pageType } : {}),
+...(shown && normalizeAgentName(shown) !== normalizeAgentName(r.agent.name) ? { shown } : {})
+};
+});
 const updated = existing.concat(entries).slice(-ASSIGN_LOG_MAX);
 localStorage.setItem(ASSIGN_LOG_KEY, JSON.stringify(updated));
 } catch (error) {
@@ -3036,11 +3122,196 @@ console.warn('[SLA Manager] Could not save the Email Only assignments.');
 }
 
 // Filters to today again in case the day rolled over mid-session.
-function renderAssignmentHistoryHtml() {
+function todaysAssignmentLog() {
 let entries = [];
 try { entries = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]'); } catch (error) { /* ignore */ }
+if (!Array.isArray(entries)) return [];
 const today = new Date().toDateString();
-entries = entries.filter(e => new Date(e.time).toDateString() === today && isStoredTimeFresh(e.time));
+return entries.filter(e => e && new Date(e.time).toDateString() === today && isStoredTimeFresh(e.time));
+}
+
+// FAIR SHARE (the Team today view): what each agent has been assigned today
+// by this tool, from the assignment log, and what became of those leads on
+// later scans. "Assigned" and "sent back" are things the tool saw. "Done"
+// comes from the agents' queues where they have been read. Without that it
+// is a best guess: the lead left the list while still showing that agent,
+// which also happens when a lead expires or moves queue.
+
+// Pure. Follows today's assignments through a scan of the page they were
+// made on. leads: every row of that scan ({key, assigned, agentName}).
+// state 'back': seen unassigned or with another agent since (Clear Queue
+// does this), or assigned again by this tool. state 'gone': no longer on the
+// list, last seen with the agent. A lead that shows again with the agent
+// goes back to open. Returns the same array when nothing changed.
+function reconcileAssignments(entries, pageType, leads) {
+const byKey = new Map();
+const twice = new Set();
+leads.forEach((l) => { if (byKey.has(l.key)) twice.add(l.key); else byKey.set(l.key, l); });
+const latest = new Map();
+entries.forEach((e, i) => { if (e.key && e.page === pageType) latest.set(e.key, i); });
+let changed = false;
+const next = entries.map((e, i) => {
+if (!e.key || e.page !== pageType || e.state === 'back') return e;
+let state;
+if (latest.get(e.key) !== i) state = 'back';
+// Two rows with one key: no telling which is this lead.
+else if (twice.has(e.key)) return e;
+else {
+const lead = byKey.get(e.key);
+if (!lead) state = 'gone';
+else if (!lead.assigned || normalizeAgentName(lead.agentName) !== normalizeAgentName(e.shown || e.agent)) state = 'back';
+}
+if (state === e.state) return e;
+changed = true;
+const { state: previous, ...rest } = e;
+return state ? { ...rest, state } : rest;
+});
+return changed ? next : entries;
+}
+
+// Called after a scan. An empty read is skipped, since it is more often a
+// table not drawn yet than a queue with nothing in it.
+function followAssignments(pageType, leads) {
+if (!pageType || !leads || leads.length === 0) return;
+try {
+const stored = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]');
+if (!Array.isArray(stored) || stored.length === 0) return;
+const next = reconcileAssignments(stored, pageType, leads);
+if (next !== stored) localStorage.setItem(ASSIGN_LOG_KEY, JSON.stringify(next));
+} catch (error) {
+console.warn('[SLA Manager] Could not follow the assignments.');
+}
+}
+
+// Pure. Per agent (by normalised name): the total, the count in each SLA
+// tier, and how many are gone from the list (done) or were sent back. An
+// entry with no tier (a Pending lead) counts in the total only.
+function fairShareTally(entries) {
+const tally = {};
+entries.forEach((e) => {
+const key = normalizeAgentName(e.agent);
+if (!key) return;
+const row = tally[key] || (tally[key] = { name: e.agent, total: 0, tiers: [0, 0, 0, 0], done: 0, back: 0 });
+row.total++;
+if (e.tier >= 1 && e.tier <= 4) row.tiers[e.tier - 1]++;
+if (e.state === 'gone') row.done++;
+if (e.state === 'back') row.back++;
+});
+return tally;
+}
+
+// Pure. The Team today rows, one per agent, by name. names: the agents
+// online. Done is the count from the agent's queue where the Queue has been
+// read today (it includes leads this tool did not assign); otherwise the
+// guess from the lead list, marked "about".
+function teamTodayRows(names, tally, queueDone) {
+const queue = (queueDone && queueDone.agents) || {};
+const display = {};
+names.forEach((name) => { display[normalizeAgentName(name)] = name; });
+Object.keys(queue).forEach((key) => { if (!display[key]) display[key] = queue[key].name; });
+Object.keys(tally).forEach((key) => { if (!display[key]) display[key] = tally[key].name; });
+return Object.keys(display).filter(Boolean).sort().map((key) => {
+const row = tally[key] || { total: 0, tiers: [0, 0, 0, 0], done: 0, back: 0 };
+const tiered = row.tiers.reduce((sum, n) => sum + n, 0);
+const untiered = row.total - tiered;
+const assigned = row.total === 0 ? '0' : `${row.total}${tiered ? ` (${row.tiers.join(' / ')})` : ''}${tiered && untiered ? ` + ${untiered} no tier` : ''}`;
+return { name: display[key], assigned, done: queue[key] ? String(queue[key].ids.length) : `about ${row.done}`, back: String(row.back) };
+});
+}
+
+function renderTeamToday() {
+const rows = teamTodayRows(getAgentRoster().map((a) => a.name), fairShareTally(todaysAssignmentLog()), loadQueueDone());
+const body = rows.length
+? `<div class="sla-team" role="table" aria-label="Team today">
+<div role="row"><span class="h" role="columnheader">Agent</span><span class="h" role="columnheader" title="Leads this tool assigned to the agent today, then how many in Tier 1 / Tier 2 / Tier 3 / Tier 4">Assigned (by tier)</span><span class="h" role="columnheader">Done</span><span class="h" role="columnheader" title="Assigned by this tool, then seen unassigned or with someone else, as Clear Queue leaves them">Sent back</span></div>
+${rows.map((r) => `<div role="row" data-agent="${escapeHtml(r.name)}"><span role="cell" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</span><span role="cell">${escapeHtml(r.assigned)}</span><span role="cell">${escapeHtml(r.done)}</span><span role="cell">${escapeHtml(r.back)}</span></div>`).join('')}
+</div>`
+: '<span class="sla-small">Nothing assigned by this tool today, and the queues have not been read.</span>';
+return `<div id="_slaTeamToday" class="sla-card">
+<span class="sla-small">Assigned and Sent back count only leads this tool assigned. Done is counted from each agent's queue when Queue is read (its last 10 rows), so it can run low. "about" is a best guess instead: leads that left the list while theirs.</span>
+${body}
+</div>`;
+}
+
+// Pure. One quiet line when the agents with the fewest are well behind the
+// rest, or '' when the spread is even enough. names: the agents compared.
+// Leads sent back do not count as theirs.
+const FAIR_SHARE_GAP = 3;
+function fairShareGapText(names, tally) {
+if (names.length < 2) return '';
+const counts = names.map((name) => { const row = tally[normalizeAgentName(name)] || { total: 0, back: 0 }; return { name, total: row.total - row.back }; });
+const low = Math.min(...counts.map((c) => c.total));
+const lows = counts.filter((c) => c.total === low);
+const rest = counts.filter((c) => c.total > low);
+if (rest.length === 0) return '';
+const gap = Math.round(rest.reduce((sum, c) => sum + c.total, 0) / rest.length) - low;
+if (gap < FAIR_SHARE_GAP) return '';
+const who = lows.length === 1 ? `${lows[0].name} has` : (lows.length === 2 ? `${lows[0].name} and ${lows[1].name} have` : `${lows.length} agents have`);
+return `${who} ${gap} fewer than the others today.`;
+}
+
+// The line under the Assign button, for the ticked agents.
+function renderFairShareLine() {
+const line = document.getElementById('_slaFairLine');
+if (!line) return;
+const names = Array.from(document.querySelectorAll('.assign-agent-checkbox:checked')).map((el) => el.dataset.name);
+const text = fairShareGapText(names, fairShareTally(todaysAssignmentLog()));
+line.textContent = text;
+line.hidden = !text;
+}
+
+runSelfTest('fairShareSelfTest', function fairShareSelfTest() {
+const failures = [];
+const check = (label, actual, expected) => {
+const a = JSON.stringify(actual); const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+};
+const entry = (agent, tier) => ({ time: new Date().toISOString(), agent, ...(tier ? { tier } : {}) });
+const log = [
+...[1, 1, 2, 2, 2, 3, 3, 3, 4].map((t) => entry('Agent Alpha', t)),
+...[1, 2, 2, 3, 3, 3, 4, 4].map((t) => entry('agent  bravo', t)), entry('Agent Bravo'),
+...[2, 2, 3, 4, 4].map((t) => entry('Agent Charlie', t))
+];
+const tally = fairShareTally(log);
+const team = (name) => teamTodayRows(['Agent Alpha', 'Agent Bravo', 'Agent Charlie', 'Agent Delta'], tally, { agents: { 'agent alpha': { name: 'Agent Alpha', ids: ['a', 'b', 'c'] }, 'agent zulu': { name: 'Agent Zulu', ids: ['z'] } } }).find((r) => r.name === name);
+check('total and tiers per agent, done from the queue', team('Agent Alpha'), { name: 'Agent Alpha', assigned: '9 (2 / 3 / 3 / 1)', done: '3', back: '0' });
+check('names are matched however they are spaced or cased, a Pending lead counts in the total only, and done is a guess where the queue was not read', team('Agent Bravo'), { name: 'Agent Bravo', assigned: '9 (1 / 2 / 3 / 2) + 1 no tier', done: 'about 0', back: '0' });
+check('an agent with nothing', team('Agent Delta'), { name: 'Agent Delta', assigned: '0', done: 'about 0', back: '0' });
+check('an agent only the queue knows still has a row', team('Agent Zulu'), { name: 'Agent Zulu', assigned: '0', done: '1', back: '0' });
+check('only Pending leads: no tiers', teamTodayRows([], fairShareTally([entry('Agent Echo'), entry('Agent Echo')]), null)[0].assigned, '2');
+const merged = mergeQueueDone({ savedAt: 'then', agents: { 'agent alpha': { name: 'Agent Alpha', ids: ['a'] } } }, [{ agentName: 'Agent  Alpha', doneIds: ['a', 'b', ''] }, { agentName: 'Agent Bravo', doneIds: [] }], 'now');
+check('a done row read twice counts once, a row with no contact is not counted, and an agent with none done still has an entry', [merged.savedAt, merged.agents['agent alpha'].ids, merged.agents['agent bravo'].ids], ['then', ['a', 'b'], []]);
+check('the fingerprint is the same however the contact is written, and empty for none', [queueItemId('Pat@Example.com ', '07700 900123') === queueItemId('pat@example.com', '+447700900123'), queueItemId('', ''), queueItemId('pat@example.com', '') !== queueItemId('sam@example.com', '')], [true, '', true]);
+check('one agent behind the rest', fairShareGapText(['Agent Alpha', 'Agent Bravo', 'Agent Charlie'], tally), 'Agent Charlie has 4 fewer than the others today.');
+check('two agents behind', fairShareGapText(['Agent Alpha', 'Agent Charlie', 'Agent Delta'], fairShareTally(log.filter((e) => e.agent !== 'Agent Charlie'))), 'Agent Charlie and Agent Delta have 9 fewer than the others today.');
+check('a small gap says nothing', fairShareGapText(['Agent Alpha', 'Agent Bravo'], tally), '');
+check('nothing assigned yet says nothing', fairShareGapText(['Agent Alpha', 'Agent Bravo'], {}), '');
+check('one agent has nobody to compare with', fairShareGapText(['Agent Charlie'], tally), '');
+// Following assignments through a scan.
+const held = (key, agent, over) => ({ time: new Date().toISOString(), agent, tier: 2, key, page: 'sla', ...over });
+const row = (key, agentName) => ({ key, assigned: !!agentName, agentName: agentName || null });
+const before = [held('a', 'Agent Alpha'), held('b', 'Agent Alpha'), held('c', 'Agent Alpha'), held('d', 'Agent Bravo'), held('e', 'Agent Bravo', { shown: 'Bravo, Agent' }), held('p', 'Agent Bravo', { page: 'pending' }), { time: new Date().toISOString(), agent: 'Agent Alpha' }];
+const scan = [row('a', 'Agent Alpha'), row('c', null), row('d', 'Agent Charlie'), row('e', 'Bravo, Agent'), row('z', null)];
+const after = reconcileAssignments(before, 'sla', scan);
+check('still with the agent: open; gone from the list: done; unassigned or with someone else: sent back', after.map((e) => e.state || 'open'), ['open', 'gone', 'back', 'back', 'open', 'open', 'open']);
+check('the name the page shows for the agent is the one compared', after[4].state, undefined);
+check('nothing changed returns the same list', reconcileAssignments(after, 'sla', scan) === after, true);
+check('a gone lead that shows again with the agent is open again', reconcileAssignments(after, 'sla', scan.concat(row('b', 'Agent Alpha')))[1].state, undefined);
+check('sent back stays sent back, even once the lead has gone', reconcileAssignments(after, 'sla', [row('a', 'Agent Alpha')]).map((e) => e.state || 'open'), ['open', 'gone', 'back', 'back', 'gone', 'open', 'open']);
+check('assigned again by this tool: the earlier one was sent back', reconcileAssignments([held('a', 'Agent Alpha'), held('a', 'Agent Bravo')], 'sla', [row('a', 'Agent Bravo')]).map((e) => e.state || 'open'), ['back', 'open']);
+check('two rows with one key are left alone', reconcileAssignments([held('a', 'Agent Alpha')], 'sla', [row('a', null), row('a', 'Agent Alpha')])[0].state, undefined);
+check('a Pending scan only follows Pending assignments', reconcileAssignments(before, 'pending', [row('q', null)]).map((e) => e.state || 'open'), ['open', 'open', 'open', 'open', 'open', 'gone', 'open']);
+check('the numbers', teamTodayRows([], fairShareTally(after), null)[0], { name: 'Agent Alpha', assigned: '4 (0 / 3 / 0 / 0) + 1 no tier', done: 'about 1', back: '1' });
+check('a lead sent back is not counted as theirs when comparing', fairShareGapText(['Agent Alpha', 'Agent Bravo'], fairShareTally([...[1, 2, 3, 4].map((n) => held('k' + n, 'Agent Alpha')), ...[5, 6, 7, 8].map((n) => held('k' + n, 'Agent Bravo', { state: 'back' }))])), 'Agent Bravo has 4 fewer than the others today.');
+if (failures.length > 0) {
+reportSelfTestFailure('SLA Manager fair-share self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Manager fair-share self-test passed');
+}
+});
+
+function renderAssignmentHistoryHtml() {
+const entries = todaysAssignmentLog();
 if (entries.length === 0) return '<div style="color: var(--wb-muted, #5b6577);">No assignments recorded today yet.</div>';
 const tally = {};
 entries.forEach(e => { tally[e.agent] = (tally[e.agent] || 0) + 1; });
@@ -3192,6 +3463,13 @@ ${P} .sla-agsum .sla-sec { gap: 3px; }
 ${P} .sla-agents { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; max-height: 150px; overflow-y: auto; padding: 1px; }
 ${P} .sla-agents label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
 ${P} .sla-agents b { margin-left: auto; color: var(--wb-muted); font-weight: 600; }
+${P} .sla-team { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 4px 12px; font-size: 12px; font-variant-numeric: tabular-nums; align-items: baseline; }
+${P} .sla-team > div { display: contents; }
+${P} .sla-team .h { font-size: 11px; color: var(--wb-muted); font-weight: 600; }
+${P} .sla-team span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+${P} .sla-team span + span { text-align: right; white-space: nowrap; }
+${P} .sla-day { background: var(--wb-surface); }
+${P} .sla-day[data-tone="warn"] { color: var(--wb-text, #1c1c1e); font-weight: 600; }
 ${P} .sla-ckl { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; flex-wrap: wrap; }
 ${P} .sla-ckl select, ${P} .sla-eo select { width: auto; padding: 3px 6px; }
 ${P} .sla-agentsOnly { display: none; }
@@ -4204,6 +4482,84 @@ byKey.set(key, r);
 return Array.from(byKey.values());
 }
 
+// SEND THROUGH: tier 6 leads (no call needed, not Post Closure) for Lead Re
+// setup's Send through run. Kept apart from the Post Closure rows, which
+// hold one row per customer.
+const SEND_THROUGH_KEY = '_workToolsSendThrough';
+
+// Pure. The no call rows of a results import, in the shape the desk reads.
+function sendThroughRowsFrom(rows, nowIso) {
+return (rows || []).filter((r) => r && r.tier === 6 && !r.postClosureAction).map((r) => ({
+name: r.name || '', email: r.email || '', phone: r.phone || '', campaign: r.campaign || '', created: r.created || '',
+subCategory: r.subCategory || '', checkedAt: nowIso, agent: ''
+}));
+}
+
+// Pure. A newer row replaces the older one but keeps the agent already
+// recorded; rows past one shift go.
+function mergeSendThrough(existing, incoming, nowIso) {
+const cutoff = new Date(nowIso).getTime() - STORED_CUSTOMER_DATA_MAX_AGE_MS;
+const byKey = new Map();
+(existing || []).forEach((l) => { if (l && new Date(l.checkedAt).getTime() >= cutoff) byKey.set(deskResultKey(l), l); });
+(incoming || []).forEach((l) => {
+const key = deskResultKey(l);
+const old = byKey.get(key);
+byKey.delete(key);
+byKey.set(key, { ...l, agent: l.agent || (old && old.agent) || '' });
+});
+return Array.from(byKey.values());
+}
+
+// Pure. Each saved lead given the agent who holds it on the page now. The
+// desk only lists leads whose agent is its own, so a lead nobody holds
+// keeps the last agent recorded. known: agent names already recorded, so
+// one person is not saved under two spellings.
+function stampSendThroughAgents(leads, customers, known) {
+const holder = new Map();
+(customers || []).forEach((c) => {
+if (!c || !c.assigned || !c.agentName) return;
+const wanted = normalizeAgentName(c.agentName);
+const name = (known || []).find((k) => normalizeAgentName(k) === wanted) || c.agentName;
+holder.set(deskResultKey({ name: c.name, email: c.email, phone: c.phone || c.mobile || c.landline }), name);
+});
+let changed = false;
+const stamped = (leads || []).map((l) => {
+const name = holder.get(deskResultKey(l));
+if (!name || name === l.agent) return l;
+changed = true;
+return { ...l, agent: name };
+});
+return { leads: stamped, changed };
+}
+
+function knownAgentNames() {
+const emailOnly = readStoredJson(EMAIL_ONLY_ASSIGNED_KEY);
+return emailOnly && Array.isArray(emailOnly.leads) ? Array.from(new Set(emailOnly.leads.map((l) => l.agent).filter(Boolean))) : [];
+}
+
+function saveSendThroughForDesk(rows) {
+const nowIso = new Date().toISOString();
+const fresh = sendThroughRowsFrom(rows, nowIso);
+if (!fresh.length) return;
+const stored = readStoredJson(SEND_THROUGH_KEY);
+const merged = mergeSendThrough(stored && Array.isArray(stored.leads) ? stored.leads : [], fresh, nowIso);
+try {
+localStorage.setItem(SEND_THROUGH_KEY, JSON.stringify({ savedAt: nowIso, leads: stampSendThroughAgents(merged, currentCustomers, knownAgentNames()).leads }));
+} catch (error) {
+console.warn('[SLA Manager] Could not save the Send through leads for the agent desktop (browser storage full or blocked).');
+}
+}
+
+// After a scan or an assignment: who holds each saved lead now.
+function refreshSendThroughAgents() {
+try {
+const stored = readStoredJson(SEND_THROUGH_KEY);
+if (!stored || !Array.isArray(stored.leads) || !stored.leads.length) return;
+const { leads, changed } = stampSendThroughAgents(stored.leads, currentCustomers, knownAgentNames());
+if (changed) localStorage.setItem(SEND_THROUGH_KEY, JSON.stringify({ ...stored, leads }));
+} catch (error) { /* The desk keeps the last agents recorded. */ }
+}
+
 // Every Post Closure row from any results that arrive (this page's batches,
 // the desk's, and results pasted by hand) goes into the one place the desk
 // reads them from. Returns false if they could not be saved.
@@ -4228,6 +4584,7 @@ return false;
 function saveDeskResults(id, tsv, progress) {
 const parsed = parseLeadCheckerImportTsv(tsv);
 if (!parsed.headerOk) { writeDeskStatus(id, 'failed', 'The Lead Checker results could not be read.'); return; }
+saveSendThroughForDesk(parsed.rows);
 if (!savePostClosureForDesk(parsed.rows)) { writeDeskStatus(id, 'failed', 'The results could not be saved (browser storage full).'); return; }
 writeDeskStatus(id, progress ? 'checking' : 'done', progress ? `Lead Checker: ${progress.done} of ${progress.total} checked.` : `Lead Checker done: ${parsed.rows.length} checked.`);
 }
@@ -4618,6 +4975,13 @@ const rows = [
 { name: 'Sam Buyer', phone: '07700 900102', email: '', source: 'Customer First', postClosureAction: '', tier: 2 }
 ];
 const pc = postClosureRowsFrom(rows, now);
+check('only no call rows that are not Post Closure go to Send through',
+sendThroughRowsFrom([{ name: 'Sam Buyer', email: 'sam.buyer@example.com', tier: 6, subCategory: 'Fleet', postClosureAction: '' }, { name: 'Jo Example', tier: 6, postClosureAction: 'send back through' }, { name: 'Al Sample', tier: 2 }], now).map((l) => [l.name, l.subCategory, l.agent]),
+[['Sam Buyer', 'Fleet', '']]);
+check('a rechecked Send through lead keeps its agent, and the page holder is stamped under the known spelling',
+stampSendThroughAgents(mergeSendThrough([{ name: 'Sam Buyer', email: 'sam.buyer@example.com', checkedAt: now, agent: 'Agent Alpha' }], [{ name: 'Sam Buyer', email: 'sam.buyer@example.com', checkedAt: now, agent: '' }, { name: 'Al Sample', email: 'al.sample@example.com', checkedAt: now, agent: '' }], now),
+[{ name: 'Al Sample', email: 'AL.SAMPLE@example.com', assigned: true, agentName: 'agent  bravo' }], ['Agent Bravo']).leads.map((l) => [l.name, l.agent]),
+[['Sam Buyer', 'Agent Alpha'], ['Al Sample', 'Agent Bravo']]);
 check('only Post Closure rows are kept for the desk', pc.map((r) => [r.name, r.postClosureAction, r.checkedAt]), [['Jo Example', 'send back through', now]]);
 const stored = [
 { name: 'Jo Example', email: 'jo.example@example.com', phone: '', postClosureAction: 'check: needs contact?', checkedAt: '2026-11-11T09:00:00.000Z' },
@@ -4806,6 +5170,7 @@ function addLeadCheckerResults(rows) {
 const merged = mergeLeadCheckerResults(loadLeadCheckerImportState().results, rows, new Date().toISOString());
 saveLeadCheckerImportState({ rawInput: '', results: merged });
 savePostClosureForDesk(rows);
+saveSendThroughForDesk(rows);
 return merged;
 }
 
@@ -5477,7 +5842,7 @@ return prioritized.slice(0, effectiveLimit);
 
 // Shared by both assign sections, which only differ in the filters zone, the
 // run handler and the Email only bar (SLA page only).
-function renderAssignSectionShell(settings, agents, runHandlerName, filtersZoneHtml, emailOnlyBarHtml) {
+function renderAssignSectionShell(settings, agents, runHandlerName, filtersZoneHtml, emailOnlyBarHtml, rescueBarHtml) {
 if (isZenModeOn()) return '';
 const filtersOpen = !!settings.filtersOpen;
 const excludedAgentIds = new Set(settings.excludedAgentIds || []);
@@ -5503,6 +5868,8 @@ ${emailOnlyBarHtml || ''}
 <span id="assignMatchPreview" class="sla-small sla-grow"></span>
 <button type="button" id="assignRunButton" class="sla-pri" onclick="window.${runHandlerName}()" ${buttonDisabled ? 'disabled' : ''}>${buttonDisabled ? (canCheckAgentRoster() ? 'No agents online' : "Can't check agents right now") : 'Assign'}</button>
 </div>
+<div id="_slaFairLine" class="sla-small" role="status" hidden></div>
+${rescueBarHtml || ''}
 <div id="assignResultsSummary"></div>
 <div id="assignResultsLog"></div>
 </div>
@@ -5592,7 +5959,7 @@ Email only (${emailOnlyCount})
 <button type="button" class="sla-sec" style="align-self: flex-start;" aria-expanded="false" aria-controls="_slaTierList" onclick="window._slaFold(this)" title="Choose which tiers are assigned"><span id="_slaTierLabel">${tierFilterLabel(new Set([1, 2, 3, 4].filter((t) => !excludedTiers.has(t))))}</span>${svgIcon('chevron', 12, '', 'sla-chev')}</button>
 <div id="_slaTierList" class="sla-tierl" hidden>${tierCheckboxes}</div>`;
 
-return renderAssignSectionShell(settings, agents, '_runSlaAssignment', filtersZoneHtml, renderEmailOnlyBar(agents, settings));
+return renderAssignSectionShell(settings, agents, '_runSlaAssignment', filtersZoneHtml, renderEmailOnlyBar(agents, settings), renderRescueBar());
 }
 
 // ===================================================================
@@ -6044,18 +6411,34 @@ return chips;
 // Which Today chip is open, kept here so a redraw does not fold it.
 let todayOpenKind = null;
 
+function hasTeamData() {
+return todaysAssignmentLog().length > 0 || !!loadQueueDone();
+}
+
 function renderTodaySummary() {
 let chips = [];
 try { chips = todayChips(loadTodayCounts()); } catch (error) { chips = []; }
-if (!chips.length) return '<div id="_slaTodaySummary" hidden></div>';
+const teamOpen = todayOpenKind === 'team';
+const team = teamOpen || hasTeamData();
+if (!chips.length && !team) return '<div id="_slaTodaySummary" hidden></div>';
 const open = chips.find((chip) => chip.kind === todayOpenKind);
 return `<div id="_slaTodaySummary" class="sla-col" style="gap: 5px;">
 <div class="sla-cf"><span class="sla-lbl">Today</span>
 ${chips.map((chip) => `<button type="button" class="sla-chip" data-kind="${chip.kind}" aria-pressed="${open === chip ? 'true' : 'false'}" title="${escapeHtml(chip.detail)}" onclick="window._toggleTodayDetail(this.dataset.kind)">${escapeHtml(chip.label)}</button>`).join('')}
+${team ? `<button type="button" class="sla-chip" data-kind="team" aria-pressed="${teamOpen ? 'true' : 'false'}" title="Team today: what each agent has been assigned, done and sent back" onclick="window._toggleTodayDetail(this.dataset.kind)">Team</button>` : ''}
 </div>
 <div class="sla-small" role="status" ${open ? '' : 'hidden'}>${open ? escapeHtml(open.detail) : ''}</div>
+${teamOpen ? renderTeamToday() : ''}
 </div>`;
 }
+
+// Team today from the More menu.
+window._showTeamToday = function() {
+todayOpenKind = 'team';
+renderTodaySummaryInPlace();
+const view = document.getElementById('_slaTeamToday');
+if (view && typeof view.scrollIntoView === 'function') view.scrollIntoView({ block: 'nearest' });
+};
 
 window._toggleTodayDetail = function(kind) {
 todayOpenKind = todayOpenKind === kind ? null : kind;
@@ -6132,10 +6515,12 @@ ${renderMoreItem('sort', 'Sort by Lead Checker category', 'window._toggleLeadChe
 ${sizeItems}
 ${renderMoreItem('arrowUp', 'Back to top', `document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0`)}
 ${renderMoreItem('list', 'List only view', 'window._toggleZenMode()', { ...needsLeads, state: zen ? 'on' : 'off', title: needsLeads.title || 'Hides Overview, Assign, Filters and Today so more leads fit' })}
+${renderMoreItem('bell', 'Warn me about leads going missed', 'window._toggleMissedWarning(this)', { state: isMissedWarningOn() ? 'on' : 'off', title: 'Counts unassigned leads that are missed, due within 5 minutes and due within 15 in the tab title, with a desktop notification if the browser allows it. The SLA list is scanned again every 2 minutes while this is on' })}
 ${sep}
 ${renderMoreItem('refresh', 'Scan again', 'window._refreshLeadsAndPanel()', needsLeads)}
 ${renderMoreItem('user', 'Refresh agents', 'window._refreshAssignSection()', needsAssign)}
 ${renderMoreItem('clock', 'History', 'window._showAssignHistory()', { ...needsAssign, title: needsAssign.title || 'How many leads each agent has been assigned today' })}
+${renderMoreItem('user', 'Team today', 'window._showTeamToday()', { ...needsAssign, title: needsAssign.title || 'What each agent has been assigned, done and sent back today' })}
 ${renderMoreItem('queue', 'Queue', 'window._checkAgentQueuePositions(null)', { ...needsLeads, title: needsLeads.title || "Reads each agent's live call queue from Konnect and shows how many leads each has not called yet" })}
 ${renderMoreItem('paste', 'Paste Lead Checker results', `window._pasteAndClassifyLeadChecker(this.querySelector('span'))`, { ...needsLeads, keep: true, title: needsLeads.title || 'Reads the results copied from the Lead Checker off the clipboard and shows them on the leads' })}
 ${renderMoreItem('trash', 'Clear Queue', 'window._clearWholeQueue()', { ...needsLeads, danger: true, title: needsLeads.title || "Unassigns every lead (Konnect's Clear Queues). There is no undo" })}
@@ -6198,6 +6583,7 @@ ${buttons}
 <button type="button" id="_slaMoreBtn" class="sla-hbtn quiet" aria-haspopup="true" aria-expanded="false" onclick="window._toggleMoreMenu()">${svgIcon('more', 14)}More</button>
 </div>
 ${renderLinkLine()}
+${renderDayStrip()}
 <div class="sla-main ${topHtml && !zen ? 'two' : ''}">
 ${topHtml ? `<div id="_slaTopArea">
 ${summaryHtml || ''}
@@ -6470,9 +6856,12 @@ return `${leadCountText(customers.length)} &middot; ${assigned} assigned &middot
 // repopulation; reusing the cache avoids the live table entirely.
 function displayPanel(customers, newCount = 0, removedCount = 0, invalidateCache = true) {
 currentCustomers = customers;
+refreshSendThroughAgents();
 currentPageType = PAGE_SLA;
 currentPanelMode = 'normal';
 if (invalidateCache) invalidateLeadsCache();
+// A new scan retires the last Rescue notice.
+if (invalidateCache && !rescue.running) rescue.text = '';
 const tiered = {
 tier1: sortByUrgency(customers.filter(c => c.tier === 1)),
 tier2: sortByUrgency(customers.filter(c => c.tier === 2)),
@@ -6497,6 +6886,7 @@ bodyHtml,
 onTitleClick: 'window._refreshLeadsAndPanel()',
 showLeadChecker: true
 }));
+updateMissedWarning();
 }
 
 // See displayPanel on invalidateCache.
@@ -6633,11 +7023,13 @@ showPageFlashOverlay(`Loading new leads… (${remaining} left)`);
 
 const removedCount = currentCustomers.filter(c => !seenKeys.has(c.key)).length;
 lastSlaDiffCounts = { newCount: addedCount, removedCount };
+followAssignments(PAGE_SLA, rowDescriptors);
 
 if (quiet) {
 // Only the lead data is loaded. The page the panel belongs to is left
 // alone: the checks may have been started from Pending.
 currentCustomers = customers;
+refreshSendThroughAgents();
 invalidateLeadsCache();
 return;
 }
@@ -6674,6 +7066,7 @@ const seenKeys = new Set(leads.map(l => l.key));
 const addedCount = leads.filter(l => !previousByKey.has(l.key)).length;
 const removedCount = currentPendingCustomers.filter(c => !seenKeys.has(c.key)).length;
 lastPendingDiffCounts = { newCount: addedCount, removedCount };
+followAssignments(PAGE_PENDING, leads);
 
 displayPendingPanel(leads, addedCount, removedCount);
 console.info(`✅ Pending Customers report generated (${leads.length} customers, +${addedCount}/-${removedCount})`);
@@ -6841,6 +7234,15 @@ invalidateLeadsCache();
 
 clearInterval(window._slaAutoDetectInterval);
 window._slaAutoDetectInterval = null;
+// The warning stays switched on for next time; its timer, counts and the
+// tab title go.
+stopMissedWatch();
+missedWarned.due = {};
+missedWarned.soon = {};
+missedWarned.missed = {};
+setTitlePrefix('');
+dayRun = { running: false, cancelled: true, text: '', tone: '' };
+rescue = { running: false, text: '' };
 if (slaVersionState && slaVersionState.timer) clearInterval(slaVersionState.timer);
 // The link: no more answers, heartbeats or sends from this page until the
 // bookmark is clicked again. The desk's waiting batch is kept for then.
@@ -6860,7 +7262,7 @@ removeStoredKey(AGENT_QUEUE_SNAPSHOT_KEY);
 removeStoredKey(REVIEW_DECISIONS_KEY);
 try {
 const log = JSON.parse(localStorage.getItem(ASSIGN_LOG_KEY) || '[]');
-if (Array.isArray(log)) localStorage.setItem(ASSIGN_LOG_KEY, JSON.stringify(log.map((e) => ({ time: e.time, agent: e.agent }))));
+if (Array.isArray(log)) localStorage.setItem(ASSIGN_LOG_KEY, JSON.stringify(log.map((e) => ({ time: e.time, agent: e.agent, ...(e.tier ? { tier: e.tier } : {}), ...(e.state ? { state: e.state } : {}) }))));
 } catch (error) { removeStoredKey(ASSIGN_LOG_KEY); }
 
 document.getElementById('_slaLinkToast')?.remove();
@@ -6886,6 +7288,7 @@ console.info('🔄 SLA Manager stopped - click bookmarklet again to run');
 // its own key when it is too old.
 function purgeExpiredStoredData() {
 loadAgentQueueSnapshot();
+loadQueueDone();
 loadNationalResults();
 loadMorningChecksLastRun();
 const importState = loadLeadCheckerImportState();
@@ -6903,6 +7306,8 @@ else if (kept.length !== log.length) localStorage.setItem(ASSIGN_LOG_KEY, JSON.s
 } catch (error) { removeStoredKey(ASSIGN_LOG_KEY); }
 const emailOnly = readStoredJson(EMAIL_ONLY_ASSIGNED_KEY);
 if (emailOnly && !isStoredTimeFresh(emailOnly.savedAt)) removeStoredKey(EMAIL_ONLY_ASSIGNED_KEY);
+const sendThrough = readStoredJson(SEND_THROUGH_KEY);
+if (sendThrough && !isStoredTimeFresh(sendThrough.savedAt)) removeStoredKey(SEND_THROUGH_KEY);
 // This tool writes the Post Closure results the desk reads.
 const desk = readStoredJson(DESK_RESULTS_KEY);
 if (desk && Array.isArray(desk.results)) {
@@ -7120,7 +7525,8 @@ await executeAssignmentRun(plan, locatePendingAssignCell, PAGE_PENDING);
 // hand it off the same way.
 const ASSIGN_CONFIRM_THRESHOLD = 10;
 
-async function executeAssignmentRun(plan, locateCellFn, pageType) {
+// options.noConfirm: Rescue, which has no prompt.
+async function executeAssignmentRun(plan, locateCellFn, pageType, options) {
 const button = document.getElementById('assignRunButton');
 const log = document.getElementById('assignResultsLog');
 if (!button || !log) return null;
@@ -7136,7 +7542,7 @@ log.textContent = 'No unassigned leads match.';
 return null;
 }
 
-if (plan.length >= ASSIGN_CONFIRM_THRESHOLD) {
+if (plan.length >= ASSIGN_CONFIRM_THRESHOLD && !(options && options.noConfirm)) {
 const agentCount = new Set(plan.map(p => p.agent.id)).size;
 const proceed = window.confirm(`About to assign ${plan.length} leads to ${agentCount} agent${agentCount === 1 ? '' : 's'}. Proceed?`);
 if (!proceed) return null;
@@ -7176,7 +7582,7 @@ const failedEntries = results.filter(r => !r.ok && !r.unconfirmed).map(r => ({ l
 lastFailedAssignmentPlan = failedEntries.length > 0 ? failedEntries : null;
 lastFailedLocateCellFn = failedEntries.length > 0 ? locateCellFn : null;
 lastFailedPageType = failedEntries.length > 0 ? pageType : null;
-appendAssignmentLog(results);
+appendAssignmentLog(results, pageType);
 console.info(`✅ Assigned ${succeeded}/${results.length} leads`);
 
 // The assign click only changes the live table, so patch the cached leads and
@@ -7208,6 +7614,7 @@ currentPendingCustomers = currentPendingCustomers.map((c) => successByKey.has(c.
 displayPendingPanel(currentPendingCustomers, 0, 0, false);
 } else {
 currentCustomers = currentCustomers.map((c) => successByKey.has(c.key) ? { ...c, assigned: true, agentName: successByKey.get(c.key) } : c);
+refreshSendThroughAgents();
 displayPanel(currentCustomers, 0, 0, false);
 }
 } catch (error) {
@@ -7348,7 +7755,7 @@ results = await runAssignmentPlan([{ lead, agent }], locateCellFn, () => {});
 assigning = false;
 }
 
-appendAssignmentLog(results);
+appendAssignmentLog(results, pageType);
 
 const result = results[0];
 if (result.ok) {
@@ -7360,6 +7767,7 @@ currentPendingCustomers = currentPendingCustomers.map((c) => c.key === lead.key 
 displayPendingPanel(currentPendingCustomers, 0, 0, false);
 } else {
 currentCustomers = currentCustomers.map((c) => c.key === lead.key ? { ...c, assigned: true, agentName: agent.name } : c);
+refreshSendThroughAgents();
 displayPanel(currentCustomers, 0, 0, false);
 }
 } else {
@@ -7398,6 +7806,7 @@ window._updateAssignPreview = function() {
 const previewEl = document.getElementById('assignMatchPreview');
 if (!previewEl) return;
 persistCurrentAssignSettings();
+renderFairShareLine();
 
 let count;
 if (currentPageType === PAGE_PENDING) {
@@ -7530,6 +7939,486 @@ initAssignSectionWheels();
 };
 
 // ===================================================================
+// MISSED LEAD WARNING
+//
+// For when the panel is hidden or the tab is not in view: the tab title
+// carries how many unassigned leads are missed, due within 5 minutes and
+// due within 15, and a desktop notification says when more join each. A
+// lead is counted once, at its most urgent. Counts only, never
+// a customer's name. Off unless switched on in More. While it is on the
+// SLA list is scanned again every 2 minutes, since nothing else keeps it
+// fresh.
+// ===================================================================
+
+const MISSED_WARNING_KEY = '_slaMissedWarning';
+const MISSED_WARNING_MINUTES = 15;
+const MISSED_URGENT_MINUTES = 5;
+// scanMs: how often the list is scanned again. tickMs: how often the counts
+// are brought up to date in between, as leads come due with time alone. A
+// test may shorten these through window.__slaWatchTiming.
+const WATCH_TIMING = { scanMs: 120000, tickMs: 15000 };
+function watchTiming() {
+return { ...WATCH_TIMING, ...(window.__slaWatchTiming || {}) };
+}
+let lastWatchScanAt = 0;
+// Leads already warned about, kept on window so clicking the bookmark again
+// does not warn about them twice.
+const missedWarned = window.__slaMissedWarned || (window.__slaMissedWarned = { due: {}, soon: {}, missed: {} });
+
+function isMissedWarningOn() {
+try { return localStorage.getItem(MISSED_WARNING_KEY) === '1'; } catch (error) { return false; }
+}
+
+// Pure. The keys of the unassigned leads that are missed (marked Missed, or
+// past their SLA time), due within 5 minutes (soon) and due within 15 (due).
+function missedWarningKeys(leads, now) {
+const missed = [];
+const soon = [];
+const due = [];
+leads.forEach((l) => {
+if (l.assigned) return;
+const minutes = l.slaDate ? (new Date(l.slaDate).getTime() - now) / 60000 : null;
+if (l.status === 'Missed' || (minutes !== null && minutes <= 0)) missed.push(l.key);
+else if (minutes !== null && minutes <= MISSED_URGENT_MINUTES) soon.push(l.key);
+else if (minutes !== null && minutes <= MISSED_WARNING_MINUTES) due.push(l.key);
+});
+return { missed, soon, due };
+}
+
+// Pure. "(1 missed, 2 in 5 min, 3 in 15) ", or '' when there are none.
+function missedTitlePrefix(missedCount, soonCount, dueCount) {
+const parts = [missedCount ? `${missedCount} missed` : '', soonCount ? `${soonCount} in ${MISSED_URGENT_MINUTES} min` : '', dueCount ? `${dueCount} in ${MISSED_WARNING_MINUTES}` : ''].filter(Boolean);
+return parts.length ? `(${parts.join(', ')}) ` : '';
+}
+
+// Pure. One sentence for the leads newly due within 15 minutes or missed in
+// this scan, and one for those newly within 5.
+function missedNotificationText(dueCount, missedCount) {
+const leads = (n) => `${n} lead${n === 1 ? '' : 's'}`;
+const parts = [];
+if (dueCount) parts.push(`${leads(dueCount)} due within ${MISSED_WARNING_MINUTES} minutes`);
+if (missedCount) parts.push(parts.length ? `${missedCount} missed` : `${leads(missedCount)} missed`);
+return parts.length ? `${parts.join(', ')}. Unassigned.` : '';
+}
+function urgentNotificationText(soonCount) {
+return soonCount ? `${soonCount} lead${soonCount === 1 ? '' : 's'} due within ${MISSED_URGENT_MINUTES} minutes. Unassigned.` : '';
+}
+
+// Pure. Which leads have not been warned about yet, and the record once
+// they have. A lead is warned about once at 15 minutes, once again at 5 and
+// once when it goes missed. One first seen inside 5 minutes skips the 15.
+function newMissedWarnings(keys, warned) {
+const was = { due: warned.due || {}, soon: warned.soon || {}, missed: warned.missed || {} };
+const newMissed = keys.missed.filter((k) => !was.missed[k]);
+const newSoon = keys.soon.filter((k) => !was.soon[k] && !was.missed[k]);
+const newDue = keys.due.filter((k) => !was.due[k] && !was.soon[k] && !was.missed[k]);
+const due = { ...was.due };
+const soon = { ...was.soon };
+const missed = { ...was.missed };
+keys.due.forEach((k) => { due[k] = 1; });
+keys.soon.forEach((k) => { soon[k] = 1; due[k] = 1; });
+keys.missed.forEach((k) => { missed[k] = 1; });
+return { newDue: newDue.length, newSoon: newSoon.length, newMissed: newMissed.length, due, soon, missed };
+}
+
+// The page's own title is whatever follows our counts, so a title Konnect
+// changes meanwhile is kept.
+const MISSED_TITLE_PATTERN = /^\((?:\d+ missed|\d+ in 5 min|\d+ in 15)(?:, (?:\d+ in 5 min|\d+ in 15))*\) /;
+function setTitlePrefix(prefix) {
+const own = document.title.replace(MISSED_TITLE_PATTERN, '');
+if (document.title !== prefix + own) document.title = prefix + own;
+}
+
+function isPanelOutOfView() {
+return document.hidden || !document.hasFocus() || !panelElement || localStorage.getItem(PANEL_STATE_KEY) === 'hidden';
+}
+
+// The two levels have their own tag, so one does not replace the other.
+function showMissedNotification(text, tag) {
+try {
+if (!text || typeof Notification === 'undefined' || Notification.permission !== 'granted') return false;
+const notification = new Notification('SLA Manager', { body: text, tag, renotify: true });
+notification.onclick = () => { window.focus(); notification.close(); };
+return true;
+} catch (error) {
+return false;
+}
+}
+
+// The SLA table as it stands when this tab is on it and nothing is using
+// it; otherwise the leads from the last scan, which still come due with time.
+function watchedLeads() {
+if (!busyReason() && detectPageType() === PAGE_SLA) return collectAssignableLeads();
+return currentCustomers;
+}
+
+function updateMissedWarning() {
+if (!isMissedWarningOn()) return;
+const keys = missedWarningKeys(watchedLeads(), Date.now());
+setTitlePrefix(missedTitlePrefix(keys.missed.length, keys.soon.length, keys.due.length));
+const fresh = newMissedWarnings(keys, missedWarned);
+missedWarned.due = fresh.due;
+missedWarned.soon = fresh.soon;
+missedWarned.missed = fresh.missed;
+// With the panel in view the tiles already say it.
+if (!isPanelOutOfView()) return;
+showMissedNotification(urgentNotificationText(fresh.newSoon), 'sla-manager-due-5');
+showMissedNotification(missedNotificationText(fresh.newDue, fresh.newMissed), 'sla-manager-due-15');
+}
+
+// Not while anything else is scanning, assigning, checking or sending, a
+// customer pop-up is open, or the user is in the More menu or a drop-down.
+function canWatchScan() {
+if (busyReason() || dayRun.running || rescue.running || currentPanelMode === 'morningChecks') return false;
+if (findDetailModal()) return false;
+if (liveLink.sent || liveLink.queue.some((b) => b.from === 'manager')) return false;
+const menu = document.getElementById('_slaMoreMenu');
+if ((menu && !menu.hidden) || isHoldingPanelInput()) return false;
+return detectPageType() === PAGE_SLA;
+}
+
+async function missedWatchTick() {
+if (!isMissedWarningOn()) { stopMissedWatch(); return; }
+if (Date.now() - lastWatchScanAt >= watchTiming().scanMs && canWatchScan()) {
+lastWatchScanAt = Date.now();
+try { await window._refreshLeadsAndPanel({ quiet: true }); } catch (error) { console.warn('[SLA Manager] The scan for the missed lead warning failed:', error && error.message); }
+if (!busyReason() && detectPageType() === PAGE_SLA) followAssignments(PAGE_SLA, collectAssignableLeads());
+}
+updateMissedWarning();
+}
+
+function stopMissedWatch() {
+clearInterval(window._slaMissedWatchInterval);
+window._slaMissedWatchInterval = null;
+}
+
+function startMissedWatch() {
+stopMissedWatch();
+lastWatchScanAt = Date.now();
+window._slaMissedWatchInterval = setInterval(missedWatchTick, watchTiming().tickMs);
+updateMissedWarning();
+}
+
+// Asks for notifications once. The title works whatever the answer.
+function askForMissedNotifications() {
+const say = (permission) => showToast(permission === 'granted'
+? 'Warnings are on: the tab title shows the counts and a notification says when more leads are due or missed.'
+: 'Warnings are on, in the tab title only: notifications are not allowed for this site.');
+if (typeof Notification === 'undefined') { say('denied'); return; }
+if (Notification.permission !== 'default') { say(Notification.permission); return; }
+try {
+Promise.resolve(Notification.requestPermission()).then(say, () => say('denied'));
+} catch (error) {
+say('denied');
+}
+}
+
+window._toggleMissedWarning = function(item) {
+const on = !isMissedWarningOn();
+try { localStorage.setItem(MISSED_WARNING_KEY, on ? '1' : '0'); } catch (error) { /* stays off */ }
+const state = item && item.querySelector('em');
+if (state) state.textContent = isMissedWarningOn() ? 'on' : 'off';
+if (isMissedWarningOn()) {
+askForMissedNotifications();
+startMissedWatch();
+} else {
+stopMissedWatch();
+setTitlePrefix('');
+}
+};
+
+runSelfTest('missedWarningSelfTest', function missedWarningSelfTest() {
+const failures = [];
+const check = (label, actual, expected) => {
+const a = JSON.stringify(actual); const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+};
+const now = Date.now();
+const lead = (key, mins, over) => ({ key, slaDate: mins === null ? null : new Date(now + mins * 60000), status: 'Pending', assigned: false, ...over });
+const leads = [
+lead('a', -20, { status: 'Missed' }), lead('b', -1), lead('c', 4), lead('d', 15), lead('e', 16),
+lead('f', 3, { assigned: true }), lead('g', -30, { status: 'Missed', assigned: true }), lead('h', null), lead('i', 6)
+];
+const keys = missedWarningKeys(leads, now);
+check('missed is marked Missed or past its time; then within 5 minutes; then within 15; assigned leads never count', keys, { missed: ['a', 'b'], soon: ['c'], due: ['d', 'i'] });
+check('the title prefix', [[1, 2, 3], [2, 0, 0], [0, 1, 0], [0, 0, 1], [2, 0, 3], [0, 0, 0]].map(([m, s, d]) => missedTitlePrefix(m, s, d)), ['(1 missed, 2 in 5 min, 3 in 15) ', '(2 missed) ', '(1 in 5 min) ', '(1 in 15) ', '(2 missed, 3 in 15) ', '']);
+check('the prefix is found again whatever the counts', ['(1 missed, 2 in 5 min, 3 in 15) Konnect', '(1 in 15) Konnect', '(12 missed) Konnect', '(4 in 5 min, 1 in 15) Konnect', '(beta) Konnect'].map((t) => t.replace(MISSED_TITLE_PATTERN, '')), ['Konnect', 'Konnect', 'Konnect', 'Konnect', '(beta) Konnect']);
+check('the 15 minute notification', [[3, 1], [1, 0], [0, 2], [0, 0]].map(([d, m]) => missedNotificationText(d, m)), ['3 leads due within 15 minutes, 1 missed. Unassigned.', '1 lead due within 15 minutes. Unassigned.', '2 leads missed. Unassigned.', '']);
+check('the 5 minute notification', [2, 1, 0].map(urgentNotificationText), ['2 leads due within 5 minutes. Unassigned.', '1 lead due within 5 minutes. Unassigned.', '']);
+const first = newMissedWarnings(keys, { due: {}, soon: {}, missed: {} });
+check('every lead is new the first time', [first.newDue, first.newSoon, first.newMissed], [2, 1, 2]);
+const again = newMissedWarnings(keys, first);
+check('and none the second', [again.newDue, again.newSoon, again.newMissed], [0, 0, 0]);
+const later = newMissedWarnings({ missed: ['a', 'b', 'c'], soon: ['d'], due: ['i', 'e'] }, first);
+check('a lead warns once more at 5 minutes and once more when missed; a lead newly within 15 warns once', [later.newDue, later.newSoon, later.newMissed], [1, 1, 1]);
+check('a lead first seen inside 5 minutes is not also warned about at 15', newMissedWarnings({ missed: [], soon: [], due: ['c'] }, first).newDue, 0);
+if (failures.length > 0) {
+reportSelfTestFailure('SLA Manager missed-warning self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Manager missed-warning self-test passed');
+}
+});
+
+// ===================================================================
+// START MY DAY
+//
+// The button at the top of Checks. One press for the morning: a scan, the
+// morning checks, then Send to the Lead Checker, each through the function
+// its own button uses. It is also a way to open the Lead Checker: the one
+// Konnect Live tab is opened or brought forward at the click, while the
+// browser still allows it, and the link comes up while the scan and checks
+// run. Cancel takes effect when the step in hand finishes; the checks
+// cannot be cut short.
+// ===================================================================
+
+const DAY_STEPS = ['scan', 'morning checks', 'send to the Lead Checker'];
+// loginWaitMs: how long Send waits for a logged out Konnect Live to log
+// back in. A test may shorten it through window.__slaDayTiming.
+const DAY_TIMING = { loginWaitMs: 120000 };
+function dayTiming() {
+return { ...DAY_TIMING, ...(window.__slaDayTiming || {}) };
+}
+// text is the strip's one line ('' for no strip). tone 'warn' is a stop.
+let dayRun = { running: false, cancelled: false, text: '', tone: '' };
+
+// Pure.
+function dayStepText(step) {
+return `Start my day: ${step} of ${DAY_STEPS.length}, ${DAY_STEPS[step - 1]}`;
+}
+
+function renderDayStrip() {
+if (!dayRun.text) return '<div id="_slaDayStrip" hidden></div>';
+const button = dayRun.running
+? (dayRun.cancelled ? '' : '<button type="button" class="sla-sec tight" onclick="window._cancelStartMyDay()" title="Stops once the step in hand has finished">Cancel</button>')
+: `<button type="button" class="sla-sec tight" onclick="window._cancelStartMyDay()" title="Close this line" aria-label="Close this line">${svgIcon('x', 12)}</button>`;
+return `<div id="_slaDayStrip" class="sla-link sla-day" role="status" data-tone="${dayRun.tone || ''}">
+<span aria-hidden="true" class="sla-dot ${dayRun.running ? 'busy' : (dayRun.tone === 'warn' ? 'warn' : '')}"></span>
+<span class="sla-grow">${escapeHtml(dayRun.text)}</span>${button}
+</div>`;
+}
+
+function showDayStrip(text, tone) {
+dayRun.text = text;
+dayRun.tone = tone || '';
+const strip = document.getElementById('_slaDayStrip');
+if (strip) strip.outerHTML = renderDayStrip();
+const button = document.getElementById('_slaStartDayBtn');
+if (button) {
+button.disabled = dayRun.running;
+button.querySelector('span').textContent = dayRun.running ? 'Running…' : 'Start my day';
+}
+}
+
+window._cancelStartMyDay = function() {
+if (!dayRun.running) { showDayStrip(''); return; }
+dayRun.cancelled = true;
+showDayStrip(`Start my day: stopping once the ${DAY_STEPS[dayRun.step - 1]} step finishes`);
+};
+
+window._startMyDay = async function() {
+if (dayRun.running) return;
+const stop = (message) => { dayRun.running = false; showDayStrip(`Start my day stopped. ${message}`, 'warn'); };
+const busy = busyReason();
+if (busy) { stop(`Not yet: ${busy}. Press Start my day again when it has finished.`); return; }
+// Before anything is awaited, so the browser still counts it as the click.
+// A link that is up and working is left alone.
+if (!isLiveLinked() || liveLink.state === 'loggedOut') {
+if (openLiveTab() && !isLiveLinked()) showToast('Konnect Live is opening. Click Work Tools there to start the Lead Checker, then come back to this tab: the scan and checks run here.');
+}
+
+dayRun = { running: true, cancelled: false, step: 0, text: '', tone: '' };
+const begin = (step) => { dayRun.step = step; showDayStrip(dayStepText(step)); };
+const cancelledAfter = (step) => {
+if (!dayRun.cancelled) return false;
+dayRun.running = false;
+showDayStrip(`Start my day cancelled after step ${step} of ${DAY_STEPS.length}. Nothing was sent.`, 'warn');
+return true;
+};
+try {
+begin(1);
+// The Checks view is often left on another Konnect page.
+if (!detectPageType()) {
+window.location.hash = findSlaPageHash();
+await waitForSlaPage();
+}
+if (!detectPageType()) { stop('The SLA page could not be opened. Open the SLA queue, then press Start my day again.'); return; }
+await window._refreshLeadsAndPanel();
+if (cancelledAfter(1)) return;
+if (busyReason() || (currentPageType !== PAGE_SLA && currentPageType !== PAGE_PENDING)) { stop('The leads could not be scanned. Press Scan again in More, then Start my day again.'); return; }
+
+begin(2);
+currentPanelMode = 'morningChecks';
+morningChecksSubView = null;
+await window._runAllMorningChecks();
+if (cancelledAfter(2)) return;
+
+begin(3);
+const exported = currentLeadCheckerExport();
+if (!exported.count) {
+dayRun.running = false;
+showDayStrip('Start my day: done. There were no leads to send.');
+return;
+}
+const leadsText = `${exported.count} lead${exported.count === 1 ? '' : 's'}`;
+if (liveLink.state === 'loggedOut') {
+showDayStrip(`Start my day: 3 of ${DAY_STEPS.length}, Konnect Live is logging back in`);
+const deadline = Date.now() + dayTiming().loginWaitMs;
+while (liveLink.state === 'loggedOut' && Date.now() < deadline && !dayRun.cancelled) await sleep(250);
+if (cancelledAfter(2)) return;
+}
+// Send as the Send button does: the batch waits in the queue until the
+// Lead Checker says it is ready.
+if (!sendBatchToLeadChecker('leads', exported.tsv)) { stop('The scan and the morning checks are done, but Konnect Live could not be opened. Allow pop-ups for this site, then press Send.'); return; }
+dayRun.running = false;
+const waiting = liveLink.queue.some((b) => b.from === 'manager' && b.kind === 'leads');
+if (!isLiveLinked()) showDayStrip('Start my day: scan and checks done. Click Work Tools on the Konnect Live tab: the leads are waiting to send.', 'warn');
+else if (liveLink.state === 'loggedOut') showDayStrip('Start my day: scan and checks done. Konnect Live is still logged out. Press Login on the Konnect Live tab: the leads are waiting to send.', 'warn');
+else if (waiting) showDayStrip(`Start my day: done. ${leadsText} will go to the Lead Checker when it is free.`);
+else showDayStrip(`Start my day: done. ${leadsText} sent to the Lead Checker.`);
+} catch (error) {
+console.error('[SLA Manager] Start my day failed:', error && error.message);
+stop(`Something went wrong in the ${DAY_STEPS[Math.max(dayRun.step, 1) - 1]} step. Run the rest from their own buttons.`);
+} finally {
+dayRun.running = false;
+}
+};
+
+runSelfTest('startMyDaySelfTest', function startMyDaySelfTest() {
+const expected = ['Start my day: 1 of 3, scan', 'Start my day: 2 of 3, morning checks', 'Start my day: 3 of 3, send to the Lead Checker'];
+const actual = [1, 2, 3].map(dayStepText);
+if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+reportSelfTestFailure(`SLA Manager start-my-day self-test FAILED:\nexpected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+} else {
+console.info('SLA Manager start-my-day self-test passed');
+}
+});
+
+// ===================================================================
+// RESCUE
+//
+// For leads about to go missed while they sit in a queue. One press does
+// what was done by hand: Clear Queue (Konnect can only clear the whole
+// queue), a new scan, then the leads that are missed or due within 15
+// minutes are assigned, most urgent first, to the ticked agents who are
+// free. No prompt, like Clear Queue. The other leads stay unassigned.
+// ===================================================================
+
+// The agent statuses that count as free to take a rescued lead, matched on
+// the whole status as Konnect shows it.
+const FREE_AGENT_STATUSES = [/^available$/i, /^wrap[\s-]*up$/i, /^wash[\s-]*up$/i];
+const RESCUE_WINDOW_MINUTES = 15;
+let rescue = { running: false, text: '' };
+
+function isAgentFree(agent) {
+const status = String((agent && agent.status) || '').trim();
+return FREE_AGENT_STATUSES.some((pattern) => pattern.test(status));
+}
+
+// Pure. Leads that are missed or due within 15 minutes, queued or not.
+function rescueCount(leads, now) {
+return leads.filter((l) => l.status === 'Missed' || (l.slaDate && (new Date(l.slaDate).getTime() - now) / 60000 <= RESCUE_WINDOW_MINUTES)).length;
+}
+
+// Pure. What Rescue did, in one line. skipped: the statuses of the ticked
+// agents who were not free.
+function rescueNoticeText({ cleared, assigned, agentCount, failed, skipped }) {
+const parts = [cleared ? 'Cleared the queue.' : 'The queue could not be confirmed as cleared.'];
+if (agentCount === 0) parts.push('No ticked agent is Available or in wrap up, so nothing was assigned.');
+else if (assigned === 0 && !failed) parts.push('No lead is missed or due within 15 minutes now, so nothing was assigned.');
+else parts.push(`${assigned} lead${assigned === 1 ? '' : 's'} assigned to ${agentCount} agent${agentCount === 1 ? '' : 's'}, most urgent first.`);
+if (failed) parts.push(`${failed} could not be assigned.`);
+if (skipped.length) {
+const statuses = Array.from(new Set(skipped.map((s) => String(s || '').trim() || 'no status')));
+parts.push(`${skipped.length} agent${skipped.length === 1 ? '' : 's'} skipped: ${statuses.join(', ')}.`);
+}
+return parts.join(' ');
+}
+
+// Shown only when there is something to rescue, or a notice to read.
+function renderRescueBar() {
+const count = rescueCount(getCachedAssignableLeads(), Date.now());
+if (!count && !rescue.text && !rescue.running) return '<div id="_slaRescueBar" hidden></div>';
+const button = count || rescue.running
+? `<button type="button" id="_slaRescueBtn" class="sla-sec caution" onclick="window._rescueLeads()" ${rescue.running ? 'disabled' : ''} title="Rescue: clears the whole queue (Konnect's Clear Queues, no undo), scans again, then assigns the leads that are missed or due within ${RESCUE_WINDOW_MINUTES} minutes, most urgent first, to the ticked agents who are Available or in wrap up. No prompt. Every other lead is left unassigned">${rescue.running ? 'Rescuing…' : `Rescue ${count}`}</button>`
+: '';
+return `<div id="_slaRescueBar" class="sla-bar">${button}<span id="_slaRescueLine" class="sla-small sla-grow" role="status">${escapeHtml(rescue.text)}</span></div>`;
+}
+
+function showRescue(text) {
+rescue.text = text;
+const bar = document.getElementById('_slaRescueBar');
+if (bar) bar.outerHTML = renderRescueBar();
+}
+
+window._rescueLeads = async function() {
+// Single fire: a second press while it runs does nothing.
+if (rescue.running) return;
+if (refuseIfBusy()) return;
+if (detectPageType() !== PAGE_SLA) return;
+// The ticked agents, from the saved choice: the tick boxes are not drawn
+// while every lead is assigned.
+const excluded = new Set(loadAssignSettings().excludedAgentIds || []);
+const ticked = () => getAgentRoster().filter((a) => !excluded.has(a.id));
+// Nothing is cleared when it is already known nobody could take the leads.
+if (getAgentRoster().length > 0 && !ticked().some(isAgentFree)) {
+showRescue('Rescue did nothing: no ticked agent is Available or in wrap up. The queue was not cleared.');
+return;
+}
+rescue.running = true;
+try {
+showRescue('Rescue: 1 of 3, clearing the queue');
+await window._clearWholeQueue();
+await waitForLeadsTableReady();
+showRescue('Rescue: 2 of 3, scanning the leads again');
+await window._refreshLeadsAndPanel();
+const leads = collectAssignableLeads();
+const cleared = leads.length > 0 && !leads.some((l) => l.assigned);
+const agents = ticked();
+const free = agents.filter(isAgentFree);
+const skipped = agents.filter((a) => !isAgentFree(a)).map((a) => a.status);
+const urgent = prioritizeLeads(filterAssignableLeads(leads, { tiers: new Set([1, 2, 3, 4]), windowMinutes: RESCUE_WINDOW_MINUTES, customerFirstOnly: false, emailOnly: false }));
+let results = [];
+if (free.length > 0 && urgent.length > 0) {
+showRescue(`Rescue: 3 of 3, assigning ${urgent.length} lead${urgent.length === 1 ? '' : 's'}`);
+setActiveAssignTab('assign');
+results = (await executeAssignmentRun(roundRobinAssign(urgent, free), locateAssignCell, PAGE_SLA, { noConfirm: true })) || [];
+}
+const assigned = results.filter((r) => r.ok).length;
+const notice = rescueNoticeText({ cleared, assigned, agentCount: free.length, failed: (free.length ? urgent.length : 0) - assigned, skipped });
+rescue.running = false;
+showRescue(notice);
+showToast(notice);
+} catch (error) {
+console.error('[SLA Manager] Rescue failed:', error && error.message);
+rescue.running = false;
+showRescue('Rescue stopped part way: something went wrong. Check the queue in Konnect before assigning again.');
+} finally {
+rescue.running = false;
+}
+};
+
+runSelfTest('rescueSelfTest', function rescueSelfTest() {
+const failures = [];
+const check = (label, actual, expected) => {
+const a = JSON.stringify(actual); const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+};
+check('free is Available or wrap up, on the whole status', ['Available', 'available ', 'Wrap Up', 'Wrapup', 'Wash up', 'Not Available', 'Shift Start', 'Live Chat', 'Toilet Break', ''].map((status) => isAgentFree({ status })), [true, true, true, true, true, false, false, false, false, false]);
+const now = Date.now();
+const lead = (mins, over) => ({ slaDate: mins === null ? null : new Date(now + mins * 60000), status: 'Pending', assigned: false, ...over });
+check('missed or due within 15 minutes, queued or not', rescueCount([lead(-5, { status: 'Missed' }), lead(10, { assigned: true }), lead(15), lead(16), lead(null), lead(null, { status: 'Missed', assigned: true })], now), 4);
+check('the notice', rescueNoticeText({ cleared: true, assigned: 9, agentCount: 3, failed: 0, skipped: ['Live Chat', 'Live Chat'] }), 'Cleared the queue. 9 leads assigned to 3 agents, most urgent first. 2 agents skipped: Live Chat.');
+check('nobody free', rescueNoticeText({ cleared: true, assigned: 0, agentCount: 0, failed: 0, skipped: ['Shift Start', ''] }), 'Cleared the queue. No ticked agent is Available or in wrap up, so nothing was assigned. 2 agents skipped: Shift Start, no status.');
+check('some failed, queue not confirmed', rescueNoticeText({ cleared: false, assigned: 1, agentCount: 1, failed: 2, skipped: [] }), 'The queue could not be confirmed as cleared. 1 lead assigned to 1 agent, most urgent first. 2 could not be assigned.');
+check('nothing urgent left', rescueNoticeText({ cleared: true, assigned: 0, agentCount: 2, failed: 0, skipped: [] }), 'Cleared the queue. No lead is missed or due within 15 minutes now, so nothing was assigned.');
+if (failures.length > 0) {
+reportSelfTestFailure('SLA Manager rescue self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Manager rescue self-test passed');
+}
+});
+
+// ===================================================================
 // BOOTSTRAP / PAGE AUTO-DETECT
 // ===================================================================
 
@@ -7574,5 +8463,6 @@ pendingPageType = pageType;
 purgeExpiredStoredData();
 ensureWheelStyles();
 createBadge();
+if (isMissedWarningOn()) startMissedWatch();
 console.info('✅ SLA Manager ready');
 })();

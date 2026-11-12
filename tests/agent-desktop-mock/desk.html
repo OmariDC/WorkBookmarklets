@@ -1,8 +1,8 @@
-<!doctype html><html><head><meta charset="utf-8"><title>Mock agent desktop: Post Closure and Email Only</title>
+<!doctype html><html><head><meta charset="utf-8"><title>Mock agent desktop: Post Closure, Email Only and Send through</title>
 <style>.hide { display: none; } .tab-pane { display: none; } .tab-pane.active { display: block; } textarea { display: block; width: 300px; }</style>
 </head><body>
-<!-- Mock of the agent desktop for the Post Closure send back and Email Only
-     runs in Lead-Reset.js. The test calls window.mock.setup() with the
+<!-- Mock of the agent desktop for the Post Closure send back, Email Only and
+     Send through runs in Lead-Reset.js. The test calls window.mock.setup() with the
      customers, then drives the tool and reads window.events and
      window.snapshots (the page as it stood when Finished was pressed). -->
 <!-- Stand-ins for Konnect's button rail and Phone column, only drawn with
@@ -66,8 +66,10 @@ window.angular = {
 
 const LEVEL1 = ['', 'Sales Event', 'Customer Hub Team', 'Bot', 'Dealer'];
 const LEVEL2 = { 'Customer Hub Team': ['', 'Appointment', 'No Appointment', 'No Opportunity', 'Customer Deferred', 'Ongoing'] };
+// 'Mis-directed' is spelt apart on purpose (it is not the real page's
+// wording): the send through run matches its options by letters only.
 const LEVEL3 = {
- 'No Opportunity': ['', 'Catch All - Customer Bought Elsewhere', 'Catch All - Ongoing / Actioned by Dealer', 'Catch All - Email Only Lead', 'Catch All - In Market Would Not Commit to appoint', 'Email Only Lead - Max Attempts - Do Not go to E m'],
+ 'No Opportunity': ['', 'Catch All - Customer Bought Elsewhere', 'Catch All - Ongoing / Actioned by Dealer', 'Catch All - Email Only Lead', 'Catch All - In Market Would Not Commit to appoint', 'Email Only Lead - Max Attempts - Do Not go to E m', 'Mis-directed'],
  Ongoing: ['', 'In Progress with Dealer', 'Defer to Site', 'Hub Reservation', 'Email Only Lead']
 };
 const LOAD_DELAY = 400;

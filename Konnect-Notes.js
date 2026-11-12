@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.14.0'
+    version: '1.17.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -21,17 +21,53 @@
   const ENGINE_URL = `${BASE_URL}Konnect-Booking-Engine.js`;
   const STORAGE_KEY = 'konnectNotes:workingConfig:v1';
   const AGENT_NAME_KEY = 'konnectNotes:agentName:v1';
-  /* The Booking Builder is still being tested, so it is only switched on in
-     browsers where the Work Tools bookmark has been used. The Konnect Tools
-     bookmark other agents use loads this same file without it. */
-  const BOOKING_ACCESS_KEY = 'konnectNotes:bookingAccess:v1';
-  try {
-    if (window.KonnectNotesBooking === true) localStorage.setItem(BOOKING_ACCESS_KEY, 'on');
-  } catch (error) { /* storage blocked: the flag on window still works this session */ }
-  function bookingAllowed() {
-    if (window.KonnectNotesBooking === true) return true;
-    try { return localStorage.getItem(BOOKING_ACCESS_KEY) === 'on'; } catch (error) { return false; }
+  /* Other staff get the call notes only: the phrase list, the shorthand and
+     their settings. The whole booking system (the Booking Builder and its
+     buttons and keys, the inbound Customer step, the diary, drafts, the
+     booking sheet row and the call outcome helper) is for the owner for now,
+     and is on only while this flag is set on the page. The Work Tools
+     bookmark sets it before loading; the Konnect Tools bookmark does not.
+     Nothing is stored, so it cannot stay on by accident. To give someone
+     else the booking system, their bookmark must set
+     window.KonnectNotesOwner = true before it loads this file. */
+  function ownerTools() {
+    return window.KonnectNotesOwner === true;
   }
+  // The stored switch earlier versions used is no longer read, so it is cleared.
+  try { localStorage.removeItem('konnectNotes:bookingAccess:v1'); } catch (error) { /* storage blocked */ }
+
+  /* Owner only: the call outcome each Call Notes phrase stands for, by phrase
+     id (shorthand in the comment). A phrase not listed here sets nothing, and
+     "Update Outcomes (No Call Made)" is never set from a note. */
+  const MESSAGE_LEFT = 'No Answer Message Left';
+  const NO_MESSAGE_LEFT = 'No Answer No Message Left';
+  const CALL_OUTCOME_FOR_PHRASE = {
+    'vm-left': MESSAGE_LEFT, // vm
+    'confirm-provisional-booking': MESSAGE_LEFT, // book
+    'line-ringing': NO_MESSAGE_LEFT, // ring, ringing
+    'could-not-reach': NO_MESSAGE_LEFT, // cnr
+    'line-engaged': NO_MESSAGE_LEFT, // eng, engaged
+    'line-rang-then-failed': NO_MESSAGE_LEFT, // rf, failed
+    'mail-box-full': NO_MESSAGE_LEFT, // mbf
+    'precall-declined-vm': NO_MESSAGE_LEFT, // dvm, pdvm
+    'line-failed-email-only': NO_MESSAGE_LEFT // lfe
+  };
+
+  /* Owner only: the dealer names as the booking sheet spells them. */
+  const SHEET_DEALERS = ['Birmingham Central', 'Birmingham North', 'Birmingham South', 'Bristol Cribbs', 'Chingford',
+    'Coventry', 'Crawley', 'Croydon', 'Edgware', 'Guildford', 'Hatfield', 'Leicester', 'Liverpool', 'Maidstone',
+    'Manchester', 'Newport', 'Nottingham', 'Preston', 'Redditch', 'Romford', 'Sale', 'Sheffield', 'Stockport',
+    'Walton', 'West London', 'Wimbledon'];
+  const SHEET_TOAST_ID = 'kn-sheet-row-toast';
+  const NAME_TITLES = /^(?:(?:mr|mrs|miss|ms|mx|dr|prof|sir|lady|rev)\.?\s+)+(?=\S)/i;
+
+  /* Dealers a booking is never made for. */
+  const NO_BOOKING_DEALERS = [
+    { match: /brentford/i, name: 'Brentford', why: 'is service only' },
+    { match: /general sales/i, name: 'General Sales', why: 'is not a dealership' },
+    { match: /national/i, name: 'National', why: 'is not a dealership' }
+  ];
+
   const OWN_PHRASES_STATUS = 'Your own phrase changes are in use on this computer only.';
   const STYLE_ID = 'kn-notes-style';
   const PALETTE_ID = 'kn-notes-palette';
@@ -591,6 +627,7 @@
       state.lastSelection = null;
       state.lastPostClosureTransaction = null;
     }
+    claimInboundCall();
     updateLauncher();
     updateInboundLauncher();
     if (!state.target && state.open && !(state.view === 'booking' && inboundContext())) closePalette();
@@ -1019,7 +1056,7 @@
     const body = element('div', 'kn-body');
     let foot = null;
     renderUpdateNotice(body);
-    if (bookingAllowed()) {
+    if (ownerTools()) {
       const booking = button('Booking', 'kn-primary kn-browse-button kn-main-booking', openBooking);
       booking.appendChild(element('span', 'kn-key', 'B'));
       body.appendChild(booking);
@@ -1219,7 +1256,7 @@
       renderPalette();
     }));
     const stop = button('Stop Konnect Notes', 'kn-danger', () => stopKonnectNotes());
-    stop.title = 'Stops Konnect Notes without refreshing the page. Click the bookmark again to load the latest version. Booking drafts are kept.';
+    stop.title = `Stops Konnect Notes without refreshing the page. Click the bookmark again to load the latest version.${ownerTools() ? ' Booking drafts are kept.' : ''}`;
     lastRow.appendChild(stop);
     body.appendChild(actions);
     body.appendChild(lastRow);
@@ -1653,6 +1690,15 @@
   }
 
   function currentDraft() {
+    const draft = draftForLead();
+    if (draft.key !== INBOUND_KEY && draft.key === inbound.callLead && !draft.fromInbound) {
+      draft.fromInbound = true;
+      inbound.callLead = '';
+    }
+    return draft;
+  }
+
+  function draftForLead() {
     const key = leadKey();
     if (state.booking && state.booking.key === key) return state.booking;
     if (inbound.mobileLead && key !== inbound.mobileLead && key !== INBOUND_KEY) forgetInboundCustomer();
@@ -1674,6 +1720,7 @@
       leadRequestUsed: !!stored.leadRequestUsed,
       typedUsed: Array.isArray(stored.typedUsed) ? stored.typedUsed : [],
       typedIgnored: stored.typedIgnored || '',
+      fromInbound: !!stored.fromInbound,
       openSection: stored.openSection || 'type',
       updated: stored.updated || Date.now()
     } : {
@@ -1709,6 +1756,7 @@
       leadRequestUsed: !!draft.leadRequestUsed,
       typedUsed: draft.typedUsed || [],
       typedIgnored: draft.typedIgnored || '',
+      fromInbound: !!draft.fromInbound,
       openSection: draft.openSection,
       updated: draft.updated
     };
@@ -2195,11 +2243,192 @@
   async function insertAndBook(draft) {
     const plan = diaryPlan(draft);
     if (!plan || diaryAlreadyBooked(draft, plan)) {
-      insertBooking(draft);
+      if (insertBooking(draft)) offerSheetRow(draft);
       return;
     }
     if (!insertBooking(draft, { keepOpen: true })) return;
-    if (await bookInDiary(draft)) closePalette();
+    const booked = await bookInDiary(draft);
+    offerSheetRow(draft);
+    if (booked) closePalette();
+  }
+
+  /* ---------- owner only: a row for the booking sheet ---------- */
+
+  function sheetDealer(dealer) {
+    const text = normaliseText(dealer).toLowerCase();
+    if (!text) return '';
+    // Longest first, so "Sale" is never taken from a longer name.
+    return SHEET_DEALERS.slice().sort((a, b) => b.length - a.length)
+      .find((name) => new RegExp(`(^|[^a-z])${name.toLowerCase()}([^a-z]|$)`).test(text)) || '';
+  }
+
+  /* Motability wins whatever the car. Then the lead's own purchase type,
+     which beats a registration (a new car can have one). Then the car in the
+     booking, then the campaign wording. Pre-registered counts as New. */
+  function sheetLeadType(facts) {
+    const campaign = normaliseText(facts.campaign).toLowerCase();
+    const purchase = normaliseText(facts.purchaseType).toLowerCase();
+    const condition = normaliseText(facts.condition).toLowerCase();
+    if (facts.motability || purchase === 'motability' || /motability/.test(campaign)) return 'Motability';
+    if (purchase === 'used') return 'Used';
+    if (purchase === 'new' || purchase === 'pre-registered') return 'New';
+    if (facts.hasReg || condition === 'used') return 'Used';
+    if (condition === 'new' || condition === 'pre-registered') return 'New';
+    if (/\bused\b/.test(campaign)) return 'Used';
+    if (/\bnew\b/.test(campaign)) return 'New';
+    return '';
+  }
+
+  function blockedDiaryDealer(dealer) {
+    const found = NO_BOOKING_DEALERS.find((item) => item.match.test(normaliseText(dealer)));
+    return found ? `${found.name} ${found.why}. Change the lead's dealer first.` : '';
+  }
+
+  /* Pure. One tab separated line for the booking sheet: Dealer, Customer
+     Full Name (no title), Date of Appt, Type of Appointment, Source, Lead
+     Type, Checked on kL (always empty, it is checked by hand later), Gone
+     into Diary. */
+  function buildSheetRow(facts) {
+    const f = facts || {};
+    const day = Number(f.day);
+    const month = MONTHS_LONG[Number(f.month) - 1];
+    const year = Number(f.year);
+    const date = day >= 1 && day <= 31 && month && year > 999 ? `${day} ${month} ${year}` : '';
+    const type = { 'face to face': 'Face to Face', 'test drive': 'Test Drive', 'phone call': 'Phone Call' }[normaliseText(f.diaryType).toLowerCase()] || '';
+    return [
+      sheetDealer(f.dealer),
+      normaliseText(f.name).replace(NAME_TITLES, ''),
+      date,
+      type,
+      f.inbound ? 'Inbound Call' : 'Outbound lead',
+      sheetLeadType(f),
+      '',
+      f.inDiary ? 'Y' : 'N'
+    ].join('\t');
+  }
+
+  function sheetFactsFor(draft) {
+    const engine = bookingEngine();
+    if (!engine) return null;
+    const input = bookingInput(draft);
+    const date = engine.resolveDate(input.date, new Date());
+    const plan = diaryPlan(draft);
+    const lead = readLead();
+    const vehicle = input.vehicles[0] || {};
+    return {
+      dealer: leadDealer() || (draft.fromInbound ? inbound.dealer : ''),
+      name: findTopName(),
+      year: date.error ? '' : date.year,
+      month: date.error ? '' : date.month,
+      day: date.error ? '' : date.day,
+      diaryType: input.type ? diaryType(input) : '',
+      inbound: !!draft.fromInbound,
+      motability: input.type === 'motability' || lead.fields.type === 'motability',
+      hasReg: !!realText(vehicle.reg),
+      condition: vehicle.condition,
+      purchaseType: lead.fields['v.condition'],
+      campaign: `${lead.leadRequest} ${lead.source}`,
+      inDiary: diaryAlreadyBooked(draft, plan)
+    };
+  }
+
+  /* Copying is always the owner's own click, as the clipboard may hold
+     something they still need. The row itself is never logged or shown.
+     The facts are read now, while this lead is still the one on the page;
+     only the Source can be switched before copying, as the tool cannot
+     always know a call came in. */
+  function offerSheetRow(draft) {
+    if (!ownerTools() || !draft || !draft.inserted || draft.key === INBOUND_KEY) return;
+    const facts = sheetFactsFor(draft);
+    if (!facts) return;
+    document.getElementById(SHEET_TOAST_ID)?.remove();
+    const toast = document.createElement('div');
+    toast.id = SHEET_TOAST_ID;
+    toast.setAttribute('role', 'status');
+    toast.style.cssText = 'position:fixed;left:50%;bottom:70px;transform:translateX(-50%);z-index:2147483000;' +
+      'display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:12px;background:#1c1c1e;color:#fff;' +
+      'font:600 13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;box-shadow:0 10px 30px rgba(0,0,0,0.3)';
+    const buttonCss = 'border:0;border-radius:8px;padding:6px 10px;font:inherit;cursor:pointer;';
+    const source = document.createElement('button');
+    source.type = 'button';
+    source.setAttribute('role', 'switch');
+    source.title = 'Switch the Source cell between Inbound Call and Outbound lead';
+    source.style.cssText = `${buttonCss}background:#3a3a3c;color:#fff;font-weight:500`;
+    const showSource = () => {
+      source.textContent = `Source: ${facts.inbound ? 'Inbound Call' : 'Outbound lead'}`;
+      source.setAttribute('aria-checked', String(!!facts.inbound));
+    };
+    showSource();
+    source.addEventListener('click', () => {
+      facts.inbound = !facts.inbound;
+      draft.fromInbound = facts.inbound;
+      if (state.booking === draft) saveDraftNow();
+      showSource();
+    });
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.textContent = 'Copy booking sheet row';
+    copy.style.cssText = `${buttonCss}background:#fff;color:#1c1c1e`;
+    copy.addEventListener('click', async () => {
+      const copied = await copyText(buildSheetRow(facts));
+      copy.textContent = copied ? 'Copied' : 'Copy was blocked';
+      if (copied) setTimeout(() => toast.remove(), 1500);
+    });
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.textContent = 'Dismiss';
+    dismiss.style.cssText = `${buttonCss}background:transparent;color:#fff;font-weight:500`;
+    dismiss.addEventListener('click', () => toast.remove());
+    toast.appendChild(source);
+    toast.appendChild(copy);
+    toast.appendChild(dismiss);
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 2 * 60 * 1000);
+  }
+
+  function sheetRowSelfTest() {
+    const failures = [];
+    const check = (name, got, want) => { if (got !== want) failures.push(`${name}: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`); };
+    const base = { dealer: 'Stellantis &You Preston', name: 'Jo Example', year: 2026, month: 11, day: 14, diaryType: 'Face To Face', condition: 'used', inDiary: true };
+    check('outbound used row', buildSheetRow(base), 'Preston\tJo Example\t14 November 2026\tFace to Face\tOutbound lead\tUsed\t\tY');
+    check('inbound, not in the diary', buildSheetRow({ ...base, inbound: true, inDiary: false, diaryType: 'Test Drive', condition: 'new', day: '05', month: '01', year: 2027 }),
+      'Preston\tJo Example\t5 January 2027\tTest Drive\tInbound Call\tNew\t\tN');
+    check('always eight cells', buildSheetRow({}).split('\t').length, 8);
+    check('nothing known', buildSheetRow({}), '\t\t\t\tOutbound lead\t\t\tN');
+    check('a tab in a name cannot add a cell', buildSheetRow({ ...base, name: 'Jo\tExample\n' }).split('\t').length, 8);
+    check('phone call', buildSheetRow({ ...base, diaryType: 'Phone Call' }).split('\t')[3], 'Phone Call');
+    check('unknown appointment type', buildSheetRow({ ...base, diaryType: 'Video' }).split('\t')[3], '');
+    check('dealer by short name', sheetDealer('Birmingham North'), 'Birmingham North');
+    check('dealer with a brand after it', sheetDealer('Stellantis &You West London Peugeot'), 'West London');
+    check('Sale', sheetDealer('Stellantis &You Sale'), 'Sale');
+    check('General Sales is not Sale', sheetDealer('Stellantis &You General Sales'), '');
+    check('National is not on the sheet', sheetDealer('National'), '');
+    check('no dealer', sheetDealer(''), '');
+    check('Motability wins', sheetLeadType({ motability: true, condition: 'used' }), 'Motability');
+    check('Motability from the lead', sheetLeadType({ purchaseType: 'Motability', condition: 'new' }), 'Motability');
+    check('Motability from the campaign', sheetLeadType({ campaign: 'Motability Enquiry' }), 'Motability');
+    check('Motability whatever the car', sheetLeadType({ purchaseType: 'Motability', hasReg: true, condition: 'used' }), 'Motability');
+    check('the lead beats a registration', sheetLeadType({ hasReg: true, purchaseType: 'New' }), 'New');
+    check('the lead beats the booking', sheetLeadType({ condition: 'new', purchaseType: 'used' }), 'Used');
+    check('a reg means used when the lead does not say', sheetLeadType({ hasReg: true, condition: 'new' }), 'Used');
+    check('the booking when the lead does not say', sheetLeadType({ condition: 'new' }), 'New');
+    check('Checked on kL is empty', buildSheetRow(base).split('\t')[6], '');
+    check('title taken off', buildSheetRow({ ...base, name: 'Mr Jo Example' }).split('\t')[1], 'Jo Example');
+    check('title with a full stop, any case', buildSheetRow({ ...base, name: 'DR. Jo Example' }).split('\t')[1], 'Jo Example');
+    check('two titles', buildSheetRow({ ...base, name: 'Prof Sir Jo Example' }).split('\t')[1], 'Jo Example');
+    check('each title', ['Mrs', 'Miss', 'Ms', 'Mx', 'Lady', 'Rev'].map((t) => buildSheetRow({ ...base, name: `${t} Jo Example` }).split('\t')[1]).join(), Array(6).fill('Jo Example').join());
+    check('a name that starts like a title', buildSheetRow({ ...base, name: 'Drew Missen' }).split('\t')[1], 'Drew Missen');
+    check('a title alone is kept', buildSheetRow({ ...base, name: 'Mr' }).split('\t')[1], 'Mr');
+    check('pre-registered counts as New', sheetLeadType({ purchaseType: 'Pre-Registered' }), 'New');
+    check('campaign wording last', sheetLeadType({ campaign: 'Used Car Enquiry Website' }), 'Used');
+    check('cannot be told', sheetLeadType({ campaign: 'Website' }), '');
+    check('vm is message left', CALL_OUTCOME_FOR_PHRASE['vm-left'], 'No Answer Message Left');
+    check('cnr is no message left', CALL_OUTCOME_FOR_PHRASE['could-not-reach'], 'No Answer No Message Left');
+    check('line failed, email only is no message left', CALL_OUTCOME_FOR_PHRASE['line-failed-email-only'], 'No Answer No Message Left');
+    check('email only sets nothing', CALL_OUTCOME_FOR_PHRASE['email-only-lead-short'], undefined);
+    check('no call made is never set', Object.values(CALL_OUTCOME_FOR_PHRASE).some((v) => /no call made/i.test(v)), false);
+    check('same letters', outcomeKey('No Answer - Message Left'), outcomeKey(MESSAGE_LEFT));
+    return failures;
   }
 
   function diaryKey(plan) {
@@ -2463,6 +2692,18 @@
         renderPalette();
         return false;
       }
+    }
+    // A National Reservation still on a National dealer has had its own
+    // message above; every other booking at a dealer that takes none stops here.
+    const blocked = blockedDiaryDealer(leadDealer());
+    if (blocked) {
+      state.bookingStatus = { kind: 'error', text: `${blocked} Nothing was put in the diary.` };
+      draft.nationalDealerOk = '';
+      renderPalette();
+      return false;
+    }
+    if (draft.data.type === 'national') {
+      const dealer = leadDealer();
       if (draft.nationalDealerOk !== dealer) {
         draft.nationalDealerOk = dealer;
         state.bookingStatus = { kind: 'warn', text: `National Reservation: book it at ${dealer} on ${plan.label}? Press again to confirm.` };
@@ -2616,8 +2857,9 @@
   }
 
   /* Styled in place, as it must still show after Stop has removed the style
-     sheet. "lead" is what happened, said first with an amber dot. */
-  function showToast(text, lead) {
+     sheet. "lead" is what happened, said first with an amber dot. "action"
+     ({ label, run }) adds one button and keeps the toast up a little longer. */
+  function showToast(text, lead, action) {
     logActivity(text);
     const toast = document.createElement('div');
     toast.className = 'kn-toast';
@@ -2644,8 +2886,17 @@
     } else {
       toast.textContent = text;
     }
+    if (action) {
+      toast.style.pointerEvents = 'auto';
+      const act = document.createElement('button');
+      act.type = 'button';
+      act.textContent = action.label;
+      act.style.cssText = 'border:0;border-radius:8px;padding:5px 10px;font:inherit;cursor:pointer;background:#fff;color:#1c1c1e';
+      act.addEventListener('click', () => { toast.remove(); action.run(); });
+      toast.appendChild(act);
+    }
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 4500);
+    setTimeout(() => toast.remove(), action ? 10000 : 4500);
   }
 
   /* Sets a Konnect (AngularJS) box so its ng-model picks the value up. */
@@ -3538,11 +3789,14 @@
     bookingRefs.insert = insert;
     actions.appendChild(insert);
     if (canDiary) {
-      const notesOnly = button('Notes only', 'kn-bk-small', () => insertBooking(draft));
+      const notesOnly = button('Notes only', 'kn-bk-small', () => { if (insertBooking(draft)) offerSheetRow(draft); });
       notesOnly.title = 'Only puts the booking into Call Notes';
       bookingRefs.notesOnly = notesOnly;
       actions.appendChild(notesOnly);
-      const diary = button(diaryRun ? 'Booking...' : 'Diary only', 'kn-bk-small', () => bookInDiary(draft));
+      const diary = button(diaryRun ? 'Booking...' : 'Diary only', 'kn-bk-small', async () => {
+        await bookInDiary(draft);
+        offerSheetRow(draft);
+      });
       diary.title = 'Only books the open lead in the diary (first free person at the booking time) and sets its outcome';
       bookingRefs.diary = diary;
       actions.appendChild(diary);
@@ -3569,6 +3823,11 @@
       ? 'Empties the whole Call Notes box and resets this booking form. Asks first; Ctrl+Z in Call Notes undoes it.'
       : 'Resets this booking form and the customer details typed here';
     actions.appendChild(clear);
+    if (ownerTools() && canDiary && draft.inserted) {
+      const sheet = button('Booking sheet row', 'kn-bk-small kn-bk-sheet-row', () => offerSheetRow(draft));
+      sheet.title = 'Brings back the Copy booking sheet row button. Nothing is copied until you press that.';
+      actions.appendChild(sheet);
+    }
     footer.appendChild(actions);
     palette.appendChild(footer);
     const versionRow = element('div', 'kn-foot kn-bk-version');
@@ -3585,10 +3844,11 @@
   }
 
   function openBooking() {
-    if (!bookingAllowed()) return;
+    if (!ownerTools()) return;
     checkForUpdate(false);
     scanPage();
     if (!state.target && !inboundContext()) return;
+    if (!state.target) noteInboundCall();
     state.open = true;
     state.view = 'booking';
     state.bookingStatus = null;
@@ -3640,8 +3900,22 @@
     mobile: '',
     mobileLead: '',
     brand: '',
-    dealer: ''
+    dealer: '',
+    callAt: 0,
+    callLead: ''
   };
+
+  /* Owner only. The builder was opened, or the customer searched, on the
+     inbound screens: the next lead whose Call Notes appears is that call's
+     lead, whether it is new or one the customer already had. */
+  function noteInboundCall() {
+    if (ownerTools()) inbound.callAt = Date.now();
+  }
+  function claimInboundCall() {
+    if (!inbound.callAt || !state.target) return;
+    if (Date.now() - inbound.callAt <= INBOUND_MAX_AGE) inbound.callLead = leadKey();
+    inbound.callAt = 0;
+  }
 
   function blankCustomer() {
     return { name: '', mobile: '', email: '', postcode: '', address1: '', dealer: '', brand: '' };
@@ -3778,6 +4052,7 @@
       showToast('Add a mobile or name first');
       return;
     }
+    noteInboundCall();
     const visibleSearch = () => {
       const button = document.getElementById('btnSearchCustomers');
       return button && isVisible(button) ? button : null;
@@ -3965,6 +4240,7 @@
       fromLead: {},
       notices: [],
       inserted: null,
+      fromInbound: true,
       openSection: '',
       updated: Date.now()
     };
@@ -4054,7 +4330,7 @@
 
   function updateInboundLauncher() {
     let launcher = document.getElementById(INBOUND_LAUNCHER_ID);
-    if (!inboundContext() || !bookingAllowed()) {
+    if (!inboundContext() || !ownerTools()) {
       if (launcher && launcher.style.display !== 'none') launcher.style.display = 'none';
       return;
     }
@@ -4443,6 +4719,30 @@
     return false;
   }
 
+  /* Konnect's option wording may carry a dash, so only letters are compared. */
+  function outcomeKey(text) {
+    return normaliseText(text).toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  /* Owner only. Sets the call outcome a Call Notes phrase stands for. One
+     already chosen is left alone unless the owner presses the button in the
+     toast. Nothing else on the lead is touched. */
+  function setCallOutcomeForNote(phrase) {
+    if (!ownerTools()) return;
+    const wanted = CALL_OUTCOME_FOR_PHRASE[phrase.id];
+    if (!wanted) return;
+    const select = Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible);
+    if (!select) return;
+    const current = selectedText(select);
+    const option = Array.from(select.options).find((item) => outcomeKey(item.textContent) === outcomeKey(wanted));
+    const choose = () => {
+      if (option && select.isConnected && setLeadControl(select, normaliseText(option.textContent))) showToast(`Call outcome set: ${wanted}`);
+    };
+    if (!current) return choose();
+    if (outcomeKey(current) === outcomeKey(wanted)) return;
+    showToast(`Call outcome left as ${current}`, '', option ? { label: `Change to ${wanted}`, run: choose } : null);
+  }
+
   /* Returns true when the phrase was written. */
   function insertPhrase(phrase, attempt, rangeOverride) {
     scanPage();
@@ -4532,6 +4832,7 @@
     state.targetHadFocus = true;
     state.lastSelection = { target, start: caret, end: caret };
     closePalette();
+    setCallOutcomeForNote(phrase);
     return true;
   }
 
@@ -4619,7 +4920,7 @@
       togglePalette();
       return;
     }
-    if (event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'b') {
+    if (ownerTools() && event.altKey && !event.ctrlKey && !event.metaKey && event.key.toLowerCase() === 'b') {
       event.preventDefault();
       if (state.open && state.view === 'booking') closePalette();
       else openBooking();
@@ -4639,7 +4940,7 @@
     /* The single-key shortcuts below must never take a character typed into
        a field on the page while the palette happens to be open. */
     if (typingOutsidePalette(event.target)) return;
-    if (state.view === 'main' && event.key.toLowerCase() === 'b' && !event.altKey && !event.ctrlKey && !event.metaKey) {
+    if (ownerTools() && state.view === 'main' && event.key.toLowerCase() === 'b' && !event.altKey && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
       openBooking();
       return;
@@ -4771,7 +5072,7 @@
       document.removeEventListener(type, onLeadActivity, true));
     window.removeEventListener('resize', positionPalette);
     forgetInboundCustomer();
-    [PALETTE_ID, STYLE_ID, LAUNCHER_SECTION_ID, INBOUND_LAUNCHER_ID].forEach((id) => document.getElementById(id)?.remove());
+    [PALETTE_ID, STYLE_ID, LAUNCHER_SECTION_ID, INBOUND_LAUNCHER_ID, SHEET_TOAST_ID].forEach((id) => document.getElementById(id)?.remove());
     try { delete window.KonnectNotes; } catch (error) { window.KonnectNotes = undefined; }
     showToast(typeof message === 'string' && message
       ? message : 'Konnect Notes stopped. Click the bookmark to load the latest version.');
@@ -4791,6 +5092,8 @@
   /* Pure builders, exposed for the tests. */
   KN.buildPostClosurePlan = buildPostClosurePlan;
   KN.mergeRemoteConfig = mergeRemoteConfig;
+  KN.buildSheetRow = buildSheetRow;
+  KN.sheetRowSelfTest = sheetRowSelfTest;
 
   init();
   updateTimer = setInterval(() => checkForUpdate(true), UPDATE_CHECK_EVERY);

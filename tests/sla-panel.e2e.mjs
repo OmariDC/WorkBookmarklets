@@ -2,8 +2,8 @@
 // Browser tests for the SLA Manager panel against a small stand-in for the
 // Konnect Manager SLA page (built below): reading customer pop-ups, the busy
 // guard, Clear Queue, due tiles, merging results and keeping the panel's
-// state across redraws. Needs Playwright with Chromium. Run from the repo
-// root:
+// state across redraws, the missed lead warning, Team today, Start my day and
+// Rescue. Needs Playwright with Chromium. Run from the repo root:
 //
 //   node tests/sla-panel.e2e.mjs
 //
@@ -33,7 +33,8 @@ function check(name, ok, detail) {
 }
 
 // The SLA table, the customer pop-up, the Assign menus and Queue by Agent,
-// with switches for slow or odd behaviour. All names and numbers are made up.
+// with switches for slow or odd behaviour (QUEUE_DONE adds done rows to an
+// agent's queue). All names and numbers are made up.
 const MOCK = `<!doctype html><html><head><meta charset="utf-8"><title>Konnect Manager (stand-in)</title>
 <style>body{font-family:Arial;margin:0}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px;font-size:12px}.dropdown-menu{display:none}</style></head>
 <body><nav><ul class="nav navbar-nav"><li><a href="#/x">Client Config</a></li></ul></nav>
@@ -74,7 +75,7 @@ window.openModal=(i)=>{const l=LEADS[i];window.OPENED[i]=(window.OPENED[i]||0)+1
   m.querySelector('.close').onclick=close;};
  m.innerHTML='<button class="close">x</button>';m.querySelector('.close').onclick=close;
  document.body.appendChild(m); if(window.MODAL_FILL_DELAY) setTimeout(fill,window.MODAL_FILL_DELAY); else fill();};
-function renderQueue(){document.getElementById('view').innerHTML='<div title="Filter by Module"><span class="ng-binding">Customer Hub</span></div><button ng-click="ClearQueues()" onclick="window.CLEARED=(window.CLEARED||0)+1;if(!window.CLEAR_DOES_NOTHING)LEADS.forEach(l=>l[8]=null)">Clear Queues</button><ul>'+AGENTS.map((a,i)=>'<li ng-repeat="agent in fullqueue | filter: filterMessages"><div class="queueitem panel-heading"><div style="font-weight:bold">'+a.DisplayText+'</div></div><ul class="list-group">'+(i===0?'<li class="queueitem list-group-item"><span title="Fay Fields | fay@example.com | 07700900004">Fay</span></li>':'')+'</ul></li>').join('')+'</ul>';}
+function renderQueue(){document.getElementById('view').innerHTML='<div title="Filter by Module"><span class="ng-binding">Customer Hub</span></div><button ng-click="ClearQueues()" onclick="window.CLEARED=(window.CLEARED||0)+1;if(!window.CLEAR_DOES_NOTHING)LEADS.forEach(l=>l[8]=null)">Clear Queues</button><ul>'+AGENTS.map((a,i)=>'<li ng-repeat="agent in fullqueue | filter: filterMessages"><div class="queueitem panel-heading"><div style="font-weight:bold">'+a.DisplayText+'</div></div><ul class="list-group">'+(i===0?'<li class="queueitem list-group-item"><span title="Fay Fields | fay@example.com | 07700900004">Fay</span></li>':'')+((window.QUEUE_DONE||{})[i]||[]).map(d=>'<li class="queueitem list-group-item" style="background-color: rgb(244, 244, 244);"><span title="'+d+'">done</span></li>').join('')+'</ul></li>').join('')+'</ul>';}
 function renderOther(){document.getElementById('view').innerHTML='<p>Another Konnect page</p>';}
 window.NAVS=[];
 window.addEventListener('hashchange',()=>{ window.NAVS.push(location.hash); if(location.hash.includes('QueueByAgent')) setTimeout(renderQueue,200); else if(location.hash.includes('other')) renderOther(); else setTimeout(renderSla,200); });
@@ -392,8 +393,8 @@ async function layoutAndMenus() {
   await t.page.click('#_slaMoreBtn');
   const menu = await t.page.evaluate(() => { const m = document.getElementById('_slaMoreMenu'); const groups = [[]]; Array.from(m.children).forEach((el) => { if (el.classList.contains('sla-ms')) groups.push([]); else if (el.classList.contains('sla-mi')) groups[groups.length - 1].push(el.querySelector('span').textContent.trim()); }); return { open: !m.hidden, groups }; });
   check('More opens with Hide the panel first and on its own', menu.open && menu.groups[0].join() === 'Hide the panel', menu);
-  check('the view group ends with List only view', menu.groups[1].join() === 'Sort by Lead Checker category,Compact size,Full size, two columns,Back to top,List only view', menu.groups[1]);
-  check('Scan again, Refresh agents, History, Queue, Paste and Clear Queue are in More', menu.groups[2].join() === 'Scan again,Refresh agents,History,Queue,Paste Lead Checker results,Clear Queue', menu.groups[2]);
+  check('the view group ends with List only view and the missed lead warning', menu.groups[1].join() === 'Sort by Lead Checker category,Compact size,Full size, two columns,Back to top,List only view,Warn me about leads going missed', menu.groups[1]);
+  check('Scan again, Refresh agents, History, Team today, Queue, Paste and Clear Queue are in More', menu.groups[2].join() === 'Scan again,Refresh agents,History,Team today,Queue,Paste Lead Checker results,Clear Queue', menu.groups[2]);
   check('then Report a problem and Clear & Stop', menu.groups[3].join() === 'Report a problem,Clear & Stop', menu.groups[3]);
   await t.page.click('#_slaMoreMenu .sla-mi:has-text("History")');
   check('History from More shows in the Assign card and the menu closes', await t.page.evaluate(() => document.getElementById('_slaMoreMenu').hidden && document.getElementById('assignHistoryPanel').style.display === 'block' && /No assignments recorded today yet/.test(document.getElementById('assignHistoryPanel').textContent)));
@@ -478,8 +479,311 @@ async function layoutAndMenus() {
   await t.context.close();
 }
 
+// A stand-in for desktop notifications that records what would be shown.
+const fakeNotifications = (answer) => `
+  window.NOTES = []; window.ASKED = 0;
+  class FakeNotification { constructor(title, options) { window.NOTES.push({ title, body: options.body }); } close() {}
+    static requestPermission() { window.ASKED++; FakeNotification.permission = '${answer}'; return Promise.resolve('${answer}'); } }
+  FakeNotification.permission = 'default';
+  window.Notification = FakeNotification;
+  document.hasFocus = () => true;
+  window.__slaWatchTiming = { scanMs: 1500, tickMs: 150 };
+  window.REFRESHES = 0;
+  document.querySelector('i.fa-refresh').addEventListener('click', () => { window.REFRESHES++; });`;
+const OWN_TITLE = 'Konnect Manager (stand-in)';
+const shot = async (page, name) => { if (process.env.SLA_SHOT_DIR) await page.locator('#_slaPanelBox').screenshot({ path: join(process.env.SLA_SHOT_DIR, name) }); };
+
+async function missedWarning() {
+  console.log('\nMissed lead warning: the tab title, one notification a scan, and the list kept fresh');
+  let t = await open(fakeNotifications('granted'));
+  await openPanel(t.page);
+  const title = () => t.page.title();
+  const notes = () => t.page.evaluate(() => window.NOTES.slice());
+  await sleep(500);
+  check('off by default: the title is the page\'s own and nothing is scanned', (await title()) === OWN_TITLE && await t.page.evaluate(() => !window._slaMissedWatchInterval && window.ASKED === 0));
+  const refreshesBefore = await t.page.evaluate(() => window.REFRESHES);
+  await sleep(2200);
+  check('and there is no rescan on a timer', (await t.page.evaluate(() => window.REFRESHES)) === refreshesBefore);
+
+  await t.page.click('#_slaMoreBtn');
+  await t.page.click('#_slaMoreMenu .sla-mi:has-text("Warn me about leads going missed")');
+  await waitFor(t.page, (own) => document.title !== own, OWN_TITLE, 3000);
+  check('turning it on asks for notifications once and says so in More', await t.page.evaluate(() => window.ASKED === 1 && Array.from(document.querySelectorAll('#_slaMoreMenu .sla-mi')).find((el) => /Warn me/.test(el.textContent)).querySelector('em').textContent === 'on' && localStorage.getItem('_slaMissedWarning') === '1'));
+  check('the title leads with the unassigned leads missed and due within 15 minutes', (await title()) === `(2 missed, 1 in 15) ${OWN_TITLE}`, await title());
+  await sleep(500);
+  check('with the panel in view there is no notification', (await notes()).length === 0, await notes());
+
+  // Panel hidden: one lead comes within 15 minutes, one within 5, and a new one is already missed.
+  await t.page.evaluate(() => { window._toggleMinimizePanel(); window.OPENED = {}; LEADS[4][6] = at(10); LEADS[5][6] = at(5); LEADS.push(['Hal Hughes', 'AB18CDE', 'Customer First', 'Citroen - Enquiry - New', at(-90), at(-89), at(-3), 'Missed', null, '07700900008', 'hal@example.com']); renderSla(); });
+  await waitFor(t.page, () => window.NOTES.length > 1, null, 4000);
+  let shown = await notes();
+  check('with the panel hidden the new ones are one notification for 5 minutes and one for the rest', shown.length === 2 && shown.every((n) => n.title === 'SLA Manager') && shown.map((n) => n.body).join('|') === '1 lead due within 5 minutes. Unassigned.|1 lead due within 15 minutes, 1 missed. Unassigned.', shown);
+  check('and the title counts each level', (await title()) === `(3 missed, 1 in 5 min, 2 in 15) ${OWN_TITLE}`, await title());
+  await t.page.evaluate(() => { LEADS[4][6] = at(5); renderSla(); });
+  await waitFor(t.page, () => window.NOTES.length > 2, null, 4000);
+  shown = await notes();
+  check('a lead warned about at 15 minutes warns once more at 5', shown.length === 3 && shown[2].body === '1 lead due within 5 minutes. Unassigned.' && (await title()) === `(3 missed, 2 in 5 min, 1 in 15) ${OWN_TITLE}`, { shown, title: await title() });
+  const names = ['Alex', 'Sample', 'Sam', 'Buyer', 'Gus', 'Green', 'Hal', 'Hughes', 'Eve', 'Evans'];
+  check('no customer name is in the title or the notification', !names.some((n) => shown.some((note) => note.body.includes(n))) && !(await title()).replace(OWN_TITLE, '').match(/[A-Z]/));
+  check('the list is scanned again on its own while the warning is on', await waitFor(t.page, () => window.REFRESHES >= 1, null, 6000));
+  await sleep(1200);
+  shown = await notes();
+  check('no lead is notified again, however many scans follow', shown.length === 3, shown);
+  check('a scan with the panel hidden opens no customer pop-up', await t.page.evaluate(() => Object.keys(window.OPENED).length === 0 && !document.querySelector('.customer-card[data-customer-name="hal hughes"]')), await t.page.evaluate(() => window.OPENED));
+
+  // Panel back: the next scan is the full one, pop-up and all.
+  await t.page.evaluate(() => window._toggleMinimizePanel());
+  check('with the panel showing the scan reads the new lead in', await waitFor(t.page, () => !!document.querySelector('.customer-card[data-customer-name="hal hughes"]') && !document.getElementById('_slaPageFlashOverlay'), null, 10000));
+
+  // Never while a customer pop-up is open.
+  await t.page.evaluate(() => { openModal(0); window.REFRESHES = 0; });
+  await sleep(3200);
+  check('no scan starts while a customer pop-up is open', (await t.page.evaluate(() => window.REFRESHES)) === 0);
+  await t.page.evaluate(() => document.querySelector('.modal .close').click());
+  check('and it carries on once the pop-up has closed', await waitFor(t.page, () => window.REFRESHES >= 1, null, 6000));
+  await idle(t.page);
+
+  await t.page.evaluate(() => { window.KEPT = LEADS.map((l) => l[8]); LEADS.forEach((l) => { l[8] = l[8] || 'Agent Alpha'; }); renderSla(); });
+  check('the title goes back to the page\'s own when none are left', await waitFor(t.page, (own) => document.title === own, OWN_TITLE, 4000), await title());
+  await t.page.evaluate(() => { LEADS.forEach((l, i) => { l[8] = window.KEPT[i]; }); renderSla(); });
+  check('and counts again when leads are unassigned', await waitFor(t.page, (own) => document.title === `(3 missed, 2 in 5 min, 1 in 15) ${own}`, OWN_TITLE, 4000), await title());
+  shown = await notes();
+  await t.page.evaluate(() => window._slaResetBookmarklet());
+  await sleep(600);
+  check('Clear & Stop restores the title and stops the scans', (await title()) === OWN_TITLE && await t.page.evaluate(() => !window._slaMissedWatchInterval), await title());
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.context.close();
+
+  // Permission refused: the title still works.
+  t = await open(fakeNotifications('denied'));
+  await openPanel(t.page);
+  await t.page.evaluate(() => { window._toggleMinimizePanel(); window._toggleMissedWarning(null); });
+  await waitFor(t.page, (own) => document.title !== own, OWN_TITLE, 3000);
+  await sleep(500);
+  check('with notifications refused the title still carries the counts', (await t.page.title()) === `(2 missed, 1 in 15) ${OWN_TITLE}` && await t.page.evaluate(() => window.ASKED === 1 && window.NOTES.length === 0), await t.page.title());
+  check('and the panel says it is the title only', /in the tab title only/.test(await toast(t.page)), await toast(t.page));
+  await t.page.evaluate(() => window._toggleMissedWarning(null));
+  check('turning it off restores the title', (await t.page.title()) === OWN_TITLE && await t.page.evaluate(() => !window._slaMissedWatchInterval && localStorage.getItem('_slaMissedWarning') === '0'));
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.context.close();
+}
+
+async function fairShare() {
+  console.log('\nTeam today: assigned by tier, done from the queues, sent back');
+  const nowIso = new Date().toISOString();
+  const entry = (agent, tier, over) => ({ time: nowIso, lead: 'Pat Example', agent, ...(tier ? { tier } : {}), ...over });
+  const log = [
+    ...[1, 1, 2, 2, 2, 3, 3, 3, 4].map((tier) => entry('Agent Alpha', tier)),
+    ...[1, 2, 2, 3, 3, 3, 4, 4].map((tier) => entry('Agent Bravo', tier)), entry('Agent Bravo'),
+    ...[2, 2, 3, 4, 4].map((tier) => entry('Agent Charlie', tier)),
+    // Not online and not in the queues: done falls back to the guess.
+    entry('Agent Delta', 2, { state: 'gone' }), entry('Agent Delta', 2),
+    // Past one shift: never counted.
+    entry('Agent Charlie', 1, { time: new Date(Date.now() - 13 * 3600000).toISOString() })
+  ];
+  const t = await open(() => { window.QUEUE_DONE = { 0: ['Pat Example | pat@example.com | 07700900021'], 1: ['Kim Example | kim@example.com | 07700900022', 'Lee Example | lee@example.com | 07700900023'] }; }, { _slaAssignmentLog: log, _slaAssignSettings: { agentsOpen: true } });
+  await openPanel(t.page);
+  const team = () => t.page.evaluate(() => Object.fromEntries(Array.from(document.querySelectorAll('#_slaTeamToday [data-agent]')).map((row) => [row.dataset.agent, Array.from(row.querySelectorAll('span')).slice(1).map((el) => el.textContent.trim()).join(' | ')])));
+  const fairLine = () => t.page.evaluate(() => { const el = document.getElementById('_slaFairLine'); return el.hidden ? '' : el.textContent; });
+  const list = await t.page.evaluate(() => ({ labels: Array.from(document.querySelectorAll('#assignAgentList label')).map((l) => l.textContent.replace(/\s+/g, ' ').trim()), extras: document.querySelectorAll('#assignAgentList .sla-share, #assignAgentList .sla-sharenote').length, team: !!document.getElementById('_slaTeamToday') }));
+  check('the agents list is name, status and count only', list.labels.join('|') === 'Agent Alpha1|Agent Bravo0|Agent Charlie0' && list.extras === 0 && !list.team, list);
+  await shot(t.page, 'agents-list-as-before.png');
+  await t.page.click('#_slaTodaySummary .sla-chip:has-text("Team")');
+  let s = await team();
+  check('Team on the Today row opens one row per agent: assigned by tier, done, sent back', s['Agent Alpha'] === '9 (2 / 3 / 3 / 1) | 1 | 0' && s['Agent Charlie'] === '5 (0 / 2 / 1 / 2) | 0 | 0', s);
+  check('a lead with no tier (Pending) counts in the total only', s['Agent Bravo'] === '9 (1 / 2 / 3 / 2) + 1 no tier | 2 | 0', s);
+  check('done is counted from the queue, and is "about" only where the queue shows no such agent', s['Agent Delta'] === '2 (0 / 2 / 0 / 0) | about 1 | 0', s);
+  check('the best guess label is there once, at the top', await t.page.evaluate(() => { const view = document.getElementById('_slaTeamToday'); const notes = view.querySelectorAll('.sla-small'); return notes.length === 1 && /best guess/.test(notes[0].textContent) && view.firstElementChild === notes[0] && !Array.from(view.querySelectorAll('[data-agent]')).some((row) => /guess/.test(row.textContent)); }));
+  check('no customer detail is kept for the done count', await t.page.evaluate(() => !/example\.com|07700|Example/.test(localStorage.getItem('_slaQueueDone'))), await t.page.evaluate(() => localStorage.getItem('_slaQueueDone')));
+  await shot(t.page, 'team-today.png');
+  check('the quiet line under Assign names who is behind', (await fairLine()) === 'Agent Charlie has 4 fewer than the others today.', await fairLine());
+  check('the line sits under the Assign button', await t.page.evaluate(() => document.getElementById('_slaFairLine').getBoundingClientRect().top >= document.getElementById('assignRunButton').getBoundingClientRect().bottom - 1));
+  await t.page.click('.assign-agent-checkbox[data-name="Agent Charlie"]');
+  check('it only compares the ticked agents', (await fairLine()) === '', await fairLine());
+  await t.page.click('.assign-agent-checkbox[data-name="Agent Charlie"]');
+
+  // The Missed tile assigns the two missed leads; the numbers follow.
+  await t.page.evaluate(() => window._quickAssignSlaTile(null, false, true));
+  await waitFor(t.page, () => /assigned/.test((document.getElementById('assignResultsSummary') || {}).textContent || ''));
+  await idle(t.page);
+  const logNow = await t.page.evaluate(() => JSON.parse(localStorage.getItem('_slaAssignmentLog')));
+  const added = logNow.slice(-2);
+  check('an assign run records each lead\'s tier, page and key', logNow.length === 27 && added.every((e) => e.tier === 2 && e.page === 'sla' && typeof e.key === 'string' && !e.state), added);
+  check('assigning itself is unchanged: the run went to ticked agents only', added.every((e) => /^Agent (Alpha|Bravo|Charlie)$/.test(e.agent)), added);
+  const before = await team();
+  check('Team today stays open across the redraw and counts the new leads', Object.values(before).map((text) => Number(text.split(' ')[0])).reduce((a, b) => a + b, 0) === 27, before);
+  check('reading the queue again does not count the same done rows twice', ['Agent Alpha', 'Agent Bravo', 'Agent Charlie'].map((name) => before[name].split(' | ')[1]).join() === '1,2,0', before);
+
+  // What became of them: one is unassigned again (as Clear Queue leaves it),
+  // the other leaves the list while still with its agent.
+  const who = Object.fromEntries(added.map((e) => [e.lead, e.agent]));
+  await t.page.evaluate(() => { LEADS[0][8] = null; LEADS.splice(6, 1); renderSla(); return window._refreshLeadsAndPanel(); });
+  await idle(t.page);
+  s = await team();
+  const states = (await t.page.evaluate(() => JSON.parse(localStorage.getItem('_slaAssignmentLog')))).slice(-2).map((e) => `${e.lead}:${e.state}`).sort().join();
+  check('the next scan sees one sent back and one gone from the list', states === 'Eve Evans:gone,Mr Alex Sample:back', states);
+  check('the agent whose lead was unassigned shows it as sent back', s[who['Mr Alex Sample']].split(' | ')[2] === '1' && s[who['Mr Alex Sample']].split(' | ')[0] === before[who['Mr Alex Sample']].split(' | ')[0], s);
+  check('where the queue is read, done stays the queue\'s count, not the guess', s[who['Eve Evans']].split(' | ')[1] === before[who['Eve Evans']].split(' | ')[1], s);
+  await t.page.click('#_slaTodaySummary .sla-chip:has-text("Team")');
+  check('the Team chip closes it again', await t.page.evaluate(() => !document.getElementById('_slaTeamToday')));
+  await t.page.click('#_slaMoreBtn');
+  await t.page.click('#_slaMoreMenu .sla-mi:has-text("Team today")');
+  check('Team today in More opens it', await t.page.evaluate(() => !!document.getElementById('_slaTeamToday') && document.getElementById('_slaMoreMenu').hidden));
+
+  await t.page.evaluate(() => window._slaResetBookmarklet());
+  const kept = await t.page.evaluate(() => JSON.parse(localStorage.getItem('_slaAssignmentLog')));
+  check('Clear & Stop keeps the counts, tiers and outcomes but no customer names or keys', kept.length === 27 && kept.every((e) => !('lead' in e) && !('key' in e) && e.agent) && kept.filter((e) => e.tier).length === 26 && kept.filter((e) => e.state).length === 3, kept.slice(-2));
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.context.close();
+}
+
+async function startMyDay() {
+  console.log('\nStart my day: opens Konnect Live, then scan, morning checks and Send on one strip');
+  const t = await open(() => { window.OPENS = 0; const openLive = window.open; window.open = (...args) => { window.OPENS++; return openLive(...args); }; });
+  await openPanel(t.page);
+  const strip = () => t.page.evaluate(() => { const el = document.getElementById('_slaDayStrip'); return !el || el.hidden ? '' : el.querySelector('span:not(.sla-dot)').textContent.trim(); });
+  const stripButton = () => t.page.evaluate(() => { const b = document.querySelector('#_slaDayStrip button'); return b ? (b.textContent.trim() || b.getAttribute('aria-label')) : ''; });
+  // The button is at the top of Checks.
+  const openChecks = async () => { for (let i = 0; i < 2 && !(await t.page.$('#_slaStartDayBtn')); i++) { await t.page.evaluate(() => window._toggleMorningChecks()); await sleep(300); } };
+  const pressStart = async () => { await openChecks(); await t.page.click('#_slaStartDayBtn'); };
+  const batches = () => t.page.evaluate(() => Array.from(new Map(window.toLive.filter((m) => m.type === 'workTools:batch').map((m) => [m.id, m])).values()));
+  const ready = (state) => t.page.evaluate((s) => window.fromLive({ type: 'workTools:ready', url: 'https://carbot.ai/konnectlive/(v1.2.200)/home.html', state: s, batchId: null, done: 0, total: 0 }), state || 'idle');
+  const finishBatch = () => t.page.evaluate(() => { const last = window.toLive.filter((m) => m.type === 'workTools:batch').pop(); window.fromLive({ type: 'workTools:received', id: last.id, rows: 1 }); window.fromLive({ type: 'workTools:ended', id: last.id, reason: 'done' }); });
+  const finishChecks = () => t.page.evaluate(() => window.FINISH_CHECKS());
+  const waitStrip = (pattern) => waitFor(t.page, (source) => new RegExp(source).test((document.getElementById('_slaDayStrip') || {}).textContent || ''), pattern, 8000);
+  // The checks themselves are stood in for: they need Konnect pages the
+  // stand-in does not have. The run calls the same function the button does.
+  await t.page.evaluate(() => { window.CHECKS = []; window._runAllMorningChecks = () => new Promise((resolve) => { window.CHECKS.push(document.getElementById('_slaDayStrip').textContent.trim().replace(/\s+/g, ' ')); window.FINISH_CHECKS = resolve; }); });
+
+  check('no strip until it is asked for', (await strip()) === '');
+  await t.page.click('.sla-hd .sla-hbtn:has-text("Checks")');
+  const checksView = await t.page.evaluate(() => { const body = document.querySelector('#_slaPanelBox .panelContent'); const buttons = Array.from(body.querySelectorAll('button')).filter((b) => !b.closest('#_slaTodaySummary')).map((b) => b.textContent.trim()); return { buttons, first: buttons[0], more: Array.from(document.querySelectorAll('#_slaMoreMenu .sla-mi')).some((el) => /Start my day/.test(el.textContent)) }; });
+  check('Start my day is the first button in Checks, with Run all checks kept, and is not in More', checksView.first === 'Start my day' && checksView.buttons.includes('Run all checks') && !checksView.more, checksView);
+  await shot(t.page, 'start-my-day-in-checks.png');
+
+  // Not linked: the click opens Konnect Live and the run goes ahead.
+  await pressStart();
+  check('not linked: the click opens the Konnect Live tab and starts the scan', (await strip()) === 'Start my day: 1 of 3, scan' && (await stripButton()) === 'Cancel' && (await t.page.evaluate(() => window.OPENS)) === 1 && await t.page.evaluate(() => { const b = document.getElementById('_slaStartDayBtn'); return !b || (b.disabled && b.textContent.trim() === 'Running…'); }), await strip());
+  await shot(t.page, 'start-my-day-strip-step-1.png');
+  check('step 2 is the morning checks, started once the scan is done', await waitFor(t.page, () => window.CHECKS.length === 1 && !document.getElementById('_slaPageFlashOverlay'), null, 15000) && (await strip()) === 'Start my day: 2 of 3, morning checks', await strip());
+  await shot(t.page, 'start-my-day-strip-step-2.png');
+  check('nothing is sent while the checks run', (await batches()).length === 0);
+  await finishChecks();
+  await waitStrip('waiting to send');
+  check('the Lead Checker has not answered: the leads wait and the strip says to click Work Tools', (await strip()) === 'Start my day: scan and checks done. Click Work Tools on the Konnect Live tab: the leads are waiting to send.' && (await batches()).length === 0 && await t.page.evaluate(() => window.__workToolsLiveLink.queue.length === 1), await strip());
+  await shot(t.page, 'start-my-day-waiting-for-work-tools.png');
+  await ready();
+  check('once Work Tools is clicked there the waiting leads go, with no second tab', await waitFor(t.page, () => window.toLive.filter((m) => m.type === 'workTools:batch').length >= 1, null, 5000) && (await batches())[0].kind === 'leads' && (await t.page.evaluate(() => window.OPENS)) === 1);
+  await finishBatch();
+  await t.page.click('#_slaDayStrip button');
+  check('the strip can be closed', (await strip()) === '');
+
+  // Linked and idle: straight through.
+  await pressStart();
+  await waitFor(t.page, () => window.CHECKS.length === 2, null, 15000);
+  await finishChecks();
+  await waitStrip('done');
+  let sent = await batches();
+  const sentRows = sent.length === 2 ? sent[1].tsv.split('\n').length - 1 : 0;
+  check('linked: step 3 sends the current leads to the Lead Checker, once', sent.length === 2 && sent[1].kind === 'leads' && sentRows > 0 && (await strip()) === `Start my day: done. ${sentRows} lead${sentRows === 1 ? '' : 's'} sent to the Lead Checker.`, { strip: await strip(), sent: sent.length, sentRows });
+  check('it sends what the Send button would', await t.page.evaluate((rows) => document.getElementById('_slaSendLabel').textContent === `Send ${rows} lead${rows === 1 ? '' : 's'}`, sentRows), await t.page.evaluate(() => document.getElementById('_slaSendLabel').textContent));
+  check('only the one Konnect Live tab was ever opened', (await t.page.evaluate(() => window.OPENS)) === 1);
+  await shot(t.page, 'start-my-day-strip-done.png');
+  await finishBatch();
+
+  // Logged out: waits for the login, then sends.
+  await ready('loggedOut');
+  await pressStart();
+  await waitFor(t.page, () => window.CHECKS.length === 3, null, 15000);
+  await finishChecks();
+  await waitStrip('logging back in');
+  check('logged out: the strip says Konnect Live is logging back in, and nothing goes yet', (await strip()) === 'Start my day: 3 of 3, Konnect Live is logging back in' && (await batches()).length === 2, await strip());
+  await ready();
+  await waitStrip('done');
+  check('once it is back in the leads are sent', (await batches()).length === 3 && /sent to the Lead Checker\.$/.test(await strip()) && (await t.page.evaluate(() => window.OPENS)) === 1, await strip());
+  await finishBatch();
+
+  // Still logged out after the wait: the leads are left waiting.
+  await ready('loggedOut');
+  await t.page.evaluate(() => { window.__slaDayTiming = { loginWaitMs: 700 }; });
+  await pressStart();
+  await waitFor(t.page, () => window.CHECKS.length === 4, null, 15000);
+  await finishChecks();
+  await waitStrip('still logged out');
+  check('still logged out after the wait: the leads wait and the strip says to press Login', (await strip()) === 'Start my day: scan and checks done. Konnect Live is still logged out. Press Login on the Konnect Live tab: the leads are waiting to send.' && (await batches()).length === 3 && await t.page.evaluate(() => window.__workToolsLiveLink.queue.length === 1), await strip());
+  await ready();
+  await waitFor(t.page, () => new Set(window.toLive.filter((m) => m.type === 'workTools:batch').map((m) => m.id)).size === 4, null, 5000);
+  await finishBatch();
+
+  // The Checks view is often left on another Konnect page: the scan goes to the SLA page itself.
+  await openChecks();
+  await t.page.evaluate(() => { location.hash = '#/other'; });
+  await sleep(500);
+  await t.page.click('#_slaStartDayBtn');
+  check('started from another Konnect page, it opens the SLA page for the scan', await waitFor(t.page, () => window.CHECKS.length === 5, null, 20000) && await t.page.evaluate(() => !!document.querySelector('table') && document.querySelectorAll('.customer-card').length > 0));
+  await t.page.click('#_slaDayStrip button:has-text("Cancel")');
+  check('Cancel says it stops after the step in hand', (await strip()) === 'Start my day: stopping once the morning checks step finishes' && (await stripButton()) === '', await strip());
+  await finishChecks();
+  await waitStrip('cancelled');
+  check('a cancelled run sends nothing', (await strip()) === 'Start my day cancelled after step 2 of 3. Nothing was sent.' && (await batches()).length === 4 && (await t.page.evaluate(() => window.OPENS)) === 1, await strip());
+
+  // Busy: refuses rather than running over a scan.
+  await idle(t.page);
+  await t.page.evaluate(() => { window._refreshLeadsAndPanel(); return window._startMyDay(); });
+  check('while a scan is running it says not yet', /^Start my day stopped\. Not yet: the leads are being refreshed\./.test(await strip()) && (await t.page.evaluate(() => window.CHECKS.length)) === 5, await strip());
+  await idle(t.page);
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.context.close();
+}
+
+async function rescue() {
+  console.log('\nRescue: clear the queue, scan, assign the leads about to go missed to free agents');
+  // Alpha is Available, Bravo on Live Chat, Charlie in wrap up. One urgent lead is already in a queue.
+  let t = await open(() => {
+    AGENTS[0].CurrentStatusName = 'Available'; AGENTS[2].CurrentStatusName = 'Wrap Up';
+    LEADS[3][6] = at(6); renderSla();
+    window.ORDER = []; const assign = window.assign; window.assign = (i, name) => { window.ORDER.push(LEADS[i][0]); assign(i, name); };
+    window.RESCUE_LINES = []; setInterval(() => { const text = (document.getElementById('_slaRescueLine') || {}).textContent || ''; if (text && window.RESCUE_LINES[window.RESCUE_LINES.length - 1] !== text) window.RESCUE_LINES.push(text); }, 20);
+  });
+  await openPanel(t.page);
+  const bar = () => t.page.evaluate(() => { const b = document.getElementById('_slaRescueBtn'); const el = document.getElementById('_slaRescueBar'); return { shown: !!el && !el.hidden, button: b ? b.textContent.trim() : '', tip: b ? b.title : '', line: (document.getElementById('_slaRescueLine') || {}).textContent || '' }; });
+  let b = await bar();
+  check('Rescue shows in the Assign card with how many are missed or due within 15 minutes, queued or not', b.button === 'Rescue 4' && await t.page.evaluate(() => !!document.querySelector('#assignSectionContainer #_slaRescueBtn')), b);
+  check('its tooltip says exactly what it does', /clears the whole queue/.test(b.tip) && /no undo/.test(b.tip) && /most urgent first/.test(b.tip) && /Available or in wrap up/.test(b.tip) && /No prompt/.test(b.tip), b.tip);
+  await shot(t.page, 'rescue-button.png');
+  await t.page.evaluate(() => { window._rescueLeads(); window._rescueLeads(); });
+  check('it ends with a notice of what it did', await waitFor(t.page, () => /^Cleared the queue\./.test((document.getElementById('_slaRescueLine') || {}).textContent || '') && !document.getElementById('_slaPageFlashOverlay'), null, 40000) && (await bar()).line === 'Cleared the queue. 4 leads assigned to 2 agents, most urgent first. 1 agent skipped: Live Chat.', (await bar()).line);
+  await idle(t.page);
+  const ran = await t.page.evaluate(() => ({ cleared: window.CLEARED, order: window.ORDER, leads: Object.fromEntries(LEADS.map((l) => [l[0], l[8]])), lines: window.RESCUE_LINES, toast: (document.getElementById('_slaLinkToast') || {}).textContent || '' }));
+  check('pressed twice, it clears the queue once and asks nothing', ran.cleared === 1 && t.dialogs.length === 0, { cleared: ran.cleared, dialogs: t.dialogs });
+  check('the urgent leads go most urgent first', ran.order.join() === 'Eve Evans,Mr Alex Sample,Miss Fay Fields,Mrs Sam Buyer', ran.order);
+  check('only to the agents who are Available or in wrap up', ran.order.every((name) => /^Agent (Alpha|Charlie)$/.test(ran.leads[name])) && new Set(ran.order.map((name) => ran.leads[name])).size === 2, ran.leads);
+  check('every other lead is left unassigned', ['Jo Example', 'Dr Gus Green', 'Dan Davis'].every((name) => ran.leads[name] === null), ran.leads);
+  check('a progress line shows each step', ['Rescue: 1 of 3, clearing the queue', 'Rescue: 2 of 3, scanning the leads again', 'Rescue: 3 of 3, assigning 4 leads'].every((line) => ran.lines.includes(line)), ran.lines);
+  await shot(t.page, 'rescue-notice.png');
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.context.close();
+
+  // Nobody free: the queue is left alone.
+  t = await open(() => { LEADS[3][6] = at(6); renderSla(); });
+  await openPanel(t.page);
+  await t.page.click('#_slaRescueBtn');
+  await sleep(500);
+  b = await bar();
+  check('with no ticked agent free it does nothing, and does not clear the queue', b.line === 'Rescue did nothing: no ticked agent is Available or in wrap up. The queue was not cleared.' && await t.page.evaluate(() => !window.CLEARED && LEADS[3][8] === 'Agent Alpha'), b);
+  await t.page.evaluate(() => { LEADS.forEach((l) => { l[6] = at(120); l[7] = 'Pending'; }); renderSla(); return window._refreshLeadsAndPanel(); });
+  await idle(t.page);
+  check('with nothing missed or due within 15 minutes there is no Rescue button', !(await bar()).shown && !(await bar()).button, await bar());
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.context.close();
+}
+
 const started = Date.now();
 try {
+  await missedWarning();
+  await fairShare();
+  await startMyDay();
+  await rescue();
   await layoutAndMenus();
   await openOnLiveAndLayout();
   await popUps();

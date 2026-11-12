@@ -96,7 +96,7 @@ function sharedContractChecks() {
       grab(sla, /const NATIONAL_RESULTS_KEY = ('[^']*')/, 'NATIONAL_RESULTS_KEY (SLA Manager)'),
       [grab(reset, /const NATIONAL_RESULTS_KEY = ('[^']*')/, 'NATIONAL_RESULTS_KEY (Lead Re setup)')]],
     ...[['LIVE_REQUEST_KEY', 'LIVE_REQUEST_KEY'], ['LIVE_STATUS_KEY', 'LIVE_STATUS_KEY'], ['LIVE_LINK_KEY', 'LIVE_LINK_KEY'],
-      ['DESK_RESULTS_KEY', 'DESK_RESULTS_KEY'], ['DESK_DECISIONS_KEY', 'DESK_DECISIONS_KEY'], ['EMAIL_ONLY_ASSIGNED_KEY', 'EMAIL_ONLY_ASSIGNED_KEY']].map(([inSla, inReset]) => [
+      ['DESK_RESULTS_KEY', 'DESK_RESULTS_KEY'], ['DESK_DECISIONS_KEY', 'DESK_DECISIONS_KEY'], ['EMAIL_ONLY_ASSIGNED_KEY', 'EMAIL_ONLY_ASSIGNED_KEY'], ['SEND_THROUGH_KEY', 'SEND_THROUGH_KEY']].map(([inSla, inReset]) => [
       `Storage shared by SLA Manager and Lead Re setup (${inSla})`,
       grab(sla, new RegExp(`const ${inSla} = ('[^']*')`), `${inSla} (SLA Manager)`),
       [grab(reset, new RegExp(`const ${inReset} = ('[^']*')`), `${inReset} (Lead Re setup)`)]]),

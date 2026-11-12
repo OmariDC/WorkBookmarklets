@@ -49,9 +49,9 @@ return;
 if (Date.now() - (window.__workToolsLoadingAt || 0) < 15000) return;
 window.__workToolsLoadingAt = Date.now();
 try {
-// The Booking Builder in Konnect Notes is still being tested, so only this
-// bookmark switches it on; the Konnect Tools bookmark leaves it off.
-if (tools.some((t) => t.file === 'Konnect-Notes.js')) window.KonnectNotesBooking = true;
+// The booking system in Konnect Notes is for the owner only for now, so only
+// this bookmark switches it on; the Konnect Tools bookmark gives call notes only.
+if (tools.some((t) => t.file === 'Konnect-Notes.js')) window.KonnectNotesOwner = true;
 for (const tool of tools) {
 try {
 if (tool.loaded && tool.loaded()) {
