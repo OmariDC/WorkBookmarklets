@@ -973,7 +973,8 @@ if (button && normalise(button.textContent) === normalise(STATUS_WHILE_RESETTING
 const item = byText(document, '[ng-click^="setMakeBusy"]', /^shift start$/i)[0];
 if (!item) throw new NeedsYou('Could not find the Shift Start status. Set your status to Shift Start yourself.');
 item.click();
-const ok = await pollUntil(() => !button || normalise(button.textContent) === normalise(STATUS_WHILE_RESETTING), 5000);
+// The button is drawn again when the status changes, so it is looked up afresh.
+const ok = await pollUntil(() => !button || normalise(currentStatus()) === normalise(STATUS_WHILE_RESETTING), 5000);
 if (!ok) throw new NeedsYou('Your status did not change to Shift Start. Set it yourself.');
 return 'Status set to Shift Start';
 }
@@ -1578,9 +1579,18 @@ if (!already && onCallPage()) throw new NeedsYou('A call is open. Finish or park
 const status = await ensureShiftStart();
 if (/^Status set/.test(status)) addLog(status);
 if (!already) {
-const nav = byText(document, '[ng-click]', /^parked( calls)?$/i).find(isVisible);
+// Changing status redraws the idle screen, which undoes a move made too
+// soon after it.
+if (/^Status set/.test(status)) await sleep(700);
+// The page's own button is pressed: Konnect sends an address typed for it
+// straight back to the idle screen. Its label carries a count.
+const parkedNav = () => byClick(document, 'navToParkedCustomers')
+|| byText(document, '[ng-click]', /^parked( (calls|customers))?( \d+)?$/i).find(isVisible);
+const nav = parkedNav();
 if (nav) nav.click(); else location.hash = '#!/search/parked';
-if (!await waitFor(onParkedPage, 15000)) throw new NeedsYou('Parked Calls did not open. Open it yourself.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
+// One more press if the first was swallowed by the redraw.
+if (!await waitFor(onParkedPage, 5000)) { const again = parkedNav(); if (again) again.click(); }
+if (!await waitFor(onParkedPage, 12000)) throw new NeedsYou('Parked Calls did not open. Open it yourself.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
 }
 await settledParkedRows();
 return already ? 'On Parked Calls' : 'Opened Parked Calls';

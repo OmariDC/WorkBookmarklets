@@ -27,7 +27,7 @@
 <div id="top">
  <button class="btn dropdown-toggle" data-toggle="dropdown" id="statusBtn">Shift Start</button>
  <ul class="dropdown-menu"><li><a ng-click="setMakeBusy(mbc.Id)">Available</a></li><li><a ng-click="setMakeBusy(mbc.Id)">Shift Start</a></li><li><a ng-click="setMakeBusy(mbc.Id)">Toilet Break</a></li></ul>
- <a ng-click="goTo('parked')" id="navParked">Parked Calls</a>
+ <button ng-click="navToParkedCalls()" id="navParkedCalls">Parked Calls 3</button> <button ng-click="navToParkedCustomers()" id="navParked">Parked Customers 1</button>
 </div>
 <div id="idle">
  <button ng-click="navToManualOutbound()" id="newOut">New Manual Outbound Call</button>

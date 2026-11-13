@@ -8514,27 +8514,23 @@ const parts = [missedCount ? `${missedCount} missed` : '', soonCount ? `${soonCo
 return parts.length ? `(${parts.join(', ')}) ` : '';
 }
 
-// Pure. One sentence for the leads newly due within 15 minutes or missed in
-// this scan, and one for those newly within 5.
-function missedNotificationText(dueCount, missedCount, waitingCount, split = '') {
+// Pure. A notification read at a glance: the title is what just changed,
+// the first line of the body is what to do, the second is the whole picture.
+// fresh: { soon, due, missed } newly in each band. totals: every urgent
+// lead by band. waiting: urgent leads nobody holds. pending: how many of
+// the new ones are Pending leads. null when there is nothing new.
+function warningNotification(fresh, totals, waiting, pending = 0) {
 const leads = (n) => `${n} lead${n === 1 ? '' : 's'}`;
 const parts = [];
-if (dueCount) parts.push(`${leads(dueCount)} due within ${MISSED_WARNING_MINUTES} minutes`);
-if (missedCount) parts.push(parts.length ? `${missedCount} missed` : `${leads(missedCount)} missed`);
-return parts.length ? `${parts.join(', ')}${split}.${waitingText(waitingCount)}` : '';
-}
-// Pure. " (1 SLA, 1 Pending)": which list the leads in a notification are
-// from. Nothing when they are all SLA leads.
-function listSplitText(slaCount, pendingCount) {
-if (!pendingCount) return '';
-return ` (${[slaCount ? `${slaCount} SLA` : '', `${pendingCount} Pending`].filter(Boolean).join(', ')})`;
-}
-// Pure. How many of all the urgent leads nobody holds yet.
-function waitingText(waitingCount) {
-return waitingCount ? ` Urgent and not assigned: ${waitingCount}.` : ' All the urgent leads are with agents.';
-}
-function urgentNotificationText(soonCount, waitingCount, split = '') {
-return soonCount ? `${soonCount} lead${soonCount === 1 ? '' : 's'} due within ${MISSED_URGENT_MINUTES} minutes${split}.${waitingText(waitingCount)}` : '';
+if (fresh.missed) parts.push(`${leads(fresh.missed)} MISSED`);
+if (fresh.soon) parts.push(`${parts.length ? fresh.soon : leads(fresh.soon)} due in ${MISSED_URGENT_MINUTES} min`);
+if (fresh.due) parts.push(`${parts.length ? fresh.due : leads(fresh.due)} due in ${MISSED_WARNING_MINUTES} min`);
+if (!parts.length) return null;
+const newCount = (fresh.missed || 0) + (fresh.soon || 0) + (fresh.due || 0);
+const fromPending = pending ? (pending === newCount ? ' (Pending)' : ` (${pending} Pending)`) : '';
+const action = waiting ? `Assign now: ${waiting} not with an agent.` : 'All with agents. Nothing to assign.';
+const picture = [totals.missed ? `${totals.missed} missed` : '', totals.soon ? `${totals.soon} in ${MISSED_URGENT_MINUTES} min` : '', totals.due ? `${totals.due} in ${MISSED_WARNING_MINUTES} min` : ''].filter(Boolean).join(' · ');
+return { title: `${parts.join(', ')}${fromPending}`, body: `${action}\nNow: ${picture}` };
 }
 
 // Pure. Which leads have not been warned about yet, and the record once
@@ -8567,10 +8563,10 @@ return document.hidden || !document.hasFocus() || !panelElement || localStorage.
 }
 
 // The two levels have their own tag, so one does not replace the other.
-function showMissedNotification(text, tag) {
+function showMissedNotification(message, tag) {
 try {
-if (!text || typeof Notification === 'undefined' || Notification.permission !== 'granted') return false;
-const notification = new Notification('SLA Manager', { body: text, tag, renotify: true });
+if (!message || typeof Notification === 'undefined' || Notification.permission !== 'granted') return false;
+const notification = new Notification(message.title, { body: message.body, tag, renotify: true });
 notification.onclick = () => { window.focus(); notification.close(); };
 return true;
 } catch (error) {
@@ -8660,14 +8656,12 @@ missedWarned.missed = fresh.missed;
 updateWatchReadLine();
 // With the panel in view the tiles already say it.
 if (!isPanelOutOfView()) return;
-const waiting = new Set(keys.waiting);
 const listOf = new Map(leads.map((l) => [l.key, l.list]));
-const split = (newKeys) => {
-const pendingCount = newKeys.filter((k) => listOf.get(k) === PAGE_PENDING).length;
-return listSplitText(newKeys.length - pendingCount, pendingCount);
-};
-showMissedNotification(urgentNotificationText(fresh.newSoon, waiting.size, split(fresh.newKeys.soon)), 'sla-manager-due-5');
-showMissedNotification(missedNotificationText(fresh.newDue, fresh.newMissed, waiting.size, split([...fresh.newKeys.due, ...fresh.newKeys.missed])), 'sla-manager-due-15');
+const pendingIn = (newKeys) => newKeys.filter((k) => listOf.get(k) === PAGE_PENDING).length;
+const totals = { missed: keys.missed.length, soon: keys.soon.length, due: keys.due.length };
+// The 5 minute warning keeps its own slot, so a 15 minute one never replaces it.
+showMissedNotification(warningNotification({ soon: fresh.newSoon }, totals, keys.waiting.length, pendingIn(fresh.newKeys.soon)), 'sla-manager-due-5');
+showMissedNotification(warningNotification({ due: fresh.newDue, missed: fresh.newMissed }, totals, keys.waiting.length, pendingIn([...fresh.newKeys.due, ...fresh.newKeys.missed])), 'sla-manager-due-15');
 }
 
 // Not while anything else is scanning, assigning, checking or sending, a
@@ -8950,9 +8944,6 @@ const bothKeys = missedWarningKeys(both, now);
 check('and the counts are over both lists, an overdue Pending lead left out', [bothKeys.missed.length, bothKeys.soon.length, bothKeys.due.length], [0, 2, 0]);
 check('a lead still to do between done leads is stuck', [stuckQueueRows([true, false, true, true]), stuckQueueRows([false, false, true, true]), stuckQueueRows([true, true, false]), stuckQueueRows([false, true, false, false, true, false])], [[2], [], [], [3, 4]]);
 check('the stuck notice names the agent and the row', [stuckQueueText([{ agentName: 'Agent Alpha', stuckRows: [2] }, { agentName: 'Agent Bravo', stuckRows: [] }]), stuckQueueText([])], ['Agent Alpha has 1 lead stuck in the queue (row 2). It has not presented, so ask them to open it.', '']);
-check('which list a notification is from', [listSplitText(2, 0), listSplitText(1, 1), listSplitText(0, 2)], ['', ' (1 SLA, 1 Pending)', ' (2 Pending)']);
-check('the 5 minute notification across both lists', urgentNotificationText(2, 1, listSplitText(1, 1)), '2 leads due within 5 minutes (1 SLA, 1 Pending). Urgent and not assigned: 1.');
-check('the 15 minute notification across both lists', missedNotificationText(1, 1, 2, listSplitText(0, 2)), '1 lead due within 15 minutes, 1 missed (2 Pending). Urgent and not assigned: 2.');
 const readAt = new Date(2026, 10, 13, 12, 14).getTime();
 check('when each list was read', [watchReadText({ sla: { at: readAt }, pending: { at: readAt + 60000 } }, readAt + 120000), watchReadText({ sla: { at: readAt }, pending: null }, readAt + 9 * 60000), watchReadText({ sla: null, pending: { at: readAt } }, readAt + 125 * 60000)], ['SLA 12:14, Pending 12:15', 'SLA 12:14 (9 min old), Pending not read yet', 'SLA not read yet, Pending 12:14 (2 h old)']);
 const leads = [
@@ -8961,10 +8952,12 @@ lead('f', 3, { assigned: true }), lead('g', -30, { status: 'Missed', assigned: t
 ];
 const keys = missedWarningKeys(leads, now);
 check('missed is marked Missed or past its time; then within 5 minutes; then within 15; assigned leads count too, and waiting lists the ones nobody holds', keys, { missed: ['a', 'b', 'g'], soon: ['c', 'f'], due: ['d', 'i'], waiting: ['a', 'b', 'c', 'd', 'i'] });
+check('a notification leads with what changed, then what to do, then the whole picture', warningNotification({ soon: 2 }, { missed: 1, soon: 2, due: 3 }, 1), { title: '2 leads due in 5 min', body: 'Assign now: 1 not with an agent.\nNow: 1 missed · 2 in 5 min · 3 in 15 min' });
+check('missed comes first and shouts', warningNotification({ due: 3, missed: 1 }, { missed: 1, soon: 0, due: 3 }, 0).title + ' | ' + warningNotification({ due: 3, missed: 1 }, { missed: 1, soon: 0, due: 3 }, 0).body, '1 lead MISSED, 3 due in 15 min | All with agents. Nothing to assign.\nNow: 1 missed · 3 in 15 min');
+check('Pending leads are named in the title', [warningNotification({ due: 2 }, { missed: 0, soon: 0, due: 2 }, 2, 2).title, warningNotification({ due: 2 }, { missed: 0, soon: 0, due: 2 }, 2, 1).title], ['2 leads due in 15 min (Pending)', '2 leads due in 15 min (1 Pending)']);
+check('nothing new, no notification', warningNotification({ soon: 0 }, { missed: 2, soon: 0, due: 0 }, 2), null);
 check('the title prefix', [[1, 2, 3], [2, 0, 0], [0, 1, 0], [0, 0, 1], [2, 0, 3], [0, 0, 0]].map(([m, s, d]) => missedTitlePrefix(m, s, d)), ['(1 missed, 2 in 5 min, 3 in 15) ', '(2 missed) ', '(1 in 5 min) ', '(1 in 15) ', '(2 missed, 3 in 15) ', '']);
 check('the prefix is found again whatever the counts', ['(1 missed, 2 in 5 min, 3 in 15) Konnect', '(1 in 15) Konnect', '(12 missed) Konnect', '(4 in 5 min, 1 in 15) Konnect', '(beta) Konnect'].map((t) => t.replace(MISSED_TITLE_PATTERN, '')), ['Konnect', 'Konnect', 'Konnect', 'Konnect', '(beta) Konnect']);
-check('the 15 minute notification', [[3, 1, 2], [1, 0, 0], [0, 2, 2], [0, 0, 0]].map(([d, m, w]) => missedNotificationText(d, m, w)), ['3 leads due within 15 minutes, 1 missed. Urgent and not assigned: 2.', '1 lead due within 15 minutes. All the urgent leads are with agents.', '2 leads missed. Urgent and not assigned: 2.', '']);
-check('the 5 minute notification', [[2, 1], [1, 0], [0, 0]].map(([n, w]) => urgentNotificationText(n, w)), ['2 leads due within 5 minutes. Urgent and not assigned: 1.', '1 lead due within 5 minutes. All the urgent leads are with agents.', '']);
 const first = newMissedWarnings(keys, { due: {}, soon: {}, missed: {} });
 check('every lead is new the first time', [first.newDue, first.newSoon, first.newMissed], [2, 2, 3]);
 const again = newMissedWarnings(keys, first);
