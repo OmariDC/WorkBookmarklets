@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.17.0'
+    version: '1.17.1'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -1767,7 +1767,7 @@
 
   function leadPanel(pane, headingText) {
     if (!pane) return null;
-    const heading = Array.from(pane.querySelectorAll('.sales-lead-accordion-heading, .panel-heading'))
+    const heading = Array.from((pane.querySelector('a.accordion-toggle') ? pane : document).querySelectorAll('.sales-lead-accordion-heading, .panel-heading'))
       .find((node) => normaliseText(node.textContent).toLowerCase() === headingText);
     return heading?.closest('.panel') || null;
   }
@@ -2317,7 +2317,8 @@
     const vehicle = input.vehicles[0] || {};
     return {
       dealer: leadDealer() || (draft.fromInbound ? inbound.dealer : ''),
-      name: findTopName(),
+      // The page's Name row is not always found; the lead holds the name too.
+      name: findTopName() || normaliseText((leadScopeActivity(state.target) || {}).SalesLead?.CustomerName || ''),
       year: date.error ? '' : date.year,
       month: date.error ? '' : date.month,
       day: date.error ? '' : date.day,
@@ -2575,6 +2576,9 @@
     const column = headers.indexOf(plan.time);
     if (column < 0) return { error: `there is no ${plan.time} column in the diary` };
     const rows = Array.from(table.querySelectorAll('tbody tr')).filter(isVisible);
+    // A greyed "very soon" box can still be booked, so it is used when no
+    // one has a clear box at that time. Past and blocked boxes never are.
+    for (const refuse of [/past|soon|blocked/i, /past|blocked/i])
     for (const row of rows) {
       const cells = Array.from(row.children);
       const slots = cells.filter((cell) => cell.matches('td[ng-click^="SelectTimeSlot"]'));
@@ -2584,7 +2588,7 @@
       // what is actually shown counts.
       const text = normaliseText(cell.innerText);
       const titles = [cell, ...Array.from(cell.querySelectorAll('[title]')).filter(isVisible)].map((node) => node.getAttribute('title') || '').join(' ');
-      if (text || /past|soon|blocked/i.test(titles)) continue;
+      if (text || refuse.test(titles)) continue;
       // The name cell also lists the person's brand letters on a second line.
       const nameText = cells[0] && cells[0] !== cell ? String(cells[0].innerText || '').split('\n')[0] : '';
       return { cell, person: normaliseText(nameText).replace(/(\s+[A-Z],)+\s*[A-Z]$/, '').replace(/\s+[A-Z](,\s*[A-Z])+$/, '') };
@@ -2659,6 +2663,12 @@
     }
     const pane = callNotesBox()?.closest('.tab-pane') || document.querySelector('.tab-pane.active') || document;
     const path = ['Customer Hub Team', 'Appointment', plan.type];
+    // The Outcomes section may be folded shut, which hides the lists.
+    const outcomeLists = () => Array.from(pane.querySelectorAll('select[ng-model^="theActivity.SelectedOutcomeLevel"]')).filter(isVisible);
+    if (!outcomeLists().length) {
+      const heading = Array.from((pane.querySelector('a.accordion-toggle') ? pane : document).querySelectorAll('a.accordion-toggle, a[ng-click="toggleOpen()"]')).find((a) => isVisible(a) && /^outcomes$/i.test(normaliseText(a.textContent)));
+      if (heading) { heading.click(); await waitFor(() => outcomeLists().length > 0 || null, 3000); }
+    }
     for (let level = 0; level < path.length; level += 1) {
       const wanted = path[level];
       const select = await waitFor(() => {
