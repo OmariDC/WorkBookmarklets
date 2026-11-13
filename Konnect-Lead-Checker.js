@@ -2534,6 +2534,9 @@ const NATIONAL_ADMIN_OUTCOMES = /test lead|duplicate record|invalid contact deta
 const NATIONAL_HANDOVER_OUTCOMES = /sent direct to enquiry max|sent to dealer|closed - other activity/i;
 const NATIONAL_DEAD_END_OUTCOMES = /email only|in market|not interested|just browsing|face to face|test drive|phone call|appointment|wont commit|won't commit|no answer|catch all|defer to site|video|sent direct to enquiry max|sent to dealer|closed - other activity|in progress with dealer|hub reservation|no appointment|no opportunity/i;
 
+const NATIONAL_BOOKED_OUTCOMES = /face to face|test drive|phone call|appointment/i;
+const NATIONAL_FULL_RUN_ATTEMPTS = 4;
+
 function isNationalDealer(name) {
 return /national/i.test(String(name || ''));
 }
@@ -2609,10 +2612,12 @@ return String(name || '').replace(/^\s*(mr|mrs|miss|ms|mx|dr)\b\.?\s+/i, '').rep
 // carrying one of the batch regs go first.
 function nationalCandidateIds(rows, expectedName, regs) {
 const withLinks = rows.filter((r) => r.link && r.customerId);
-const name = normalizeCustomerName(expectedName);
-const exact = withLinks.filter((r) => name && normalizeCustomerName(r.customerName) === name);
+// Letters only: "O'Brien", "O Brien" and "OBrien" are one name.
+const key = (value) => normalizeCustomerName(value).replace(/[^a-z]/g, '');
+const name = key(expectedName);
+const exact = withLinks.filter((r) => name && key(r.customerName) === name);
 const loose = withLinks.filter((r) => {
-const candidate = normalizeCustomerName(r.customerName);
+const candidate = key(r.customerName);
 return candidate && name && (candidate.includes(name) || name.includes(candidate));
 });
 const pool = exact.length > 0 ? exact : (loose.length > 0 ? loose : withLinks);
@@ -2723,14 +2728,28 @@ if (state.state === 'FAILED') return null;
 return best.id;
 }
 
+// Pure. Konnect's name search loses names with an apostrophe, so those are
+// also tried with a space in its place and as the part before it.
+function nameSearchVariants(name) {
+const clean = stripNameTitle(name);
+const variants = [clean];
+if (/['\u2019\u2018`]/.test(clean)) {
+variants.push(clean.replace(/['\u2019\u2018`]/g, ' ').replace(/\s+/g, ' ').trim());
+variants.push(clean.split(/['\u2019\u2018`]/)[0].trim());
+}
+return variants.filter((v, i) => v.length >= 3 && variants.indexOf(v) === i);
+}
+
 async function searchAndOpenNationalCustomer(group, session) {
 const sample = group.rows[0];
 // Konnect's name search does not match names with a title in front.
 let search = { status: 'SEARCH_NO_RESULTS' };
-const name = stripNameTitle(sample.name);
-if (name) {
-search = await runCustomerSearch('name', name, session);
+let name = '';
+for (const variant of nameSearchVariants(sample.name)) {
+name = variant;
+search = await runCustomerSearch('name', variant, session);
 if (search.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
+if (search.status === 'OK' && nationalCandidateIds(search.rows, sample.name).length > 0) break;
 }
 // Nothing by name: the reg (or lead reference) is the other way in.
 if (search.status !== 'OK') {
@@ -2745,18 +2764,23 @@ if (search.status !== 'OK') return { status: 'FAILED', exception: search.status 
 const regs = group.rows.map((r) => r.reg).filter(Boolean);
 const ids = nationalCandidateIds(search.rows, sample.name, regs);
 if (ids.length === 0) return { status: 'FAILED', exception: 'CUSTOMER_NOT_LINKED' };
-if (ids.length === 1) {
+const single = ids.length === 1;
+if (single) {
 const row = search.rows.find((r) => r.customerId === ids[0]);
 const timelineState = await openCustomerAndWaitForTimeline(row);
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 if (timelineState.state === 'FAILED') return { status: 'FAILED', exception: 'TIMELINE_TIMEOUT' };
 await waitForTimelineItemsSettled();
-return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
+// One record with the name is usually the person, but it can be a
+// namesake: only stop here when it holds one of these leads.
+if (await countGroupLeadsOnTimeline(group, session) > 0) return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
+if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 }
 
+const spec = search.spec || { type: 'name', value: name };
+const byName = (id) => openSearchResultById(runCustomerSearch, spec, id, session);
 // More than one record: keep the one whose timeline holds these leads.
-const byName = (id) => openSearchResultById(runCustomerSearch, search.spec || { type: 'name', value: name }, id, session);
-let chosen = await openRecordHoldingLeads(ids, group, session, undefined, byName);
+let chosen = single ? null : await openRecordHoldingLeads(ids, group, session, undefined, byName);
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 // None of the name matches holds them: the reg points straight at the record.
 for (const reg of chosen ? [] : regs) {
@@ -2767,6 +2791,13 @@ const regIds = nationalCandidateIds(byReg.rows, sample.name, [reg]).filter((id) 
 if (regIds.length === 0) continue;
 chosen = await openRecordHoldingLeads(regIds, group, session, undefined, (id) => openSearchResultById(runCustomerSearch, { type: 'reg', value: reg }, id, session));
 if (chosen) break;
+}
+if (!chosen && single) {
+// Still the only record with the name: open it again so each lead
+// reports "Not found" against its timeline.
+const state = await byName(ids[0]);
+if (state.state === 'FAILED') return { status: 'FAILED', exception: 'TIMELINE_TIMEOUT' };
+return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
 }
 if (!chosen) return { status: 'FAILED', exception: 'LEAD_NOT_ON_MATCHING_CUSTOMERS' };
 return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
@@ -2972,6 +3003,36 @@ if (walkIn && !isNationalDealer(walkIn[1])) return true;
 return type === 1 && (ctx.openLeadIds || []).map(String).includes(String(i.LeadID));
 });
 if (cover && NATIONAL_HANDOVER_OUTCOMES.test(finalOutcome)) return verdict('OK', `Covered by newer lead ${formatShortTime(eventTimeMs(cover.EventTime))}`);
+// A lead made after this one's last call is this enquiry set up again
+// (or the customer coming back), unless that one also went nowhere.
+const sinceMs = lastAttemptMs || createdMs || 0;
+const again = (allItems || []).filter((i) => Number(i.TimelineItemType) === 1 && Number(i.LeadID) && String(i.LeadID) !== String(lead.leadId)
+&& (eventTimeMs(i.EventTime) || 0) > sinceMs && !/created in Enquiry Max/i.test(String(i.Description || ''))).sort(byTime).pop();
+if (again) {
+const theirs = (allItems || []).filter((i) => String(i.LeadID) === String(again.LeadID)).sort(byTime);
+const theirOutcome = theirs.filter((i) => Number(i.TimelineItemType) === 3).map((i) => outcomeFromCallDescription(i.Description)).filter(Boolean).pop() || '';
+const theirSend = theirs.some((i) => Number(i.TimelineItemType) === 2 && emDealerOf(i) && !isNationalDealer(emDealerOf(i)));
+const wentNowhere = !theirSend && NATIONAL_DEAD_END_OUTCOMES.test(theirOutcome) && !/max attempts/i.test(theirOutcome);
+if (!wentNowhere) return verdict('OK', `Already set up again as a new lead on ${formatShortTime(eventTimeMs(again.EventTime))}`);
+}
+// Booked and passed on: later calls (the customer ringing in, a follow
+// up) do not undo a send made with the booking.
+if (NATIONAL_BOOKED_OUTCOMES.test(finalOutcome) && !/no appointment/i.test(finalOutcome)) {
+if (earlierDealerSend) return verdict('OK', `Booked and sent to ${earlierDealerSend} via Enquiry Max`);
+const since = (allItems || []).filter((i) => (eventTimeMs(i.EventTime) || 0) >= (createdMs || 0) - 2 * 60 * 1000);
+const bookings = since.filter((i) => Number(i.TimelineItemType) === 8).map((i) => eventTimeMs(i.EventTime) || 0);
+const bookedSend = since.find((i) => {
+if (Number(i.TimelineItemType) !== 2 || !emDealerOf(i) || isNationalDealer(emDealerOf(i))) return false;
+const at = eventTimeMs(i.EventTime) || 0;
+return bookings.some((b) => at - b >= -5 * 60 * 1000 && at - b <= 60 * 60 * 1000);
+});
+if (bookedSend) return verdict('OK', `Booked and sent to ${emDealerOf(bookedSend)} via Enquiry Max on ${formatShortTime(eventTimeMs(bookedSend.EventTime))}`);
+}
+// Passed to Enquiry Max after the full run of calls is a normal close.
+// The calls can be spread over this customer's other leads.
+const callsSince = (allItems || []).filter((i) => isAttemptItem(i) && (eventTimeMs(i.EventTime) || 0) >= (createdMs || 0) - 2 * 60 * 1000).length;
+const fullRun = Math.max(attempts || 0, callsSince);
+if (/sent direct to enquiry max/i.test(finalOutcome) && fullRun >= NATIONAL_FULL_RUN_ATTEMPTS) return verdict('OK', `Closed as ${finalOutcome} after ${fullRun} attempts`);
 // Misdirected: the agent decided it was not a sales lead. Right only if
 // the lead itself confirms that, which needs its window read (see
 // resolveMisdirected), so it starts as Check.
@@ -3121,6 +3182,38 @@ patch.resetCampaign = row.campaign || details.campaign;
 return finalizeResult(result, patch);
 }
 
+// Pure. The owner's own verdict for a lead the check got wrong. The first
+// verdict is kept so the change can be undone and the reason still shows.
+function applyNationalVerdictChange(result, verdict, why) {
+const was = result.verdictChange || { verdict: nationalVerdictOf(result), reason: result.status === 'EXCEPTION' ? `Could not check: ${exceptionLabel(result.exception)}` : (result.verdictReason || ''), status: result.status, exception: result.exception, resetCampaign: result.resetCampaign || '' };
+const note = String(why || '').trim();
+return Object.assign({}, result, {
+status: 'CLASSIFIED', exception: null, verdict,
+verdictReason: `Changed by you from ${was.verdict}${note ? `: ${note}` : ''}. The check said: ${was.reason || 'nothing'}`,
+resetCampaign: verdict === RE_SETUP ? (was.resetCampaign || result.campaign || '') : '',
+verdictChange: was
+});
+}
+
+function undoNationalVerdictChange(result) {
+const was = result.verdictChange;
+if (!was) return result;
+const back = Object.assign({}, result, { status: was.status, exception: was.exception, verdict: was.verdict, verdictReason: was.reason, resetCampaign: was.resetCampaign });
+delete back.verdictChange;
+return back;
+}
+
+function nationalChangeHtml(r) {
+const current = nationalVerdictOf(r);
+const buttons = [RE_SETUP, 'Check', 'OK'].filter((v) => v !== current)
+.map((v) => `<button type="button" class="btn" data-verdict="${escapeHtmlForUi(v)}">${escapeHtmlForUi(v === 'OK' ? 'It is OK' : v === RE_SETUP ? 'Needs Re setup' : 'Needs a check')}</button>`).join('');
+const undo = r.verdictChange ? `<button type="button" class="btn" data-verdict-undo="1">Undo my change</button>` : '';
+return `<details class="disagree national-change" data-key="${r.inputIndex}"><summary>${r.verdictChange ? 'Changed by you' : 'Wrong? Change it'}</summary>
+<div class="review-actions" role="group" aria-label="Change the result for ${escapeHtmlForUi(r.name)}">${buttons}${undo}</div>
+<input type="text" class="review-reason" aria-label="Why (optional)" placeholder="Why (optional): helps me add a rule">
+</details>`;
+}
+
 function buildNationalResultsExport(session) {
 const rows = orderedResults(session).map((r) => {
 const exception = r.status === 'EXCEPTION';
@@ -3163,7 +3256,7 @@ if (verdict === RE_SETUP) lines.push(['Campaign to set up again', r.resetCampaig
 return resultRowHtml({
 key: r.inputIndex, open: ui.isCustomerOpen(r.inputIndex), avatar: ui.avatar(r, color), name: r.name, title: reason, meta: reason,
 openTag: ui.openTag ? ui.openTag(r) : '', note: ui.openNote ? ui.openNote(r) : '',
-body: kvHtml(lines.filter(([, v]) => v).map(([k, v]) => [k, escapeHtmlForUi(v)]))
+body: kvHtml(lines.filter(([, v]) => v).map(([k, v]) => [k, escapeHtmlForUi(v)])) + nationalChangeHtml(r)
 });
 }).join('');
 return resultGroupHtml(key, verdict, color, rows.length, ui.isTierOpen(key, verdict !== 'OK'), customers);
@@ -3171,6 +3264,8 @@ return resultGroupHtml(key, verdict, color, rows.length, ui.isTierOpen(key, verd
 }
 
 window.KonnectLeadChecker.evaluateNationalLead = evaluateNationalLead;
+window.KonnectLeadChecker.applyNationalVerdictChange = applyNationalVerdictChange;
+window.KonnectLeadChecker.undoNationalVerdictChange = undoNationalVerdictChange;
 window.KonnectLeadChecker.buildNationalResultsExport = buildNationalResultsExport;
 
 window.KonnectLeadChecker.timelineEntryKey = timelineEntryKey;
@@ -3818,8 +3913,7 @@ if (sample.normalizedEmail) attempts.push({ type: 'email', value: sample.email }
 if (sample.normalizedPhone) attempts.push({ type: 'phone', value: sample.phone });
 // Last resort: the name. A name can belong to someone else, so a record
 // found this way is only used if its timeline holds the lead.
-const nameValue = stripNameTitle(sample.name);
-if (nameValue) attempts.push({ type: 'name', value: nameValue, needsLeadProof: true });
+nameSearchVariants(sample.name).forEach((value) => attempts.push({ type: 'name', value, needsLeadProof: true }));
 if (attempts.length === 0) return { status: 'FAILED', exception: 'NO_SEARCH_IDENTIFIER' };
 
 let lastException = 'NO_SEARCH_IDENTIFIER';
@@ -5849,6 +5943,31 @@ const booked = [created(1400022, '07T17:47'), sent(1400022, '08T10:05', 'Preston
 const r22 = run(1400022, booked, { exportOutcome: 'Face to Face - National UCS', attempts: '1', lastContact: '08/11/2026 09:59' });
 check('send after the last call is OK, dealer name without the confirmation note', [r22.verdict, r22.enquiryMaxDealer], ['OK', 'Preston']);
 
+// Live cases from 13 Nov.
+const setUpAgain = emailOnlyWithNewer.concat([created(1400030, '09T16:01'), call(1400030, '09T16:01', 'Manual Reschedule', `No Activity Outcome at ${NAT}`)]);
+const r30 = run(1400003, setUpAgain, {});
+check('a lead made after the last call means it is already set up again', [r30.verdict, /9 Nov 16:01/.test(r30.reason)], ['OK', true]);
+const setUpAgainDead = emailOnly.concat([created(1400031, '09T16:01'), call(1400031, '09T16:05', 'Spoke to Customer', `Sales -> Customer Hub Team -> No Appointment -> Not Interested at ${NAT}`)]);
+check('a newer lead that also went nowhere does not cover it', run(1400003, setUpAgainDead, {}).verdict, RE_SETUP);
+const bookedThenRang = [created(1400032, '10T23:31'), it(8, 1400032, '11T10:06', 'Appointment Created', 'Appointment Created by Agent A of type Test Drive', false), sent(1400032, '11T10:08', 'Crawley')];
+const r32 = run(1400032, bookedThenRang, { exportOutcome: 'Test Drive - National UCS', attempts: '1', lastContact: '11/11/2026 14:33' });
+check('a booking sent on before later calls is OK', [r32.verdict, /Crawley/.test(r32.reason)], ['OK', true]);
+const bookedOnOther = [created(1400033, '12T12:15'), created(1400034, '12T13:17'), it(8, 1400034, '12T13:26', 'Appointment Created', 'Appointment Created by Agent A of type Face To Face', false), sent(1400034, '12T13:29', 'Sale with EMax confirmation')];
+check('a booking sent on under the customer\'s other lead is OK', run(1400033, bookedOnOther, { exportOutcome: 'Face To Face', attempts: '1', lastContact: '12/11/2026 13:47' }).verdict, 'OK');
+check('a booking with no send anywhere is still Re setup', run(1400033, bookedOnOther.slice(0, 3), { exportOutcome: 'Face To Face', attempts: '1', lastContact: '12/11/2026 13:47' }).verdict, RE_SETUP);
+const fourCalls = [created(1400035, '03T11:49'), created(1400036, '08T12:05'), call(1400035, '08T12:05', 'Manual Reschedule', `Sales -> Sent Direct to Enquiry Max at ${NAT}`), call(1400036, '08T15:58', 'Manual Reschedule', `No Activity Outcome at ${NAT}`),
+call(1400036, '09T11:01', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400035, '10T10:04', 'No Answer - No Message Left', `Sales -> Sent Direct to Enquiry Max at ${NAT}`)];
+check('Sent Direct to Enquiry Max after four calls is OK', run(1400035, fourCalls, { exportOutcome: 'Sent Direct to Enquiry Max', attempts: '2', lastContact: '10/11/2026 10:04' }).verdict, 'OK');
+check('Sent Direct to Enquiry Max after two calls is not', run(1400035, fourCalls.slice(0, 3).concat(fourCalls.slice(5)), { exportOutcome: 'Sent Direct to Enquiry Max', attempts: '2', lastContact: '10/11/2026 10:04' }).verdict, RE_SETUP);
+check('apostrophe names are searched three ways', nameSearchVariants("Mr. Sam O'Buyer"), ["Sam O'Buyer", 'Sam O Buyer', 'Sam O']);
+check('plain names are searched once', nameSearchVariants('Mr Sam Buyer'), ['Sam Buyer']);
+check('an apostrophe or a space in its place is the same name', nationalCandidateIds([{ link: {}, customerId: '7', customerName: 'Mr Sam O Buyer' }, { link: {}, customerId: '8', customerName: 'Sam Oliver' }], "Sam O'Buyer"), ['7']);
+const changed = applyNationalVerdictChange({ inputIndex: 0, status: 'CLASSIFIED', verdict: RE_SETUP, verdictReason: 'nowhere', resetCampaign: 'Vauxhall - Enquiry - Used', campaign: 'Vauxhall - Enquiry - Used' }, 'OK', 'already done');
+check('a verdict changed by hand keeps what the check said', [changed.verdict, changed.resetCampaign, /already done/.test(changed.verdictReason), /nowhere/.test(changed.verdictReason)], ['OK', '', true, true]);
+const undone = undoNationalVerdictChange(changed);
+check('undo puts the check\'s verdict back', [undone.verdict, undone.verdictReason, undone.resetCampaign, undone.verdictChange], [RE_SETUP, 'nowhere', 'Vauxhall - Enquiry - Used', undefined]);
+check('changing to Re setup fills the campaign', applyNationalVerdictChange({ status: 'CLASSIFIED', verdict: 'OK', verdictReason: 'x', campaign: 'Vauxhall - Enquiry - Used' }, RE_SETUP, '').resetCampaign, 'Vauxhall - Enquiry - Used');
+
 // Misdirected starts as Check; the lead details decide it.
 const misdirectedLead = [created(1400023, '08T20:24')];
 check('Misdirected starts as Check', run(1400023, misdirectedLead, { exportOutcome: 'Misdirected - Created VR Message', attempts: '1', lastContact: '09/11/2026 12:52' }).verdict, 'Check');
@@ -7075,6 +7194,15 @@ if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); summar
 resultsBody.querySelectorAll('details.disagree').forEach((box) => {
 const key = Number(box.dataset.key);
 const note = () => box.querySelector('.review-reason').value.trim();
+const changeVerdict = (change) => {
+if (!session || !session.results[key]) return;
+session.results[key] = change(session.results[key]);
+saveSession(session);
+linkResendAfterDecision();
+render();
+};
+box.querySelectorAll('button[data-verdict]').forEach((btn) => btn.addEventListener('click', () => changeVerdict((r) => applyNationalVerdictChange(r, btn.dataset.verdict, note()))));
+box.querySelectorAll('button[data-verdict-undo]').forEach((btn) => btn.addEventListener('click', () => changeVerdict(undoNationalVerdictChange)));
 box.querySelectorAll('button[data-tier]').forEach((btn) => btn.addEventListener('click', () => {
 decideReview(key, Number(btn.dataset.tier), '', note());
 render();

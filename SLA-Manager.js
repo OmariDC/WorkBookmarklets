@@ -818,6 +818,23 @@ console.warn('[SLA Manager] Could not save the done counts from the queue.');
 }
 }
 
+// Pure. A lead still to do with done leads on both sides of it has been
+// passed over: it did not present, so the agent has to open it by hand.
+// done: one flag per queue row, top to bottom. Returns the row numbers.
+function stuckQueueRows(done) {
+const first = done.indexOf(true);
+const last = done.lastIndexOf(true);
+return done.map((isDone, i) => (!isDone && i > first && i < last && first !== -1 ? i + 1 : 0)).filter(Boolean);
+}
+
+// Pure. "Agent Alpha has 1 lead stuck in the queue (row 2)." per agent.
+function stuckQueueText(agents) {
+return agents.filter((a) => a.stuckRows && a.stuckRows.length).map((a) => {
+const n = a.stuckRows.length;
+return `${a.agentName} has ${n} lead${n === 1 ? '' : 's'} stuck in the queue (row${n === 1 ? '' : 's'} ${a.stuckRows.join(', ')}). It has not presented, so ask them to open it.`;
+}).join(' ');
+}
+
 function scrapeAgentQueuePositions() {
 const agentPanels = document.querySelectorAll('li[ng-repeat="agent in fullqueue | filter: filterMessages"]');
 const agents = [];
@@ -839,6 +856,7 @@ agents.push({
 agentName,
 totalShown: queue.length,
 notDoneCount: queue.filter((item) => !item.done).length,
+stuckRows: stuckQueueRows(queue.map((item) => item.done)),
 doneIds: queue.filter((item) => item.done).map((item) => queueItemId(item.email, item.phone)),
 queue: queue.map(({ done, ...item }) => item)
 });
@@ -848,6 +866,8 @@ return agents;
 
 // Visits Queue by Agent, saves the snapshot and comes back. Returns true or
 // false so a failed refresh does not abort the caller.
+// What the last Queue read found stuck, said once the panel is back.
+let lastStuckQueueText = '';
 async function refreshAgentQueueSnapshot() {
 const originalHash = window.location.hash;
 try {
@@ -870,6 +890,7 @@ agent: a.agentName, notDone: a.notDoneCount, totalShown: a.totalShown, sample: a
 })));
 recordQueueDone(agents);
 saveAgentQueueSnapshot(agents.map(({ doneIds, ...agent }) => agent));
+lastStuckQueueText = stuckQueueText(agents);
 return true;
 } finally {
 window.location.hash = originalHash;
@@ -903,6 +924,7 @@ else displayPanel(currentCustomers, 0, 0, false);
 console.error('[SLA Manager] Panel failed to render after queue check:', error);
 alert('SLA Manager: the panel failed to load after checking the queue.\n\n' + (error && error.stack ? error.stack : error) + '\n\nPlease report this exact message.');
 }
+if (lastStuckQueueText) showToast(lastStuckQueueText);
 } finally {
 navigating = false;
 hidePageFlashOverlay();
@@ -3862,7 +3884,7 @@ return `
 <label ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
 <input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()">
 <span class="sla-dot" style="background: ${statusDotColor(a.status)};"></span>
-${escapeHtml(a.name)}${queueBadge}
+${escapeHtml(a.name)}${queueBadge}${queueInfo && queueInfo.stuckRows && queueInfo.stuckRows.length ? `<b class="sla-stuck" style="color: #b91c1c;" title="Row ${queueInfo.stuckRows.join(', ')} of their queue is still to do with done leads after it. It has not presented, so ask them to open it.">${queueInfo.stuckRows.length} stuck</b>` : ''}
 </label>`;
 }).join('') + renderStatusesSeen(agents);
 }
@@ -8423,6 +8445,8 @@ const due = [];
 const waiting = [];
 leads.forEach((l) => {
 const minutes = l.slaDate ? (new Date(l.slaDate).getTime() - now) / 60000 : null;
+// A Pending lead past its Next Action Date is late, not a missed SLA.
+if (l.list === PAGE_PENDING && minutes !== null && minutes <= 0) return;
 if (l.status === 'Missed' || (minutes !== null && minutes <= 0)) missed.push(l.key);
 else if (minutes !== null && minutes <= MISSED_URGENT_MINUTES) soon.push(l.key);
 else if (minutes !== null && minutes <= MISSED_WARNING_MINUTES) due.push(l.key);
@@ -8522,7 +8546,8 @@ return { key: pending ? `pending||${lead.key}` : lead.key, slaDate: watchDueDate
 
 // Pure. Both lists as one, a lead on both counted once at its more urgent.
 function mergeWatchedLeads(slaLeads, pendingLeads) {
-const urgency = (l) => (l.status === 'Missed' ? -Infinity : (l.slaDate ? new Date(l.slaDate).getTime() : Infinity));
+const overduePending = (l) => l.list === PAGE_PENDING && l.slaDate && new Date(l.slaDate).getTime() <= Date.now();
+const urgency = (l) => (l.status === 'Missed' ? -Infinity : (l.slaDate && !overduePending(l) ? new Date(l.slaDate).getTime() : Infinity));
 const merged = slaLeads.slice();
 const indexBySame = new Map(merged.map((l, i) => [l.same, i]));
 pendingLeads.forEach((p) => {
@@ -8872,7 +8897,9 @@ const both = mergeWatchedLeads(
 [watchLead(pendingRow('jo  example', new Date(now + 2 * 60000)), PAGE_PENDING), watchLead(pendingRow('Al Sample', new Date(now + 30 * 60000)), PAGE_PENDING), watchLead(pendingRow('Di Other', new Date(now - 60000)), PAGE_PENDING)]);
 check('a lead on both lists is counted once, at its more urgent', both.map((l) => `${l.list}:${l.same.split('||')[0]}`), ['pending:jo example', 'sla:al sample', 'pending:di other']);
 const bothKeys = missedWarningKeys(both, now);
-check('and the counts are over both lists', [bothKeys.missed.length, bothKeys.soon.length, bothKeys.due.length], [1, 2, 0]);
+check('and the counts are over both lists, an overdue Pending lead left out', [bothKeys.missed.length, bothKeys.soon.length, bothKeys.due.length], [0, 2, 0]);
+check('a lead still to do between done leads is stuck', [stuckQueueRows([true, false, true, true]), stuckQueueRows([false, false, true, true]), stuckQueueRows([true, true, false]), stuckQueueRows([false, true, false, false, true, false])], [[2], [], [], [3, 4]]);
+check('the stuck notice names the agent and the row', [stuckQueueText([{ agentName: 'Agent Alpha', stuckRows: [2] }, { agentName: 'Agent Bravo', stuckRows: [] }]), stuckQueueText([])], ['Agent Alpha has 1 lead stuck in the queue (row 2). It has not presented, so ask them to open it.', '']);
 check('which list a notification is from', [listSplitText(2, 0), listSplitText(1, 1), listSplitText(0, 2)], ['', ' (1 SLA, 1 Pending)', ' (2 Pending)']);
 check('the 5 minute notification across both lists', urgentNotificationText(2, 1, listSplitText(1, 1)), '2 leads due within 5 minutes (1 SLA, 1 Pending). Urgent and not assigned: 1.');
 check('the 15 minute notification across both lists', missedNotificationText(1, 1, 2, listSplitText(0, 2)), '1 lead due within 15 minutes, 1 missed (2 Pending). Urgent and not assigned: 2.');

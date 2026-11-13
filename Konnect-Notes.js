@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.21.1'
+    version: '1.21.2'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -4557,9 +4557,18 @@
     const c = inbound.customer;
     let modal = visibleCustomerModal();
     if (!modal) {
-      const newButton = findButtonByClick('button[ng-click^="showCustomerModal"]', 'new customer');
+      let newButton = findButtonByClick('button[ng-click^="showCustomerModal"]', 'new customer');
       if (!newButton) {
-        showToast('Open Customer Call first, then try again');
+        /* Still on the call type screen: press Customer Call for the agent. */
+        const customerCall = Array.from(document.querySelectorAll('button[ng-click="setCallType(\'Customer\')"]')).find(isVisible);
+        if (customerCall) {
+          customerCall.click();
+          newButton = await waitFor(() => findButtonByClick('button[ng-click^="showCustomerModal"]', 'new customer'), 3000);
+          if (newButton) await new Promise((resolve) => setTimeout(resolve, 150));
+        }
+      }
+      if (!newButton) {
+        showToast('Accept the call first, then try again');
         return;
       }
       newButton.click();
