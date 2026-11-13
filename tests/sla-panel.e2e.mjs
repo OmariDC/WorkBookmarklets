@@ -509,7 +509,7 @@ async function missedWarning() {
   await t.page.click('#_slaMoreMenu .sla-mi:has-text("Warn me about leads going missed")');
   await waitFor(t.page, (own) => document.title !== own, OWN_TITLE, 3000);
   check('turning it on asks for notifications once and says so in More', await t.page.evaluate(() => window.ASKED === 1 && Array.from(document.querySelectorAll('#_slaMoreMenu .sla-mi')).find((el) => /Warn me/.test(el.textContent)).querySelector('em').textContent === 'on' && localStorage.getItem('_slaMissedWarning') === '1'));
-  check('the title leads with the unassigned leads missed and due within 15 minutes', (await title()) === `(2 missed, 1 in 15) ${OWN_TITLE}`, await title());
+  check('the title leads with the leads missed and due within 15 minutes', (await title()) === `(2 missed, 1 in 15) ${OWN_TITLE}`, await title());
   await sleep(500);
   check('with the panel in view there is no notification', (await notes()).length === 0, await notes());
 
@@ -517,12 +517,12 @@ async function missedWarning() {
   await t.page.evaluate(() => { window._toggleMinimizePanel(); window.OPENED = {}; LEADS[4][6] = at(10); LEADS[5][6] = at(5); LEADS.push(['Hal Hughes', 'AB18CDE', 'Customer First', 'Citroen - Enquiry - New', at(-90), at(-89), at(-3), 'Missed', null, '07700900008', 'hal@example.com']); renderSla(); });
   await waitFor(t.page, () => window.NOTES.length > 1, null, 4000);
   let shown = await notes();
-  check('with the panel hidden the new ones are one notification for 5 minutes and one for the rest', shown.length === 2 && shown.every((n) => n.title === 'SLA Manager') && shown.map((n) => n.body).join('|') === '1 lead due within 5 minutes. Unassigned.|1 lead due within 15 minutes, 1 missed. Unassigned.', shown);
+  check('with the panel hidden the new ones are one notification for 5 minutes and one for the rest', shown.length === 2 && shown.every((n) => n.title === 'SLA Manager') && shown.map((n) => n.body).join('|') === '1 lead due within 5 minutes. Urgent and not assigned: 6.|1 lead due within 15 minutes, 1 missed. Urgent and not assigned: 6.', shown);
   check('and the title counts each level', (await title()) === `(3 missed, 1 in 5 min, 2 in 15) ${OWN_TITLE}`, await title());
   await t.page.evaluate(() => { LEADS[4][6] = at(5); renderSla(); });
   await waitFor(t.page, () => window.NOTES.length > 2, null, 4000);
   shown = await notes();
-  check('a lead warned about at 15 minutes warns once more at 5', shown.length === 3 && shown[2].body === '1 lead due within 5 minutes. Unassigned.' && (await title()) === `(3 missed, 2 in 5 min, 1 in 15) ${OWN_TITLE}`, { shown, title: await title() });
+  check('a lead warned about at 15 minutes warns once more at 5', shown.length === 3 && shown[2].body === '1 lead due within 5 minutes. Urgent and not assigned: 6.' && (await title()) === `(3 missed, 2 in 5 min, 1 in 15) ${OWN_TITLE}`, { shown, title: await title() });
   const names = ['Alex', 'Sample', 'Sam', 'Buyer', 'Gus', 'Green', 'Hal', 'Hughes', 'Eve', 'Evans'];
   check('no customer name is in the title or the notification', !names.some((n) => shown.some((note) => note.body.includes(n))) && !(await title()).replace(OWN_TITLE, '').match(/[A-Z]/));
   check('the list is scanned again on its own while the warning is on', await waitFor(t.page, () => window.REFRESHES >= 1, null, 6000));
@@ -543,10 +543,14 @@ async function missedWarning() {
   check('and it carries on once the pop-up has closed', await waitFor(t.page, () => window.REFRESHES >= 1, null, 6000));
   await idle(t.page);
 
+  // Assigned but not done still counts: a lead on the list has not been done.
   await t.page.evaluate(() => { window.KEPT = LEADS.map((l) => l[8]); LEADS.forEach((l) => { l[8] = l[8] || 'Agent Alpha'; }); renderSla(); });
-  check('the title goes back to the page\'s own when none are left', await waitFor(t.page, (own) => document.title === own, OWN_TITLE, 4000), await title());
-  await t.page.evaluate(() => { LEADS.forEach((l, i) => { l[8] = window.KEPT[i]; }); renderSla(); });
-  check('and counts again when leads are unassigned', await waitFor(t.page, (own) => document.title === `(3 missed, 2 in 5 min, 1 in 15) ${own}`, OWN_TITLE, 4000), await title());
+  await sleep(3000);
+  check('assigned leads that are not done still count in the title', (await title()) === `(3 missed, 2 in 5 min, 1 in 15) ${OWN_TITLE}`, await title());
+  await t.page.evaluate(() => { LEADS.forEach((l, i) => { l[8] = window.KEPT[i]; }); window.GONE = LEADS.splice(0, LEADS.length); renderSla(); });
+  check('the title goes back to the page\'s own when none are left', await waitFor(t.page, (own) => document.title === own, OWN_TITLE, 6000), await title());
+  await t.page.evaluate(() => { LEADS.push(...window.GONE); renderSla(); });
+  check('and counts again when the leads are back', await waitFor(t.page, (own) => document.title === `(3 missed, 2 in 5 min, 1 in 15) ${own}`, OWN_TITLE, 6000), await title());
   shown = await notes();
   await t.page.evaluate(() => window._slaResetBookmarklet());
   await sleep(600);
@@ -586,7 +590,7 @@ async function fairShare() {
   const team = () => t.page.evaluate(() => Object.fromEntries(Array.from(document.querySelectorAll('#_slaTeamToday [data-agent]')).map((row) => [row.dataset.agent, Array.from(row.querySelectorAll('span')).slice(1).map((el) => el.textContent.trim()).join(' | ')])));
   const fairLine = () => t.page.evaluate(() => { const el = document.getElementById('_slaFairLine'); return el.hidden ? '' : el.textContent; });
   const list = await t.page.evaluate(() => ({ labels: Array.from(document.querySelectorAll('#assignAgentList label')).map((l) => l.textContent.replace(/\s+/g, ' ').trim()), extras: document.querySelectorAll('#assignAgentList .sla-share, #assignAgentList .sla-sharenote').length, team: !!document.getElementById('_slaTeamToday') }));
-  check('the agents list is name, status and count only', list.labels.join('|') === 'Agent Alpha1|Agent Bravo0|Agent Charlie0' && list.extras === 0 && !list.team, list);
+  check('the agents list is name, status and count only', list.labels.join('|') === 'Agent Alpha · Shift Start1|Agent Bravo · Live Chat0|Agent Charlie0' && list.extras === 0 && !list.team, list);
   await shot(t.page, 'agents-list-as-before.png');
   await t.page.click('#_slaTodaySummary .sla-chip:has-text("Team")');
   let s = await team();
