@@ -106,6 +106,8 @@ try {
 // The booking system in Konnect Notes is for the owner only for now, so only
 // this bookmark switches it on; the Konnect Tools bookmark gives call notes only.
 if (tools.some((t) => t.file === 'Konnect-Notes.js')) window.KonnectNotesOwner = true;
+// Lead Re setup starts as its button, not an open panel, on its first load.
+window.WorkToolsStartTucked = true;
 for (const tool of tools) {
 try {
 if (tool.loaded && tool.loaded()) {

@@ -3753,5 +3753,10 @@ unload
 };
 
 purgeExpired();
-if (buildPanel()) window[INSTANCE_KEY] = instance;
+if (buildPanel()) {
+window[INSTANCE_KEY] = instance;
+// Loaded by Work Tools at the start of the day: stay out of the way as the
+// button until it is wanted. A second click of the bookmark opens it.
+if (window.WorkToolsStartTucked && !state.running && !state.paused) hidePanel();
+}
 })();
