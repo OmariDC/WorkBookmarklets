@@ -54,7 +54,7 @@ const HIDE_STYLE_ID = '_workToolsHideStyle';
 const HIDE_SELECTOR = ['#_slaBadge', '#_slaBadgeNavItem', '#_slaPanel', '#_slaAvatarAssignPopover', '#_slaLinkToast',
 '#_klcNavItem', '#_klcBadge', '#_klcPanelHost',
 '#_leadResetPanel', '#_leadResetButton', '#_leadResetRailSection', '#_leadResetNotice',
-'[id^="kn-"]:not(style)', '.kn-ui', '#_regCheckNotice'].join(', ');
+'[id^="kn-"]:not(style)', '.kn-ui', '.kn-launcher', '.kn-launcher-section', '.kn-phone-launcher', '.kn-inbound-launcher', '#_regCheckNotice'].join(', ');
 function toolsHidden() {
 try { return sessionStorage.getItem(HIDE_KEY) === '1'; } catch (error) { return !!document.getElementById(HIDE_STYLE_ID); }
 }
@@ -75,7 +75,9 @@ let style = document.getElementById(HIDE_STYLE_ID);
 if (hidden && !style) {
 style = document.createElement('style');
 style.id = HIDE_STYLE_ID;
-style.textContent = `${HIDE_SELECTOR} { display: none !important; }`;
+// The two :not() parts only add weight, so this beats a tool's own
+// "display: ... !important" rule for its button.
+style.textContent = `:is(${HIDE_SELECTOR}):not(#_wtA):not(#_wtB) { display: none !important; visibility: hidden !important; }`;
 document.head.appendChild(style);
 } else if (!hidden && style) style.remove();
 if (!quiet) hideNote(hidden ? 'Work Tools hidden. Still running. Alt+H brings them back.' : 'Work Tools showing.');

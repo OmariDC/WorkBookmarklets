@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.17.1'
+    version: '1.17.2'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -1943,6 +1943,17 @@
       }
     };
 
+    // The lead often repeats the brand in the model box ("Abarth" and
+    // "Abarth 500e"), so the model is taken without it.
+    const withoutBrand = (fields, makePath, modelPath) => {
+      const engine = bookingEngine();
+      if (!engine || !fields[makePath] || !fields[modelPath]) return;
+      const split = engine.splitMakeModel(fields[makePath], fields[modelPath]);
+      if (split.model) fields[modelPath] = split.model;
+    };
+    withoutBrand(lead.fields, 'v.make', 'v.model');
+    withoutBrand(lead.pxFields, 'px.make', 'px.model');
+
     Object.entries(lead.fields).forEach(([path, value]) => consider(path, value));
 
     const switchState = lead.pxOn === null ? null : (lead.pxOn ? 'on' : 'off');
@@ -2588,7 +2599,10 @@
       // what is actually shown counts.
       const text = normaliseText(cell.innerText);
       const titles = [cell, ...Array.from(cell.querySelectorAll('[title]')).filter(isVisible)].map((node) => node.getAttribute('title') || '').join(' ');
-      if (text || refuse.test(titles)) continue;
+      // A booked box keeps the customer's name in its button even when
+      // Konnect hides the button, so the name counts whether shown or not.
+      const booked = Array.from(cell.querySelectorAll('button')).some((b) => normaliseText(b.textContent));
+      if (text || booked || refuse.test(titles)) continue;
       // The name cell also lists the person's brand letters on a second line.
       const nameText = cells[0] && cells[0] !== cell ? String(cells[0].innerText || '').split('\n')[0] : '';
       return { cell, person: normaliseText(nameText).replace(/(\s+[A-Z],)+\s*[A-Z]$/, '').replace(/\s+[A-Z](,\s*[A-Z])+$/, '') };
@@ -2767,9 +2781,15 @@
       if (run.stopped) return;
       const confirm = await waitFor(() => Array.from(modal.querySelectorAll('button[ng-click="createAppointment()"]')).find((b) => isVisible(b) && !b.disabled), 3000);
       if (!confirm) return fail('the Confirm button was not ready');
+      // Konnect closes the form whether it took the appointment or refused
+      // it, so a refusal is read from its own message.
+      const refusal = () => Array.from(document.querySelectorAll('.toast-error, .toast-warning')).filter(isVisible).map((t) => normaliseText(t.textContent)).filter(Boolean)[0] || '';
+      const refusedBefore = refusal();
       confirm.click();
-      const done = await waitFor(() => !isVisible(confirm) || !confirm.isConnected, 10000);
+      const done = await waitFor(() => (refusal() && refusal() !== refusedBefore) || !isVisible(confirm) || !confirm.isConnected, 10000);
       if (!done) return fail('Konnect did not confirm the appointment');
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      if (refusal() && refusal() !== refusedBefore) return fail(`Konnect refused it ("${refusal().slice(0, 80)}"). Nothing was booked`);
       // The diary stays open after Confirm, so close it before the outcome.
       await new Promise((resolve) => setTimeout(resolve, 400));
       const close = Array.from(modal.querySelectorAll('button[ng-click="cancel()"]')).filter(isVisible)
@@ -4868,18 +4888,24 @@
     if (!(target instanceof HTMLTextAreaElement)) return;
     if (target.selectionStart !== target.selectionEnd) return;
     const before = target.value.slice(0, target.selectionStart);
-    /* A shorthand only counts when it is the only thing on its line, so an
-       ordinary word in a sentence ("book", "fin") is left alone. Lead Re
-       setup presses the key itself after putting the word at the end of the
-       box, which can follow a trailing space: its key presses (not trusted
-       by the browser) keep the looser rule. */
-    const match = event.isTrusted
-      ? (/^[ \t]*(?:\n|$)/.test(target.value.slice(target.selectionStart))
-        ? before.match(/(^|\n)[ \t]*([a-z][a-z0-9_-]*)$/i) : null)
-      : before.match(/(^|\s)([a-z][a-z0-9_-]*)$/i);
-    if (!match) return;
-    const found = abbreviationMatch(match[2]);
-    if (!found) return;
+    /* A plain word shorthand only counts when it is the only thing on its
+       line, so an ordinary word in a sentence ("book", "fin") is left alone.
+       One with an attempt number ("vm1", "cnr2") is never an ordinary word,
+       so it also counts at the end of a line after other words, and goes
+       onto a line of its own. Lead Re setup presses the key itself after
+       putting the word at the end of the box, which can follow a trailing
+       space: its key presses (not trusted by the browser) keep the looser
+       rule. */
+    const loose = before.match(/(^|\s)([a-z][a-z0-9_-]*)$/i);
+    const lineEndsHere = /^[ \t]*(?:\n|$)/.test(target.value.slice(target.selectionStart));
+    const alone = lineEndsHere ? before.match(/(^|\n)[ \t]*([a-z][a-z0-9_-]*)$/i) : null;
+    let match = event.isTrusted ? alone : loose;
+    let found = match ? abbreviationMatch(match[2]) : null;
+    if (!found && event.isTrusted && lineEndsHere && loose) {
+      const numbered = abbreviationMatch(loose[2]);
+      if (numbered && numbered.attempt !== null) { match = loose; found = numbered; }
+    }
+    if (!match || !found) return;
     /* The page may have changed lead since the last scan. */
     scanPage();
     if (target !== state.target && target !== state.postClosureTarget) return;

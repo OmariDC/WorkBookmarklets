@@ -4539,10 +4539,20 @@ uiHandle.loggedOut();
 uiHandle.setState(message);
 }
 stopFlash = startTitleFlash('Press Login to carry on');
+// The browser only hands the saved password to the page once the agent
+// touches this window. So the wait keeps watching: as soon as the password
+// is there (any click or key press on the page is enough), Login is pressed
+// for them. It is never pressed again with the box still empty.
 const startedAt = Date.now();
+let pressedAt = 0;
 while (Date.now() - startedAt < (waitMs || 30 * 60 * 1000)) {
 await sleep(500);
 if (!onLoginPage()) { lcNotices.stopped = null; notifyNoticesChanged(); await sleep(1500); return true; }
+const box = document.querySelector('input[type="password"]');
+if (box && box.value && Date.now() - pressedAt > 4000) {
+const login = Array.from(document.querySelectorAll('button[ng-click="login()"], button.btn-login')).find((b) => b.offsetWidth || b.offsetHeight);
+if (login) { pressedAt = Date.now(); login.click(); }
+}
 }
 return false;
 } finally {

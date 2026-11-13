@@ -183,9 +183,18 @@ async function typing() {
   await page.click('#callA');
   await page.keyboard.type('Customer wants to book a test drive');
   await page.keyboard.press('Enter');
-  await page.keyboard.type('Spoke to customer, not sure on fin yet, said vm1 was not heard');
+  await page.keyboard.type('Spoke to customer, not sure on fin yet, said he would book later');
   check('6 words inside a sentence are left alone', await page.inputValue('#callA') ===
-    'Customer wants to book a test drive\nSpoke to customer, not sure on fin yet, said vm1 was not heard', await page.inputValue('#callA'));
+    'Customer wants to book a test drive\nSpoke to customer, not sure on fin yet, said he would book later', await page.inputValue('#callA'));
+  // A numbered shorthand is never an ordinary word: after other words it goes onto its own line.
+  await page.keyboard.type(' vm1 ');
+  check('6 a numbered shorthand after other words expands on a new line', await page.inputValue('#callA') ===
+    'Customer wants to book a test drive\nSpoke to customer, not sure on fin yet, said he would book later \n1 - VM left -- Sam Tester\n', await page.inputValue('#callA'));
+  await page.fill('#callA', '');
+  await page.click('#callA');
+  await page.keyboard.type('Customer wants to book a test drive');
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('Spoke to customer, not sure on fin yet, said he would book later');
   await page.keyboard.press('Enter');
   await page.keyboard.type('ni ');
   check('6 a shorthand alone on a new line expands', (await page.inputValue('#callA')).endsWith('\nNot interested -- Sam Tester\n'), await page.inputValue('#callA'));
