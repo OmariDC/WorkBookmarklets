@@ -526,18 +526,18 @@ async function missedWarning() {
   await t.page.evaluate(() => { window._toggleMinimizePanel(); window.OPENED = {}; LEADS[4][6] = at(10); LEADS[5][6] = at(5); LEADS.push(['Hal Hughes', 'AB18CDE', 'Customer First', 'Citroen - Enquiry - New', at(-90), at(-89), at(-3), 'Missed', null, '07700900008', 'hal@example.com']); renderSla(); });
   await waitFor(t.page, () => window.NOTES.length > 1, null, 4000);
   let shown = await notes();
-  check('with the panel hidden the new ones are one notification for 5 minutes and one for the rest', shown.length === 2 && shown.map((n) => n.title).join('|') === '1 lead due in 5 min|1 lead MISSED, 1 due in 15 min' && shown.every((n) => /^Assign now: 6 not with an agent\.\nNow: \d+ missed · /.test(n.body)), shown);
+  check('with the panel hidden there is one notification with the totals: missed first, then who holds them, then agents free', shown.length === 1 && shown[0].title === '3 MISSED · 1 due in 5 mins · 2 due in 15 mins' && shown[0].body === 'Unassigned: 3 missed, 1 due in 5 mins, 2 due in 15 mins\nAssigned: none\nAgents free: none', shown);
   check('and the title counts each level', (await title()) === `(3 missed, 1 in 5 min, 2 in 15) ${OWN_TITLE}`, await title());
   await t.page.evaluate(() => { LEADS[4][6] = at(5); renderSla(); });
   await waitFor(t.page, () => window.NOTES.length > 2, null, 4000);
   shown = await notes();
-  check('a lead warned about at 15 minutes warns once more at 5', shown.length === 3 && shown[2].title === '1 lead due in 5 min' && shown[2].body === 'Assign now: 6 not with an agent.\nNow: 3 missed · 2 in 5 min · 1 in 15 min' && (await title()) === `(3 missed, 2 in 5 min, 1 in 15) ${OWN_TITLE}`, { shown, title: await title() });
+  check('a lead warned about at 15 minutes warns once more at 5', shown.length === 2 && shown[1].title === '3 MISSED · 2 due in 5 mins · 1 due in 15 mins' && (await title()) === `(3 missed, 2 in 5 min, 1 in 15) ${OWN_TITLE}`, { shown, title: await title() });
   const names = ['Alex', 'Sample', 'Sam', 'Buyer', 'Gus', 'Green', 'Hal', 'Hughes', 'Eve', 'Evans'];
   check('no customer name is in the title or the notification', !names.some((n) => shown.some((note) => note.body.includes(n))) && !(await title()).replace(OWN_TITLE, '').match(/[A-Z]/));
   check('the list is scanned again on its own while the warning is on', await waitFor(t.page, () => window.REFRESHES >= 1, null, 6000));
   await sleep(1200);
   shown = await notes();
-  check('no lead is notified again, however many scans follow', shown.length === 3, shown);
+  check('nothing new means no more notifications inside the reminder time', shown.length === 2, shown);
   check('a scan with the panel hidden opens no customer pop-up', await t.page.evaluate(() => Object.keys(window.OPENED).length === 0 && !document.querySelector('.customer-card[data-customer-name="hal hughes"]')), await t.page.evaluate(() => window.OPENED));
 
   // Panel back: the next scan is the full one, pop-up and all.
@@ -619,19 +619,19 @@ async function bothLists() {
   await home(SLA_HASH);
   check('and the hash ends where it started, on the SLA table', (await state()).hash === SLA_HASH && (await state()).sla && (await navs()).slice(0, 2).join() === `#/Queue/PendingCustomerQueue,${SLA_HASH}`, { state: await state(), navs: await navs() });
   check('the footer line shows both times', /^ · watch: SLA \d\d:\d\d, Pending \d\d:\d\d$/.test(await footer()), await footer());
-  check('a lead on both lists is counted once and the placeholder date is ignored', (await title()) === `(2 missed, 1 in 15) ${OWN_TITLE}` && (await notes()).length === 0, { title: await title(), notes: await notes() });
+  check('a lead on both lists is counted once and the placeholder date is ignored', (await title()) === `(2 missed, 1 in 15) ${OWN_TITLE}` && (await notes()).length === 1 && (await notes())[0].title === '2 MISSED · 1 due in 15 mins', { title: await title(), notes: await notes() });
   check('the visit is not a reload and opens no customer pop-up', await t.page.evaluate(() => !!document.getElementById('_slaBadge') && Object.keys(window.OPENED).length === 0));
 
   // A Pending lead comes due while the tab sits on the SLA page.
   await t.page.evaluate(() => { PENDING[0][10] = at(4); });
-  await waitFor(t.page, () => window.NOTES.length > 0, null, 8000);
+  await waitFor(t.page, () => window.NOTES.length > 1, null, 8000);
   await home(SLA_HASH);
   let shown = await notes();
-  check('a Pending lead coming due is notified, and says which list', shown.length === 1 && shown[0].title === '1 lead due in 5 min (Pending)' && /^Assign now: 4 not with an agent\./.test(shown[0].body), shown);
+  check('a Pending new lead coming due is notified, in the totals', shown.length === 2 && shown[1].title === '2 MISSED · 1 due in 5 mins · 1 due in 15 mins', shown);
   check('and is in the title', (await title()) === `(2 missed, 1 in 5 min, 1 in 15) ${OWN_TITLE}`, await title());
   check('the tab is back on the SLA page', (await state()).hash === SLA_HASH && (await state()).sla, await state());
   await sleep(2500);
-  check('it is notified once, however many visits follow', (await notes()).length === 1 && (await visits()) >= 3, { notes: await notes(), visits: await visits() });
+  check('it is notified once, however many visits follow', (await notes()).length === 2 && (await visits()) >= 3, { notes: await notes(), visits: await visits() });
   check('no customer name is in the title or the notification', !['Pat', 'Pending Customers', 'Sam', 'Buyer'].some((n) => shown[0].body.includes(n)) && !(await title()).replace(OWN_TITLE, '').match(/[A-Z]/));
 
   // Never while a customer pop-up is open.

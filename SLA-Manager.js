@@ -8461,6 +8461,9 @@ initAssignSectionWheels();
 
 const MISSED_WARNING_KEY = '_slaMissedWarning';
 const MISSED_WARNING_MINUTES = 15;
+const WATCHED_PENDING_TYPE = 'New';
+// While a missed lead is still on the list, it is said again this often.
+const MISSED_REMIND_MS = 5 * 60 * 1000;
 const MISSED_URGENT_MINUTES = 5;
 // scanMs: how often the list is scanned again. tickMs: how often the counts
 // are brought up to date in between, as leads come due with time alone. A
@@ -8493,19 +8496,22 @@ const missed = [];
 const soon = [];
 const due = [];
 const waiting = [];
+const count = () => ({ missed: 0, soon: 0, due: 0 });
+const split = { unassigned: count(), assigned: count() };
 leads.forEach((l) => {
 const minutes = l.slaDate ? (new Date(l.slaDate).getTime() - now) / 60000 : null;
-// A Pending lead past its Next Action Date is late, not a missed SLA.
-if (l.list === PAGE_PENDING && minutes !== null && minutes <= 0) return;
-if (l.status === 'Missed' || (minutes !== null && minutes <= 0)) missed.push(l.key);
-else if (minutes !== null && minutes <= MISSED_URGENT_MINUTES) soon.push(l.key);
-else if (minutes !== null && minutes <= MISSED_WARNING_MINUTES) due.push(l.key);
+let band;
+if (l.status === 'Missed' || (minutes !== null && minutes <= 0)) band = 'missed';
+else if (minutes !== null && minutes <= MISSED_URGENT_MINUTES) band = 'soon';
+else if (minutes !== null && minutes <= MISSED_WARNING_MINUTES) band = 'due';
 else return;
+({ missed, soon, due })[band].push(l.key);
+split[l.assigned ? 'assigned' : 'unassigned'][band] += 1;
 if (!l.assigned) waiting.push(l.key);
 });
 // A lead still on the list is not done, whoever holds it, so assigned
 // leads count too. waiting: the ones among them nobody holds yet.
-return { missed, soon, due, waiting };
+return { missed, soon, due, waiting, split };
 }
 
 // Pure. "(1 missed, 2 in 5 min, 3 in 15) ", or '' when there are none.
@@ -8514,23 +8520,26 @@ const parts = [missedCount ? `${missedCount} missed` : '', soonCount ? `${soonCo
 return parts.length ? `(${parts.join(', ')}) ` : '';
 }
 
-// Pure. A notification read at a glance: the title is what just changed,
-// the first line of the body is what to do, the second is the whole picture.
-// fresh: { soon, due, missed } newly in each band. totals: every urgent
-// lead by band. waiting: urgent leads nobody holds. pending: how many of
-// the new ones are Pending leads. null when there is nothing new.
-function warningNotification(fresh, totals, waiting, pending = 0) {
-const leads = (n) => `${n} lead${n === 1 ? '' : 's'}`;
-const parts = [];
-if (fresh.missed) parts.push(`${leads(fresh.missed)} MISSED`);
-if (fresh.soon) parts.push(`${parts.length ? fresh.soon : leads(fresh.soon)} due in ${MISSED_URGENT_MINUTES} min`);
-if (fresh.due) parts.push(`${parts.length ? fresh.due : leads(fresh.due)} due in ${MISSED_WARNING_MINUTES} min`);
-if (!parts.length) return null;
-const newCount = (fresh.missed || 0) + (fresh.soon || 0) + (fresh.due || 0);
-const fromPending = pending ? (pending === newCount ? ' (Pending)' : ` (${pending} Pending)`) : '';
-const action = waiting ? `Assign now: ${waiting} not with an agent.` : 'All with agents. Nothing to assign.';
-const picture = [totals.missed ? `${totals.missed} missed` : '', totals.soon ? `${totals.soon} in ${MISSED_URGENT_MINUTES} min` : '', totals.due ? `${totals.due} in ${MISSED_WARNING_MINUTES} min` : ''].filter(Boolean).join(' · ');
-return { title: `${parts.join(', ')}${fromPending}`, body: `${action}\nNow: ${picture}` };
+// Pure. The notification: every number is the current total. The title is
+// the urgent leads with missed first; then who holds them; then how many
+// agents could take one (left out when the agents could not be read).
+// split: missedWarningKeys(...).split. null when nothing is urgent.
+function warningNotification(split, agentsFree) {
+const bands = [['missed', 'missed'], ['soon', `due in ${MISSED_URGENT_MINUTES} mins`], ['due', `due in ${MISSED_WARNING_MINUTES} mins`]];
+const total = (band) => split.unassigned[band] + split.assigned[band];
+const title = bands.filter(([band]) => total(band)).map(([band, words]) => (band === 'missed' ? `${total(band)} MISSED` : `${total(band)} ${words}`)).join(' · ');
+if (!title) return null;
+const line = (counts) => bands.filter(([band]) => counts[band]).map(([band, words]) => `${counts[band]} ${words}`).join(', ') || 'none';
+const lines = [`Unassigned: ${line(split.unassigned)}`, `Assigned: ${line(split.assigned)}`];
+if (agentsFree !== null && agentsFree !== undefined) lines.push(`Agents free: ${agentsFree || 'none'}`);
+return { title, body: lines.join('\n') };
+}
+
+// Pure. Whether to notify now: something new became urgent, or a missed
+// lead is still there and it was last said long enough ago.
+function shouldNotifyWarning(fresh, missedCount, lastAt, now) {
+if (fresh.newMissed || fresh.newSoon || fresh.newDue) return true;
+return missedCount > 0 && now - (lastAt || 0) >= MISSED_REMIND_MS;
 }
 
 // Pure. Which leads have not been warned about yet, and the record once
@@ -8587,13 +8596,12 @@ return Number.isNaN(date.getTime()) || date.getFullYear() < 2000 ? null : date;
 function watchLead(lead, list) {
 const pending = list === PAGE_PENDING;
 const same = [lead.name, pending ? lead.reg : lead.registration, lead.campaign].map((v) => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ')).join('||');
-return { key: pending ? `pending||${lead.key}` : lead.key, slaDate: watchDueDate(pending ? lead.nextActionDate : lead.slaDate), status: pending ? '' : lead.status, assigned: !!lead.assigned, list, same };
+return { key: pending ? `pending||${lead.key}` : lead.key, slaDate: watchDueDate(pending ? lead.nextActionDate : lead.slaDate), status: pending ? '' : lead.status, assigned: !!lead.assigned, list, same, type: pending ? String(lead.callbackType || '') : '' };
 }
 
 // Pure. Both lists as one, a lead on both counted once at its more urgent.
 function mergeWatchedLeads(slaLeads, pendingLeads) {
-const overduePending = (l) => l.list === PAGE_PENDING && l.slaDate && new Date(l.slaDate).getTime() <= Date.now();
-const urgency = (l) => (l.status === 'Missed' ? -Infinity : (l.slaDate && !overduePending(l) ? new Date(l.slaDate).getTime() : Infinity));
+const urgency = (l) => (l.status === 'Missed' ? -Infinity : (l.slaDate ? new Date(l.slaDate).getTime() : Infinity));
 const merged = slaLeads.slice();
 const indexBySame = new Map(merged.map((l, i) => [l.same, i]));
 pendingLeads.forEach((p) => {
@@ -8641,7 +8649,10 @@ function watchedLeads() {
 readPageInView();
 const sla = watchSnapshots.sla ? watchSnapshots.sla.leads : currentCustomers.map((l) => watchLead(l, PAGE_SLA));
 const pending = watchSnapshots.pending ? watchSnapshots.pending.leads : currentPendingCustomers.map((l) => watchLead(l, PAGE_PENDING));
-return mergeWatchedLeads(sla, pending);
+// Of the Pending list only the new leads count: they are the SLA leads,
+// and one that is stuck or sitting in a queue can drop off the SLA list.
+// Automatic and manual reschedules are not warned about.
+return mergeWatchedLeads(sla, pending.filter((l) => l.type === WATCHED_PENDING_TYPE));
 }
 
 function updateMissedWarning() {
@@ -8656,12 +8667,12 @@ missedWarned.missed = fresh.missed;
 updateWatchReadLine();
 // With the panel in view the tiles already say it.
 if (!isPanelOutOfView()) return;
-const listOf = new Map(leads.map((l) => [l.key, l.list]));
-const pendingIn = (newKeys) => newKeys.filter((k) => listOf.get(k) === PAGE_PENDING).length;
-const totals = { missed: keys.missed.length, soon: keys.soon.length, due: keys.due.length };
-// The 5 minute warning keeps its own slot, so a 15 minute one never replaces it.
-showMissedNotification(warningNotification({ soon: fresh.newSoon }, totals, keys.waiting.length, pendingIn(fresh.newKeys.soon)), 'sla-manager-due-5');
-showMissedNotification(warningNotification({ due: fresh.newDue, missed: fresh.newMissed }, totals, keys.waiting.length, pendingIn([...fresh.newKeys.due, ...fresh.newKeys.missed])), 'sla-manager-due-15');
+const now = Date.now();
+if (!shouldNotifyWarning(fresh, keys.missed.length, missedWarned.notifiedAt, now)) return;
+// The agents as last read; with none read, that line is left out.
+const roster = getAgentRoster();
+const agentsFree = roster.length ? roster.filter(isAgentFree).length : null;
+if (showMissedNotification(warningNotification(keys.split, agentsFree), 'sla-manager-warning')) missedWarned.notifiedAt = now;
 }
 
 // Not while anything else is scanning, assigning, checking or sending, a
@@ -8941,7 +8952,8 @@ const both = mergeWatchedLeads(
 [watchLead(pendingRow('jo  example', new Date(now + 2 * 60000)), PAGE_PENDING), watchLead(pendingRow('Al Sample', new Date(now + 30 * 60000)), PAGE_PENDING), watchLead(pendingRow('Di Other', new Date(now - 60000)), PAGE_PENDING)]);
 check('a lead on both lists is counted once, at its more urgent', both.map((l) => `${l.list}:${l.same.split('||')[0]}`), ['pending:jo example', 'sla:al sample', 'pending:di other']);
 const bothKeys = missedWarningKeys(both, now);
-check('and the counts are over both lists, an overdue Pending lead left out', [bothKeys.missed.length, bothKeys.soon.length, bothKeys.due.length], [0, 2, 0]);
+check('and the counts are over both lists', [bothKeys.missed.length, bothKeys.soon.length, bothKeys.due.length], [1, 2, 0]);
+check('a Pending lead carries its callback type, so only new ones are watched', [watchLead(pendingRow('Jo Example', new Date(now + 60000), { callbackType: 'New' }), PAGE_PENDING).type, watchLead(pendingRow('Jo Example', new Date(now + 60000), { callbackType: 'Auto Rescheduled' }), PAGE_PENDING).type, watchLead(slaRow('Jo Example', 3), PAGE_SLA).type], ['New', 'Auto Rescheduled', '']);
 check('a lead still to do between done leads is stuck', [stuckQueueRows([true, false, true, true]), stuckQueueRows([false, false, true, true]), stuckQueueRows([true, true, false]), stuckQueueRows([false, true, false, false, true, false])], [[2], [], [], [3, 4]]);
 check('the stuck notice names the agent and the row', [stuckQueueText([{ agentName: 'Agent Alpha', stuckRows: [2] }, { agentName: 'Agent Bravo', stuckRows: [] }]), stuckQueueText([])], ['Agent Alpha has 1 lead stuck in the queue (row 2). It has not presented, so ask them to open it.', '']);
 const readAt = new Date(2026, 10, 13, 12, 14).getTime();
@@ -8951,11 +8963,14 @@ lead('a', -20, { status: 'Missed' }), lead('b', -1), lead('c', 4), lead('d', 15)
 lead('f', 3, { assigned: true }), lead('g', -30, { status: 'Missed', assigned: true }), lead('h', null), lead('i', 6)
 ];
 const keys = missedWarningKeys(leads, now);
-check('missed is marked Missed or past its time; then within 5 minutes; then within 15; assigned leads count too, and waiting lists the ones nobody holds', keys, { missed: ['a', 'b', 'g'], soon: ['c', 'f'], due: ['d', 'i'], waiting: ['a', 'b', 'c', 'd', 'i'] });
-check('a notification leads with what changed, then what to do, then the whole picture', warningNotification({ soon: 2 }, { missed: 1, soon: 2, due: 3 }, 1), { title: '2 leads due in 5 min', body: 'Assign now: 1 not with an agent.\nNow: 1 missed · 2 in 5 min · 3 in 15 min' });
-check('missed comes first and shouts', warningNotification({ due: 3, missed: 1 }, { missed: 1, soon: 0, due: 3 }, 0).title + ' | ' + warningNotification({ due: 3, missed: 1 }, { missed: 1, soon: 0, due: 3 }, 0).body, '1 lead MISSED, 3 due in 15 min | All with agents. Nothing to assign.\nNow: 1 missed · 3 in 15 min');
-check('Pending leads are named in the title', [warningNotification({ due: 2 }, { missed: 0, soon: 0, due: 2 }, 2, 2).title, warningNotification({ due: 2 }, { missed: 0, soon: 0, due: 2 }, 2, 1).title], ['2 leads due in 15 min (Pending)', '2 leads due in 15 min (1 Pending)']);
-check('nothing new, no notification', warningNotification({ soon: 0 }, { missed: 2, soon: 0, due: 0 }, 2), null);
+check('missed is marked Missed or past its time; then within 5 minutes; then within 15; assigned leads count too, and waiting lists the ones nobody holds', { missed: keys.missed, soon: keys.soon, due: keys.due, waiting: keys.waiting }, { missed: ['a', 'b', 'g'], soon: ['c', 'f'], due: ['d', 'i'], waiting: ['a', 'b', 'c', 'd', 'i'] });
+const none = { missed: 0, soon: 0, due: 0 };
+check('the notification: totals in the title with missed first, then who holds them, then agents free', warningNotification({ unassigned: { missed: 1, soon: 2, due: 0 }, assigned: { missed: 1, soon: 1, due: 0 } }, 2), { title: '2 MISSED · 3 due in 5 mins', body: 'Unassigned: 1 missed, 2 due in 5 mins\nAssigned: 1 missed, 1 due in 5 mins\nAgents free: 2' });
+check('an empty line says none, and no agents free says none', warningNotification({ unassigned: none, assigned: { missed: 0, soon: 1, due: 2 } }, 0), { title: '1 due in 5 mins · 2 due in 15 mins', body: 'Unassigned: none\nAssigned: 1 due in 5 mins, 2 due in 15 mins\nAgents free: none' });
+check('agents not read: that line is left out; nothing urgent: no notification', [warningNotification({ unassigned: { missed: 0, soon: 0, due: 1 }, assigned: none }, null).body, warningNotification({ unassigned: none, assigned: none }, 3)], ['Unassigned: 1 due in 15 mins\nAssigned: none', null]);
+check('the split counts each lead once by who holds it', keys.split, { unassigned: { missed: 2, soon: 1, due: 2 }, assigned: { missed: 1, soon: 1, due: 0 } });
+const quiet = { newMissed: 0, newSoon: 0, newDue: 0 };
+check('notify on anything new; remind while a lead is still missed, every five minutes; never otherwise', [shouldNotifyWarning({ ...quiet, newDue: 1 }, 0, now, now), shouldNotifyWarning(quiet, 2, now - 4 * 60000, now), shouldNotifyWarning(quiet, 2, now - 5 * 60000, now), shouldNotifyWarning(quiet, 0, now - 60 * 60000, now), shouldNotifyWarning(quiet, 2, 0, now)], [true, false, true, false, true]);
 check('the title prefix', [[1, 2, 3], [2, 0, 0], [0, 1, 0], [0, 0, 1], [2, 0, 3], [0, 0, 0]].map(([m, s, d]) => missedTitlePrefix(m, s, d)), ['(1 missed, 2 in 5 min, 3 in 15) ', '(2 missed) ', '(1 in 5 min) ', '(1 in 15) ', '(2 missed, 3 in 15) ', '']);
 check('the prefix is found again whatever the counts', ['(1 missed, 2 in 5 min, 3 in 15) Konnect', '(1 in 15) Konnect', '(12 missed) Konnect', '(4 in 5 min, 1 in 15) Konnect', '(beta) Konnect'].map((t) => t.replace(MISSED_TITLE_PATTERN, '')), ['Konnect', 'Konnect', 'Konnect', 'Konnect', '(beta) Konnect']);
 const first = newMissedWarnings(keys, { due: {}, soon: {}, missed: {} });

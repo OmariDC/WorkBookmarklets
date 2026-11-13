@@ -62,9 +62,15 @@ const nav = document.querySelector('nav.navbar.navbar-inverse.navbar-fixed-top')
 return !!(nav && nav.querySelector('ul.nav.navbar-right.top-nav'));
 }
 
+// After a time out Konnect can put its login box over the page it was on,
+// with the menus still there, so a shown password box beside a Login button
+// counts as logged out too.
 function onLoginPage() {
 const password = document.querySelector('input[type="password"]');
-return !!password && !konnectNavReady();
+if (!password) return false;
+if (!konnectNavReady()) return true;
+const shown = (el) => !!el && !!(el.offsetWidth || el.offsetHeight);
+return shown(password) && Array.from(document.querySelectorAll('button[ng-click="login()"], button.btn-login')).some(shown);
 }
 
 function showLoginWaitNote() {
