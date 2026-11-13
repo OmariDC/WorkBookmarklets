@@ -3028,6 +3028,13 @@ return bookings.some((b) => at - b >= -5 * 60 * 1000 && at - b <= 60 * 60 * 1000
 });
 if (bookedSend) return verdict('OK', `Booked and sent to ${emDealerOf(bookedSend)} via Enquiry Max on ${formatShortTime(eventTimeMs(bookedSend.EventTime))}`);
 }
+// Spoken to and not interested: there is nothing to pass to a dealership.
+// The conversation can be filed under another of the customer's leads.
+if (/not interested/i.test(finalOutcome)) {
+const spoke = (allItems || []).some((i) => Number(i.TimelineItemType) === 3 && (eventTimeMs(i.EventTime) || 0) >= (createdMs || 0) - 2 * 60 * 1000
+&& /outcome of spoke to customer|took an inbound call/i.test(String(i.BelowLineTitle || '')));
+if (spoke) return verdict('OK', `Closed as ${finalOutcome} after speaking to the customer`);
+}
 // Passed to Enquiry Max after the full run of calls is a normal close.
 // The calls can be spread over this customer's other leads.
 const callsSince = (allItems || []).filter((i) => isAttemptItem(i) && (eventTimeMs(i.EventTime) || 0) >= (createdMs || 0) - 2 * 60 * 1000).length;
@@ -5968,6 +5975,10 @@ const undone = undoNationalVerdictChange(changed);
 check('undo puts the check\'s verdict back', [undone.verdict, undone.verdictReason, undone.resetCampaign, undone.verdictChange], [RE_SETUP, 'nowhere', 'Vauxhall - Enquiry - Used', undefined]);
 check('changing to Re setup fills the campaign', applyNationalVerdictChange({ status: 'CLASSIFIED', verdict: 'OK', verdictReason: 'x', campaign: 'Vauxhall - Enquiry - Used' }, RE_SETUP, '').resetCampaign, 'Vauxhall - Enquiry - Used');
 
+const notInterested = [created(1400040, '10T09:00'), call(1400040, '10T09:30', 'Spoke to Customer', `Sales -> Customer Hub Team -> No Appointment -> Not Interested at ${NAT}`)];
+check('spoken to and not interested is OK with no send', run(1400040, notInterested, { exportOutcome: 'Not Interested', attempts: '1', lastContact: '10/11/2026 09:30' }).verdict, 'OK');
+const notSpoken = [created(1400041, '10T09:00'), call(1400041, '10T09:30', 'Update Outcomes (No Call Made)', `Sales -> Customer Hub Team -> No Appointment -> Not Interested at ${NAT}`)];
+check('not interested without a conversation is still Re setup', run(1400041, notSpoken, { exportOutcome: 'Not Interested', attempts: '1', lastContact: '10/11/2026 09:30' }).verdict, RE_SETUP);
 // Misdirected starts as Check; the lead details decide it.
 const misdirectedLead = [created(1400023, '08T20:24')];
 check('Misdirected starts as Check', run(1400023, misdirectedLead, { exportOutcome: 'Misdirected - Created VR Message', attempts: '1', lastContact: '09/11/2026 12:52' }).verdict, 'Check');
