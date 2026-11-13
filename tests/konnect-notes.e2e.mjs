@@ -553,7 +553,7 @@ async function otherStaff() {
   const eo = await leadResetTypes(page, '#callA', 'eo');
   const cad = await leadResetTypes(page, '#pcA', 'cad');
   check('the words Lead Re setup types still expand', eo.prevented && /EMAIL ONLY LEAD: jo@example\.com/.test(eo.value) && cad.prevented && /actioned by dealer/i.test(cad.value), [eo, cad]);
-  check('the call outcome is never touched', await page.evaluate(() => document.querySelector('#callOutcome').selectedIndex === 0 && window.outcomeChanges === 0) && !/Call outcome/.test(await toastText(page)));
+  check('the call outcome follows the note for other staff too', await page.evaluate(() => /message left/i.test(document.querySelector('#callOutcome').selectedOptions[0].textContent) && window.outcomeChanges === 1), await page.evaluate(() => [document.querySelector('#callOutcome').selectedOptions[0].textContent, window.outcomeChanges]));
   await page.click('#callA');
   check('Alt+B does nothing and is left to the page', await altB(page) === false && await page.evaluate(() => !KonnectNotes.state.open));
   await page.click('#kn-notes-launcher-section .kn-launcher');

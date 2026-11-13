@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.18.0'
+    version: '1.19.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -5013,11 +5013,11 @@
     return normaliseText(text).toLowerCase().replace(/[^a-z0-9]/g, '');
   }
 
-  /* Owner only. Sets the call outcome a Call Notes phrase stands for. One
-     already chosen is left alone unless the owner presses the button in the
-     toast. Nothing else on the lead is touched. */
+  /* For everyone, as part of the call notes. Sets the call outcome a Call
+     Notes phrase stands for. One already chosen is left alone unless the
+     agent presses the button in the toast. Nothing else on the lead is
+     touched. */
   function setCallOutcomeForNote(phrase) {
-    if (!ownerTools()) return;
     const wanted = CALL_OUTCOME_FOR_PHRASE[phrase.id];
     if (!wanted) return;
     const select = Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible);
