@@ -590,7 +590,7 @@ async function fairShare() {
   const team = () => t.page.evaluate(() => Object.fromEntries(Array.from(document.querySelectorAll('#_slaTeamToday [data-agent]')).map((row) => [row.dataset.agent, Array.from(row.querySelectorAll('span')).slice(1).map((el) => el.textContent.trim()).join(' | ')])));
   const fairLine = () => t.page.evaluate(() => { const el = document.getElementById('_slaFairLine'); return el.hidden ? '' : el.textContent; });
   const list = await t.page.evaluate(() => ({ labels: Array.from(document.querySelectorAll('#assignAgentList label')).map((l) => l.textContent.replace(/\s+/g, ' ').trim()), extras: document.querySelectorAll('#assignAgentList .sla-share, #assignAgentList .sla-sharenote').length, team: !!document.getElementById('_slaTeamToday') }));
-  check('the agents list is name, status and count only', list.labels.join('|') === 'Agent Alpha · Shift Start1|Agent Bravo · Live Chat0|Agent Charlie0' && list.extras === 0 && !list.team, list);
+  check('the agents list is name, status and count only', list.labels.join('|') === 'Agent Alpha1|Agent Bravo0|Agent Charlie0' && list.extras === 0 && !list.team, list);
   await shot(t.page, 'agents-list-as-before.png');
   await t.page.click('#_slaTodaySummary .sla-chip:has-text("Team")');
   let s = await team();

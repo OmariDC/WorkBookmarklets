@@ -3804,7 +3804,7 @@ return `
 <label ${a.status ? `title="${escapeHtml(a.status)}"` : ''}>
 <input type="checkbox" class="assign-agent-checkbox" value="${escapeHtml(a.id)}" data-name="${escapeHtml(a.name)}" ${excludedAgentIds.has(a.id) ? '' : 'checked'} onchange="window._updateAssignPreview()">
 <span class="sla-dot" style="background: ${statusDotColor(a.status)};"></span>
-${escapeHtml(a.name)}${a.status ? `<span class="sla-small" style="color: var(--wb-muted, #64748b); font-weight: 400;"> · ${escapeHtml(a.status)}${isAgentFree(a) ? ', free' : ''}</span>` : ''}${queueBadge}
+${escapeHtml(a.name)}${queueBadge}
 </label>`;
 }).join('') + renderStatusesSeen(agents);
 }
@@ -3822,7 +3822,8 @@ const before = seen.length;
 (agents || []).forEach((a) => { const name = String(a.status || '').trim(); if (name && !seen.includes(name)) seen.push(name); });
 if (seen.length !== before) { try { localStorage.setItem(STATUSES_SEEN_KEY, JSON.stringify({ day: new Date().toDateString(), names: seen })); } catch (error) { /* shown this once */ } }
 if (!seen.length) return '';
-return `<div class="sla-small" style="color: var(--wb-muted, #64748b); margin-top: 4px;" title="Rescue only gives leads to agents marked free">Statuses seen today: ${escapeHtml(seen.slice().sort().join(', '))}</div>`;
+const free = (name) => (isAgentFree({ status: name }) ? `${name} (free)` : name);
+return `<div class="sla-small" style="color: var(--wb-muted, #64748b); margin-top: 4px;" title="Rescue only gives leads to agents whose status is marked free">Statuses seen today: ${escapeHtml(seen.slice().sort().map(free).join(', '))}</div>`;
 }
 
 // All and None, then the cap on how many leads a run touches, applied before
