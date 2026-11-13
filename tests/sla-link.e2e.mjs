@@ -519,7 +519,7 @@ async function bookingChecks() {
   const verifies = async () => (await toLive(manager)).filter((m) => m.type === 'workTools:verify');
   const waitVerifies = (count) => waitFor(verifies, (v) => v.length >= count);
   const answer = (id, over) => fromLive(manager, { type: 'workTools:verified', id, ok: true, found: true, appointment: true, outcome: true, sent: false, text: '', ...over });
-  const copyRows = () => manager.evaluate(async () => { let text = null; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (t) => { text = t; return Promise.resolve(); } } }); const b = document.createElement('button'); window._copyBookingRows(b); await new Promise((r) => setTimeout(r, 50)); return { text, label: b.textContent }; });
+  const copyRows = () => manager.evaluate(async () => { let text = null; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (t) => { text = t; return Promise.resolve(); } } }); const b = document.createElement('button'); window._copyBookingRows(b, true); await new Promise((r) => setTimeout(r, 50)); return { text, label: b.textContent }; });
   // Later bookings are added on the manager page: another tab can read a
   // value a moment old and write it back over an answer just stored.
   const addBooking = (b) => manager.evaluate((x) => { const v = JSON.parse(localStorage.getItem('_workToolsBookingChecks')); v.bookings.push(x); localStorage.setItem('_workToolsBookingChecks', JSON.stringify(v)); }, b);

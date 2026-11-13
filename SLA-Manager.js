@@ -5130,12 +5130,32 @@ pumpBookingChecks();
 renderTodaySummaryInPlace();
 };
 
-window._copyBookingRows = function(buttonEl) {
+// Pure. The bookings a copy takes: the ones not copied yet whose check has
+// finished (so the row carries its final Checked on kL), or every one when
+// all is asked for.
+function bookingsToCopy(entries, all) {
+return all ? entries.slice() : entries.filter((e) => !e.copiedAt && e.state !== 'waiting');
+}
+
+// Copies the new rows and remembers them, so the next copy holds only what
+// has not gone onto the sheet yet. all: every row again, as a way back.
+window._copyBookingRows = function(buttonEl, all) {
 const entries = loadBookingChecks();
-const restore = () => { buttonEl.textContent = 'Copy rows'; };
-if (!entries.length) { buttonEl.textContent = 'No bookings'; setTimeout(restore, 1200); return; }
-navigator.clipboard.writeText(entries.map(bookingSheetRow).join('\n')).then(() => {
-buttonEl.textContent = `✓ Copied ${entries.length}`;
+const label = buttonEl.textContent;
+const restore = () => { buttonEl.textContent = label; };
+const rows = bookingsToCopy(entries, !!all);
+const waiting = entries.filter((e) => !e.copiedAt && e.state === 'waiting').length;
+if (!rows.length) {
+buttonEl.textContent = !entries.length ? 'No bookings' : (waiting ? `${waiting} still being checked` : 'Nothing new');
+setTimeout(restore, 1500);
+return;
+}
+const ids = rows.map((e) => e.id);
+navigator.clipboard.writeText(rows.map(bookingSheetRow).join('\n')).then(() => {
+const at = new Date().toISOString();
+updateBookingChecks((fresh) => fresh.map((e) => (ids.includes(e.id) && !e.copiedAt ? { ...e, copiedAt: at } : e)));
+showToast(`Copied ${rows.length} booking row${rows.length === 1 ? '' : 's'}.${!all && waiting ? ` ${waiting} still being checked.` : ''}`);
+buttonEl.textContent = `✓ Copied ${rows.length}`;
 setTimeout(restore, 1200);
 }).catch(() => {
 buttonEl.textContent = '✗ Failed';
@@ -5157,16 +5177,18 @@ const note = checking ? 'Checking on Konnect Live now.'
 : '';
 const button = e.state === 'checked' ? '' : `<button type="button" class="sla-sec" data-id="${escapeHtml(e.id)}" onclick="window._checkBookingNow(this.dataset.id)" ${checking ? 'disabled' : ''}>Check now</button>`;
 return `<div class="sla-bk" data-booking="${escapeHtml(e.id)}" data-state="${escapeHtml(e.state || '')}">
-<span class="sla-nm"><i>${escapeHtml(e.name || 'No name')}</i>${e.state === 'checked' ? '<span class="sla-tag done">Checked</span>' : (e.state === 'failed' ? '<span class="sla-tag warn">Check by hand</span>' : '')}</span>${button}
+<span class="sla-nm"><i>${escapeHtml(e.name || 'No name')}</i>${e.state === 'checked' ? '<span class="sla-tag done">Checked</span>' : (e.state === 'failed' ? '<span class="sla-tag warn">Check by hand</span>' : '')}${e.copiedAt ? '<span class="sla-tag" data-copied="1">Copied</span>' : ''}</span>${button}
 <span class="sla-bkmeta">${about}${results}</span>
 ${note ? `<span class="sla-bknote${e.state === 'failed' ? ' warn' : ''}">${escapeHtml(note)}</span>` : ''}
 </div>`;
 }).join('');
 const open = entries.some((e) => e.state !== 'checked');
+const toCopy = bookingsToCopy(entries, false).length;
 return `<div id="_slaBookings" class="sla-card">
 <div class="sla-cf"><span class="sla-small sla-grow">Each booking is checked on Konnect Live a few minutes after it is made.</span>
 ${open ? '<button type="button" class="sla-sec" id="_slaBookingsCheckAll" onclick="window._checkBookingNow()">Check now</button>' : ''}
-<button type="button" class="sla-sec" id="_slaBookingsCopy" onclick="window._copyBookingRows(this)" title="Copies every booking sheet row, with Y in Checked on kL for the checked ones">Copy rows</button></div>
+<button type="button" class="sla-sec" id="_slaBookingsCopy" onclick="window._copyBookingRows(this)" title="Copies the sheet rows not copied yet whose check has finished, with Y in Checked on kL for the checked ones">Copy new rows${toCopy ? ` (${toCopy})` : ''}</button>
+${entries.some((e) => e.copiedAt) ? '<button type="button" class="sla-sec" id="_slaBookingsCopyAll" onclick="window._copyBookingRows(this, true)" title="Copies every row again, including the ones already copied">Copy all</button>' : ''}</div>
 ${rows || '<span class="sla-small">No bookings in this shift.</span>'}
 </div>`;
 }
@@ -5181,6 +5203,7 @@ const timing = { ...LIVE_TIMING };
 const t0 = new Date('2026-11-13T10:00:00.000Z').getTime();
 const iso = (ms) => new Date(ms).toISOString();
 const entry = (over) => ({ id: 'bk-1', name: 'Sam Buyer', row: ['13/11/2026', 'Sam Buyer', 'Crawley', 'Test Drive', '14 November 2026', '10:00', '', 'x'].join('\t'), bookedAt: iso(t0), state: 'waiting', tries: 0, appointment: null, outcome: null, sent: null, ...over });
+check('a copy takes only finished bookings not copied before, or all of them when asked', [bookingsToCopy([entry({ id: 'a', state: 'checked' }), entry({ id: 'b', state: 'checked', copiedAt: 'T' }), entry({ id: 'c' }), entry({ id: 'd', state: 'failed' })], false).map((e) => e.id), bookingsToCopy([entry({ id: 'a' }), entry({ id: 'b', copiedAt: 'T' })], true).map((e) => e.id)], [['a', 'd'], ['a', 'b']]);
 check('not due before three minutes', isBookingCheckDue(entry({}), t0 + 179000, timing), false);
 check('due three minutes after booking', isBookingCheckDue(entry({}), t0 + 180000, timing), true);
 check('after a try, not due again before five minutes', isBookingCheckDue(entry({ tries: 1, checkedAt: iso(t0 + 180000) }), t0 + 180000 + 299000, timing), false);

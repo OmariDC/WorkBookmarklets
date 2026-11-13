@@ -960,9 +960,17 @@ async function bookingsToday() {
   r = await rows();
   check('the answer shows on the row and the chip without a redraw of the panel', r['bk-jo'].state === 'checked' && r['bk-jo'].meta.endsWith('Sent to dealership ✓') && (await chip()).text === 'Bookings 2 of 3 checked', { row: r['bk-jo'], chip: await chip() });
 
-  const copied = await t.page.evaluate(async () => { let text = null; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (x) => { text = x; return Promise.resolve(); } } }); document.getElementById('_slaBookingsCopy').click(); await new Promise((res) => setTimeout(res, 50)); return { text, label: document.getElementById('_slaBookingsCopy').textContent }; });
+  const copied = await t.page.evaluate(async () => { let text = null; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (x) => { text = x; return Promise.resolve(); } } }); window._copyBookingRows(document.getElementById('_slaBookingsCopy'), true); await new Promise((res) => setTimeout(res, 50)); return { text, label: document.getElementById('_slaBookingsCopy').textContent }; });
   const cells = (copied.text || '').split('\n').map((l) => l.split('\t'));
-  check('Copy rows copies every sheet row, Y in the seventh cell for checked bookings only', cells.map((c) => `${c[1]}:${c[6]}`).join() === 'Sam Buyer:Y,Jo Example:Y,Pat Example:' && cells.every((c) => c.length === 8) && /Copied 3/.test(copied.label), copied);
+  check('Copy rows copies every sheet row, Y in the seventh cell for checked bookings only', cells.map((c) => `${c[1]}:${c[6]}`).join() === 'Sam Buyer:Y,Jo Example:Y,Pat Example:' && cells.every((c) => c.length === 8), copied);
+
+  // Copy new rows takes each finished booking once.
+  const copyNew = () => t.page.evaluate(async () => { let text = null; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (x) => { text = x; return Promise.resolve(); } } }); const b = document.getElementById('_slaBookingsCopy'); b.click(); await new Promise((res) => setTimeout(res, 80)); return { text, label: b.textContent, tags: document.querySelectorAll('#_slaBookings [data-copied]').length, all: !!document.getElementById('_slaBookingsCopyAll') }; });
+  await t.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('_workToolsBookingChecks')); s.bookings.forEach((b) => delete b.copiedAt); localStorage.setItem('_workToolsBookingChecks', JSON.stringify(s)); });
+  const firstCopy = await copyNew();
+  const firstNames = (firstCopy.text || '').split('\n').map((l) => l.split('\t')[1]);
+  const secondCopy = await copyNew();
+  check('Copy new rows copies each finished booking once, tags it Copied and offers Copy all', firstNames.includes('Sam Buyer') && firstNames.includes('Jo Example') && firstCopy.tags === firstNames.length && secondCopy.text === null && secondCopy.label === 'Nothing new' && secondCopy.all, { firstCopy, secondCopy });
 
   await t.page.click('#_slaBookingsCheckAll');
   await waitFor(t.page, () => window.toLive.filter((m) => m.type === 'workTools:verify').length === 2, null, 4000);
@@ -970,7 +978,7 @@ async function bookingsToday() {
   check('Check now at the top asks about every booking not yet checked', sent.length === 2 && sent[1].id === 'bk-pat', sent.map((m) => m.id));
   await t.page.evaluate(() => window.fromLive({ type: 'workTools:verified', id: 'bk-pat', ok: true, found: true, appointment: true, outcome: true, sent: true, text: '' }));
   const all = await chip();
-  check('with every booking checked the chip is no longer amber and Check now has gone', all.text === 'Bookings 3 of 3 checked' && !all.warn && await t.page.evaluate(() => !document.querySelector('#_slaBookings button:not(#_slaBookingsCopy)')), all);
+  check('with every booking checked the chip is no longer amber and Check now has gone', all.text === 'Bookings 3 of 3 checked' && !all.warn && await t.page.evaluate(() => !document.querySelector('#_slaBookings button:not(#_slaBookingsCopy):not(#_slaBookingsCopyAll)')), all);
   // A new booking from the agent desktop arrives as a storage event.
   const other = await t.context.newPage();
   await other.goto(`${base}/`);
