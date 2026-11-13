@@ -1,0 +1,190 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Mock agent desktop with several leads</title>
+<!-- One customer with several lead tabs, for the "part exchange on another
+     lead" tests. window.buildLeads([...]) draws the tabs. Each lead has its
+     own pane and its own scope (theActivity), folding sections (Details,
+     Vehicle of Interest, Part Exchange, Outcomes) and three linked outcome
+     lists. Part Exchange and Outcomes start folded. Each outcome list starts
+     on an unknown "?" option that goes once a real one is chosen, as Konnect
+     does. The ng-model names of the PX boxes are made up: the real ones are
+     not known. All values are fictional. -->
+<style>
+body { font-family: Arial, sans-serif; margin: 0; padding: 10px 10px 10px 110px; background: #eee; }
+.userQuotesAffix { position: fixed; left: 10px; top: 60px; width: 80px; }
+.btn-call-nav { display: inline-block; width: 60px; height: 60px; border-radius: 30px; }
+.nav-tabs { list-style: none; padding: 0; display: flex; gap: 8px; }
+.nav-tabs li.active a { font-weight: bold; }
+.tab-pane { display: none; } .tab-pane.active { display: block; }
+.panel { border: 1px solid #bbb; margin: 6px 0; padding: 4px; background: #fff; }
+.panel-collapse { display: none; } .panel-collapse.in { display: block; }
+textarea { display: block; width: 520px; height: 60px; }
+.row { margin: 6px 0; }
+.toggle { display: inline-block; padding: 2px 8px; border: 1px solid #888; }
+</style></head><body>
+<div class="userQuotesAffix">
+ <section class="cassini-section"><a class="btn btn-circle btn-lgr btn-call-nav" style="background:rgb(40,180,60)">ok</a></section>
+ <section class="cassini-section"><a class="btn btn-circle btn-lgr btn-call-nav" style="background:rgb(40,190,190)">car</a></section>
+</div>
+<div class="row"><b>Name</b> <span id="custName">Jo Example</span></div>
+<div class="row" id="emailRow"><b>Email</b> <span class="ng-scope" id="custEmail">jo@example.com</span></div>
+<div class="row"><label>Call Outcome</label> <select ng-model="selected.CallOutcome" id="callOutcome"><option>(Select a Call Outcome)</option><option>Spoke to Customer</option><option>No Answer - Message Left</option></select></div>
+<button id="finished" onclick="window.finishedPresses += 1">Finished</button>
+<div id="leads"><ul class="nav nav-tabs" id="tabs"></ul><div class="tab-content" id="panes"></div></div>
+<script>
+window.outcomeChanges = 0;
+window.finishedPresses = 0;
+document.querySelector('#callOutcome').addEventListener('change', () => { window.outcomeChanges += 1; });
+
+const OUTCOMES = {
+  'Customer Hub Team': {
+    Appointment: ['Face To Face', 'Phone Call'],
+    Ongoing: ['Defer to Site', 'Email Only Lead'],
+    'No Opportunity': ['Catch All', 'Duplicate Lead', 'Not Interested']
+  },
+  Sales: { ART: ['Appointment'] }
+};
+const scopes = {};
+const byPath = (root, path) => path.split('.').slice(1).reduce((at, key) => (at == null ? at : at[key]), root);
+function setPath(root, path, value) {
+  const keys = path.split('.').slice(1);
+  const last = keys.pop();
+  keys.reduce((at, key) => at[key], root)[last] = value;
+}
+
+function drawBoxes(pane, activity) {
+  pane.querySelectorAll('input[ng-model]').forEach((input) => { input.value = byPath(activity, input.getAttribute('ng-model')) || ''; });
+  pane.querySelectorAll('toggle').forEach((toggle) => {
+    const on = !!byPath(activity, toggle.getAttribute('ng-model'));
+    const control = toggle.querySelector('.toggle');
+    control.classList.toggle('off', !on);
+    control.textContent = on ? 'Has Part Exchange' : 'No Part Exchange';
+  });
+}
+
+function pxBody() {
+  const model = (name) => `theActivity.SalesLead.LeadDetails.PartExchange.${name}`;
+  return '<toggle ng-model="theActivity.SalesLead.LeadDetails.HasPartExchange"><div class="toggle off" ng-click="onSwitch($event)">No Part Exchange</div></toggle>' +
+    `<input placeholder="Vehicle Brand" ng-model="${model('Brand')}"><input placeholder="Vehicle Model" ng-model="${model('Model')}">` +
+    `<input placeholder="Reg Number" ng-model="${model('Reg')}"><input placeholder="Mileage" ng-model="${model('Mileage')}">` +
+    `<input placeholder="Valuation" ng-model="${model('Valuation')}">`;
+}
+
+// The options a list offers. The unknown option is only there until a real one is chosen.
+function fillOutcomeList(select, names, chosen) {
+  select.innerHTML = (chosen ? '' : '<option value="?" selected></option>') +
+    names.map((name, index) => `<option value="number:${index + 11}"${name === chosen ? ' selected' : ''}>${name}</option>`).join('');
+  select.style.display = names.length ? '' : 'none';
+}
+function drawOutcomes(pane, activity, lead) {
+  const [one, two, three] = pane.querySelectorAll('select[ng-model^="theActivity.SelectedOutcomeLevel"]');
+  const level2 = OUTCOMES[activity.SelectedOutcomeLevel1] || {};
+  const level3 = (level2[activity.SelectedOutcomeLevel2] || []).filter((name) => !(lead.noDuplicate && name === 'Duplicate Lead'));
+  fillOutcomeList(one, Object.keys(OUTCOMES), activity.SelectedOutcomeLevel1);
+  fillOutcomeList(two, Object.keys(level2), activity.SelectedOutcomeLevel2);
+  fillOutcomeList(three, level3, activity.SelectedOutcomeLevel3);
+}
+
+function section(title, body, open) {
+  return `<div class="panel"><div class="panel-heading"><a class="accordion-toggle" ng-click="toggleOpen()">${title}</a></div>` +
+    `<div class="panel-collapse${open ? ' in' : ''}"><div class="panel-body">${body}</div></div></div>`;
+}
+
+function showTab(id) {
+  document.querySelectorAll('#tabs > li').forEach((li) => li.classList.toggle('active', li.id === `salesTab-${id}`));
+  document.querySelectorAll('#panes > .tab-pane').forEach((pane) => pane.classList.toggle('active', pane.dataset.leadId === String(id)));
+  window.tabShows.push(id);
+}
+
+window.buildLeads = function (leads) {
+  window.tabShows = [];
+  leads.forEach((lead) => {
+    const px = lead.px || {};
+    const activity = {
+      ID: lead.id,
+      CampaignName: lead.campaign,
+      OutcomeFullHierarchy: lead.hierarchy || 'None',
+      CreatedDate: lead.created || '',
+      SelectedOutcomeLevel1: '', SelectedOutcomeLevel2: '', SelectedOutcomeLevel3: '',
+      SalesLead: { LeadDetails: { LeadRequestID: lead.request, Notes: '', HasPartExchange: !!px.on,
+        PartExchange: { Brand: px.make || '', Model: px.model || '', Reg: px.reg || '', Mileage: px.mileage || '', Valuation: px.val || '' } } }
+    };
+    const pane = document.createElement('div');
+    pane.className = 'tab-pane';
+    pane.dataset.leadId = String(lead.id);
+    scopes[lead.id] = {
+      theActivity: activity,
+      $eval: (expr) => byPath(activity, expr),
+      $apply: (expr) => { new Function('theActivity', expr)(activity); drawBoxes(pane, activity); }
+    };
+    pane.innerHTML =
+      section('Details', `<div class="form-group"><label>Lead Request</label><select ng-model="theActivity.SalesLead.LeadDetails.LeadRequestID"><option>(Select)</option><option selected>${lead.request}</option></select></div>` +
+        `<div class="form-group"><label>Initial Notes</label><div><textarea id="init-${lead.id}"></textarea></div></div>` +
+        `<div class="form-group"><label>Call Notes</label><footer class="text-primary"><textarea class="form-control" id="call-${lead.id}" ng-model="theActivity.SalesLead.LeadDetails.Notes"></textarea></footer></div>`, true) +
+      section('Vehicle of Interest', '<input placeholder="Reg Number"><input placeholder="Vehicle Brand"><input placeholder="Vehicle Model"><input placeholder="Fuel Type"><select><option>(Select)</option><option>New</option><option>Used</option></select>', true) +
+      section('Part Exchange', lead.lazyPx ? '' : pxBody(), false) +
+      section('Outcomes', '<select ng-model="theActivity.SelectedOutcomeLevel1"></select><select ng-model="theActivity.SelectedOutcomeLevel2"></select><select ng-model="theActivity.SelectedOutcomeLevel3"></select>', false);
+    document.querySelector('#panes').appendChild(pane);
+    drawBoxes(pane, activity);
+    drawOutcomes(pane, activity, lead);
+
+    pane.addEventListener('click', (event) => {
+      const heading = event.target.closest('a.accordion-toggle');
+      if (heading) {
+        const body = heading.closest('.panel').querySelector('.panel-collapse');
+        body.classList.toggle('in');
+        // A lazy Part Exchange section only draws its boxes when first opened.
+        if (lead.lazyPx && heading.textContent === 'Part Exchange' && !body.querySelector('input')) {
+          body.querySelector('.panel-body').innerHTML = pxBody();
+          drawBoxes(pane, activity);
+        }
+      }
+      const toggle = event.target.closest('toggle');
+      if (toggle) {
+        setPath(activity, toggle.getAttribute('ng-model'), !byPath(activity, toggle.getAttribute('ng-model')));
+        drawBoxes(pane, activity);
+      }
+    });
+    pane.addEventListener('input', (event) => {
+      const model = event.target.matches('input[ng-model]') && event.target.getAttribute('ng-model');
+      if (model) setPath(activity, model, event.target.value);
+    });
+    pane.addEventListener('change', (event) => {
+      const model = event.target.matches('select[ng-model^="theActivity.SelectedOutcomeLevel"]') && event.target.getAttribute('ng-model');
+      if (!model) return;
+      const level = Number(model.slice(-1));
+      const text = event.target.options[event.target.selectedIndex].textContent;
+      activity[`SelectedOutcomeLevel${level}`] = text;
+      for (let below = level + 1; below <= 3; below += 1) activity[`SelectedOutcomeLevel${below}`] = '';
+      window.leadOutcomeChanges.push(lead.id);
+      drawOutcomes(pane, activity, lead);
+    });
+
+    const tab = document.createElement('li');
+    tab.id = `salesTab-${lead.id}`;
+    tab.setAttribute('ng-repeat', 'tab in tabs');
+    tab.innerHTML = `<a ng-click="select()">${lead.campaign}</a>`;
+    tab.querySelector('a').addEventListener('click', () => showTab(lead.id));
+    document.querySelector('#tabs').appendChild(tab);
+  });
+  showTab((leads.find((lead) => lead.active) || leads[0]).id);
+  window.tabShows = [];
+};
+window.leadOutcomeChanges = [];
+window.leadState = (id) => {
+  const a = scopes[id].theActivity;
+  return { outcome: [a.SelectedOutcomeLevel1, a.SelectedOutcomeLevel2, a.SelectedOutcomeLevel3], pxOn: a.SalesLead.LeadDetails.HasPartExchange, px: { ...a.SalesLead.LeadDetails.PartExchange } };
+};
+
+window.angular = {
+  element(node) {
+    return {
+      scope() {
+        const pane = node && node.closest ? node.closest('.tab-pane[data-lead-id]') : null;
+        return pane ? scopes[pane.dataset.leadId] : undefined;
+      },
+      controller() { return null; }
+    };
+  }
+};
+</script>
+</body></html>

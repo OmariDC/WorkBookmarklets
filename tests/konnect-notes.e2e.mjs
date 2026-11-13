@@ -38,7 +38,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const served = ['Konnect-Notes.js', 'Konnect-Booking-Engine.js', 'Konnect-Notes-Phrases.json'];
 const server = http.createServer((req, res) => {
   const name = decodeURIComponent(req.url.split(/[?#]/)[0]).replace(/^\//, '');
-  const file = name === 'index.html' ? mockPage : served.includes(name) ? normalize(join(repo, name)) : '';
+  const file = name === 'index.html' ? mockPage : name === 'two-leads.html' ? join(here, 'konnect-notes-mock', name) : served.includes(name) ? normalize(join(repo, name)) : '';
   if (file && existsSync(file) && statSync(file).isFile()) {
     res.setHeader('Content-Type', name.endsWith('.html') ? 'text/html' : 'text/plain');
     res.end(readFileSync(file));
@@ -60,7 +60,7 @@ async function fresh(options = {}) {
   page.consoleText = [];
   page.on('console', (m) => page.consoleText.push(m.text()));
   page.on('dialog', (d) => d.accept());
-  await page.goto(`${base}index.html${options.hash || ''}`);
+  await page.goto(`${base}${options.page || 'index.html'}${options.hash || ''}`);
   await page.evaluate(([b, o]) => {
     localStorage.setItem('konnectNotes:agentName:v1', 'Sam Tester');
     if (o.stored) localStorage.setItem('konnectNotes:workingConfig:v1', JSON.stringify(o.stored));
@@ -933,6 +933,129 @@ async function ownerHelpers() {
   check('Work Tools sets the owner flag before it loads the tools, and no other switch', flagAt > 0 && flagAt < workTools.indexOf('for (const tool of tools)') && !/KonnectNotesBooking/.test(workTools));
 }
 
+// A customer whose part exchange sits on its own PX valuation lead.
+async function pxOnAnotherLead() {
+  console.log('\nPart exchange on another lead');
+  const pxLead = (extra = {}) => ({ id: 77000001, campaign: 'Leapmotor - P/X Valuation - New', request: 'PX Valuation - New', created: '2026-11-12T21:30:00',
+    px: { on: true, make: 'Ford', model: 'Fiesta', reg: 'AB12CDE', mileage: '45000', val: '3500' }, ...extra });
+  const bookingLead = (extra = {}) => ({ id: 77000002, campaign: 'Leapmotor - Test Drive Request - New', request: 'Test Drive Request - New', active: true, ...extra });
+  const thirdLead = { id: 77000003, campaign: 'Leapmotor - Brochure Request - New', request: 'Brochure Request' };
+  const NOTICE = 'This customer\'s part exchange is on another lead (PX Valuation - New, 12 Nov 21:30).';
+  const PRESS = '.kn-bk-other-px .kn-button:has-text("Use it and close that lead as duplicate")';
+  const DONE = 'Part exchange copied from the other lead. That lead is set to Duplicate Lead.';
+  const start = async (leads, options = {}) => {
+    const page = await fresh({ owner: options.owner !== false, page: 'two-leads.html', before: `window.buildLeads(${JSON.stringify(leads)})` });
+    await page.click(`#call-${options.on || 77000002}`);
+    await page.keyboard.press('Alt+b');
+    if (options.owner !== false) await page.waitForFunction(() => window.KonnectBookingEngine && document.querySelector('.kn-bk-actions'), null, { timeout: 5000 });
+    else await sleep(400);
+    return page;
+  };
+  const cards = (page) => page.evaluate(() => Array.from(document.querySelectorAll('.kn-bk-other-px')).map((card) => ({
+    text: card.querySelector('.kn-bk-notice-text').textContent,
+    buttons: Array.from(card.querySelectorAll('button')).map((b) => b.textContent)
+  })));
+  const status = (page) => page.evaluate(() => document.querySelector('.kn-bk-status')?.textContent || '');
+  const finished = (page) => page.waitForFunction(() => /outcome yourself|set to Duplicate Lead\.|Nothing was copied/.test(document.querySelector('.kn-bk-status')?.textContent || ''), null, { timeout: 15000 });
+  const after = (page) => page.evaluate(() => ({
+    draftPx: KonnectNotes.state.booking.data.px,
+    key: KonnectNotes.state.booking.key,
+    preview: document.querySelector('.kn-bk-preview')?.textContent || '',
+    px: window.leadState(77000001),
+    booking: window.leadState(77000002),
+    activeTab: document.querySelector('#tabs li.active').id,
+    callOutcome: document.querySelector('#callOutcome').selectedIndex,
+    callOutcomeChanges: window.outcomeChanges,
+    finished: window.finishedPresses,
+    changedLeads: Array.from(new Set(window.leadOutcomeChanges)),
+    storageKeys: Object.keys(localStorage).sort(),
+    draftKeys: Object.keys(JSON.parse(Object.entries(localStorage).find(([k]) => /draft/i.test(k))?.[1] || '{}'))
+  }));
+
+  let page = await start([pxLead(), bookingLead()], { owner: false });
+  check('other staff: no notice and no builder', await page.evaluate(() => !document.querySelector('.kn-bk-other-px') && !/another lead/.test(document.body.textContent)));
+
+  page = await start([pxLead(), bookingLead(), thirdLead]);
+  let shown = await cards(page);
+  check('owner: the notice names the other lead and has one button', shown.length === 1 && shown[0].text === NOTICE && shown[0].buttons.join('|') === 'Use it and close that lead as duplicate', shown);
+  await page.evaluate(() => { KonnectNotes.state.booking.openSection = 'px'; KonnectNotes.openBooking(); });
+  shown = await cards(page);
+  check('owner: the notice is also in the Part exchange step', shown.length === 2 && await page.evaluate(() => !!document.querySelector('.kn-bk-content .kn-bk-other-px')), shown);
+  let now = await after(page);
+  check('nothing happens before the press', now.px.outcome.join('') === '' && now.draftPx.status === 'unmentioned' && !now.booking.pxOn && now.changedLeads.length === 0, now);
+  await page.click(PRESS);
+  await finished(page);
+  await sleep(400);
+  now = await after(page);
+  const item = now.draftPx.items[0];
+  check('press: the details are in the draft with part exchange on', now.draftPx.status === 'yes' && item.make === 'Ford' && item.model === 'Fiesta' && item.reg === 'AB12CDE' && item.mileage === '45000' && item.roughVal === '3500', now.draftPx);
+  check('press: the booking text shows the part exchange', /Fiesta/.test(now.preview) && /AB12\s?CDE/.test(now.preview), now.preview);
+  check('press: the booking lead has the PX boxes filled and its switch on', now.booking.pxOn === true && now.booking.px.Brand === 'Ford' && now.booking.px.Model === 'Fiesta' && /AB12\s?CDE/.test(now.booking.px.Reg) && now.booking.px.Mileage.replace(/\D/g, '') === '45000', now.booking);
+  check('press: the PX lead is set to Customer Hub Team > No Opportunity > Duplicate Lead', now.px.outcome.join(' > ') === 'Customer Hub Team > No Opportunity > Duplicate Lead', now.px.outcome);
+  check('press: only the PX lead\'s outcome was touched', now.changedLeads.join() === '77000001' && now.booking.outcome.join('') === '' && (await page.evaluate(() => window.leadState(77000003).outcome.join(''))) === '', now.changedLeads);
+  check('press: back on the booking lead with its own draft', now.activeTab === 'salesTab-77000002' && now.key === 'lead-77000002', [now.activeTab, now.key]);
+  check('press: the status line says what was done', (await status(page)) === DONE, await status(page));
+  check('press: Finished is not pressed and the call outcome is left alone', now.finished === 0 && now.callOutcome === 0 && now.callOutcomeChanges === 0, now);
+  check('press: nothing new is stored and no draft is made for the PX lead', now.storageKeys.join() === 'konnectNotes:agentName:v1,konnectNotes:bookingDrafts:v1,konnectNotes:workingConfig:v1' && now.draftKeys.join() === 'lead-77000002', [now.storageKeys, now.draftKeys]);
+  check('press: the notice is not offered again', (await cards(page)).length === 0, await cards(page));
+  check('no page errors', page.errors.length === 0, page.errors);
+
+  page = await start([pxLead({ noDuplicate: true }), bookingLead()]);
+  await page.click(PRESS);
+  await finished(page);
+  await sleep(400);
+  now = await after(page);
+  check('missing third option: stops with the message', (await status(page)) === 'The duplicate lead outcome was not found under No Opportunity. Set that lead\'s outcome yourself.', await status(page));
+  check('missing third option: the details are still copied', now.draftPx.status === 'yes' && now.draftPx.items[0].reg === 'AB12CDE' && now.booking.px.Brand === 'Ford' && now.booking.pxOn === true && now.px.outcome[2] === '', now);
+  check('missing third option: back on the booking lead', now.activeTab === 'salesTab-77000002' && now.key === 'lead-77000002', now.activeTab);
+
+  page = await start([pxLead(), bookingLead()]);
+  await page.evaluate(() => {
+    const px = KonnectNotes.state.booking.data.px;
+    px.status = 'yes';
+    px.items[0].make = 'Vauxhall';
+    KonnectNotes.openBooking();
+  });
+  await page.click(PRESS);
+  await finished(page);
+  await sleep(400);
+  now = await after(page);
+  const notices = () => page.evaluate(() => Array.from(document.querySelectorAll('.kn-bk-notice:not(.kn-bk-other-px)')).map((card) => card.textContent));
+  check('typed value: it is kept and the rest is filled', now.draftPx.items[0].make === 'Vauxhall' && now.draftPx.items[0].model === 'Fiesta' && now.booking.px.Brand === 'Vauxhall', now.draftPx);
+  check('typed value: the other lead\'s value is offered with Use it / Keep mine', (await notices()).some((text) => /PX brand on the other lead is "Ford"/.test(text) && /Use it/.test(text) && /Keep mine/.test(text)), await notices());
+  check('typed value: the status line points at the notices', (await status(page)).startsWith(DONE) && /were kept/.test(await status(page)), await status(page));
+  await page.click('.kn-bk-notice:not(.kn-bk-other-px) .kn-button:has-text("Use it")');
+  await sleep(200);
+  check('typed value: Use it takes the other lead\'s value', await page.evaluate(() => KonnectNotes.state.booking.data.px.items[0].make === 'Ford'));
+
+  page = await start([pxLead({ hierarchy: 'Sales -> ART -> Appointment -> Phone Call' }), bookingLead()]);
+  check('a closed PX lead is ignored', (await cards(page)).length === 0, await cards(page));
+  page = await start([{ ...thirdLead, px: { on: true, make: 'Ford', model: 'Fiesta' } }, bookingLead()]);
+  check('an open lead that is not a PX valuation lead is ignored', (await cards(page)).length === 0, await cards(page));
+  page = await start([pxLead({ active: true }), bookingLead({ active: false, id: 77000004, campaign: 'Leapmotor - PX Valuation - Used', request: 'PX Valuation - Used' })], { on: 77000001 });
+  check('no notice when the lead being booked is itself a PX valuation lead', (await cards(page)).length === 0, await cards(page));
+
+  page = await start([pxLead(), pxLead({ id: 77000005, request: 'PX Valuation - Used', campaign: 'Leapmotor - PX Valuation - Used', created: '2026-11-13T09:05:00', px: { on: true, make: 'Kia', model: 'Rio', reg: 'CD34EFG', mileage: '60000' } }), bookingLead()]);
+  shown = await cards(page);
+  check('two PX leads: both are listed to pick from', shown.length === 1 && /2 other part exchange leads/.test(shown[0].text) && shown[0].buttons.join('|') === 'PX Valuation - New, 12 Nov 21:30|PX Valuation - Used, 13 Nov 09:05', shown);
+  await page.click('.kn-bk-other-px .kn-button:has-text("PX Valuation - Used")');
+  await finished(page);
+  await sleep(400);
+  now = await after(page);
+  check('two PX leads: only the picked one is copied and closed', now.draftPx.items[0].make === 'Kia' && now.px.outcome.join('') === '' && now.changedLeads.join() === '77000005' &&
+    (await page.evaluate(() => window.leadState(77000005).outcome[2])) === 'Duplicate Lead', now);
+  shown = await cards(page);
+  check('two PX leads: the other one is still offered afterwards', shown.length > 0 && shown.every((card) => card.text === NOTICE), shown);
+
+  page = await start([pxLead({ lazyPx: true }), bookingLead()]);
+  await page.click(PRESS);
+  await finished(page);
+  await sleep(400);
+  now = await after(page);
+  check('boxes not on the page yet: that tab is opened, read and left again', now.draftPx.items[0].reg === 'AB12CDE' && now.px.outcome[2] === 'Duplicate Lead' && now.activeTab === 'salesTab-77000002' && (await status(page)) === DONE, [now.draftPx, await status(page)]);
+  check('no page errors on the part exchange runs', page.errors.length === 0, page.errors);
+}
+
 const started = Date.now();
 try {
   await layout();
@@ -943,6 +1066,7 @@ try {
   await pureBuilders();
   await otherStaff();
   await ownerHelpers();
+  await pxOnAnotherLead();
 } catch (e) {
   failures++;
   console.log(`FAIL  test crashed: ${e && e.stack || e}`);

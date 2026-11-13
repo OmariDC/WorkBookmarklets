@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.17.3'
+    version: '1.18.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -67,6 +67,13 @@
     { match: /general sales/i, name: 'General Sales', why: 'is not a dealership' },
     { match: /national/i, name: 'National', why: 'is not a dealership' }
   ];
+
+  /* Owner only: a customer's part exchange can sit on its own PX valuation
+     lead. That lead is closed with this outcome once its details are copied
+     onto the lead being booked. Options are matched on letters only. */
+  const DUPLICATE_LEAD_OUTCOME = ['Customer Hub Team', 'No Opportunity', 'Duplicate Lead'];
+  const PX_VALUATION_LEAD = /p\s*\/?\s*x\s+valuation/i;
+  const OUTCOME_LISTS = 'select[ng-model^="theActivity.SelectedOutcomeLevel"]';
 
   const OWN_PHRASES_STATUS = 'Your own phrase changes are in use on this computer only.';
   const STYLE_ID = 'kn-notes-style';
@@ -613,6 +620,11 @@
 
   function scanPage() {
     clearTimeout(state.scanTimer);
+    /* While the other lead's tab is brought forward, the booking stays on its own lead. */
+    if (pxMoveRun) {
+      state.scanTimer = setTimeout(scanPage, 300);
+      return;
+    }
     state.scanDueBy = 0;
     const found = findCallNotesTarget();
     const postClosure = findPostClosureNotesTarget();
@@ -800,6 +812,7 @@
       .kn-bk-notice-text b { color: #5c2c00; }
       .kn-bk-notice-actions { display: flex; gap: 6px; }
       .kn-bk-notice-actions .kn-button { padding: 5px 11px; font-size: 12px; }
+      .kn-bk-other-px .kn-bk-notice-actions { flex-wrap: wrap; }
       .kn-bk-footer { flex: 0 0 auto; padding: 0 10px 9px; background: #f2f2f7; }
       .kn-bk-preview-card { margin-bottom: 8px; padding: 9px 10px; border-radius: 12px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
       .kn-bk-preview-label { margin-bottom: 5px; font-size: 11.5px; font-weight: 700; color: #4b5565; }
@@ -1822,6 +1835,20 @@
     return !control.classList.contains('off');
   }
 
+  const PX_BOXES = {
+    'px.make': 'Vehicle Brand',
+    'px.model': 'Vehicle Model',
+    'px.reg': 'Reg Number',
+    'px.mileage': 'Mileage',
+    'px.roughVal': 'Valuation'
+  };
+
+  function readPxBoxes(panel) {
+    const fields = {};
+    Object.entries(PX_BOXES).forEach(([path, placeholder]) => { fields[path] = inputByPlaceholder(panel, placeholder); });
+    return fields;
+  }
+
   function readLead() {
     const pane = activeLeadPane();
     const voi = leadPanel(pane, 'vehicle of interest');
@@ -1839,14 +1866,7 @@
       else if (purchase === 'new' || purchase === 'used' || purchase === 'pre-registered') fields['v.condition'] = purchase;
     }
     const pxOn = px ? pxSwitchOn(px) : null;
-    const pxFields = {};
-    if (px) {
-      pxFields['px.make'] = inputByPlaceholder(px, 'Vehicle Brand');
-      pxFields['px.model'] = inputByPlaceholder(px, 'Vehicle Model');
-      pxFields['px.reg'] = inputByPlaceholder(px, 'Reg Number');
-      pxFields['px.mileage'] = inputByPlaceholder(px, 'Mileage');
-      pxFields['px.roughVal'] = inputByPlaceholder(px, 'Valuation');
-    }
+    const pxFields = px ? readPxBoxes(px) : {};
     const engine = bookingEngine();
     const request = engine ? engine.parseRequestedSlot(readInitialNotes()) : null;
     return {
@@ -2991,7 +3011,7 @@
   /* Copies the booking's vehicle of interest and PX into the lead's boxes.
      Only fills or corrects: an empty booking value never clears a lead box.
      Returns the names of the boxes that changed. */
-  function writeBookingToLead(draft) {
+  function writeBookingToLead(draft, options) {
     const engine = bookingEngine();
     const pane = activeLeadPane();
     const d = draft.data;
@@ -3011,7 +3031,7 @@
 
     const voi = leadPanel(pane, 'vehicle of interest');
     const vehicle = d.type !== 'valuation' ? d.vehicles.find((v) => realText(v.make) || realText(v.model) || realText(v.reg)) : null;
-    if (voi && vehicle) {
+    if (voi && vehicle && !options?.pxOnly) {
       const names = tidy(vehicle.make, vehicle.model);
       put(voi, 'Reg Number', engine.normaliseReg(realText(vehicle.reg)), 'Reg');
       put(voi, 'Vehicle Brand', names.make, 'Brand');
@@ -3054,6 +3074,229 @@
         resolve(updated);
       }, switched ? 150 : 0);
     });
+  }
+
+  /* ---------- part exchange held on another lead ---------- */
+
+  function lettersOnly(text) {
+    return String(text || '').toLowerCase().replace(/[^a-z]/g, '');
+  }
+
+  /* The lead a pane belongs to, read from one of its own boxes. */
+  function paneActivity(pane) {
+    const node = pane?.querySelector('[ng-model^="theActivity."]');
+    return node ? leadScopeActivity(node) : null;
+  }
+
+  function leadRequestText(pane) {
+    return selectedText(pane?.querySelector('select[ng-model$="LeadDetails.LeadRequestID"]') || labelledSelect(pane, 'lead request'));
+  }
+
+  function isPxValuationLead(pane, activity) {
+    return PX_VALUATION_LEAD.test(String(activity?.CampaignName || '')) || PX_VALUATION_LEAD.test(leadRequestText(pane));
+  }
+
+  function leadTabLinks(pane) {
+    const content = pane?.parentElement;
+    const panes = Array.from(content?.children || []).filter((node) => node.classList.contains('tab-pane'));
+    const links = Array.from(content?.parentElement?.querySelectorAll('a[ng-click="select()"]') || [])
+      .filter((link) => !content.contains(link));
+    return { panes, links: links.length === panes.length ? links : [] };
+  }
+
+  function otherLeadWhen(activity) {
+    const raw = [activity.CreatedDate, activity.DateCreated, activity.SalesLead?.CreatedDate, activity.SalesLead?.DateCreated,
+      activity.SalesLead?.LeadDetails?.CreatedDate].find(Boolean);
+    const stamp = /^\/Date\((\d+)/.exec(String(raw || ''));
+    const date = raw ? new Date(stamp ? Number(stamp[1]) : raw) : null;
+    if (!date || Number.isNaN(date.getTime())) return '';
+    const month = MONTHS_SHORT[date.getMonth()];
+    return `${date.getDate()} ${month[0].toUpperCase()}${month.slice(1)} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  }
+
+  /* The customer's other open leads that are PX valuation leads. Nothing is
+     offered when the lead in view is itself one, or cannot be told apart. */
+  const pxMoveDone = new WeakSet();
+  let pxMoveRun = false;
+  function otherPxLeads() {
+    if (!ownerTools() || !state.target) return [];
+    const home = activeLeadPane();
+    const mine = leadScopeActivity(state.target);
+    if (!home || !mine || isPxValuationLead(home, mine)) return [];
+    const found = [];
+    leadTabLinks(home).panes.forEach((pane) => {
+      if (pane === home) return;
+      const activity = paneActivity(pane);
+      if (!activity || activity === mine || pxMoveDone.has(activity) || found.some((lead) => lead.activity === activity)) return;
+      if (lettersOnly(activity.OutcomeFullHierarchy) !== 'none' || !isPxValuationLead(pane, activity)) return;
+      const name = leadRequestText(pane) || normaliseText(activity.CampaignName);
+      found.push({ pane, activity, label: [name, otherLeadWhen(activity)].filter(Boolean).join(', ') });
+    });
+    return found;
+  }
+
+  function renderOtherPxLead(draft, body) {
+    if (pxMoveRun || draft.key === INBOUND_KEY) return;
+    const leads = otherPxLeads();
+    if (!leads.length) return;
+    const card = element('div', 'kn-bk-notice kn-bk-other-px');
+    const actions = element('div', 'kn-bk-notice-actions');
+    if (leads.length === 1) {
+      card.appendChild(element('div', 'kn-bk-notice-text', `This customer's part exchange is on another lead (${leads[0].label}).`));
+      actions.appendChild(button('Use it and close that lead as duplicate', 'kn-primary', () => usePxFromOtherLead(draft, leads[0])));
+    } else {
+      card.appendChild(element('div', 'kn-bk-notice-text', `This customer has ${leads.length} other part exchange leads. Pick the one to use. Only that lead is closed as duplicate.`));
+      leads.forEach((lead) => actions.appendChild(button(lead.label, 'kn-primary', () => usePxFromOtherLead(draft, lead))));
+    }
+    card.appendChild(actions);
+    body.appendChild(card);
+  }
+
+  async function showLeadTab(pane) {
+    const shown = () => pane.classList.contains('active') && isVisible(pane);
+    if (shown()) return true;
+    const tabs = leadTabLinks(pane);
+    const link = tabs.links[tabs.panes.indexOf(pane)];
+    if (!link) return false;
+    link.click();
+    return !!(await waitFor(shown, 3000));
+  }
+
+  async function openLeadSection(pane, title) {
+    const heading = Array.from(pane.querySelectorAll('a.accordion-toggle, a[ng-click="toggleOpen()"]'))
+      .find((a) => isVisible(a) && normaliseText(a.textContent).toLowerCase() === title);
+    if (heading) heading.click();
+    return !!heading;
+  }
+
+  /* A box's value as Konnect holds it, which is there even when the pane is
+     hidden or the section is folded; the box itself is the fallback. */
+  function scopeBoxValue(input) {
+    try {
+      const model = input.getAttribute('ng-model');
+      const value = model ? window.angular.element(input).scope().$eval(model) : null;
+      if (typeof value === 'string' || typeof value === 'number') return realText(value);
+    } catch (error) { /* read the box instead */ }
+    return realText(input.value);
+  }
+
+  async function readOtherLeadPx(lead, home) {
+    const boxes = (panel) => Object.values(PX_BOXES).some((placeholder) => panel?.querySelector(`input[placeholder="${placeholder}"]`));
+    let panel = leadPanel(lead.pane, 'part exchange');
+    if (boxes(panel)) {
+      const fields = {};
+      Object.entries(PX_BOXES).forEach(([path, placeholder]) => {
+        const input = panel.querySelector(`input[placeholder="${placeholder}"]`);
+        fields[path] = input ? scopeBoxValue(input) : '';
+      });
+      return fields;
+    }
+    /* The boxes are not on the page yet: look at that lead, then come back. */
+    if (!(await showLeadTab(lead.pane))) return null;
+    panel = leadPanel(lead.pane, 'part exchange');
+    if (!boxes(panel)) {
+      await openLeadSection(lead.pane, 'part exchange');
+      await waitFor(() => boxes(leadPanel(lead.pane, 'part exchange')), 3000);
+      panel = leadPanel(lead.pane, 'part exchange');
+    }
+    const fields = boxes(panel) ? readPxBoxes(panel) : null;
+    return (await showLeadTab(home)) ? fields : null;
+  }
+
+  /* Empty booking boxes are filled. A value already in the booking is kept
+     and the other lead's value is offered as a notice. Returns how many were kept. */
+  function copyPxIntoDraft(draft, fields) {
+    const engine = bookingEngine();
+    if (engine && fields['px.make'] && fields['px.model']) {
+      const split = engine.splitMakeModel(fields['px.make'], fields['px.model']);
+      if (split.model) fields['px.model'] = split.model;
+    }
+    let kept = 0;
+    draft.data.px.status = 'yes';
+    Object.entries(fields).forEach(([path, value]) => {
+      if (!value) return;
+      const current = realText(getBookingField(draft.data, path));
+      if (!current) {
+        setBookingField(draft.data, path, value);
+        draft.fromLead[path] = true;
+      } else if (!sameValue(current, value)) {
+        addNotice(draft, { path, value, label: `${LEAD_FIELD_LABELS[path] || path} on the other lead is "${value}"` });
+        kept += 1;
+      }
+    });
+    return kept;
+  }
+
+  /* Picks the outcome lists in order on the lead in view, as setLeadOutcome
+     does, but only on lists that belong to that lead. Returns the level that
+     could not be chosen, or -1 when all were. */
+  async function chooseLeadOutcome(pane, activity, path) {
+    const lists = () => Array.from(pane.querySelectorAll(OUTCOME_LISTS))
+      .filter((node) => isVisible(node) && leadScopeActivity(node) === activity);
+    if (!lists().length && (await openLeadSection(pane, 'outcomes'))) await waitFor(() => lists().length > 0, 3000);
+    for (let level = 0; level < path.length; level += 1) {
+      const wanted = lettersOnly(path[level]);
+      const found = await waitFor(() => {
+        const box = lists()[level];
+        const option = box && Array.from(box.options).find((item) => lettersOnly(item.textContent) === wanted);
+        return option ? { box, option } : null;
+      }, 4000);
+      if (!found) return level;
+      if (found.box.value !== found.option.value) {
+        found.box.value = found.option.value;
+        found.box.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      const chosen = await waitFor(() => {
+        const box = lists()[level];
+        return box && lettersOnly(box.options[box.selectedIndex]?.textContent) === wanted;
+      }, 1500);
+      if (!chosen) return level;
+    }
+    return -1;
+  }
+
+  /* Copies the other lead's part exchange into the booking and its lead, then
+     sets that lead to Duplicate Lead. Finished is never pressed and the call
+     outcome is left alone. */
+  async function usePxFromOtherLead(draft, lead) {
+    if (pxMoveRun || diaryRun) return;
+    const home = activeLeadPane();
+    if (!home || !lead.pane.isConnected) return;
+    const say = (kind, text) => {
+      state.bookingStatus = { kind, text };
+      if (state.open && state.view === 'booking') renderPalette();
+    };
+    pxMoveRun = true;
+    let last = null;
+    const finish = (kind, text) => { last = { kind, text }; };
+    try {
+      say('ok', 'Reading the part exchange on the other lead...');
+      const fields = await readOtherLeadPx(lead, home);
+      if (!fields) return finish('error', 'The part exchange on the other lead could not be read. Nothing was copied, and that lead was left as it is. Check which lead tab is in view.');
+      if (!Object.values(fields).some(Boolean)) return finish('error', 'The other lead has no part exchange details. Nothing was copied, and that lead was left as it is.');
+
+      say('ok', 'Copying the part exchange into this booking and lead...');
+      const kept = copyPxIntoDraft(draft, fields);
+      draft.openSection = 'px';
+      saveDraftNow();
+      await writeBookingToLead(draft, { pxOnly: true });
+
+      say('ok', 'Setting the other lead to Duplicate Lead...');
+      const copied = 'Part exchange copied from the other lead.';
+      const yourself = 'Set that lead\'s outcome yourself.';
+      if (!(await showLeadTab(lead.pane))) return finish('error', `${copied} The other lead's tab could not be opened. ${yourself}`);
+      const missed = await chooseLeadOutcome(lead.pane, lead.activity, DUPLICATE_LEAD_OUTCOME);
+      const back = await showLeadTab(home);
+      const goBack = back ? '' : ' Go back to the lead you are booking.';
+      if (missed === DUPLICATE_LEAD_OUTCOME.length - 1) return finish('error', `The duplicate lead outcome was not found under ${DUPLICATE_LEAD_OUTCOME[1]}. ${yourself}${goBack}`);
+      if (missed >= 0) return finish('error', `${copied} The "${DUPLICATE_LEAD_OUTCOME[missed]}" outcome was not offered on the other lead. ${yourself}${goBack}`);
+      pxMoveDone.add(lead.activity);
+      finish(back ? 'ok' : 'warn', `${copied} That lead is set to Duplicate Lead.${kept ? ' Your own part exchange details were kept: see the notices at the top.' : ''}${goBack}`);
+    } finally {
+      pxMoveRun = false;
+      if (last) say(last.kind, last.text);
+      scanPage();
+    }
   }
 
   /* ---------- small UI helpers ---------- */
@@ -3466,6 +3709,7 @@
 
   function renderPxSection(draft, body) {
     const d = draft.data;
+    renderOtherPxLead(draft, body);
     if (d.type === 'valuation') {
       renderPxItem(draft, d.px.items[0], 0, body);
       body.appendChild(element('div', 'kn-bk-label', 'Reason'));
@@ -3766,6 +4010,8 @@
       card.appendChild(actions);
       body.appendChild(card);
     });
+
+    renderOtherPxLead(draft, body);
 
     bookingRefs = { summaries: {}, badges: {}, needed: null, readout: null, preview: null, issues: null, insert: null };
     renderUpdateNotice(body);
