@@ -927,6 +927,132 @@ async function ownerHelpers() {
   check('inbound: the source is remembered with the draft', await page.evaluate(() => KonnectNotes.state.booking.fromInbound === true && !!KonnectNotes.state.booking.inserted));
   check('no page errors on the inbound flow', page.errors.length === 0, page.errors);
 
+  // The booking check: a booking the tool put in the diary is noted for SLA
+  // Manager. The mock page has no diary, so the smallest stand-in is added
+  // here: the lead's scope with its contact details, Manage Appointments, one
+  // free box at 14:00 on the right day, the appointment form and the outcome lists.
+  const CHECKS_KEY = '_workToolsBookingChecks';
+  const diaryLabel = `Tuesday ${months[when.getMonth()].slice(0, 3)} ${when.getDate()}th`;
+  const addDiary = `(() => {
+    ${addLeadDetails('Stellantis &You Preston', 'Used')};
+    const pane = document.querySelector('#paneA');
+    window.mockActivity = { ID: 4242, SalesAppointmentID: 0, SalesLead: { CustomerName: 'Jo Example', EmailAddress: 'jo.lead@example.com', MobileNumber: '07700 900123', LandlineNumber: '' } };
+    window.angular = { element: (node) => ({ scope: () => (node && node.closest && node.closest('#paneA') ? { theActivity: window.mockActivity } : undefined), controller: () => null }) };
+    const lists = [['Customer Hub Team'], ['Appointment'], ['Face To Face', 'Test Drive', 'Phone Call']];
+    pane.insertAdjacentHTML('beforeend', lists.map((names, i) => '<select ng-model="theActivity.SelectedOutcomeLevel' + (i + 1) + '"><option>(Select)</option>' +
+      names.map((n) => '<option>' + n + '</option>').join('') + '</select>').join('') +
+      '<button ng-click="manageSalesEventBookings(theActivity)" id="openDiary">Manage Appointments</button>');
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.style.display = 'none';
+    const form = '<button ng-click="makingAppointment=true" id="make">Make Appointment</button><div id="apptForm" style="display:none">' +
+      '<div><button>Time Span</button><button class="dropdown-toggle">v</button><a ng-click="setAppointmentLength(30)">30 minutes</a> <a ng-click="setAppointmentLength(60)">60 minutes</a></div>' +
+      '<div><button>Type</button><button class="dropdown-toggle">v</button><a ng-click="setAppointmentType(1)">Face To Face</a> <a ng-click="setAppointmentType(2)">Test Drive</a></div>' +
+      '<button ng-click="createAppointment()" id="confirm">Confirm</button></div>';
+    modal.innerHTML = '<button ng-click="openStartDate($event)">${diaryLabel}</button>' +
+      '<table><thead><tr><th>Name</th><th>14:00</th></tr></thead><tbody><tr><td>Alex Advisor</td><td ng-click="SelectTimeSlot(1)" id="slot" style="width:60px;height:24px;border:1px solid #999"></td></tr></tbody></table>' +
+      '<div id="apptArea"></div><button ng-click="cancel()">Close</button>';
+    document.body.appendChild(modal);
+    window.diaryMade = 0;
+    document.querySelector('#openDiary').addEventListener('click', () => { modal.querySelector('#apptArea').innerHTML = ''; modal.style.display = 'block'; });
+    modal.addEventListener('click', (event) => {
+      const id = event.target.id;
+      if (id === 'slot') modal.querySelector('#apptArea').innerHTML = form;
+      if (id === 'make') modal.querySelector('#apptForm').style.display = 'block';
+      if (id === 'confirm') { modal.querySelector('#apptArea').innerHTML = ''; window.diaryMade += 1; window.mockActivity.SalesAppointmentID = 9000 + window.diaryMade; }
+      if (event.target.getAttribute('ng-click') === 'cancel()') modal.style.display = 'none';
+    });
+  })()`;
+  const stored = (page) => page.evaluate((key) => JSON.parse(localStorage.getItem(key)), CHECKS_KEY);
+  const booked = (page, count) => page.waitForFunction((n) => window.diaryMade === n && Array.from(document.querySelectorAll('.kn-toast')).some((t) => /Diary booked/.test(t.textContent)) &&
+    !Array.from(document.querySelectorAll('.modal')).some((m) => m.style.display !== 'none'), count, { timeout: 30000 });
+  const rowWanted = `Preston\tJo Example\t${sheetDate}\tFace to Face\tOutbound lead\tUsed\t\tY`;
+
+  const checkFailures = await page.evaluate(() => KonnectNotes.bookingCheckSelfTest());
+  check('the booking check self-test passes', Array.isArray(checkFailures) && checkFailures.length === 0, checkFailures);
+
+  page = await fresh({ booking: true, owner: true, before: addDiary });
+  // Another booking SLA Manager has already checked, with a field this tool does not know.
+  const earlier = { id: 'bk-earlier', bookingKey: 'lead-1 2026-11-14 10:00 Test Drive', name: 'Sam Sample', bookedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(), state: 'checked', sent: true, later: 'kept' };
+  await page.evaluate(([key, e]) => localStorage.setItem(key, JSON.stringify({ savedAt: 'then', bookings: [e, { id: 'bk-old', bookedAt: new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString() }] })), [CHECKS_KEY, earlier]);
+  await openBuilder(page);
+  await fillBooking(page, 'view');
+  check('check: nothing is noted before the diary is booked', (await stored(page)).bookings.length === 2);
+  const beforeBooking = Date.now();
+  await page.click('.kn-bk-actions .kn-button.kn-primary');
+  await booked(page, 1);
+  await sleep(300);
+  let checks = await stored(page);
+  let entry = checks.bookings.find((b) => !/^bk-(earlier|old)$/.test(b.id)) || {};
+  check('check: the diary run finished with the outcome set', await page.evaluate(() => !!KonnectNotes.state.booking.diaryBooked) && /Diary booked and outcome set: Face To Face with Alex Advisor/.test(await toastText(page)), await toastText(page));
+  check('check: one entry is written for the booking', checks.bookings.length === 2 && /^bk-\d+-[a-z0-9]+$/.test(entry.id), checks);
+  check('check: the customer as the sheet row has them, contact details from the lead', entry.name === 'Jo Example' && entry.email === 'jo.lead@example.com' && entry.phone === '07700 900123', entry);
+  check('check: dealer, type and date in the sheet spelling', entry.dealer === 'Preston' && entry.apptType === 'Face to Face' && entry.apptDate === sheetDate, entry);
+  check('check: the row is the sheet row, eight cells, the seventh (Checked on kL) empty', entry.row === rowWanted && entry.row.split('\t').length === 8 && entry.row.split('\t')[6] === '', entry.row);
+  check('check: it waits to be checked', entry.state === 'waiting' && entry.tries === 0 && entry.appointment === null && entry.outcome === null && entry.sent === null, entry);
+  check('check: the booked time is now', Date.parse(entry.bookedAt) >= beforeBooking - 1000 && Date.parse(entry.bookedAt) <= Date.now() + 1000, entry.bookedAt);
+  check('check: another entry is kept whole, an old one is dropped', JSON.stringify(checks.bookings[0]) === JSON.stringify(earlier) && !checks.bookings.some((b) => b.id === 'bk-old'), checks);
+  check('check: the toast says Konnect Live will be checked', (await toastText(page)).includes('Konnect Live will be checked in a few minutes (see Bookings in SLA Manager).'), await toastText(page));
+  // The same booking again (Diary only, pressed twice to confirm a second appointment).
+  const firstId = entry.id;
+  await page.evaluate(([key, id]) => {
+    const value = JSON.parse(localStorage.getItem(key));
+    Object.assign(value.bookings.find((b) => b.id === id), { state: 'checked', tries: 2, sent: true });
+    localStorage.setItem(key, JSON.stringify(value));
+    document.querySelectorAll('.kn-toast').forEach((n) => n.remove());
+  }, [CHECKS_KEY, firstId]);
+  await openBuilder(page);
+  await page.click('.kn-bk-actions .kn-button:has-text("Diary only")');
+  await sleep(300);
+  check('check: a repeat is asked about first, and nothing changes yet', /already in the diary/.test(await page.evaluate(() => document.querySelector('.kn-bk-status')?.textContent || '')) && (await stored(page)).bookings.some((b) => b.id === firstId));
+  await page.click('.kn-bk-actions .kn-button:has-text("Diary only")');
+  await booked(page, 2);
+  await sleep(300);
+  checks = await stored(page);
+  entry = checks.bookings[checks.bookings.length - 1];
+  check('check: the same booking again replaces its entry', checks.bookings.length === 2 && entry.id !== firstId && !checks.bookings.some((b) => b.id === firstId) && entry.state === 'waiting' && entry.sent === null && entry.row === rowWanted, checks);
+  // A different time on the same lead is a new booking.
+  await page.evaluate(() => { document.querySelector('.modal thead th:last-child').textContent = '15:00'; document.querySelectorAll('.kn-toast').forEach((n) => n.remove()); });
+  // Diary only leaves the builder open.
+  await page.evaluate(() => { KonnectNotes.state.booking.data.time = '15:00'; KonnectNotes.openBooking(); });
+  await page.click('.kn-bk-actions .kn-button:has-text("Diary only")');
+  await booked(page, 3);
+  await sleep(300);
+  checks = await stored(page);
+  check('check: another time on the same lead adds an entry', checks.bookings.length === 3 && new Set(checks.bookings.map((b) => b.bookingKey)).size === 3, checks.bookings.map((b) => b.bookingKey));
+  check('check: no customer details in the key that tells bookings apart', checks.bookings.slice(1).every((b) => /^lead-4242 /.test(b.bookingKey) && !/example|07700|Jo/i.test(b.bookingKey)), checks.bookings.map((b) => b.bookingKey));
+  check('check: nothing about the customer in the console', !page.consoleText.some((t) => /Jo Example|example\.com|07700/.test(t)), page.consoleText);
+  check('no page errors on the booking check', page.errors.length === 0, page.errors);
+
+  // Storage that is full: the booking carries on, without the line about the check.
+  page = await fresh({ booking: true, owner: true, before: addDiary });
+  await page.evaluate((key) => {
+    const real = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (name, value) {
+      if (name === key) throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+      return real.call(this, name, value);
+    };
+  }, CHECKS_KEY);
+  await openBuilder(page);
+  await fillBooking(page, 'view');
+  await page.click('.kn-bk-actions .kn-button.kn-primary');
+  await booked(page, 1);
+  await sleep(300);
+  const full = await page.evaluate((key) => ({ booked: KonnectNotes.state.booking.diaryBooked || null, stored: localStorage.getItem(key), outcome: document.querySelector('#paneA select[ng-model$="Level3"]').value,
+    sheet: !!document.getElementById('kn-sheet-row-toast') }), CHECKS_KEY);
+  check('full storage: the diary is booked, the outcome set and the sheet row offered', !!full.booked && full.outcome === 'Face To Face' && full.sheet && full.stored === null &&
+    /Diary booked and outcome set: Face To Face with Alex Advisor/.test(await toastText(page)), [full, await toastText(page)]);
+  check('full storage: the toast does not promise a check', !/Konnect Live/.test(await toastText(page)), await toastText(page));
+  check('full storage: no page errors', page.errors.length === 0, page.errors);
+
+  // Other staff: the same page and the same call, with no owner flag.
+  page = await fresh({ before: addDiary });
+  const staff = await page.evaluate((key) => {
+    const result = KonnectNotes.recordBookingCheck({ key: 'lead-4242', data: { type: 'view' }, inserted: true }, { year: 2026, month: 11, day: 14, time: '14:00', type: 'Face To Face' });
+    return { result, stored: localStorage.getItem(key) };
+  }, CHECKS_KEY);
+  check('other staff: a booking is never noted', staff.result === false && staff.stored === null && page.errors.length === 0, [staff, page.errors]);
+
   // Work Tools sets the flag before Konnect Notes loads.
   const workTools = readFileSync(join(repo, 'Work-Tools.js'), 'utf8');
   const flagAt = workTools.indexOf('window.KonnectNotesOwner = true');

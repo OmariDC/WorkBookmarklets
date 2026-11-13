@@ -39,6 +39,9 @@ function check(name, ok, detail) {
 }
 
 const MANAGER = 'https://konnectonlineservices.co.uk';
+const NOW = new Date();
+const TODAY_ISO = `${NOW.getFullYear()}-${String(NOW.getMonth() + 1).padStart(2, '0')}-${String(NOW.getDate()).padStart(2, '0')}`;
+const TODAY_TEXT = `${NOW.getDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][NOW.getMonth()]} ${NOW.getFullYear()}`;
 const stored = (page, key) => page.evaluate((k) => JSON.parse(localStorage.getItem(k) || 'null'), key);
 const until = (page, fn, arg, timeout = 60000) => page.waitForFunction(fn, arg, { timeout }).then(() => true, () => false);
 const shadowText = (page, sel) => page.evaluate((s) => {
@@ -53,7 +56,9 @@ try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
   await context.route('**/*', (route) => {
     const url = route.request().url();
-    if (url.startsWith('https://carbot.ai/konnectlive')) return route.fulfill({ contentType: 'text/html', body: livePage });
+    // The test customer's booking is dated 13 Nov 2026 on the mock page; here it is moved to today,
+    // as SLA Manager only checks bookings made in the last shift.
+    if (url.startsWith('https://carbot.ai/konnectlive')) return route.fulfill({ contentType: 'text/html', body: livePage.split('2026-11-13').join(TODAY_ISO).split('13 Nov 2026').join(TODAY_TEXT) });
     if (url.startsWith(`${MANAGER}/desk`)) return route.fulfill({ contentType: 'text/html', body: deskPage });
     if (url.startsWith(MANAGER)) return route.fulfill({ contentType: 'text/html', body: managerPage });
     return route.abort();
@@ -120,6 +125,19 @@ try {
   });
   check('the Lead Checker answers once, in plain words', await until(manager, () => window.__opened.length === 1 && typeof window.__opened[0].text === 'string' && window.__opened[0].text.length > 0, null, 60000), await manager.evaluate(() => window.__opened));
   check('opening a customer leaves the finished batch and the link alone', await live.evaluate(() => { const s = window.__konnectLeadChecker.getSession(); return !!(s && s.done); }) && ((await stored(manager, '_workToolsLinkState')) || {}).state === 'idle', await stored(manager, '_workToolsLinkState'));
+
+  console.log('\nA booking noted on the agent desktop is checked on Konnect Live');
+  // Written from the desk tab, as Konnect Notes does after a diary booking.
+  // Booked four minutes ago, so its first check is due. The send to the dealership on the mock
+  // page is at a fixed time of day, so only the two day level results are asserted.
+  const bookedAt = new Date(Date.now() - 4 * 60000).toISOString();
+  await desk.evaluate((at) => localStorage.setItem('_workToolsBookingChecks', JSON.stringify({ savedAt: new Date().toISOString(), bookings: [
+    { id: 'bk-link-all', bookingKey: 'lead-1 today 10:00 Test Drive', name: 'Casey Bookwell', email: 'casey.bookwell@example.com', phone: '07700 900323', dealer: 'Preston', apptType: 'Test Drive', apptDate: '14 November 2026',
+      row: 'Preston\tCasey Bookwell\t14 November 2026\tTest Drive\tOutbound lead\tNew\t\tY', bookedAt: at, state: 'waiting', checkedAt: null, tries: 0, appointment: null, outcome: null, sent: null, text: '' }] })), bookedAt);
+  check('SLA Manager asks the Lead Checker and stores what it found', await until(manager, () => { const s = JSON.parse(localStorage.getItem('_workToolsBookingChecks') || 'null'); const b = s && s.bookings && s.bookings[0]; return !!(b && (b.tries > 0 || b.state !== 'waiting') && typeof b.appointment === 'boolean'); }, null, 120000), await stored(manager, '_workToolsBookingChecks'));
+  const checkedBooking = ((await stored(manager, '_workToolsBookingChecks')) || {}).bookings?.[0] || {};
+  check('the booking is found in the diary with its outcome', checkedBooking.appointment === true && checkedBooking.outcome === true && typeof checkedBooking.sent === 'boolean' && checkedBooking.bookingKey === 'lead-1 today 10:00 Test Drive', checkedBooking);
+  check('the finished batch and the link are untouched by the check', await live.evaluate(() => { const s = window.__konnectLeadChecker.getSession(); return !!(s && s.done); }) && ((await stored(manager, '_workToolsLinkState')) || {}).state === 'idle', await stored(manager, '_workToolsLinkState'));
 
   console.log('\nSLA Manager refreshed: it links back to the open Live tab');
   await manager.reload();

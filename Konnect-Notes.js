@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.19.0'
+    version: '1.20.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -1522,6 +1522,8 @@
   const BOOKING_DRAFTS_KEY = 'konnectNotes:bookingDrafts:v1';
   /* One shift, the same rule the other tools use for customer data. */
   const BOOKING_DRAFT_MAX_AGE = 12 * 60 * 60 * 1000;
+  /* Shared with SLA Manager, which checks each booking on Konnect Live. */
+  const BOOKING_CHECKS_KEY = '_workToolsBookingChecks';
 
   const BOOKING_TYPES = [
     { value: 'testdrive', label: 'Test drive' },
@@ -2463,6 +2465,119 @@
     return failures;
   }
 
+  /* ---------- owner only: noting a booking for the Konnect Live check ---------- */
+
+  /* Pure. One entry for the shared list, from the facts the sheet row is
+     built from. bookingKey (the lead with the day, time and type) only tells
+     a repeat of the same booking from a new one; it holds no customer data. */
+  function buildBookingCheck(facts, contact, bookingKey, now, suffix) {
+    const row = buildSheetRow(facts);
+    const cells = row.split('\t');
+    const who = contact || {};
+    return {
+      id: `bk-${now}-${suffix || Math.random().toString(36).slice(2, 8)}`,
+      bookingKey: String(bookingKey || ''),
+      name: cells[1],
+      email: normaliseText(who.email),
+      phone: normaliseText(who.phone),
+      dealer: cells[0],
+      apptType: cells[3],
+      apptDate: cells[2],
+      row,
+      bookedAt: new Date(now).toISOString(),
+      state: 'waiting',
+      checkedAt: null,
+      tries: 0,
+      appointment: null,
+      outcome: null,
+      sent: null,
+      text: ''
+    };
+  }
+
+  /* Pure. The stored value with the entry added. The same booking again
+     replaces its earlier entry, entries over a shift old are dropped (one
+     with no readable time cannot be aged, so it goes too) and fields this
+     tool does not know are kept as they are. */
+  function mergeBookingChecks(stored, entry, now) {
+    const base = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+    const kept = (Array.isArray(base.bookings) ? base.bookings : []).filter((item) => {
+      if (!item || typeof item !== 'object') return false;
+      const age = now - Date.parse(item.bookedAt);
+      if (!(age < BOOKING_DRAFT_MAX_AGE)) return false;
+      return !(entry && entry.bookingKey && item.bookingKey === entry.bookingKey);
+    });
+    return { ...base, savedAt: new Date(now).toISOString(), bookings: entry ? kept.concat([entry]) : kept };
+  }
+
+  /* The lead's own record first, as the top of the page shows one customer
+     whichever lead tab is open. */
+  function leadContact() {
+    const lead = (leadScopeActivity(callNotesBox()) || {}).SalesLead || {};
+    return {
+      email: normaliseText(lead.EmailAddress) || findTopEmail(),
+      phone: normaliseText(lead.MobileNumber) || normaliseText(lead.LandlineNumber)
+    };
+  }
+
+  /* Notes a booking the tool has just put in the diary. Storage can be full
+     or blocked, and that must never stop the booking, so any failure only
+     means there is no automatic check. Returns whether it was noted. */
+  function recordBookingCheck(draft, plan) {
+    if (!ownerTools() || !draft || !plan || draft.key === INBOUND_KEY) return false;
+    try {
+      const facts = sheetFactsFor(draft);
+      if (!facts) return false;
+      const now = Date.now();
+      const entry = buildBookingCheck(facts, leadContact(), `${draft.key} ${diaryKey(plan)}`, now);
+      let stored = null;
+      try { stored = JSON.parse(localStorage.getItem(BOOKING_CHECKS_KEY)); } catch (error) { /* unreadable, so started again */ }
+      localStorage.setItem(BOOKING_CHECKS_KEY, JSON.stringify(mergeBookingChecks(stored, entry, now)));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function bookingCheckSelfTest() {
+    const failures = [];
+    const check = (name, got, want) => { if (got !== want) failures.push(`${name}: got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`); };
+    const now = Date.parse('2026-11-13T10:00:00Z');
+    const hour = 60 * 60 * 1000;
+    const facts = { dealer: 'Stellantis &You Preston', name: 'Mr Jo Example', year: 2026, month: 11, day: 14, diaryType: 'Face To Face', condition: 'used', inDiary: true };
+    const entry = buildBookingCheck(facts, { email: ' jo@example.com ', phone: '07700 900123' }, 'lead-1 2026-11-14 14:00 Face To Face', now, 'abc');
+    check('id', entry.id, `bk-${now}-abc`);
+    check('a random id when none is given', /^bk-\d+-[a-z0-9]+$/.test(buildBookingCheck(facts, {}, 'k', now).id), true);
+    check('name without the title', entry.name, 'Jo Example');
+    check('email', entry.email, 'jo@example.com');
+    check('phone', entry.phone, '07700 900123');
+    check('sheet spellings', [entry.dealer, entry.apptType, entry.apptDate].join('|'), 'Preston|Face to Face|14 November 2026');
+    check('the row is the sheet row', entry.row, buildSheetRow(facts));
+    check('eight cells', entry.row.split('\t').length, 8);
+    check('Checked on kL is empty', entry.row.split('\t')[6], '');
+    check('booked time', entry.bookedAt, '2026-11-13T10:00:00.000Z');
+    check('starts waiting', [entry.state, entry.tries, entry.checkedAt, entry.appointment, entry.outcome, entry.sent, entry.text].join('|'), 'waiting|0|||||');
+    check('no contact details', [buildBookingCheck(facts, null, 'k', now).email, buildBookingCheck(facts, null, 'k', now).phone].join('|'), '|');
+
+    const at = (hours) => new Date(now - hours * hour).toISOString();
+    const other = { id: 'bk-1', bookingKey: 'lead-2 2026-11-14 10:00 Test Drive', bookedAt: at(1), state: 'checked', sent: true, extra: { kept: 1 } };
+    const same = { id: 'bk-2', bookingKey: entry.bookingKey, bookedAt: at(2), state: 'failed', tries: 6 };
+    const sameLeadOtherTime = { id: 'bk-3', bookingKey: 'lead-1 2026-11-14 15:00 Face To Face', bookedAt: at(2) };
+    const old = { id: 'bk-4', bookingKey: 'lead-3 x', bookedAt: at(13) };
+    const merged = mergeBookingChecks({ savedAt: 'then', later: 'kept', bookings: [other, same, sameLeadOtherTime, old, null, { id: 'bk-5' }] }, entry, now);
+    check('ids after a merge', merged.bookings.map((b) => b.id).join(), `bk-1,bk-3,${entry.id}`);
+    check('another entry is kept whole', JSON.stringify(merged.bookings[0]), JSON.stringify(other));
+    check('the repeat starts waiting again', merged.bookings[2].state, 'waiting');
+    check('unknown top level fields are kept', merged.later, 'kept');
+    check('saved time', merged.savedAt, '2026-11-13T10:00:00.000Z');
+    check('just inside a shift is kept', mergeBookingChecks({ bookings: [{ id: 'a', bookedAt: at(11.9) }] }, entry, now).bookings.length, 2);
+    check('nothing stored', mergeBookingChecks(null, entry, now).bookings.length, 1);
+    check('a stored value of the wrong shape', mergeBookingChecks('x', entry, now).bookings.length, 1);
+    check('bookings of the wrong shape', mergeBookingChecks({ bookings: 'x' }, entry, now).bookings.length, 1);
+    check('the stored value is not changed', [other.state, same.state].join(), 'checked,failed');
+    return failures;
+  }
+
   function diaryKey(plan) {
     return plan ? `${plan.year}-${plan.month}-${plan.day} ${plan.time} ${plan.type}` : '';
   }
@@ -2832,17 +2947,19 @@
       const unconfirmed = inDiary ? '' : ' The green tick has not shown on the lead\'s tab yet: check it is in the diary.';
       draft.diaryBooked = diaryKey(plan);
       saveDraftNow();
+      const toCheck = recordBookingCheck(draft, plan)
+        ? ' Konnect Live will be checked in a few minutes (see Bookings in SLA Manager).' : '';
       // Which outcome a National Reservation takes is not confirmed yet, so it is left to the agent.
       const outcomeProblem = !closed ? 'the diary did not close'
         : draft.data.type === 'national' ? 'National Reservations have their outcome set by hand for now'
           : await setLeadOutcome(draft, plan);
       if (outcomeProblem) {
         say('warn', `Diary booked: ${plan.label}, ${plan.type}${who}. Outcome not set: ${outcomeProblem}.${moved}${unconfirmed}`);
-        showToast(`Diary booked. Set the outcome by hand: ${outcomeProblem}`);
+        showToast(`Diary booked. Set the outcome by hand: ${outcomeProblem}${toCheck && '.'}${toCheck}`);
         return false;
       }
       say(moved || unconfirmed ? 'warn' : 'ok', `Diary booked: ${plan.label}, ${plan.type}, ${plan.length}${who}. Outcome set to Customer Hub Team, Appointment, ${plan.type}.${moved}${unconfirmed}`);
-      showToast(`Diary booked and outcome set: ${plan.type}${who}`);
+      showToast(`Diary booked and outcome set: ${plan.type}${who}${toCheck && '.'}${toCheck}`);
       return !moved;
     } finally {
       if (diaryRun === run) diaryRun = null;
@@ -5389,6 +5506,10 @@
   KN.mergeRemoteConfig = mergeRemoteConfig;
   KN.buildSheetRow = buildSheetRow;
   KN.sheetRowSelfTest = sheetRowSelfTest;
+  KN.buildBookingCheck = buildBookingCheck;
+  KN.mergeBookingChecks = mergeBookingChecks;
+  KN.bookingCheckSelfTest = bookingCheckSelfTest;
+  KN.recordBookingCheck = recordBookingCheck;
 
   init();
   updateTimer = setInterval(() => checkForUpdate(true), UPDATE_CHECK_EVERY);

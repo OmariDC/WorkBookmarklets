@@ -3469,6 +3469,11 @@ ${P} .sla-team > div:first-child { display: none; }
 ${P} .sla-team span:first-child { flex: 1 0 100%; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 ${P} .sla-team span + span { color: var(--wb-muted); }
 ${P} .sla-team span + span::before { content: attr(data-label) " "; }
+${P} .sla-bk { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; font-size: 12.5px; padding-top: 8px; border-top: 1px solid var(--wb-border); }
+${P} .sla-bkmeta, ${P} .sla-bknote { grid-column: 1 / 3; font-size: 11.5px; color: var(--wb-muted); }
+${P} .sla-bkmeta { display: flex; flex-wrap: wrap; gap: 1px 10px; }
+${P} .sla-bkmeta b.ok { color: var(--sla-ok); }
+${P} .sla-bknote.warn { color: var(--sla-warn); font-weight: 600; }
 ${P} .sla-day { background: var(--wb-surface); }
 ${P} .sla-day[data-tone="warn"] { color: var(--wb-text, #1c1c1e); font-weight: 600; }
 ${P} .sla-ckl { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; flex-wrap: wrap; }
@@ -4197,14 +4202,18 @@ const DESK_RESULTS_KEY = '_workToolsDeskResults';
 const REVIEW_DECISIONS_KEY = '_slaReviewDecisions';
 // Written by Lead Re setup on the agent desktop; only read here.
 const DESK_DECISIONS_KEY = '_workToolsDeskDecisions';
+// Bookings Konnect Notes made, waiting to be checked on Konnect Live.
+const BOOKING_CHECKS_KEY = '_workToolsBookingChecks';
 const DESK_REQUEST_MAX_AGE_MS = 10 * 60 * 1000;
 // resendMs: a batch not acknowledged in this time is sent again. downMs: no
 // "ready" for this long means the Live tab has gone. lostGraceMs: how long
 // after "received" an idle "ready" is taken to mean the batch was lost.
 // legacyBusyMs: how long to hold off after an older Lead Checker (which
 // does not report its state) said it was busy. A test may shorten these
-// through window.__workToolsLinkTiming.
-const LIVE_TIMING = { resendMs: 15000, downMs: 30000, tickMs: 1000, heartbeatMs: 10000, lostGraceMs: 2000, legacyBusyMs: 60000 };
+// through window.__workToolsLinkTiming. verifyFirstMs: how long after a
+// booking its first check is due. verifyRetryMs: the gap before each later
+// try. verifyAnswerMs: how long an answer to one check is waited for.
+const LIVE_TIMING = { resendMs: 15000, downMs: 30000, tickMs: 1000, heartbeatMs: 10000, lostGraceMs: 2000, legacyBusyMs: 60000, verifyFirstMs: 180000, verifyRetryMs: 300000, verifyAnswerMs: 60000 };
 function liveTiming() {
 return { ...LIVE_TIMING, ...(window.__workToolsLinkTiming || {}) };
 }
@@ -4889,6 +4898,250 @@ setTimeout(restore, 1500);
 });
 };
 
+// ---- Booking checks: is each booking in the diary, given its outcome and
+// sent to the dealership? Konnect Notes adds the entries; this page asks the
+// Lead Checker about each one when it is due and keeps the answers. ----
+
+const BOOKING_MAX_TRIES = 6;
+// A check the Lead Checker could not make uses no try, but this many in a
+// row (a customer it cannot find, say) ends the checking.
+const BOOKING_MAX_REFUSALS = 12;
+const BOOKING_RESULTS = [['appointment', 'In diary'], ['outcome', 'Outcome set'], ['sent', 'Sent to dealership']];
+
+// Pure. Entries booked within one shift; anything else is dropped.
+function freshBookingEntries(stored, now) {
+const list = stored && Array.isArray(stored.bookings) ? stored.bookings : [];
+return list.filter((e) => {
+const t = e && e.id && e.bookedAt ? new Date(e.bookedAt).getTime() : NaN;
+return Number.isFinite(t) && now - t <= STORED_CUSTOMER_DATA_MAX_AGE_MS;
+});
+}
+
+// Pure. A waiting entry is due verifyFirstMs after it was booked, then
+// verifyRetryMs after each try or refusal.
+function isBookingCheckDue(entry, now, timing) {
+if (!entry || entry.state !== 'waiting') return false;
+const last = Math.max(new Date(entry.checkedAt || 0).getTime() || 0, new Date(entry.refusedAt || 0).getTime() || 0);
+if (last > 0) return now - last >= timing.verifyRetryMs;
+return now - new Date(entry.bookedAt).getTime() >= timing.verifyFirstMs;
+}
+
+// Pure. The entry to check next: one the owner asked for first, else the
+// longest booked of those due.
+function nextBookingCheck(entries, forced, now, timing) {
+const asked = entries.find((e) => forced.includes(e.id) && e.state !== 'checked');
+if (asked) return asked;
+const due = entries.filter((e) => isBookingCheckDue(e, now, timing));
+due.sort((a, b) => new Date(a.bookedAt).getTime() - new Date(b.bookedAt).getTime());
+return due[0] || null;
+}
+
+// Pure. A check goes only when the Lead Checker is idle, no batch is
+// waiting, sent or running, no other check is out and this tool is not busy.
+function canVerifyBooking(link, toolBusy) {
+return link.state === 'idle' && !link.sent && !link.running && !(link.queue && link.queue.length) && !link.verify && !toolBusy;
+}
+
+// Pure. The results still not confirmed, in the owner's words.
+function bookingMissing(entry) {
+return BOOKING_RESULTS.filter(([field]) => entry[field] !== true).map(([, label]) => label.toLowerCase());
+}
+
+// Pure. The entry after one answer. ok false (the Lead Checker could not
+// look) uses no try; a real answer does, and the last try without all
+// three makes it failed.
+function applyBookingAnswer(entry, answer, nowIso) {
+if (!answer || answer.ok !== true) {
+const refused = (entry.refused || 0) + 1;
+const why = answer && typeof answer.text === 'string' && answer.text ? answer.text : 'Konnect Live could not look.';
+return { ...entry, refused, refusedAt: nowIso, state: refused >= BOOKING_MAX_REFUSALS && entry.state === 'waiting' ? 'failed' : entry.state, text: why };
+}
+const next = { ...entry, appointment: answer.appointment === true, outcome: answer.outcome === true, sent: answer.sent === true, tries: (entry.tries || 0) + 1, checkedAt: nowIso, refused: 0 };
+delete next.refusedAt;
+const missing = bookingMissing(next);
+if (!missing.length) return { ...next, state: 'checked', text: 'Checked on Konnect Live.' };
+if (next.tries >= BOOKING_MAX_TRIES) return { ...next, state: 'failed', text: `Still missing after ${next.tries} tries: ${missing.join(', ')}.` };
+return { ...next, state: 'waiting', text: `Not yet: ${missing.join(', ')}. It is checked again shortly.` };
+}
+
+// Pure. The sheet row with the Checked on kL cell (the seventh) set.
+function bookingSheetRow(entry) {
+const cells = String(entry.row || '').split('\t');
+while (cells.length < 8) cells.push('');
+cells[6] = entry.state === 'checked' ? 'Y' : '';
+return cells.join('\t');
+}
+
+// Pure. The Bookings chip, or null with no bookings.
+function bookingsChip(entries) {
+if (!entries.length) return null;
+const checked = entries.filter((e) => e.state === 'checked').length;
+const failed = entries.filter((e) => e.state === 'failed').length;
+return { label: `Bookings ${checked} of ${entries.length} checked`, tone: failed ? 'warn' : (checked === entries.length ? 'ok' : ''), detail: failed ? `${failed} could not be confirmed on Konnect Live` : 'Bookings checked on Konnect Live: in the diary, outcome set and sent to the dealership' };
+}
+
+function loadBookingChecks() {
+return freshBookingEntries(readStoredJson(BOOKING_CHECKS_KEY), Date.now());
+}
+
+// Reads the whole value, changes it and writes it back, so an entry Konnect
+// Notes added a moment ago is kept. change(entries) returns the new list.
+function updateBookingChecks(change) {
+const stored = readStoredJson(BOOKING_CHECKS_KEY);
+if (!stored || !Array.isArray(stored.bookings)) return;
+const bookings = change(freshBookingEntries(stored, Date.now()));
+try {
+localStorage.setItem(BOOKING_CHECKS_KEY, JSON.stringify({ ...stored, savedAt: new Date().toISOString(), bookings }));
+} catch (error) { /* storage full: it is checked again on the next tick */ }
+renderTodaySummaryInPlace();
+}
+
+function recordBookingAnswer(id, answer) {
+updateBookingChecks((entries) => entries.map((e) => (e.id === id ? applyBookingAnswer(e, answer, new Date().toISOString()) : e)));
+}
+
+function isToolBusyForBookings() {
+return extracting || assigning || runningMorningChecks || dayRun.running || rescue.running;
+}
+
+// One check at a time, and only between batches. Runs on every link tick.
+function pumpBookingChecks() {
+const now = Date.now();
+const timing = liveTiming();
+const stored = readStoredJson(BOOKING_CHECKS_KEY);
+if (!stored || !Array.isArray(stored.bookings)) return;
+const entries = freshBookingEntries(stored, now);
+if (entries.length !== stored.bookings.length) updateBookingChecks((fresh) => fresh);
+if (liveLink.verify) {
+if (now - liveLink.verify.at < timing.verifyAnswerMs) return;
+const unanswered = liveLink.verify.id;
+liveLink.verify = null;
+// With the link down nothing is held against the booking.
+if (liveLink.state !== 'none') recordBookingAnswer(unanswered, { ok: false, text: 'The Lead Checker did not answer. Click Work Tools on the Konnect Live tab.' });
+else renderTodaySummaryInPlace();
+return;
+}
+if (!liveLink.win || liveLink.win.closed || !canVerifyBooking(liveLink, isToolBusyForBookings())) return;
+const forced = liveLink.verifyForced || [];
+const entry = nextBookingCheck(entries, forced, now, timing);
+if (!entry) return;
+liveLink.verifyForced = forced.filter((id) => id !== entry.id);
+liveLink.verify = { id: entry.id, at: now };
+liveLink.win.postMessage({ type: 'workTools:verify', id: entry.id, row: { name: tsvClean(entry.name), phone: tsvClean(entry.phone), email: tsvClean(entry.email) }, since: entry.bookedAt }, LIVE_ORIGIN);
+renderTodaySummaryInPlace();
+}
+
+function onBookingVerified(data) {
+const id = data.id == null ? null : String(data.id);
+if (id === null) return;
+if (liveLink.verify && liveLink.verify.id === id) liveLink.verify = null;
+recordBookingAnswer(id, data);
+pumpBookingChecks();
+}
+
+// Check now, for one booking or (with no id) every one not yet checked.
+window._checkBookingNow = function(id) {
+const wanted = loadBookingChecks().filter((e) => e.state !== 'checked' && (!id || e.id === id)).map((e) => e.id);
+if (!wanted.length) return;
+liveLink.verifyForced = (liveLink.verifyForced || []).filter((x) => !wanted.includes(x)).concat(wanted);
+if (!isLiveLinked()) showToast('Konnect Live is not open. Press Open Konnect Live first.');
+else if (!canVerifyBooking(liveLink, isToolBusyForBookings())) showToast('Konnect Live is busy. The booking is checked as soon as it is free.');
+pumpBookingChecks();
+renderTodaySummaryInPlace();
+};
+
+window._copyBookingRows = function(buttonEl) {
+const entries = loadBookingChecks();
+const restore = () => { buttonEl.textContent = 'Copy rows'; };
+if (!entries.length) { buttonEl.textContent = 'No bookings'; setTimeout(restore, 1200); return; }
+navigator.clipboard.writeText(entries.map(bookingSheetRow).join('\n')).then(() => {
+buttonEl.textContent = `✓ Copied ${entries.length}`;
+setTimeout(restore, 1200);
+}).catch(() => {
+buttonEl.textContent = '✗ Failed';
+setTimeout(restore, 1500);
+});
+};
+
+// The list behind the Bookings chip: one two line row per booking.
+function renderBookingsToday() {
+const entries = loadBookingChecks();
+const forced = liveLink.verifyForced || [];
+const rows = entries.map((e) => {
+const results = BOOKING_RESULTS.map(([field, label]) => `<span data-result="${field}">${label} ${e[field] === true ? '<b class="ok">✓</b>' : 'not yet'}</span>`).join('');
+const about = [e.dealer, e.apptType, e.apptDate].filter(Boolean).map((v) => `<span>${escapeHtml(v)}</span>`).join('');
+const checking = !!(liveLink.verify && liveLink.verify.id === e.id);
+const note = checking ? 'Checking on Konnect Live now.'
+: e.state === 'failed' ? (e.text || 'Could not be confirmed on Konnect Live.')
+: e.state === 'waiting' ? (forced.includes(e.id) ? 'Waiting for Konnect Live to be free.' : (e.text || 'Not checked yet. It is checked a few minutes after booking.'))
+: '';
+const button = e.state === 'checked' ? '' : `<button type="button" class="sla-sec" data-id="${escapeHtml(e.id)}" onclick="window._checkBookingNow(this.dataset.id)" ${checking ? 'disabled' : ''}>Check now</button>`;
+return `<div class="sla-bk" data-booking="${escapeHtml(e.id)}" data-state="${escapeHtml(e.state || '')}">
+<span class="sla-nm"><i>${escapeHtml(e.name || 'No name')}</i>${e.state === 'checked' ? '<span class="sla-tag done">Checked</span>' : (e.state === 'failed' ? '<span class="sla-tag warn">Check by hand</span>' : '')}</span>${button}
+<span class="sla-bkmeta">${about}${results}</span>
+${note ? `<span class="sla-bknote${e.state === 'failed' ? ' warn' : ''}">${escapeHtml(note)}</span>` : ''}
+</div>`;
+}).join('');
+const open = entries.some((e) => e.state !== 'checked');
+return `<div id="_slaBookings" class="sla-card">
+<div class="sla-cf"><span class="sla-small sla-grow">Each booking is checked on Konnect Live a few minutes after it is made.</span>
+${open ? '<button type="button" class="sla-sec" id="_slaBookingsCheckAll" onclick="window._checkBookingNow()">Check now</button>' : ''}
+<button type="button" class="sla-sec" id="_slaBookingsCopy" onclick="window._copyBookingRows(this)" title="Copies every booking sheet row, with Y in Checked on kL for the checked ones">Copy rows</button></div>
+${rows || '<span class="sla-small">No bookings in this shift.</span>'}
+</div>`;
+}
+
+runSelfTest('bookingCheckSelfTest', function bookingCheckSelfTest() {
+const failures = [];
+const check = (label, actual, expected) => {
+const a = JSON.stringify(actual); const e = JSON.stringify(expected);
+if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
+};
+const timing = { ...LIVE_TIMING };
+const t0 = new Date('2026-11-13T10:00:00.000Z').getTime();
+const iso = (ms) => new Date(ms).toISOString();
+const entry = (over) => ({ id: 'bk-1', name: 'Sam Buyer', row: ['13/11/2026', 'Sam Buyer', 'Crawley', 'Test Drive', '14 November 2026', '10:00', '', 'x'].join('\t'), bookedAt: iso(t0), state: 'waiting', tries: 0, appointment: null, outcome: null, sent: null, ...over });
+check('not due before three minutes', isBookingCheckDue(entry({}), t0 + 179000, timing), false);
+check('due three minutes after booking', isBookingCheckDue(entry({}), t0 + 180000, timing), true);
+check('after a try, not due again before five minutes', isBookingCheckDue(entry({ tries: 1, checkedAt: iso(t0 + 180000) }), t0 + 180000 + 299000, timing), false);
+check('after a try, due again at five minutes', isBookingCheckDue(entry({ tries: 1, checkedAt: iso(t0 + 180000) }), t0 + 480000, timing), true);
+check('a refusal also waits five minutes', [isBookingCheckDue(entry({ refusedAt: iso(t0 + 180000) }), t0 + 200000, timing), isBookingCheckDue(entry({ refusedAt: iso(t0 + 180000) }), t0 + 480000, timing)], [false, true]);
+check('checked and failed entries are never due', ['checked', 'failed'].map((state) => isBookingCheckDue(entry({ state }), t0 + 3600000, timing)), [false, false]);
+const all = { ok: true, found: true, appointment: true, outcome: true, sent: true };
+const partial = { ok: true, found: true, appointment: true, outcome: true, sent: false };
+const done = applyBookingAnswer(entry({}), all, iso(t0));
+check('all three true is checked', [done.state, done.tries, done.checkedAt, done.text], ['checked', 1, iso(t0), 'Checked on Konnect Live.']);
+const once = applyBookingAnswer(entry({}), partial, iso(t0));
+check('a partial answer stays waiting and says what is missing', [once.state, once.tries, once.sent, once.text], ['waiting', 1, false, 'Not yet: sent to dealership. It is checked again shortly.']);
+const last = applyBookingAnswer(entry({ tries: 5 }), { ...partial, outcome: false }, iso(t0));
+check('the sixth try without all three is failed, with what is missing', [last.state, last.tries, last.text], ['failed', 6, 'Still missing after 6 tries: outcome set, sent to dealership.']);
+check('the sixth try with all three is checked', applyBookingAnswer(entry({ tries: 5 }), all, iso(t0)).state, 'checked');
+const refused = applyBookingAnswer(entry({ tries: 2 }), { ok: false, text: 'The Lead Checker is busy with a batch.' }, iso(t0));
+check('ok false uses no try and keeps the reason', [refused.state, refused.tries, refused.refused, refused.refusedAt, refused.text], ['waiting', 2, 1, iso(t0), 'The Lead Checker is busy with a batch.']);
+check('a real answer clears the refusals', [applyBookingAnswer(refused, partial, iso(t0)).refused, 'refusedAt' in applyBookingAnswer(refused, partial, iso(t0))], [0, false]);
+check('refused too many times in a row is failed', applyBookingAnswer(entry({ refused: BOOKING_MAX_REFUSALS - 1 }), { ok: false, text: 'Customer not found.' }, iso(t0)).state, 'failed');
+check('fields this tool does not know are kept', applyBookingAnswer(entry({ extra: 'kept' }), all, iso(t0)).extra, 'kept');
+const idle = { state: 'idle', queue: [], sent: null, running: null, verify: null };
+check('a check can go when idle with nothing else out', canVerifyBooking(idle, false), true);
+check('never while running, paused, logged out or not linked', ['running', 'paused', 'loggedOut', 'none'].map((state) => canVerifyBooking({ ...idle, state }, false)), [false, false, false, false]);
+check('never while a batch is waiting, sent or running', [canVerifyBooking({ ...idle, queue: [{ id: 'a' }] }, false), canVerifyBooking({ ...idle, sent: { batch: { id: 'a' } } }, false), canVerifyBooking({ ...idle, running: { id: 'a' } }, false)], [false, false, false]);
+check('one check at a time, and not while this tool is busy', [canVerifyBooking({ ...idle, verify: { id: 'bk-1' } }, false), canVerifyBooking(idle, true)], [false, false]);
+const older = entry({ id: 'bk-0', bookedAt: iso(t0 - 60000) });
+check('the longest booked of those due goes first', (nextBookingCheck([entry({}), older], [], t0 + 180000, timing) || {}).id, 'bk-0');
+check('nothing due, nothing to check', nextBookingCheck([entry({})], [], t0 + 1000, timing), null);
+check('Check now goes first, due or not, failed included', [(nextBookingCheck([older, entry({})], ['bk-1'], t0 + 1000, timing) || {}).id, (nextBookingCheck([entry({ state: 'failed' })], ['bk-1'], t0, timing) || {}).id], ['bk-1', 'bk-1']);
+check('Check now never rechecks a checked booking', nextBookingCheck([entry({ state: 'checked' })], ['bk-1'], t0, timing), null);
+check('a checked row gets Y in the seventh cell', bookingSheetRow(entry({ state: 'checked' })).split('\t')[6], 'Y');
+check('any other row has it empty, whatever it held', [bookingSheetRow(entry({})).split('\t')[6], bookingSheetRow(entry({ state: 'failed', row: 'a\tb\tc\td\te\tf\tY\th' })).split('\t')[6], bookingSheetRow(entry({})).split('\t').length], ['', '', 8]);
+check('entries older than a shift, or with no time, are dropped', freshBookingEntries({ bookings: [entry({}), entry({ id: 'bk-old', bookedAt: iso(t0 - 13 * 3600000) }), entry({ id: 'bk-none', bookedAt: '' }), null] }, t0 + 1000).map((e) => e.id), ['bk-1']);
+check('the chip counts checked of all', [bookingsChip([entry({ state: 'checked' }), entry({ state: 'checked' }), entry({})]).label, bookingsChip([entry({ state: 'failed' })]).tone, bookingsChip([])], ['Bookings 2 of 3 checked', 'warn', null]);
+if (failures.length > 0) {
+reportSelfTestFailure('SLA Manager booking-check self-test FAILED:\n' + failures.join('\n'));
+} else {
+console.info('SLA Manager booking-check self-test passed');
+}
+});
+
 function onLiveMessage(event) {
 if (event.origin !== LIVE_ORIGIN) return;
 const data = event.data;
@@ -4952,6 +5205,8 @@ endLiveBatch(id, typeof data.reason === 'string' ? data.reason : 'done');
 showToast(typeof data.text === 'string' && data.text ? data.text : (data.ok ? 'Opened on Konnect Live.' : 'Konnect Live could not open the lead.'));
 } else if (data.type === 'workTools:review' && typeof data.tsv === 'string') {
 saveReviewDecisions(data.tsv);
+} else if (data.type === 'workTools:verified') {
+onBookingVerified(data);
 }
 }
 
@@ -4961,6 +5216,7 @@ const timing = liveTiming();
 if (liveLink.state !== 'none' && ((liveLink.win && liveLink.win.closed) || now - liveLink.lastReadyAt > timing.downMs)) setLinkDown();
 takeDeskRequest(readStoredJson(LIVE_REQUEST_KEY));
 pumpLiveQueue();
+pumpBookingChecks();
 // Rewritten in step even when nothing changes, so the desk can tell that
 // SLA Manager is still running.
 if (now - liveLink.lastLinkWrite >= timing.heartbeatMs) writeLinkState();
@@ -6466,15 +6722,20 @@ let chips = [];
 try { chips = todayChips(loadTodayCounts()); } catch (error) { chips = []; }
 const teamOpen = todayOpenKind === 'team';
 const team = teamOpen || hasTeamData();
-if (!chips.length && !team) return '<div id="_slaTodaySummary" hidden></div>';
+let bookings = null;
+try { bookings = bookingsChip(loadBookingChecks()); } catch (error) { bookings = null; }
+const bookingsOpen = todayOpenKind === 'bookings' && !!bookings;
+if (!chips.length && !team && !bookings) return '<div id="_slaTodaySummary" hidden></div>';
 const open = chips.find((chip) => chip.kind === todayOpenKind);
 return `<div id="_slaTodaySummary" class="sla-col" style="gap: 5px;">
 <div class="sla-cf"><span class="sla-lbl">Today</span>
 ${chips.map((chip) => `<button type="button" class="sla-chip" data-kind="${chip.kind}" aria-pressed="${open === chip ? 'true' : 'false'}" title="${escapeHtml(chip.detail)}" onclick="window._toggleTodayDetail(this.dataset.kind)">${escapeHtml(chip.label)}</button>`).join('')}
 ${team ? `<button type="button" class="sla-chip" data-kind="team" aria-pressed="${teamOpen ? 'true' : 'false'}" title="Team today: what each agent has been assigned, done and sent back" onclick="window._toggleTodayDetail(this.dataset.kind)">Team</button>` : ''}
+${bookings ? `<button type="button" class="sla-chip ${bookings.tone}" data-kind="bookings" aria-pressed="${bookingsOpen ? 'true' : 'false'}" title="${escapeHtml(bookings.detail)}" onclick="window._toggleTodayDetail(this.dataset.kind)">${escapeHtml(bookings.label)}</button>` : ''}
 </div>
 <div class="sla-small" role="status" ${open ? '' : 'hidden'}>${open ? escapeHtml(open.detail) : ''}</div>
 ${teamOpen ? renderTeamToday() : ''}
+${bookingsOpen ? renderBookingsToday() : ''}
 </div>`;
 }
 
@@ -6498,8 +6759,12 @@ if (el) el.outerHTML = renderTodaySummary();
 
 // Lead Re setup works in another tab, so its progress arrives as storage
 // events. One listener per page, calling the newest copy of the tool.
-const TODAY_KEYS = [NATIONAL_RESULTS_KEY, LEAD_RESET_PROGRESS_KEY, DESK_RESULTS_KEY, LEAD_RESET_DESK_PROGRESS_KEY, EMAIL_ONLY_ASSIGNED_KEY];
-window.__slaOnTodayStorage = (key) => { if (TODAY_KEYS.includes(key)) renderTodaySummaryInPlace(); };
+const TODAY_KEYS = [NATIONAL_RESULTS_KEY, LEAD_RESET_PROGRESS_KEY, DESK_RESULTS_KEY, LEAD_RESET_DESK_PROGRESS_KEY, EMAIL_ONLY_ASSIGNED_KEY, BOOKING_CHECKS_KEY];
+window.__slaOnTodayStorage = (key) => {
+if (TODAY_KEYS.includes(key)) renderTodaySummaryInPlace();
+// A booking just made, or one the owner asked to be checked.
+if (key === BOOKING_CHECKS_KEY && window.__workToolsLinkTick) pumpBookingChecks();
+};
 if (!window.__slaTodayListening && typeof window.addEventListener === 'function') {
 window.__slaTodayListening = true;
 window.addEventListener('storage', (event) => { if (window.__slaOnTodayStorage) window.__slaOnTodayStorage(event.key); });
@@ -7300,6 +7565,13 @@ window.__workToolsOnDeskRequest = null;
 window.__slaOnTodayStorage = null;
 liveLink.queue = liveLink.queue.filter((b) => b.from !== 'manager');
 if (liveLink.sent && liveLink.sent.batch.from === 'manager') liveLink.sent = null;
+// Bookings still to be checked are kept for next time; the checked go.
+liveLink.verify = null;
+liveLink.verifyForced = [];
+try {
+const kept = readStoredJson(BOOKING_CHECKS_KEY);
+if (kept && Array.isArray(kept.bookings)) localStorage.setItem(BOOKING_CHECKS_KEY, JSON.stringify({ ...kept, bookings: kept.bookings.filter((e) => !e || e.state !== 'checked') }));
+} catch (error) { /* left as it is */ }
 
 // The lead card results and the queue snapshot go. The assignment log keeps
 // its per-agent counts for the day but loses the customer names.

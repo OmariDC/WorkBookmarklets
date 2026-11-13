@@ -782,6 +782,69 @@ async function rescue() {
   await t.context.close();
 }
 
+async function bookingsToday() {
+  console.log('\nBookings on the Today row: chip, list, Check now and Copy rows');
+  const sheetRow = (name) => ['13/11/2026', name, 'Crawley', 'Test Drive', '14 November 2026', '10:00', '', 'AB12CDE'].join('\t');
+  const booking = (id, name, over) => ({ id, name, email: `${name.toLowerCase().replace(' ', '.')}@example.com`, phone: '07700 900111', dealer: 'Crawley', apptType: 'Test Drive', apptDate: '14 November 2026', row: sheetRow(name), bookedAt: new Date().toISOString(), state: 'waiting', tries: 0, checkedAt: null, appointment: null, outcome: null, sent: null, text: '', ...over });
+  const seeded = { savedAt: new Date().toISOString(), bookings: [
+    booking('bk-sam', 'Sam Buyer', { state: 'checked', tries: 1, appointment: true, outcome: true, sent: true, text: 'Checked on Konnect Live.' }),
+    booking('bk-jo', 'Jo Example'),
+    booking('bk-pat', 'Pat Example', { state: 'failed', tries: 6, appointment: true, outcome: true, sent: false, text: 'Still missing after 6 tries: sent to dealership.' }),
+    booking('bk-old', 'Old Example', { bookedAt: new Date(Date.now() - 13 * 3600000).toISOString() })] };
+  const t = await open(() => { window.__workToolsLinkTiming = { tickMs: 40 }; }, { _workToolsBookingChecks: seeded });
+  await openPanel(t.page);
+  const chip = () => t.page.evaluate(() => { const c = document.querySelector('#_slaTodaySummary button[data-kind="bookings"]'); return c ? { text: c.textContent.trim(), warn: c.classList.contains('warn'), pressed: c.getAttribute('aria-pressed') } : null; });
+  const rows = () => t.page.evaluate(() => Object.fromEntries(Array.from(document.querySelectorAll('#_slaBookings .sla-bk')).map((r) => [r.dataset.booking, {
+    name: r.querySelector('.sla-nm i').textContent, state: r.dataset.state, meta: Array.from(r.querySelectorAll('.sla-bkmeta span')).map((s) => s.textContent.trim()).join(' | '),
+    note: (r.querySelector('.sla-bknote') || {}).textContent || '', amber: !!r.querySelector('.sla-bknote.warn') && getComputedStyle(r.querySelector('.sla-bknote.warn')).color === 'rgb(168, 90, 0)',
+    button: (r.querySelector('button') || {}).textContent || '', twoLines: r.querySelector('.sla-bkmeta').getBoundingClientRect().top > r.querySelector('.sla-nm').getBoundingClientRect().top }])));
+  const verifies = () => t.page.evaluate(() => window.toLive.filter((m) => m.type === 'workTools:verify'));
+  check('the Bookings chip counts checked of this shift\'s bookings, amber when one failed', JSON.stringify(await chip()) === JSON.stringify({ text: 'Bookings 1 of 3 checked', warn: true, pressed: 'false' }), await chip());
+  check('the list is closed until the chip is pressed', await t.page.evaluate(() => !document.getElementById('_slaBookings')));
+  await t.page.click('#_slaTodaySummary button[data-kind="bookings"]');
+  let r = await rows();
+  check('the chip opens one row per booking', Object.keys(r).join() === 'bk-sam,bk-jo,bk-pat' && (await chip()).pressed === 'true', Object.keys(r));
+  check('a row is two lines: the name, then dealer, type, date and the three results', r['bk-sam'].name === 'Sam Buyer' && r['bk-sam'].twoLines && r['bk-sam'].meta === 'Crawley | Test Drive | 14 November 2026 | In diary ✓ | Outcome set ✓ | Sent to dealership ✓', r['bk-sam']);
+  check('a booking not checked yet reads not yet for each', r['bk-jo'].meta === 'Crawley | Test Drive | 14 November 2026 | In diary not yet | Outcome set not yet | Sent to dealership not yet' && /^Not checked yet/.test(r['bk-jo'].note) && !r['bk-jo'].amber, r['bk-jo']);
+  check('a failed booking shows what is missing in amber', r['bk-pat'].meta.endsWith('In diary ✓ | Outcome set ✓ | Sent to dealership not yet') && r['bk-pat'].note === 'Still missing after 6 tries: sent to dealership.' && r['bk-pat'].amber, r['bk-pat']);
+  check('Check now is on each booking not yet checked', r['bk-sam'].button === '' && r['bk-jo'].button === 'Check now' && r['bk-pat'].button === 'Check now', r);
+  await shot(t.page, 'bookings-list.png');
+
+  await t.page.click('#_slaBookings .sla-bk[data-booking="bk-jo"] button');
+  check('Check now with Konnect Live not open says so and sends nothing', /Konnect Live is not open/.test(await toast(t.page)) && (await verifies()).length === 0, await toast(t.page));
+  await t.page.evaluate(() => window.fromLive({ type: 'workTools:ready', url: 'https://carbot.ai/konnectlive/(v1.2.200)/home.html', state: 'idle', batchId: null, done: 0, total: 0 }));
+  await waitFor(t.page, () => window.toLive.some((m) => m.type === 'workTools:verify'), null, 4000);
+  let sent = await verifies();
+  check('once linked the booking asked for is checked, though not due for three minutes', sent.length === 1 && sent[0].id === 'bk-jo' && sent[0].row.email === 'jo.example@example.com', sent);
+  r = await rows();
+  check('its row says it is being checked', r['bk-jo'].note === 'Checking on Konnect Live now.', r['bk-jo']);
+  await t.page.evaluate(() => window.fromLive({ type: 'workTools:verified', id: 'bk-jo', ok: true, found: true, appointment: true, outcome: true, sent: true, text: '' }));
+  r = await rows();
+  check('the answer shows on the row and the chip without a redraw of the panel', r['bk-jo'].state === 'checked' && r['bk-jo'].meta.endsWith('Sent to dealership ✓') && (await chip()).text === 'Bookings 2 of 3 checked', { row: r['bk-jo'], chip: await chip() });
+
+  const copied = await t.page.evaluate(async () => { let text = null; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (x) => { text = x; return Promise.resolve(); } } }); document.getElementById('_slaBookingsCopy').click(); await new Promise((res) => setTimeout(res, 50)); return { text, label: document.getElementById('_slaBookingsCopy').textContent }; });
+  const cells = (copied.text || '').split('\n').map((l) => l.split('\t'));
+  check('Copy rows copies every sheet row, Y in the seventh cell for checked bookings only', cells.map((c) => `${c[1]}:${c[6]}`).join() === 'Sam Buyer:Y,Jo Example:Y,Pat Example:' && cells.every((c) => c.length === 8) && /Copied 3/.test(copied.label), copied);
+
+  await t.page.click('#_slaBookingsCheckAll');
+  await waitFor(t.page, () => window.toLive.filter((m) => m.type === 'workTools:verify').length === 2, null, 4000);
+  sent = await verifies();
+  check('Check now at the top asks about every booking not yet checked', sent.length === 2 && sent[1].id === 'bk-pat', sent.map((m) => m.id));
+  await t.page.evaluate(() => window.fromLive({ type: 'workTools:verified', id: 'bk-pat', ok: true, found: true, appointment: true, outcome: true, sent: true, text: '' }));
+  const all = await chip();
+  check('with every booking checked the chip is no longer amber and Check now has gone', all.text === 'Bookings 3 of 3 checked' && !all.warn && await t.page.evaluate(() => !document.querySelector('#_slaBookings button:not(#_slaBookingsCopy)')), all);
+  // A new booking from the agent desktop arrives as a storage event.
+  const other = await t.context.newPage();
+  await other.goto(`${base}/`);
+  await other.evaluate((b) => { const v = JSON.parse(localStorage.getItem('_workToolsBookingChecks')); v.bookings.push(b); localStorage.setItem('_workToolsBookingChecks', JSON.stringify(v)); }, booking('bk-kim', 'Kim Example'));
+  await waitFor(t.page, () => /3 of 4/.test((document.querySelector('#_slaTodaySummary button[data-kind="bookings"]') || {}).textContent || ''), null, 4000);
+  check('a booking made on the agent desktop shows without a click', (await chip()).text === 'Bookings 3 of 4 checked' && !!(await rows())['bk-kim'], await chip());
+  await sleep(400);
+  check('and is not checked before it is due', (await verifies()).length === 2);
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.context.close();
+}
+
 const started = Date.now();
 try {
   await missedWarning();
@@ -794,6 +857,7 @@ try {
   await busyGuard();
   await resultsAndState();
   await nationalDecisions();
+  await bookingsToday();
 } catch (e) {
   failures++;
   console.log(`FAIL  test crashed: ${e && e.stack || e}`);

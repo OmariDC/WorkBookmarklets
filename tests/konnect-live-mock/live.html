@@ -20,6 +20,10 @@ nav { background: #222; height: 50px; }
        has two leads (one Post Closure) and a call. A search containing
        "tavistock" finds Jo Tavistock, with one lead. Clicking a lead's icon
        opens a lead window the Lead Checker can read; Escape closes it.
+     - A search containing "bookwell" finds Casey Bookwell, booked in on
+       13 Nov 2026: an appointment made at 10:02, its call outcome at 10:04
+       and the send to the dealership at 10:06, after an earlier send at
+       09:10 and an appointment from 2 Nov.
      - Any other search finds one customer whose timeline has no sales leads.
      window.mock.logOut() swaps the page for the login form; pressing Login
      brings it back. -->
@@ -42,7 +46,19 @@ nav { background: #222; height: 50px; }
   // real page, through angular.element(row).scope().item.
   window.angular = { element: (el) => ({ scope: () => (el && el.__scope) || null }) };
   const lead = (id, shown, iso, source, campaign, request, notes) => ({ kind: 'lead', id, shown, iso, source, campaign, request, notes });
+  // Any other timeline entry: its heading, description and time, as the
+  // Lead Checker reads them from the row's scope.
+  const event = (type, shown, iso, title, desc) => ({ kind: 'event', type, shown, iso, title, desc });
+  const SENT = 'Lead sent by Sam Tester and successfuly received at Crawley';
   const CUSTOMERS = {
+    bookwell: { id: 700400, name: 'Casey Bookwell', phone: '07700 900323', reg: 'EF56GHJ', entries: [
+      event(2, '13 Nov 2026 10:06', '2026-11-13T10:06:12.480+00:00', 'Lead sent to Enquiry Max', SENT),
+      event(3, '13 Nov 2026 10:04', '2026-11-13T10:04:30+00:00', 'Sam Tester called the customer with an outcome of Spoke To Customer', 'Sales -> ART -> Appointment -> Test Drive at Crawley'),
+      event(5, '13 Nov 2026 10:02', '2026-11-13T10:02:05+00:00', 'Appointment Created', 'Appointment Created by Sam Tester of type Test Drive at Crawley'),
+      lead(1386500, '13 Nov 2026 09:40', '2026-11-13T09:40:00', 'Customer First', 'Enquiry - New', 'Test Drive', 'Would like a test drive this weekend.'),
+      event(2, '13 Nov 2026 09:10', '2026-11-13T09:10:00+00:00', 'Lead sent to Enquiry Max', SENT),
+      event(5, '2 Nov 2026 15:20', '2026-11-02T15:20:00+00:00', 'Appointment Created', 'Appointment Created by Sam Tester of type Face to Face at Crawley')
+    ] },
     reedwell: { id: 700200, name: 'Morgan Reedwell', phone: '07700 900321', reg: 'AB12CDE', entries: [
       { kind: 'call', id: 1386301, shown: '10 Nov 2026 11:42', iso: '2026-11-10T11:42:00', title: 'Agent A called the customer' },
       lead(1386301, '10 Nov 2026 09:05', '2026-11-10T09:05:00', 'Customer First', 'Enquiry - New', 'Test Drive', 'Would like to test drive a 2008 this coming Saturday.'),
@@ -93,6 +109,11 @@ nav { background: #222; height: 50px; }
     const row = document.createElement('div');
     row.className = 'row ng-scope tl-row';
     row.setAttribute('ng-repeat', 'item in customerTimeLine');
+    if (entry.kind === 'event') {
+      row.innerHTML = `<a class="connected-customer-timeline-centre-grey"><i class="fa">e</i></a> <span>${entry.shown}</span> <span>${entry.title}</span> <span>${entry.desc}</span>`;
+      row.__scope = { item: { TimelineItemType: entry.type, LeadID: 1386500, EventTime: entry.iso, BelowLineTitle: entry.title, Description: entry.desc } };
+      return row;
+    }
     if (entry.kind === 'call') {
       row.innerHTML = `<a class="connected-customer-timeline-centre-lightblue"><i class="fa fa-phone">c</i></a> <span class="connected-customer-timeline-heading-left-lightblue">${entry.shown}</span> <span class="connected-customer-title-lightblue">${entry.title}</span>`;
       row.__scope = { item: { TimelineItemType: 3, LeadID: entry.id, EventTime: entry.iso, Description: '', BelowLineTitle: '' } };

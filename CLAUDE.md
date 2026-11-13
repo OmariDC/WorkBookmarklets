@@ -14,6 +14,7 @@ Browser bookmarklets used by staff inside the Konnect CRM. The main tools are:
 - Konnect Live only answers the tab that opened it, so SLA Manager holds the one link to the Lead Checker (postMessage, every batch carries an id). Send and "Open Konnect Live" in SLA Manager open that tab.
 - Konnect Manager and the agent desktop are the same site in separate tabs. Lead Re setup asks SLA Manager for a check, and reads its progress, the link state and the Post Closure results, through shared localStorage. The key names are constants with the same name in both files.
 - SLA Manager can ask the Lead Checker to open one customer (from the control behind a lead card's initials), and the Lead Checker sends each review decision back as it is made. Lead Re setup records its own decisions in shared storage, and SLA Manager's "Copy review decisions" gathers both.
+- Konnect Notes records each diary booking it makes in shared storage. A few minutes later SLA Manager asks the Lead Checker to read that customer's timeline (`workTools:verify`, answered by `workTools:verified`) for the appointment, its outcome and the send to the dealership, and lists the results under Bookings.
 - Each tool's Clear & Stop clears only its own data. Customer data in storage is kept for one shift (12 hours).
 - The agent desktop page must never be reloaded by a tool.
 

@@ -507,6 +507,110 @@ async function startMyDayAndTheLink() {
   await context.close();
 }
 
+async function bookingChecks() {
+  console.log('\nBooking checks: due, asked one at a time between batches, answers kept');
+  // Three minutes and five minutes, shortened.
+  const { context, manager, desk, errors } = await open({ verifyFirstMs: 700, verifyRetryMs: 300, verifyAnswerMs: 5000 });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const sheetRow = (name) => ['13/11/2026', name, 'Crawley', 'Test Drive', '14 November 2026', '10:00', '', 'AB12CDE'].join('\t');
+  const booking = (id, name, over) => ({ id, name, email: `${name.toLowerCase().replace(' ', '.')}@example.com`, phone: '07700 900111', dealer: 'Crawley', apptType: 'Test Drive', apptDate: '14 November 2026', row: sheetRow(name), bookedAt: new Date().toISOString(), state: 'waiting', tries: 0, checkedAt: null, appointment: null, outcome: null, sent: null, text: '', ...over });
+  const bookings = async () => ((await stored(manager, '_workToolsBookingChecks')) || { bookings: [] }).bookings;
+  const entry = async (id) => (await bookings()).find((e) => e.id === id);
+  const verifies = async () => (await toLive(manager)).filter((m) => m.type === 'workTools:verify');
+  const waitVerifies = (count) => waitFor(verifies, (v) => v.length >= count);
+  const answer = (id, over) => fromLive(manager, { type: 'workTools:verified', id, ok: true, found: true, appointment: true, outcome: true, sent: false, text: '', ...over });
+  const copyRows = () => manager.evaluate(async () => { let text = null; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: (t) => { text = t; return Promise.resolve(); } } }); const b = document.createElement('button'); window._copyBookingRows(b); await new Promise((r) => setTimeout(r, 50)); return { text, label: b.textContent }; });
+  // Later bookings are added on the manager page: another tab can read a
+  // value a moment old and write it back over an answer just stored.
+  const addBooking = (b) => manager.evaluate((x) => { const v = JSON.parse(localStorage.getItem('_workToolsBookingChecks')); v.bookings.push(x); localStorage.setItem('_workToolsBookingChecks', JSON.stringify(v)); }, b);
+  await ready(manager);
+  // Konnect Notes writes from the agent desktop tab.
+  const sam = booking('bk-sam', 'Sam Buyer', { extra: 'kept' });
+  await desk.evaluate((list) => localStorage.setItem('_workToolsBookingChecks', JSON.stringify({ savedAt: new Date().toISOString(), bookings: list })), [sam, booking('bk-old', 'Old Example', { bookedAt: new Date(Date.now() - 13 * 3600000).toISOString() })]);
+  await sleep(300);
+  check('a booking just made is not checked before it is due', (await verifies()).length === 0, await verifies());
+  check('a booking older than 12 hours is dropped', (await bookings()).map((e) => e.id).join() === 'bk-sam', (await bookings()).map((e) => e.id));
+  let sent = await waitVerifies(1);
+  check('once due it is asked about, by id, with the customer and the booking time', sent.length === 1 && JSON.stringify(sent[0]) === JSON.stringify({ type: 'workTools:verify', id: 'bk-sam', row: { name: 'Sam Buyer', phone: '07700 900111', email: 'sam.buyer@example.com' }, since: sam.bookedAt }), sent);
+  await sleep(500);
+  check('it is not asked again while the answer is awaited', (await verifies()).length === 1);
+
+  await answer('bk-sam');
+  let e = await entry('bk-sam');
+  check('a partial answer leaves it waiting, with one try used and what is missing', e.state === 'waiting' && e.tries === 1 && e.appointment === true && e.outcome === true && e.sent === false && !!e.checkedAt && /^Not yet: sent to dealership\./.test(e.text), e);
+  check('fields SLA Manager does not know are kept', e.extra === 'kept' && e.row === sam.row, e);
+  sent = await waitVerifies(2);
+  check('and it is tried again after the retry time', sent.length === 2 && sent[1].id === 'bk-sam', sent.map((m) => m.id));
+
+  await answer('bk-sam', { ok: false, found: false, appointment: false, outcome: false, text: 'The Lead Checker is busy with a batch.' });
+  e = await entry('bk-sam');
+  check('ok false uses no try and keeps what was already known', e.state === 'waiting' && e.tries === 1 && e.appointment === true && e.text === 'The Lead Checker is busy with a batch.', e);
+  sent = await waitVerifies(3);
+  check('it is asked again later', sent.length === 3);
+  await answer('bk-sam', { ok: false, found: false, text: 'Konnect Live is logged out.' });
+  check('logged out uses no try either', (await entry('bk-sam')).tries === 1, await entry('bk-sam'));
+  await waitVerifies(4);
+  await answer('bk-sam');
+  check('a second real answer is the second try', (await entry('bk-sam')).tries === 2);
+
+  // A batch takes the link: no check goes until it has ended.
+  await send(manager);
+  const batch = (await toLive(manager)).find((m) => m.type === 'workTools:batch');
+  await sleep(600);
+  check('nothing is asked while a batch is sent and not yet acknowledged', (await verifies()).length === 4, await link(manager));
+  await fromLive(manager, { type: 'workTools:received', id: batch.id, rows: 1 });
+  await ready(manager, { state: 'running', batchId: batch.id, done: 0, total: 1 });
+  await sleep(600);
+  check('nothing is asked while a batch is running', (await verifies()).length === 4);
+  await ready(manager, { state: 'paused', batchId: batch.id, done: 0, total: 1 });
+  await manager.evaluate(() => window._checkBookingNow('bk-sam'));
+  await sleep(300);
+  check('not even with Check now, while it is paused', (await verifies()).length === 4);
+  await fromLive(manager, { type: 'workTools:ended', id: batch.id, reason: 'done' });
+  sent = await waitVerifies(5);
+  check('once the batch has ended the check goes', sent.length === 5 && (await toLive(manager)).filter((m) => m.type === 'workTools:batch').length === 1, sent.length);
+
+  await answer('bk-sam', { sent: true });
+  e = await entry('bk-sam');
+  check('all three true makes it checked', e.state === 'checked' && e.tries === 3 && e.sent === true && e.text === 'Checked on Konnect Live.', e);
+
+  // A second booking, not due for a minute: only Check now asks about it.
+  await manager.evaluate(() => { window.__workToolsLinkTiming.verifyFirstMs = 60000; });
+  const jo = booking('bk-jo', 'Jo Example');
+  await addBooking(jo);
+  await sleep(500);
+  check('a checked booking is not asked about again, nor one not yet due', (await verifies()).length === 5);
+  const copied = await copyRows();
+  const lines = (copied.text || '').split('\n').map((l) => l.split('\t'));
+  check('Copy rows puts Y in the seventh cell for the checked booking only', lines.length === 2 && lines[0][1] === 'Sam Buyer' && lines[0][6] === 'Y' && lines[1][1] === 'Jo Example' && lines[1][6] === '' && lines.every((c) => c.length === 8 && c[7] === 'AB12CDE') && /Copied 2/.test(copied.label), copied);
+  await manager.evaluate(() => window._checkBookingNow('bk-jo'));
+  sent = await waitVerifies(6);
+  check('Check now asks straight away', sent.length === 6 && sent[5].id === 'bk-jo' && sent[5].since === jo.bookedAt, sent.map((m) => m.id));
+
+  // Six tries without all three.
+  await manager.evaluate(() => { window.__workToolsLinkTiming.verifyRetryMs = 80; });
+  for (let n = 1; n <= 6; n++) {
+    await waitVerifies(5 + n);
+    await answer('bk-jo', { outcome: false });
+    if (n === 5) check('five tries leaves it waiting', (await entry('bk-jo')).state === 'waiting' && (await entry('bk-jo')).tries === 5, await entry('bk-jo'));
+  }
+  e = await entry('bk-jo');
+  check('six tries makes it failed, saying what is missing', e.state === 'failed' && e.tries === 6 && e.text === 'Still missing after 6 tries: outcome set, sent to dealership.', e);
+  await sleep(500);
+  check('a failed booking is not asked about again', (await verifies()).length === 11, (await verifies()).length);
+  await manager.evaluate(() => window._checkBookingNow());
+  await waitVerifies(12);
+  await answer('bk-jo', { outcome: true, sent: true });
+  check('Check now for all asks about the failed one, and a full answer makes it checked', (await verifies()).length === 12 && (await entry('bk-jo')).state === 'checked', await entry('bk-jo'));
+
+  const kim = booking('bk-kim', 'Kim Example');
+  await addBooking(kim);
+  await manager.evaluate(() => window._slaResetBookmarklet());
+  check('Clear & Stop removes only the checked bookings', (await bookings()).map((b) => b.id).join() === 'bk-kim', (await bookings()).map((b) => b.id));
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
 const started = Date.now();
 try {
   await openedAndReview();
@@ -520,6 +624,7 @@ try {
   await openWithNoLeads();
   await olderLeadChecker();
   await startMyDayAndTheLink();
+  await bookingChecks();
 } catch (e) {
   failures++;
   console.log(`FAIL  test crashed: ${e && e.stack || e}`);

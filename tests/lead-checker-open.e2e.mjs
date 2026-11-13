@@ -395,6 +395,126 @@ let finishedOutcomes = null;
   await t.close();
 }
 
+// ------------------------------------------------------------------
+// 6. The booking check SLA Manager asks for: the timeline is read, the
+//    lead window is never opened, and no batch or link state changes.
+// ------------------------------------------------------------------
+const VERIFY_ROW = { name: 'Casey Bookwell', phone: '07700 900323', email: 'casey.bookwell@example.com' };
+// The mock's times are read as this machine's clock, as the page's are.
+const at = (day, hour, minute) => new Date(2026, 10, day, hour, minute).toISOString();
+const RUN_BUSY = 'The Lead Checker is checking a batch. Pause it or wait, then try again.';
+{
+  const t = await openLinked();
+  await t.send({ type: 'workTools:verify', id: 'bk-1', row: VERIFY_ROW, since: at(13, 10, 0) });
+  const all = await t.waitFor('verified');
+  check('verify on an idle page: found, with all three results and the id', all && all.id === 'bk-1' && all.ok === true && all.found === true && all.appointment === true && all.outcome === true && all.sent === true && all.text === 'Casey Bookwell: in the diary, outcome set, sent to the dealership.', all);
+  let page = await t.page();
+  const opens = await t.live.evaluate(() => window.mock.modalOpens.length);
+  check('the timeline was opened, never a lead window, no overlay, lock let go', /connectedCustomer\/700400/.test(page.hash) && page.modals === 0 && opens === 0 && !page.sawOverlay && !page.busy, [page, opens]);
+  await t.live.waitForTimeout(500);
+  check('it is answered once', (await t.msgs('verified')).length === 1, await t.msgs('verified'));
+  check('no batch was made for it and the link still says idle', (await t.snapshot()) === null && (await t.msgs('ready')).every((m) => m.state === 'idle' && m.batchId === null), await t.msgs('ready'));
+  check('nothing else was sent', (await t.msgs()).every((m) => m.type === 'workTools:ready' || m.type === 'workTools:verified'), (await t.msgs()).map((m) => m.type));
+
+  await t.clearMsgs();
+  await t.send({ type: 'workTools:verify', id: 'bk-2', row: VERIFY_ROW, since: at(13, 10, 30) });
+  const notSent = await t.waitFor('verified');
+  check('booked after the last send: the earlier sends do not count', notSent && notSent.ok === true && notSent.found === true && notSent.appointment === true && notSent.outcome === true && notSent.sent === false && notSent.text === 'Casey Bookwell: in the diary, outcome set, not sent to the dealership yet.', notSent);
+
+  await t.clearMsgs();
+  await t.send({ type: 'workTools:verify', id: 'bk-3', row: VERIFY_ROW, since: at(14, 9, 0) });
+  const nextDay = await t.waitFor('verified');
+  check('booked the day after: nothing from before that day counts', nextDay && nextDay.ok === true && nextDay.found === true && !nextDay.appointment && !nextDay.outcome && !nextDay.sent, nextDay);
+
+  await t.clearMsgs();
+  await t.send({ type: 'workTools:verify', id: 'bk-4', row: { name: 'Pat Noneson', phone: '', email: 'pat.noneson@example.com' }, since: at(13, 10, 0) });
+  const none = await t.waitFor('verified');
+  check('customer not found: ok false, found false, said plainly', none && none.id === 'bk-4' && none.ok === false && none.found === false && none.appointment === false && none.outcome === false && none.sent === false && none.text === 'No customer found for Pat Noneson.', none);
+
+  await t.clearMsgs();
+  await t.send({ type: 'workTools:verify', id: 'bk-5', row: {}, since: at(13, 10, 0) });
+  await t.send({ type: 'workTools:verify', id: 'bk-6', row: VERIFY_ROW });
+  const noRow = await t.waitFor('verified', (m) => m.id === 'bk-5', 5000);
+  const noSince = await t.waitFor('verified', (m) => m.id === 'bk-6', 5000);
+  check('a verify with no customer or no time is answered ok false', noRow && noRow.ok === false && noRow.text === 'No customer was given to check.' && noSince && noSince.ok === false && noSince.text === 'No booking time was given to check.', [noRow, noSince]);
+
+  await t.clearMsgs();
+  await t.live.evaluate(({ row, since }) => window.postMessage({ type: 'workTools:verify', id: 'x', row, since }, '*'), { row: VERIFY_ROW, since: at(13, 10, 0) });
+  await t.live.waitForTimeout(800);
+  check('a verify from another window is ignored', (await t.msgs('verified')).length === 0);
+
+  // An open by hand is not interrupted by a verify, and takes over from one.
+  await t.live.evaluate(() => { window.mock.searchDelay = 700; });
+  await t.send({ type: 'workTools:open', id: 'o1', row: OPEN_ROW });
+  await t.live.waitForFunction(() => window.mock.searches.some((s) => /reedwell/.test(s)));
+  await t.send({ type: 'workTools:verify', id: 'bk-7', row: VERIFY_ROW, since: at(13, 10, 0) });
+  const waited = await t.waitFor('verified', (m) => m.id === 'bk-7', 5000);
+  const opened = await t.waitFor('opened', (m) => m.id === 'o1');
+  check('a verify while a customer is being opened by hand is refused, and the open finishes', waited && waited.ok === false && /being opened/.test(waited.text) && opened && opened.ok === true && (await t.page()).lead === '1386301', [waited, opened]);
+  await t.clearMsgs();
+  await t.live.evaluate(() => { window.mock.searches = []; });
+  await t.send({ type: 'workTools:verify', id: 'bk-8', row: VERIFY_ROW, since: at(13, 10, 0) });
+  await t.live.waitForFunction(() => window.mock.searches.some((s) => /bookwell/.test(s)));
+  await t.send({ type: 'workTools:open', id: 'o2', row: OPEN_ROW });
+  const gaveWay = await t.waitFor('verified', (m) => m.id === 'bk-8');
+  const second = await t.waitFor('opened', (m) => m.id === 'o2');
+  await t.live.waitForTimeout(400);
+  check('an open by hand takes over from a verify, which says so once', gaveWay && gaveWay.ok === false && gaveWay.found === false && /opened by hand/.test(gaveWay.text) && second && second.ok === true && (await t.msgs('verified')).length === 1 && !(await t.page()).busy, [gaveWay, second]);
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.close();
+}
+
+// A finished batch, then a verify, then logged out.
+{
+  const t = await openLinked();
+  await t.runToEnd('v1');
+  await t.avatar(0).click();
+  await t.waitState(/^Morgan Reedwell is open: timeline and lead\.$/);
+  await t.clearMsgs();
+  const before = await t.snapshot();
+  const opensBefore = await t.live.evaluate(() => window.mock.modalOpens.length);
+  await t.send({ type: 'workTools:verify', id: 'bk-9', row: VERIFY_ROW, since: at(13, 10, 0) });
+  const done = await t.waitFor('verified');
+  check('verify on a finished batch answers with the three results', done && done.ok === true && done.appointment && done.outcome && done.sent, done);
+  check('the finished results and position are untouched', (await t.snapshot()) === before && JSON.stringify(await t.outcomes()) === JSON.stringify(EXPECTED), await t.outcomes());
+  const page = await t.page();
+  check('the lead window left open by hand was closed and none was opened', page.modals === 0 && (await t.live.evaluate(() => window.mock.modalOpens.length)) === opensBefore && !page.busy, page);
+  const quiet = await t.msgs();
+  check('the link state is untouched: nothing but the answer and idle', quiet.every((m) => (m.type === 'workTools:ready' && m.state === 'idle' && m.batchId === null) || m.type === 'workTools:verified') && quiet.filter((m) => m.type === 'workTools:verified').length === 1, quiet.map((m) => [m.type, m.state]));
+  check('the state line says what was found', (await t.state()) === 'Casey Bookwell: in the diary, outcome set, sent to the dealership.', await t.state());
+
+  await t.live.evaluate(() => { window.mock.logOut(); window.mock.searches = []; });
+  await t.clearMsgs();
+  await t.send({ type: 'workTools:verify', id: 'bk-10', row: VERIFY_ROW, since: at(13, 10, 0) });
+  const out = await t.waitFor('verified', null, 5000);
+  check('logged out: ok false with the reason, nothing is searched', out && out.id === 'bk-10' && out.ok === false && out.found === false && out.text === 'Konnect Live is logged out. Log in, then try again.' && (await t.live.evaluate(() => window.mock.searches.length)) === 0 && !(await t.page()).busy, out);
+  check('still the same results', (await t.snapshot()) === before);
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.close();
+}
+
+// While a batch is running.
+{
+  const t = await openLinked();
+  await t.live.evaluate(() => { window.mock.searchDelay = 900; });
+  await t.send({ type: 'workTools:batch', id: 'v2', kind: 'leads', tsv: BATCH });
+  await t.waitFor('ready', (m) => m.state === 'running');
+  await t.live.waitForFunction(() => { const s = window.__konnectLeadChecker.getSession(); return s && Object.keys(s.results).length === 2 && window.mock.searches.length === 2; }, null, { timeout: 30000 });
+  const before = await t.snapshot();
+  const stateBefore = await t.state();
+  await t.send({ type: 'workTools:verify', id: 'bk-11', row: VERIFY_ROW, since: at(13, 10, 0) });
+  const refused = await t.waitFor('verified', null, 5000);
+  check('verify while a batch is running: ok false with a plain reason', refused && refused.id === 'bk-11' && refused.ok === false && refused.found === false && refused.appointment === false && refused.outcome === false && refused.sent === false && refused.text === RUN_BUSY, refused);
+  const searches = await t.live.evaluate(() => window.mock.searches.slice());
+  check('the batch was not disturbed: nothing searched, nothing moved, the state line unchanged', searches.length === 2 && !searches.some((s) => /bookwell/.test(s)) && (await t.snapshot()) === before && (await t.state()) === stateBefore && (await t.page()).busy === true, [searches, await t.state()]);
+  await t.live.evaluate(() => { window.mock.searchDelay = 120; });
+  const ended = await t.waitFor('ended', (m) => m.id === 'v2', 60000);
+  check('the batch finishes with the same results as an unbroken run', ended && ended.reason === 'done' && JSON.stringify(await t.outcomes()) === JSON.stringify(EXPECTED), await t.outcomes());
+  check('the verify was answered once', (await t.msgs('verified')).length === 1, await t.msgs('verified'));
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.close();
+}
+
 await browser.close();
 console.log(failures === 0 ? `\nAll ${passes} Lead Checker open tests passed.` : `\n${failures} Lead Checker open test(s) FAILED (${passes} passed).`);
 process.exit(failures === 0 ? 0 : 1);

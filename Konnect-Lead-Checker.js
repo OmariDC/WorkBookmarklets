@@ -3781,7 +3781,7 @@ return findMatchingLeadCandidates(row.created, new Date()).candidates.length > 0
 // finds no records moves on to the next; one that finds records without
 // the lead ends the search. session is optional and checked between every
 // awaited sub-step.
-async function searchAndOpenCustomer(group, session) {
+async function searchAndOpenCustomer(group, session, holdsLead = timelineHoldsSlaLead) {
 const sample = group.rows[0];
 if (sample.mode === 'national') return searchAndOpenNationalCustomer(group, session);
 const attempts = [];
@@ -3817,7 +3817,7 @@ return { status: 'OK', matchMethod: attempt.type, noEligibleEvents: false };
 }
 
 // Several records (or a name search): keep the one holding the lead.
-const chosen = await openRecordHoldingLeads(candidateIds, group, session, timelineHoldsSlaLead,
+const chosen = await openRecordHoldingLeads(candidateIds, group, session, holdsLead,
 (id) => openSearchResultById(runCustomerSearch, { type: attempt.type, value: attempt.value }, id, session));
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 if (chosen) return { status: 'OK', matchMethod: attempt.type, noEligibleEvents: false };
@@ -4211,6 +4211,87 @@ check('nobody found', openOutcomeText(row, { status: 'NO_CUSTOMER', exception: '
 if (failures.length > 0) console.error('KonnectLeadChecker open-outcome self-test FAILED:\n' + failures.join('\n'));
 else console.info('KonnectLeadChecker open-outcome self-test passed');
 });
+
+// Pure. The three things a booking check reads from a customer's timeline
+// items. since is when the booking was made (ISO). The appointment and its
+// outcome count from the start of that day; the send to the dealership
+// only from that minute on, as it follows Finished. EventTime carries no
+// seconds worth trusting, so the send is compared to the minute.
+function bookingCheckFrom(items, since) {
+const sinceMs = Date.parse(String(since || ''));
+const none = { appointment: false, outcome: false, sent: false };
+if (isNaN(sinceMs)) return none;
+const at = new Date(sinceMs);
+const dayStart = new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime();
+const minuteStart = Math.floor(sinceMs / 60000) * 60000;
+(items || []).forEach((item) => {
+const when = item ? eventTimeMs(item.EventTime) : null;
+if (when == null || when < dayStart) return;
+const heading = String(item.BelowLineTitle || '');
+const description = String(item.Description || '');
+if (/^\s*appointment created\b/i.test(heading)) none.appointment = true;
+if (/->\s*Appointment\s*->/i.test(description)) none.outcome = true;
+if (when >= minuteStart && /^\s*lead sent to enquiry max\b/i.test(heading) && /success\w* received/i.test(description)) none.sent = true;
+});
+return none;
+}
+
+// Pure. One line for the owner about what a booking check found.
+function bookingCheckText(name, found) {
+const parts = [
+found.appointment ? 'in the diary' : 'not in the diary yet',
+found.outcome ? 'outcome set' : 'no appointment outcome yet',
+found.sent ? 'sent to the dealership' : 'not sent to the dealership yet'
+];
+return `${name || 'This booking'}: ${parts.join(', ')}.`;
+}
+
+runSelfTest('bookingCheckSelfTest', function bookingCheckSelfTest() {
+const failures = [];
+const check = (label, actual, expected) => {
+if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+};
+const it = (time, below, desc) => ({ TimelineItemType: 0, LeadID: 1400300, EventTime: `2026-11-${time}+00:00`, BelowLineTitle: below, Description: desc });
+// Booked at 10:05 on the 13th by the clock this runs on, as the page's times are.
+const since = new Date(2026, 10, 13, 10, 5, 20).toISOString();
+const appointment = it('13T10:05:02.113', 'Appointment Created', 'Appointment Created by Sam Tester of type Test Drive at Crawley');
+const outcome = it('13T10:07:40', 'Sam Tester called the customer with an outcome of Spoke To Customer', 'Sales -> ART -> Appointment -> Test Drive at Crawley');
+const sent = it('13T10:08:10', 'Lead sent to Enquiry Max', 'Lead sent by Sam Tester and successfuly received at Crawley');
+const all = { appointment: true, outcome: true, sent: true };
+check('all three present', bookingCheckFrom([sent, outcome, appointment], since), all);
+check('not sent yet: the lead is not finished', bookingCheckFrom([outcome, appointment], since), { appointment: true, outcome: true, sent: false });
+const oldAppointment = it('06T15:20:00', 'Appointment Created', 'Appointment Created by Sam Tester of type Test Drive at Crawley');
+const oldOutcome = it('06T15:22:00', 'Sam Tester called the customer with an outcome of Spoke To Customer', 'Sales -> ART -> Appointment -> Test Drive at Crawley');
+check('an appointment and outcome from an earlier day do not count', bookingCheckFrom([oldOutcome, oldAppointment], since), { appointment: false, outcome: false, sent: false });
+const earlierSend = it('13T09:30:00', 'Lead sent to Enquiry Max', 'Lead sent by Sam Tester and successfuly received at Crawley');
+check('a send from before the booking does not count', bookingCheckFrom([earlierSend, outcome, appointment], since), { appointment: true, outcome: true, sent: false });
+check('a send in the minute of the booking counts', bookingCheckFrom([it('13T10:05:00', 'Lead sent to Enquiry Max', 'Lead sent by Sam Tester and successfully received at Crawley')], since).sent, true);
+check('a send that was not received does not count', bookingCheckFrom([it('13T10:08:10', 'Lead sent to Enquiry Max', 'Lead sent by Sam Tester and failed at Crawley')], since).sent, false);
+check('an appointment earlier on the day of the booking counts', bookingCheckFrom([it('13T08:00:00', 'Appointment Created', '')], since).appointment, true);
+check('a call outcome that is not an appointment does not count', bookingCheckFrom([it('13T10:07:40', 'Sam Tester called the customer with an outcome of Spoke To Customer', 'Sales -> ART -> Ongoing -> Call Back')], since).outcome, false);
+check('an entry with no time does not count', bookingCheckFrom([{ BelowLineTitle: 'Appointment Created', Description: '' }], since).appointment, false);
+check('no booking time: nothing is confirmed', bookingCheckFrom([sent, outcome, appointment], ''), { appointment: false, outcome: false, sent: false });
+check('text, all three', bookingCheckText('Casey Bookwell', all), 'Casey Bookwell: in the diary, outcome set, sent to the dealership.');
+check('text, not sent', bookingCheckText('Casey Bookwell', { appointment: true, outcome: true, sent: false }), 'Casey Bookwell: in the diary, outcome set, not sent to the dealership yet.');
+check('text, nothing yet', bookingCheckText('', { appointment: false, outcome: false, sent: false }), 'This booking: not in the diary yet, no appointment outcome yet, not sent to the dealership yet.');
+if (failures.length > 0) console.error('KonnectLeadChecker booking-check self-test FAILED:\n' + failures.join('\n'));
+else console.info('KonnectLeadChecker booking-check self-test passed');
+});
+
+// Searches for the customer as the run does and reads the booking check
+// from their timeline. The lead window is never opened. A record found by
+// name alone is only used if its timeline has something from that day on.
+async function verifyBookingOnPage(group, since, token) {
+const at = new Date(Date.parse(since));
+const dayStart = new Date(at.getFullYear(), at.getMonth(), at.getDate()).getTime();
+const hasEntrySince = () => readAllTimelineItems().some((item) => { const when = eventTimeMs(item.EventTime); return when != null && when >= dayStart; });
+const opened = await searchAndOpenCustomer(group, token, hasEntrySince);
+if (isCancelled(token)) return { status: 'CANCELLED' };
+if (opened.status !== 'OK') return { status: 'NO_CUSTOMER', exception: opened.exception };
+await waitForTimelineItemsSettled();
+if (isCancelled(token)) return { status: 'CANCELLED' };
+return Object.assign({ status: 'READ' }, bookingCheckFrom(readAllTimelineItems(), since));
+}
 
 // Pure. What kind of check a pasted batch is, shown above the status.
 const CHECK_SCENARIOS = {
@@ -6345,6 +6426,14 @@ function showOpenNote() {
 if (openNote && (openNoteUntil || (!(isRunning && !(session && session.paused)) && !manualStepBusy))) curStateEl.textContent = openNote;
 }
 
+// Why the page cannot be driven by hand just now, or '' when it can.
+function pageBusyReason() {
+if ((isRunning && !(session && session.paused)) || manualStepBusy || batchChangesWaiting > 0) return RUN_BUSY_NOTE;
+if (klcShared.stepBusy && !openInFlight) return 'The lead being checked is still finishing. Try again in a moment.';
+if (onLoginPage()) return LOGGED_OUT_NOTE;
+return '';
+}
+
 function refuseManualOpen(text) {
 openNote = text;
 openNoteOpened = '';
@@ -6364,9 +6453,8 @@ async function openRowByHand(key, row, group, result) {
 const s = session;
 if (destroyed) return { ok: false, lead: false, text: '' };
 openNoteKey = key;
-if ((isRunning && !(s && s.paused)) || manualStepBusy || batchChangesWaiting > 0) return refuseManualOpen(RUN_BUSY_NOTE);
-if (klcShared.stepBusy && !openInFlight) return refuseManualOpen('The lead being checked is still finishing. Try again in a moment.');
-if (onLoginPage()) return refuseManualOpen(LOGGED_OUT_NOTE);
+const busy = pageBusyReason();
+if (busy) return refuseManualOpen(busy);
 if (openInFlight) { openInFlight.token.cancelled = true; openInFlight.token.replaced = true; }
 const mine = { key, token: { cancelled: false, loggedOut: false, replaced: false } };
 // Said when something else took the page before this one finished.
@@ -6431,6 +6519,74 @@ const answer = (reply) => linkPost(Object.assign({ type: 'workTools:opened' }, d
 if (!row || !fields.slice(0, 3).some(Boolean)) { answer({ ok: false, lead: false, text: 'No customer was given to open.' }); return; }
 openRowByHand(`link:${++linkOpenCount}`, row, { rows: [row] }, null)
 .then(answer, () => answer({ ok: false, lead: false, text: `${row.name || 'The customer'} could not be opened: the tool hit an error.` }));
+}
+
+// SLA Manager asking whether a booking is in the diary, has its outcome and
+// has gone to the dealership. Refused as an open is, but without a word on
+// the state line, since nobody pressed anything; a customer being opened
+// by hand is not interrupted either. Holds the step lock and gives way to
+// a run or an open like an open does. Changes no result. Answered once.
+let linkVerifyCount = 0;
+async function verifyBooking(row, since) {
+const no = (text) => ({ ok: false, found: false, appointment: false, outcome: false, sent: false, text });
+if (destroyed) return no('');
+const busy = pageBusyReason();
+if (busy) return no(busy);
+if (openInFlight || klcShared.stepBusy) return no('A customer is being opened on Konnect Live. Try again in a moment.');
+const mine = { key: `verify:${++linkVerifyCount}`, token: { cancelled: false, loggedOut: false, replaced: false } };
+const gaveWay = () => no(mine.token.loggedOut ? LOGGED_OUT_NOTE : (mine.token.replaced ? 'A customer was opened by hand instead. Try again in a moment.' : RUN_BUSY_NOTE));
+openInFlight = mine;
+openNoteKey = mine.key;
+openNote = `Checking the booking for ${row.name || 'the customer'}...`;
+openNoteOpened = '';
+openNoteUntil = 0;
+render();
+klcShared.stepBusy = true;
+pageMovedByHand = true;
+const loginWatch = setInterval(() => {
+if (!onLoginPage() || mine.token.cancelled) return;
+mine.token.cancelled = true;
+mine.token.loggedOut = true;
+if (openInFlight === mine) { openInFlight = null; openNote = LOGGED_OUT_NOTE; render(); }
+}, 300);
+let outcome;
+try {
+await closeLeadModal();
+outcome = await verifyBookingOnPage({ rows: [row] }, since, mine.token);
+} catch (error) {
+console.error('KonnectLeadChecker: the booking could not be checked:', errorText(error));
+outcome = { status: 'ERROR' };
+} finally {
+clearInterval(loginWatch);
+klcShared.stepBusy = false;
+}
+if (mine.token.cancelled || destroyed) return gaveWay();
+openInFlight = null;
+let reply;
+if (onLoginPage()) reply = no(LOGGED_OUT_NOTE);
+else if (outcome.status === 'READ') {
+const found = { appointment: outcome.appointment, outcome: outcome.outcome, sent: outcome.sent };
+reply = Object.assign({ ok: true, found: true }, found, { text: bookingCheckText(row.name, found) });
+} else if (outcome.status === 'NO_CUSTOMER') reply = no(openOutcomeText(row, outcome).replace('could not be opened', 'could not be checked'));
+else reply = no(`${row.name || 'The customer'} could not be checked: the tool hit an error.`);
+// Shown briefly: it is not something the owner asked this page for.
+openNote = reply.text;
+openNoteUntil = Date.now() + 5000;
+setTimeout(() => { if (!destroyed) render(); }, 5100);
+render();
+return reply;
+}
+
+function verifyBookingFromLink(data) {
+const given = data.row && typeof data.row === 'object' ? data.row : {};
+const cell = (name) => String(given[name] == null ? '' : given[name]).replace(/[\t\r\n]+/g, ' ').trim();
+const fields = ['name', 'phone', 'email'].map(cell);
+const row = parseBatchInput(`${EXPECTED_BATCH_HEADER.join('\t')}\n${fields.concat(['', '', '']).join('\t')}`).rows[0];
+const answer = (reply) => linkPost(Object.assign({ type: 'workTools:verified' }, data.id == null ? {} : { id: data.id }, reply));
+const no = (text) => answer({ ok: false, found: false, appointment: false, outcome: false, sent: false, text });
+if (!row || !fields.some(Boolean)) { no('No customer was given to check.'); return; }
+if (isNaN(Date.parse(String(data.since || '')))) { no('No booking time was given to check.'); return; }
+verifyBooking(row, String(data.since)).then(answer, () => no(`${row.name || 'The customer'} could not be checked: the tool hit an error.`));
 }
 
 // Capture phase, so a press on the initials never reaches the row around
@@ -7285,6 +7441,7 @@ const manager = managerWindow();
 if (destroyed || !manager || event.origin !== MANAGER_ORIGIN || event.source !== manager) return;
 const data = event.data;
 if (data && data.type === 'workTools:open') { openCustomerFromLink(data); return; }
+if (data && data.type === 'workTools:verify') { verifyBookingFromLink(data); return; }
 if (!data || data.type !== 'workTools:batch' || typeof data.tsv !== 'string') return;
 const id = data.id == null ? null : data.id;
 const current = linkedBatch();
