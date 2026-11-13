@@ -622,13 +622,17 @@ async function bothLists() {
   check('a lead on both lists is counted once and the placeholder date is ignored', (await title()) === `(2 missed, 1 in 15) ${OWN_TITLE}` && (await notes()).length === 1 && (await notes())[0].title === '2 MISSED · 1 due in 15 mins', { title: await title(), notes: await notes() });
   check('the visit is not a reload and opens no customer pop-up', await t.page.evaluate(() => !!document.getElementById('_slaBadge') && Object.keys(window.OPENED).length === 0));
 
-  // A Pending lead comes due while the tab sits on the SLA page.
-  await t.page.evaluate(() => { PENDING[0][10] = at(4); });
+  // A new lead comes due on the SLA list, then drops off it (stuck, or in
+  // a queue) while still on the Pending list: its SLA time is remembered.
+  // The Pending list's own time for it has long passed and is never used.
+  await t.page.evaluate(() => { PENDING[0][10] = at(-56); LEADS.push(['Pat Pending', 'AB21CDE', 'Customer First', 'General', at(-56), at(-56), at(4), 'Pending', null, '07700900021', 'pat@example.com']); renderSla(); });
   await waitFor(t.page, () => window.NOTES.length > 1, null, 8000);
+  await t.page.evaluate(() => { LEADS.pop(); renderSla(); });
+  await sleep(1500);
   await home(SLA_HASH);
   let shown = await notes();
-  check('a Pending new lead coming due is notified, in the totals', shown.length === 2 && shown[1].title === '2 MISSED · 1 due in 5 mins · 1 due in 15 mins', shown);
-  check('and is in the title', (await title()) === `(2 missed, 1 in 5 min, 1 in 15) ${OWN_TITLE}`, await title());
+  check('a new lead coming due is notified, in the totals', shown.length === 2 && shown[1].title === '2 MISSED · 1 due in 5 mins · 1 due in 15 mins', shown);
+  check('and stays in the title at its SLA time after it leaves the SLA list', (await title()) === `(2 missed, 1 in 5 min, 1 in 15) ${OWN_TITLE}`, await title());
   check('the tab is back on the SLA page', (await state()).hash === SLA_HASH && (await state()).sla, await state());
   await sleep(2500);
   check('it is notified once, however many visits follow', (await notes()).length === 2 && (await visits()) >= 3, { notes: await notes(), visits: await visits() });
@@ -704,7 +708,7 @@ async function bothLists() {
   await waitFor(p.page, () => document.querySelectorAll('#view th').length === 12, null, 4000);
   await sleep(1500);
   await p.page.evaluate(() => { window.NAVS = []; window.OPENED = {}; localStorage.setItem('_slaPanelState', 'visible'); window._toggleMinimizePanel(); window._toggleMissedWarning(null); });
-  check('on the Pending page the SLA list is read and the tab comes back', await waitFor(p.page, (own) => document.title === `(2 missed, 2 in 15) ${own}`, OWN_TITLE, 10000) && await waitFor(p.page, () => location.hash === '#/Queue/PendingCustomerQueue' && document.querySelectorAll('#view th').length === 12, null, 8000), { title: await p.page.title(), navs: await p.page.evaluate(() => window.NAVS) });
+  check('on the Pending page the SLA list is read and the tab comes back', await waitFor(p.page, (own) => document.title === `(2 missed, 1 in 15) ${own}`, OWN_TITLE, 10000) && await waitFor(p.page, () => location.hash === '#/Queue/PendingCustomerQueue' && document.querySelectorAll('#view th').length === 12, null, 8000), { title: await p.page.title(), navs: await p.page.evaluate(() => window.NAVS) });
   check('and no customer pop-up is opened on the way', await p.page.evaluate(() => Object.keys(window.OPENED).length === 0), await p.page.evaluate(() => window.OPENED));
   check('no page errors', p.errors.length === 0, p.errors);
   await p.context.close();

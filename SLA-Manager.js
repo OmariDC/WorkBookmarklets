@@ -8599,17 +8599,46 @@ const same = [lead.name, pending ? lead.reg : lead.registration, lead.campaign].
 return { key: pending ? `pending||${lead.key}` : lead.key, slaDate: watchDueDate(pending ? lead.nextActionDate : lead.slaDate), status: pending ? '' : lead.status, assigned: !!lead.assigned, list, same, type: pending ? String(lead.callbackType || '') : '' };
 }
 
-// Pure. Both lists as one, a lead on both counted once at its more urgent.
-function mergeWatchedLeads(slaLeads, pendingLeads) {
-const urgency = (l) => (l.status === 'Missed' ? -Infinity : (l.slaDate ? new Date(l.slaDate).getTime() : Infinity));
+// The key each lead had on the SLA list, for this page visit only.
+const watchSlaKeys = window.__slaWatchKeys || (window.__slaWatchKeys = {});
+
+// Both lists as one. The SLA list's own time is the only true due
+// time: the Pending list's Next Action Date for a new lead is not it. So a
+// lead on both is the SLA entry, and a Pending new lead that has dropped
+// off the SLA list takes the SLA time remembered for it. With none
+// remembered it has no due time and is not counted, rather than guessed.
+function mergeWatchedLeads(slaLeads, pendingLeads, remembered) {
 const merged = slaLeads.slice();
-const indexBySame = new Map(merged.map((l, i) => [l.same, i]));
+merged.forEach((l) => { watchSlaKeys[watchSameId(l.same)] = l.key; });
+const onSla = new Set(merged.map((l) => l.same));
 pendingLeads.forEach((p) => {
-const i = indexBySame.get(p.same);
-if (i === undefined) merged.push(p);
-else if (urgency(p) < urgency(merged[i])) merged[i] = p;
+if (onSla.has(p.same)) return;
+const id = watchSameId(p.same);
+const known = remembered && remembered[id];
+// It keeps the key it had on the SLA list, so it is not announced again.
+merged.push({ ...p, key: watchSlaKeys[id] || p.key, slaDate: known ? new Date(known) : null });
 });
 return merged;
+}
+
+// The SLA times seen for each lead this shift, so one that leaves the SLA
+// list is still known. Kept under a fingerprint, never the customer's name.
+const WATCH_SLA_DATES_KEY = '_slaWatchSlaDates';
+function watchSameId(same) {
+let hash = 5381;
+for (let i = 0; i < same.length; i++) hash = ((hash * 33) ^ same.charCodeAt(i)) >>> 0;
+return hash.toString(36);
+}
+// Pure. Adds the SLA list's times to the remembered ones and drops any
+// more than a shift old.
+function rememberSlaDates(remembered, slaLeads, now) {
+const kept = {};
+Object.keys(remembered || {}).forEach((id) => { if (now - new Date(remembered[id]).getTime() < STORED_CUSTOMER_DATA_MAX_AGE_MS) kept[id] = remembered[id]; });
+slaLeads.forEach((l) => { if (l.slaDate) kept[watchSameId(l.same)] = new Date(l.slaDate).toISOString(); });
+return kept;
+}
+function loadSlaDatesSeen() {
+try { return JSON.parse(sessionStorage.getItem(WATCH_SLA_DATES_KEY)) || {}; } catch (error) { return {}; }
 }
 
 // Pure. "SLA 12:14, Pending 12:15", with its age once a read is getting old.
@@ -8652,7 +8681,9 @@ const pending = watchSnapshots.pending ? watchSnapshots.pending.leads : currentP
 // Of the Pending list only the new leads count: they are the SLA leads,
 // and one that is stuck or sitting in a queue can drop off the SLA list.
 // Automatic and manual reschedules are not warned about.
-return mergeWatchedLeads(sla, pending.filter((l) => l.type === WATCHED_PENDING_TYPE));
+const remembered = rememberSlaDates(loadSlaDatesSeen(), sla, Date.now());
+try { sessionStorage.setItem(WATCH_SLA_DATES_KEY, JSON.stringify(remembered)); } catch (error) { /* this visit still has them */ }
+return mergeWatchedLeads(sla, pending.filter((l) => l.type === WATCHED_PENDING_TYPE), remembered);
 }
 
 function updateMissedWarning() {
@@ -8947,12 +8978,15 @@ check('the placeholder date is never a due time', [watchDueDate(parseKonnectDate
 const pendingLead = watchLead(pendingRow('Jo Example', new Date(now + 4 * 60000), { assigned: true }), PAGE_PENDING);
 check('a Pending lead is due at its Next Action Date, under its own key', [pendingLead.key, pendingLead.list, pendingLead.assigned, pendingLead.status, new Date(pendingLead.slaDate).getTime()], ['pending||Jo Example||AB12CDE||General||New||x', PAGE_PENDING, true, '', now + 4 * 60000]);
 check('a Pending lead with the placeholder date has no due time', watchLead(pendingRow('Jo Example', parseKonnectDate('Sun, 31 Dec 0000 23:58')), PAGE_PENDING).slaDate, null);
-const both = mergeWatchedLeads(
-[watchLead(slaRow('Jo Example', 10), PAGE_SLA), watchLead(slaRow('Al Sample', 3), PAGE_SLA)],
-[watchLead(pendingRow('jo  example', new Date(now + 2 * 60000)), PAGE_PENDING), watchLead(pendingRow('Al Sample', new Date(now + 30 * 60000)), PAGE_PENDING), watchLead(pendingRow('Di Other', new Date(now - 60000)), PAGE_PENDING)]);
-check('a lead on both lists is counted once, at its more urgent', both.map((l) => `${l.list}:${l.same.split('||')[0]}`), ['pending:jo example', 'sla:al sample', 'pending:di other']);
+const slaSeen = [watchLead(slaRow('Jo Example', 10), PAGE_SLA), watchLead(slaRow('Al Sample', 3), PAGE_SLA)];
+const stuck = watchLead(slaRow('Di Other', 4), PAGE_SLA);
+const seenTimes = rememberSlaDates({ old: new Date(now - 13 * 3600000).toISOString() }, slaSeen.concat([stuck]), now);
+const both = mergeWatchedLeads(slaSeen,
+[watchLead(pendingRow('jo  example', new Date(now - 50 * 60000)), PAGE_PENDING), watchLead(pendingRow('Di Other', new Date(now - 56 * 60000)), PAGE_PENDING), watchLead(pendingRow('Ed Unknown', new Date(now - 60000)), PAGE_PENDING)], seenTimes);
+check('a lead on both lists is the SLA entry; one that left the SLA list keeps the SLA time seen for it; one never seen there has no due time', both.map((l) => `${l.list}:${l.same.split('||')[0]}:${l.slaDate ? Math.round((new Date(l.slaDate).getTime() - now) / 60000) : 'none'}`), ['sla:jo example:10', 'sla:al sample:3', 'pending:di other:4', 'pending:ed unknown:none']);
 const bothKeys = missedWarningKeys(both, now);
-check('and the counts are over both lists', [bothKeys.missed.length, bothKeys.soon.length, bothKeys.due.length], [1, 2, 0]);
+check('so a Pending time that has passed never makes a lead missed', [bothKeys.missed.length, bothKeys.soon.length, bothKeys.due.length], [0, 2, 1]);
+check('remembered SLA times are kept by fingerprint and dropped after a shift', [Object.keys(seenTimes).length, 'old' in seenTimes, Object.keys(seenTimes).some((k) => /jo|example/i.test(k))], [3, false, false]);
 check('a Pending lead carries its callback type, so only new ones are watched', [watchLead(pendingRow('Jo Example', new Date(now + 60000), { callbackType: 'New' }), PAGE_PENDING).type, watchLead(pendingRow('Jo Example', new Date(now + 60000), { callbackType: 'Auto Rescheduled' }), PAGE_PENDING).type, watchLead(slaRow('Jo Example', 3), PAGE_SLA).type], ['New', 'Auto Rescheduled', '']);
 check('a lead still to do between done leads is stuck', [stuckQueueRows([true, false, true, true]), stuckQueueRows([false, false, true, true]), stuckQueueRows([true, true, false]), stuckQueueRows([false, true, false, false, true, false])], [[2], [], [], [3, 4]]);
 check('the stuck notice names the agent and the row', [stuckQueueText([{ agentName: 'Agent Alpha', stuckRows: [2] }, { agentName: 'Agent Bravo', stuckRows: [] }]), stuckQueueText([])], ['Agent Alpha has 1 lead stuck in the queue (row 2). It has not presented, so ask them to open it.', '']);
