@@ -4286,11 +4286,37 @@ function isLiveLinked() {
 return !!(liveLink.win && !liveLink.win.closed && liveLink.state !== 'none');
 }
 
+// STALLED. A Konnect Live tab kept behind another tab can stop drawing its
+// pages, so the count stops while the Lead Checker still answers. Pure:
+// true when a running batch has made no progress for the given time.
+const LIVE_STALL_MS = 90000;
+function isLiveStalled(state, progressAt, now, stallMs) {
+return state === 'running' && progressAt > 0 && now - progressAt >= stallMs;
+}
+const LIVE_STALL_HELP = 'Drag the Konnect Live tab out into its own window and keep part of it in view.';
+function liveStatusText() {
+if (isLiveStalled(liveLink.state, liveLink.progressAt || 0, Date.now(), LIVE_STALL_MS)) {
+return `Konnect Live: stopped moving at ${liveLink.done || 0} of ${liveLink.total || 0}. ${LIVE_STALL_HELP}`;
+}
+return linkStatusText(liveLink.state, liveLink.done, liveLink.total);
+}
+// Called on every link change: notes when the count last moved, and says so
+// once when it has stopped.
+function trackLiveProgress() {
+const key = `${liveLink.state}|${liveLink.done}|${liveLink.total}`;
+if (key !== liveLink.progressKey) { liveLink.progressKey = key; liveLink.progressAt = Date.now(); liveLink.stallTold = false; return; }
+if (!liveLink.stallTold && isLiveStalled(liveLink.state, liveLink.progressAt || 0, Date.now(), LIVE_STALL_MS)) {
+liveLink.stallTold = true;
+showToast(`Konnect Live has stopped moving. ${LIVE_STALL_HELP}`);
+}
+}
+
 function writeLinkState() {
+trackLiveProgress();
 liveLink.lastLinkWrite = Date.now();
 try {
 localStorage.setItem(LIVE_LINK_KEY, JSON.stringify({
-state: liveLink.state, text: linkStatusText(liveLink.state, liveLink.done, liveLink.total),
+state: liveLink.state, text: liveStatusText(),
 done: liveLink.done, total: liveLink.total, at: new Date().toISOString()
 }));
 } catch (error) { /* the desk then says SLA Manager is not running */ }
@@ -4304,14 +4330,15 @@ const state = liveLink.state;
 const dot = state === 'idle' ? '' : state === 'running' ? 'busy' : state === 'none' ? 'off' : state === 'loggedOut' ? 'bad' : 'warn';
 const waiting = liveLink.queue.length + (liveLink.sent ? 1 : 0);
 const waitingText = waiting ? ` ${waiting} batch${waiting === 1 ? '' : 'es'} waiting to go.` : '';
-const text = (state === 'none' ? 'Konnect Live: not open.' : linkStatusText(state, liveLink.done, liveLink.total)).replace(/\.$/, '') + waitingText;
+const stalled = isLiveStalled(state, liveLink.progressAt || 0, Date.now(), LIVE_STALL_MS);
+const text = (state === 'none' ? 'Konnect Live: not open.' : liveStatusText()).replace(/\.$/, '') + waitingText;
 const openButton = state === 'none'
 ? `<button type="button" class="sla-sec" onclick="window._openKonnectLive(this.querySelector('span'))" title="Opens the Konnect Live tab, or brings it forward, without sending anything">${svgIcon('openOut', 13)}<span>Open Konnect Live</span></button>`
 : '';
-const showBar = state === 'running' && liveLink.total > 0;
+const showBar = state === 'running' && liveLink.total > 0 && !stalled;
 const bar = showBar ? `<span class="sla-prog sla-grow" aria-hidden="true"><i style="width: ${Math.max(0, Math.min(100, Math.round(((liveLink.done || 0) / liveLink.total) * 100)))}%;"></i></span>` : '';
 return `<div id="_slaLinkLine" class="sla-link" role="status" data-state="${state}">
-<span aria-hidden="true" class="sla-dot ${dot}"></span>
+<span aria-hidden="true" class="sla-dot ${stalled ? 'bad' : dot}"></span>
 <span ${showBar ? '' : 'class="sla-grow"'}>${escapeHtml(text)}</span>${bar}${openButton}
 </div>`;
 }
@@ -4967,6 +4994,7 @@ const known = { 'manager-1': { from: 'manager', kind: 'leads' }, 'desk-1': { fro
 check('results are routed by the id the batch was sent with', [liveBatchOwner('desk-1', known, []).from, liveBatchOwner('manager-1', known, []).from], ['desk', 'manager']);
 check('the desk request id is the desk\'s even after this page reloaded', liveBatchOwner('desk-9', {}, ['desk-9']).from, 'desk');
 check('an unknown id, or none, is SLA Manager\'s own', [liveBatchOwner('other-1', known, ['desk-9']).from, liveBatchOwner(null, known, []).from], ['manager', 'manager']);
+check('a running batch with no progress for 90 seconds is stalled; idle and fresh ones are not', [isLiveStalled('running', 1000, 91000, 90000), isLiveStalled('running', 1000, 50000, 90000), isLiveStalled('idle', 1000, 999999, 90000), isLiveStalled('running', 0, 999999, 90000)], [true, false, false, false]);
 check('status line wording', ['none', 'idle', 'running', 'paused', 'loggedOut'].map((s) => linkStatusText(s, 12, 40)), [
 'Konnect Live: not open. Press Open Konnect Live in SLA Manager.', 'Konnect Live: linked, ready.', 'Konnect Live: checking 12 of 40.', 'Konnect Live: paused.', 'Konnect Live: logged out, logging back in.']);
 const now = '2026-11-11T12:00:00.000Z';
