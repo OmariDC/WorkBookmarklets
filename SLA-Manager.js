@@ -1479,9 +1479,46 @@ ${morningChecksResults.map(renderMorningCheckRow).join('')}
 ${nationalRow ? renderNationalCard(nationalRow) : ''}
 <div class="sla-bar" style="justify-content: center;">
 <button type="button" class="sla-sec" onclick="window._runAllMorningChecks();" ${runningMorningChecks ? 'disabled' : ''}>${svgIcon('refresh', 13)}${runningMorningChecks ? 'Running…' : (allDone ? 'Run again' : 'Run all checks')}</button>
+${allDone && !runningMorningChecks ? `<button type="button" class="sla-sec" onclick="window._copyMorningNumbers(this);" title="Copies the eight boxes for the numbers sheet as one column: Email Only Leads, SLA, Live Chat (0), Inbox (left empty for you), In Progress, Lead Type Check, All Leads Are Routed to, Voicemail Messages">Copy numbers</button>` : ''}
 ${allDone && !runningMorningChecks ? `<button type="button" class="sla-txt" onclick="window._clearMorningChecks();">Clear</button>` : ''}
 </div>`;
 }
+
+// Pure. The morning check results as the numbers sheet's column, top to
+// bottom: Email Only Leads, SLA, Live Chat (always 0), Inbox (counted
+// elsewhere, so left empty), In Progress, Lead Type Check, All Leads Are
+// Routed to, Voicemail Messages. A check that did not pass keeps its own
+// wording so the problem is not pasted as a number.
+function morningNumbersColumn(results) {
+const by = {};
+(results || []).forEach((r) => { by[r.key] = r; });
+const text = (key) => String((by[key] && by[key].summary) || '').trim();
+const firstNumber = (value) => { const m = String(value).match(/\d+/); return m ? m[0] : value; };
+const okOr = (key) => (by[key] && by[key].ok === true ? 'OK' : text(key));
+const sla = by.sla || {};
+const emailOnly = typeof sla.emailOnlyCount === 'number' ? String(sla.emailOnlyCount) : firstNumber(text('emailOnly'));
+const inProgress = by.inProgress && by.inProgress.ok === true ? firstNumber(text('inProgress').replace(/^OK\s*/i, '')) : text('inProgress');
+return [emailOnly, firstNumber(text('sla')), '0', '', inProgress, okOr('leadType'), okOr('routedTo'), firstNumber(text('voicemail'))];
+}
+
+window._copyMorningNumbers = function(btn) {
+const original = btn.textContent;
+const flash = (label) => { btn.textContent = label; setTimeout(() => { btn.textContent = original; }, 2200); };
+navigator.clipboard.writeText(morningNumbersColumn(morningChecksResults).join('\n')).then(() => flash('Copied'), () => flash('Could not copy'));
+};
+
+runSelfTest('morningNumbersSelfTest', function morningNumbersSelfTest() {
+const failures = [];
+const got = morningNumbersColumn([
+{ key: 'emailOnly', summary: '7' }, { key: 'sla', summary: '92', emailOnlyCount: 7 }, { key: 'inProgress', ok: true, summary: 'OK (76)' },
+{ key: 'leadType', ok: true, summary: 'OK (found overnight yesterday: Fiat)' }, { key: 'routedTo', ok: true, summary: 'OK' }, { key: 'voicemail', ok: null, summary: '0' }, { key: 'national', summary: 'x' }
+]);
+if (JSON.stringify(got) !== JSON.stringify(['7', '92', '0', '', '76', 'OK', 'OK', '0'])) failures.push(`the column as the sheet has it: got ${JSON.stringify(got)}`);
+const bad = morningNumbersColumn([{ key: 'sla', summary: '92' }, { key: 'inProgress', ok: false, summary: 'MISMATCH: top total 76, rows sum to 70 (off by 6)' }, { key: 'routedTo', ok: false, summary: '2 NOT ROUTED' }]);
+if (bad[4] !== 'MISMATCH: top total 76, rows sum to 70 (off by 6)' || bad[6] !== '2 NOT ROUTED') failures.push(`a failed check keeps its wording: got ${JSON.stringify(bad)}`);
+if (failures.length) reportSelfTestFailure('SLA Manager morning-numbers self-test FAILED:\n' + failures.join('\n'));
+else console.info('SLA Manager morning-numbers self-test passed');
+});
 
 // Results otherwise persist until end of day or the next run.
 window._clearMorningChecks = function() {
