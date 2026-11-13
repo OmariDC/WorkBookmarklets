@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.22.0'
+    version: '1.22.1'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2742,17 +2742,32 @@
   function diaryFreeCell(modal, plan) {
     const table = Array.from(modal.querySelectorAll('table')).find((t) => t.querySelector('td[ng-click^="SelectTimeSlot"]'));
     if (!table) return { error: 'the diary table was not found' };
-    const headers = Array.from(table.querySelectorAll('thead th, tr:first-child th')).map((th) => normaliseText(th.textContent));
-    const column = headers.indexOf(plan.time);
-    if (column < 0) return { error: `there is no ${plan.time} column in the diary` };
+    const headerCells = Array.from(table.querySelectorAll('thead th, tr:first-child th'));
+    const headers = headerCells.map((th) => normaliseText(th.textContent));
+    const headerAt = headers.indexOf(plan.time);
+    if (headerAt < 0) return { error: `there is no ${plan.time} column in the diary` };
+    // A longer appointment is one wide box, so a row can hold fewer boxes
+    // than there are times. The box is the one sitting under the time's
+    // heading; where the page gives no positions, widths are counted instead.
+    const span = (cell) => Math.max(1, Number(cell.colSpan) || 1);
+    const column = headerCells.slice(0, headerAt).reduce((sum, th) => sum + span(th), 0);
+    const headerBox = headerCells[headerAt].getBoundingClientRect();
+    const middle = headerBox.width > 0 ? headerBox.left + headerBox.width / 2 : null;
+    const cellUnder = (cells) => {
+      if (middle !== null) {
+        const under = cells.find((cell) => { const box = cell.getBoundingClientRect(); return box.width > 0 && box.left <= middle && middle < box.right; });
+        if (under) return under;
+      }
+      let at = 0;
+      return cells.find((cell) => { const from = at; at += span(cell); return column >= from && column < at; }) || null;
+    };
     const rows = Array.from(table.querySelectorAll('tbody tr')).filter(isVisible);
     // A greyed "very soon" box can still be booked, so it is used when no
     // one has a clear box at that time. Past and blocked boxes never are.
     for (const refuse of [/past|soon|blocked/i, /past|blocked/i])
     for (const row of rows) {
       const cells = Array.from(row.children);
-      const slots = cells.filter((cell) => cell.matches('td[ng-click^="SelectTimeSlot"]'));
-      const cell = cells.length === headers.length ? cells[column] : slots[column - (headers.length - slots.length)];
+      const cell = cellUnder(cells);
       if (!cell || !cell.matches('td[ng-click^="SelectTimeSlot"]')) continue;
       // Every box holds a hidden "BLOCKED" and a hidden name button, so only
       // what is actually shown counts.

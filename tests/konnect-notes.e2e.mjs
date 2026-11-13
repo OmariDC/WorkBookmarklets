@@ -1053,6 +1053,24 @@ async function ownerHelpers() {
   }, CHECKS_KEY);
   check('other staff: a booking is never noted', staff.result === false && staff.stored === null && page.errors.length === 0, [staff, page.errors]);
 
+  // A longer appointment later in the row is one wide box, so the row has
+  // fewer boxes than there are times. The 14:00 box is still the one picked.
+  page = await fresh({ booking: true, owner: true, before: addDiary });
+  await page.evaluate(() => {
+    const table = document.querySelector('.modal table');
+    table.querySelector('thead tr').innerHTML = '<th>Name</th><th>13:30</th><th>14:00</th><th>14:30</th><th>15:00</th>';
+    table.querySelector('tbody tr').innerHTML = '<td>Alex Advisor</td><td ng-click="SelectTimeSlot(0)" id="early" style="width:60px;height:24px;border:1px solid #999"></td>' +
+      '<td ng-click="SelectTimeSlot(1)" id="slot" style="width:60px;height:24px;border:1px solid #999"></td><td ng-click="SelectTimeSlot(2)" colspan="2" style="height:24px;border:1px solid #999"><button>Sam Buyer</button></td>';
+    window.picked = [];
+    table.addEventListener('click', (event) => { if (event.target.id) window.picked.push(event.target.id); }, true);
+  });
+  await openBuilder(page);
+  await fillBooking(page, 'view');
+  await sleep(300);
+  await page.click('.kn-bk-actions .kn-primary');
+  await booked(page, 1);
+  check('diary: a wide box later in the row does not shift the time picked', JSON.stringify(await page.evaluate(() => window.picked)) === '["slot"]', await page.evaluate(() => window.picked));
+
   // One button on an inbound call: customer, Booking Opportunity, the new
   // lead, the diary opened and closed once, the lead's drop downs, then the
   // notes, the diary booking and the outcome.
