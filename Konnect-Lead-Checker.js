@@ -2988,6 +2988,8 @@ if (!open && /max attempts/i.test(finalOutcome)) return verdict('OK', `Closed as
 if (!open && NATIONAL_ADMIN_OUTCOMES.test(finalOutcome)) return verdict('OK', `Closed as ${finalOutcome}`);
 // 5. Still being worked.
 if (open) {
+// By the last attempt there is no next call to schedule by hand.
+if (String(batchRow.exportHint || '') === 'open-auto' && attempts >= NATIONAL_FULL_RUN_ATTEMPTS) return verdict('OK', `On attempt ${attempts}, the last one`);
 if (String(batchRow.exportHint || '') === 'open-auto') return verdict('Check', 'Automatic reschedule, should be manual');
 return verdict('OK', 'Still being worked');
 }
@@ -5979,6 +5981,7 @@ const notInterested = [created(1400040, '10T09:00'), call(1400040, '10T09:30', '
 check('spoken to and not interested is OK with no send', run(1400040, notInterested, { exportOutcome: 'Not Interested', attempts: '1', lastContact: '10/11/2026 09:30' }).verdict, 'OK');
 const notSpoken = [created(1400041, '10T09:00'), call(1400041, '10T09:30', 'Update Outcomes (No Call Made)', `Sales -> Customer Hub Team -> No Appointment -> Not Interested at ${NAT}`)];
 check('not interested without a conversation is still Re setup', run(1400041, notSpoken, { exportOutcome: 'Not Interested', attempts: '1', lastContact: '10/11/2026 09:30' }).verdict, RE_SETUP);
+check('an automatic reschedule on the fourth attempt is OK, earlier is a Check', [run(1400040, notInterested, { state: 'In Progress', exportHint: 'open-auto', exportOutcome: 'In Market - wont commit to appointment yet', attempts: '4' }).verdict, run(1400040, notInterested, { state: 'In Progress', exportHint: 'open-auto', attempts: '2' }).verdict], ['OK', 'Check']);
 // Misdirected starts as Check; the lead details decide it.
 const misdirectedLead = [created(1400023, '08T20:24')];
 check('Misdirected starts as Check', run(1400023, misdirectedLead, { exportOutcome: 'Misdirected - Created VR Message', attempts: '1', lastContact: '09/11/2026 12:52' }).verdict, 'Check');
