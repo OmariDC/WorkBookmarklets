@@ -3618,6 +3618,15 @@ const SETTINGS_STORAGE_KEY = 'konnectLeadChecker:settings:v1';
 const SMALL_WINDOW_NAME = 'workToolsLiveSmall';
 const SMALL_WINDOW_KEY = '_klcSmallWindow';
 const SMALL_WINDOW_BOX_KEY = '_klcSmallWindowBox';
+// Running in the small window: say so every few seconds, so a later click
+// of Work Tools finds this window rather than opening over it.
+const SMALL_ALIVE_KEY = '_klcSmallAlive';
+if (window.__workToolsManager && !window.__klcSmallAliveTimer) {
+const beat = () => { try { localStorage.setItem(SMALL_ALIVE_KEY, String(Date.now())); } catch (error) { /* found by name the slow way */ } };
+beat();
+window.__klcSmallAliveTimer = setInterval(beat, 5000);
+window.addEventListener('pagehide', () => { try { localStorage.removeItem(SMALL_ALIVE_KEY); } catch (error) { /* goes stale by itself */ } });
+}
 
 function smallWindowWanted() {
 try { return localStorage.getItem(SMALL_WINDOW_KEY) !== 'off'; } catch (error) { return true; }

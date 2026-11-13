@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.21.0'
+    version: '1.21.1'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2369,7 +2369,8 @@
       month: date.error ? '' : date.month,
       day: date.error ? '' : date.day,
       diaryType: input.type ? diaryType(input) : '',
-      inbound: !!draft.fromInbound,
+      // The page's own address says when the call came in, whichever lead it is.
+      inbound: !!draft.fromInbound || /#!?\/call\/inbound\//i.test(location.hash),
       motability: input.type === 'motability' || lead.fields.type === 'motability',
       hasReg: !!realText(vehicle.reg),
       condition: vehicle.condition,
@@ -2812,6 +2813,7 @@
   /* Sets the open lead's outcome to match the appointment. The call outcome
      follows the contact header and brings up the lead's outcome lists, which
      are then picked in order. A call outcome already chosen is left alone. */
+  const INBOUND_BOOKING_CALL_OUTCOME = 'Booking Opportunity';
   const CALL_OUTCOME_FOR_CONTACT = {
     none: 'Spoke to Customer',
     vm: 'No Answer - Message Left',
@@ -2823,7 +2825,10 @@
     if (!callOutcome) return 'the call outcome box was not found';
     const current = normaliseText(callOutcome.options[callOutcome.selectedIndex]?.textContent);
     if (!current || /^\(select/i.test(current)) {
-      const wantedCall = CALL_OUTCOME_FOR_CONTACT[draft.data.contact || 'none'];
+      // An inbound call has its own list, where a booking is "Booking
+      // Opportunity". The lead outcome lists only appear once one is chosen.
+      const offers = (text) => Array.from(callOutcome.options).some((o) => normaliseText(o.textContent).toLowerCase() === text.toLowerCase());
+      const wantedCall = offers(INBOUND_BOOKING_CALL_OUTCOME) ? INBOUND_BOOKING_CALL_OUTCOME : CALL_OUTCOME_FOR_CONTACT[draft.data.contact || 'none'];
       if (!wantedCall) return 'choose the call outcome yourself, then the lead outcome';
       if (!setLeadControl(callOutcome, wantedCall)) return `could not choose the call outcome "${wantedCall}"`;
     }

@@ -127,6 +127,7 @@ if (Date.now() - (window.__workToolsLoadingAt || 0) < 15000) return;
 // bar to click Work Tools on), which is given SLA Manager's window for the
 // link, and this tab closes. The Lead Checker's More menu turns this off.
 const SMALL_NAME = 'workToolsLiveSmall';
+const SMALL_ALIVE_KEY = '_klcSmallAlive';
 const SMALL_KEY = '_klcSmallWindow';
 const SMALL_BOX_KEY = '_klcSmallWindowBox';
 const stored = (key) => { try { return localStorage.getItem(key); } catch (error) { return null; } };
@@ -168,12 +169,17 @@ let box = null;
 try { box = JSON.parse(stored(SMALL_BOX_KEY)); } catch (error) { /* the default is used */ }
 box = smallWindowBox(box, window.screen);
 try {
-const win = window.open('', SMALL_NAME, `popup=yes,width=${box.width},height=${box.height},left=${box.left},top=${box.top}`);
+const features = `popup=yes,width=${box.width},height=${box.height},left=${box.left},top=${box.top}`;
+// A small window that is running says so every few seconds. Only then is
+// it looked for by name alone, which finds it without reloading it. In
+// every other case the window is opened straight at the address: a blank
+// window sent the address afterwards stayed blank in Chrome.
+const alive = Date.now() - Number(stored(SMALL_ALIVE_KEY) || 0) < 15000;
+let win = alive ? window.open('', SMALL_NAME) : null;
+let fresh = false;
+if (!win || win.location.href === 'about:blank') { win = window.open(location.href, SMALL_NAME, features); fresh = true; }
 if (!win) smallProblem = 'Allow pop-ups for Konnect Live to use the small window. The Lead Checker is running in this tab for now.';
-else {
-small = { win, fresh: win.location.href === 'about:blank' };
-if (small.fresh) win.location.replace(location.href);
-}
+else small = { win, fresh };
 } catch (error) {
 small = null;
 smallProblem = 'The small window could not be reached, so the Lead Checker is running in this tab.';
@@ -220,7 +226,7 @@ if (win.closed) state = 'closed';
 else if (win.__konnectLeadChecker) state = win.__konnectLeadChecker.getSession ? 'running' : 'login';
 else if (win.document !== putInto && smallLooksReady(win, seen)) state = 'ready';
 // A new window still blank after three seconds is sent the address again.
-else if (small.fresh && !steered && Date.now() - startedAt > 3000 && win.location.href === 'about:blank') { steered = true; win.location.href = location.href; }
+else if (small.fresh && !steered && Date.now() - startedAt > 3000 && win.location.href === 'about:blank') { steered = true; window.open(location.href, SMALL_NAME); }
 } catch (error) { /* between pages: looked at again */ }
 if (state === 'running') {
 try { win.__konnectLeadChecker.focus(); win.focus(); } catch (error) { /* it is running all the same */ }

@@ -184,6 +184,9 @@ nav { background: #222; height: 50px; }
       document.getElementById('searchForm').style.display = '';
     });
   };
+  // A test can start a page logged out: read here, as a script added by the
+  // test does not reach a window opened straight at an address.
+  try { if (localStorage.getItem('_testLoggedOut')) mock.logOut(); } catch (e) { /* storage blocked */ }
 })();
 </script>
 </body>

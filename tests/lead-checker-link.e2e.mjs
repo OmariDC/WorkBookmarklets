@@ -405,7 +405,6 @@ async function openForWorkTools(options = {}) {
     const open = window.open.bind(window);
     window.__opens = [];
     window.open = (...args) => { window.__opens.push(args); return localStorage.getItem('_testBlockPopups') ? null : open(...args); };
-    if (localStorage.getItem('_testLoggedOut')) window.addEventListener('DOMContentLoaded', () => window.mock.logOut());
   });
   const errors = [];
   context.on('page', (page) => page.on('pageerror', (e) => errors.push(e.message)));
