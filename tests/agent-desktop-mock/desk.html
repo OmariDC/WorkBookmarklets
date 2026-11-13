@@ -190,6 +190,13 @@ function drawLeads(c, callScope) {
   }));
   const levels = Array.from(pane.querySelectorAll('.outcomes select'));
   fill(levels[0], LEVEL1);
+  // As on the real page: the first list has no blank. An unset lead shows
+  // an unknown "?" option, which goes as soon as an outcome is chosen, so
+  // every option below it moves up one place.
+  Array.from(levels[0].options).filter((o) => !o.textContent.trim()).forEach((o) => o.remove());
+  const unknown = document.createElement('option'); unknown.value = '?'; unknown.selected = true;
+  levels[0].insertBefore(unknown, levels[0].firstChild);
+  levels[0].addEventListener('change', () => { const chosen = levels[0].selectedOptions[0]; if (chosen !== unknown && unknown.parentNode) { unknown.remove(); if (chosen) chosen.selected = true; } });
   levels.forEach((s, n) => s.addEventListener('change', () => {
    const text = s.selectedOptions[0] ? s.selectedOptions[0].textContent : '';
    events.push(`level${n + 1}:${l.ID}:${text}`);

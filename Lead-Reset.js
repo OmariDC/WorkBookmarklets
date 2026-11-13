@@ -849,8 +849,11 @@ select.dispatchEvent(new Event('change', { bubbles: true }));
 function chooseByText(select, text) {
 const index = chooseOptionIndex(optionTexts(select), text);
 if (index < 0) return false;
+// Read before choosing: Konnect drops its unknown "?" option once a real
+// one is chosen, which moves every option up a place.
+const wanted = optionTexts(select)[index];
 chooseByIndex(select, index);
-return normalise(selectedText(select)) === normalise(optionTexts(select)[index]);
+return normalise(selectedText(select)) === normalise(wanted);
 }
 
 // Sets an ng-model to a stored ID (the dropdowns show names but hold IDs).
@@ -1208,7 +1211,9 @@ return Array.from(document.querySelectorAll(selector)).filter((el) => belongsTo(
 // Opens the closed section around a control so the result can be seen.
 function revealSection(el) {
 const panel = el && el.closest('.panel');
-if (!panel || panel.classList.contains('panel-open')) return;
+// A control already in view needs nothing: pressing the heading again
+// would fold the section away.
+if (!panel || panel.classList.contains('panel-open') || isVisible(el)) return;
 const toggle = panel.querySelector('.accordion-toggle, a[ng-click="toggleOpen()"]');
 if (toggle) toggle.click();
 }
