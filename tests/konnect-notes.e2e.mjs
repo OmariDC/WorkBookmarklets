@@ -1053,6 +1053,71 @@ async function ownerHelpers() {
   }, CHECKS_KEY);
   check('other staff: a booking is never noted', staff.result === false && staff.stored === null && page.errors.length === 0, [staff, page.errors]);
 
+  // One button on an inbound call: customer, Booking Opportunity, the new
+  // lead, the diary opened and closed once, the lead's drop downs, then the
+  // notes, the diary booking and the outcome.
+  page = await fresh({ booking: true, owner: true, hash: '#!/select-call-type/calldirection/inbound/x', before: `(() => {
+    window.steps = [];
+    window.heldTabs = document.querySelector('.tab-content').parentElement;
+    window.heldTabs.remove();
+    const outcomeRow = document.querySelector('#callOutcome').closest('.row');
+    outcomeRow.style.display = 'none';
+    const add = (html) => { const d = document.createElement('div'); d.innerHTML = html; document.body.appendChild(d); return d; };
+    const call = add('<button ng-click="setCallType(\\'Customer\\')" id="custCall">Customer Call</button>');
+    const custModal = add('<div class="modal" id="custModal" style="display:none"><input ng-model="customer.FullName"><input ng-model="customer.Mobile1"><input ng-model="customer.PostCode"><input ng-model="customer.EmailAddress">' +
+      '<select ng-model="selected.dealer"><option>(Select)</option><option>Stellantis &amp;You Preston</option></select><select ng-model="customer.VehicleBadgeID"><option>(Select)</option><option>Peugeot</option><option>Stellantis &amp;You</option></select><button ng-click="ok()" id="custSave">Save</button></div>');
+    const leadModal = add('<div class="modal" id="leadModal" style="display:none"><label><input type="radio" name="salesOptions" value="true">Regular Sales Lead</label><label><input type="radio" name="salesOptions" value="false" checked>The Sales Event</label>' +
+      '<select ng-model="selected.Badge"><option>(Select a Brand)</option><option>Peugeot</option></select><select ng-model="selected.campaignID"><option>(Select a Campaign)</option><option>Peugeot - Enquiry - New</option><option>Peugeot - Enquiry - Used</option><option>Peugeot - Motability</option></select><button ng-click="ok()" id="leadSave">Save</button></div>');
+    document.querySelector('#custCall').addEventListener('click', () => { window.steps.push('customer call'); call.innerHTML = '<button ng-click="showCustomerModal($event)" id="newCust">New Customer</button>';
+      document.querySelector('#newCust').addEventListener('click', () => { document.querySelector('#custModal').style.display = 'block'; }); });
+    document.querySelector('#custSave').addEventListener('click', () => {
+      window.steps.push('customer saved: ' + document.querySelector('[ng-model="customer.FullName"]').value);
+      document.querySelector('#custModal').style.display = 'none';
+      call.innerHTML = '';
+      const select = document.querySelector('#callOutcome');
+      select.innerHTML = '<option>(Select a Call Outcome)</option><option>Booking Opportunity</option><option>No Booking</option>';
+      outcomeRow.style.display = '';
+      location.hash = '#!/call/inbound/customer/1';
+      select.addEventListener('change', () => { window.steps.push('call outcome: ' + select.selectedOptions[0].textContent);
+        if (!document.querySelector('#addLead')) { add('<button ng-click="createNewSalesLead();" id="addLead">Add New Lead</button>'); document.querySelector('#addLead').addEventListener('click', () => { document.querySelector('#leadModal').style.display = 'block'; }); } });
+    });
+    document.querySelector('#leadSave').addEventListener('click', () => {
+      window.steps.push('lead saved: ' + document.querySelector('[ng-model="selected.campaignID"]').selectedOptions[0].textContent + ', regular ' + document.querySelector('[name="salesOptions"][value="true"]').checked);
+      document.querySelector('#leadModal').style.display = 'none';
+      document.body.appendChild(window.heldTabs);
+      const pane = document.querySelector('#paneA');
+      const list = (name, options) => '<select ng-model="theActivity.SalesLead.LeadDetails.' + name + '"><option>(Select)</option>' + options.map((o) => '<option>' + o + '</option>').join('') + '</select>';
+      pane.insertAdjacentHTML('beforeend', list('LeadTypeID', ['New', 'Not Known', 'Used']) + list('ChannelBadgeID', ['Peugeot', 'Vauxhall']) + list('SourceOfEnquiryID', ['Post Closure Processing', 'Phone call']) + list('LeadRequestID', ['Enquiry - New', 'Enquiry - Used', 'Motability']));
+      pane.addEventListener('change', (event) => { const model = event.target.getAttribute('ng-model') || ''; if (/LeadDetails\\./.test(model)) window.steps.push(model.split('.').pop() + ': ' + event.target.selectedOptions[0].textContent); });
+      (0, eval)(window.addDiaryScript);
+      document.querySelector('#openDiary').addEventListener('click', () => window.steps.push('diary opened, notes ' + (document.querySelector('#callA').value ? 'written' : 'empty')));
+    });
+  })()` });
+  await page.evaluate((script) => { window.addDiaryScript = script; }, addDiary);
+  await sleep(400);
+  await page.click('#kn-inbound-launcher');
+  await page.waitForSelector('.kn-bk-content', { timeout: 5000 });
+  await page.fill('.kn-bk-content input[placeholder="07700 900123"]', '07700 900123');
+  await page.evaluate(() => { const c = Array.from(document.querySelectorAll('.kn-bk-content .kn-bk-field')).find((f) => /^Name/.test(f.textContent)); const i = c.querySelector('input'); i.value = 'Jo Example'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+  await page.selectOption('.kn-bk-content select >> nth=0', { label: 'Preston' });
+  await fillBooking(page, 'testdrive');
+  await sleep(500);
+  const oneButton = page.locator('.kn-bk-actions .kn-primary');
+  check('inbound: the main button offers the whole job', /Create customer, lead and booking/.test(await oneButton.textContent()) && !(await oneButton.isDisabled()), await oneButton.textContent());
+  await oneButton.click();
+  await booked(page, 1);
+  const steps = await page.evaluate(() => window.steps);
+  const at = (text) => steps.findIndex((step) => step.startsWith(text));
+  check('inbound one button: Customer Call is pressed and the customer saved', at('customer call') === 0 && at('customer saved: Jo Example') === 1, steps);
+  check('inbound one button: Booking Opportunity, then a regular lead on the brand\'s used enquiry campaign', at('call outcome: Booking Opportunity') === 2 && at('lead saved: Peugeot - Enquiry - Used, regular true') === 3, steps);
+  check('inbound one button: the diary is opened once before anything is in Call Notes', at('diary opened, notes empty') === 4, steps);
+  check('inbound one button: lead type, brand, source and lead request are set', at('LeadTypeID: Used') > 4 && at('ChannelBadgeID: Peugeot') > 4 && at('SourceOfEnquiryID: Phone call') > 4 && at('LeadRequestID: Enquiry - Used') > 4, steps);
+  check('inbound one button: then the notes go in and the diary is booked', steps[steps.length - 1] === 'diary opened, notes written' && at('diary opened, notes written') > at('LeadRequestID'), steps);
+  const ended = await page.evaluate(() => ({ notes: document.querySelector('#callA').value, call: document.querySelector('#callOutcome').selectedOptions[0].textContent,
+    lead: Array.from(document.querySelectorAll('select[ng-model^="theActivity.SelectedOutcomeLevel"]')).map((x) => x.selectedOptions[0].textContent).join(' > '), from: KonnectNotes.state.booking.fromInbound, key: KonnectNotes.state.booking.key }));
+  check('inbound one button: notes written, outcome Appointment > Test Drive, booking on the new lead', /208/.test(ended.notes) && ended.call === 'Booking Opportunity' && ended.lead === 'Customer Hub Team > Appointment > Test Drive' && ended.from === true && ended.key !== 'inbound', ended);
+  check('inbound one button: no page errors', page.errors.length === 0, page.errors);
+
   // Work Tools sets the flag before Konnect Notes loads.
   const workTools = readFileSync(join(repo, 'Work-Tools.js'), 'utf8');
   const flagAt = workTools.indexOf('window.KonnectNotesOwner = true');

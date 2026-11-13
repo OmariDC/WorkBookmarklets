@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.21.2'
+    version: '1.22.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -634,7 +634,7 @@
   function scanPage() {
     clearTimeout(state.scanTimer);
     /* While the other lead's tab is brought forward, the booking stays on its own lead. */
-    if (pxMoveRun || noteOutcomeRun) {
+    if (pxMoveRun || noteOutcomeRun || inboundSetupHold) {
       state.scanTimer = setTimeout(scanPage, 300);
       return;
     }
@@ -2452,6 +2452,12 @@
     check('General Sales is not Sale', sheetDealer('Stellantis &You General Sales'), '');
     check('National is not on the sheet', sheetDealer('National'), '');
     check('no dealer', sheetDealer(''), '');
+    const planOf = (kind) => { const p = inboundLeadPlan(kind, 'Vauxhall'); return `${p.leadType}|${p.source}|${p.request.join('/')}|${p.campaigns.join('/')}`; };
+    check('inbound lead: Motability', planOf('Motability'), 'Not Known|Phone call|Motability|Vauxhall - Motability');
+    check('inbound lead: new', planOf('New'), 'New|Phone call|Enquiry - New|Vauxhall - Enquiry - New');
+    check('inbound lead: used', planOf('Used'), 'Used|Phone call|Enquiry - Used|Vauxhall - Enquiry - Used');
+    check('inbound lead: not known', planOf(''), 'Not Known|Phone call|Enquiry - Unknown/Enquiry - New|Vauxhall - Enquiry - Unknown/Vauxhall - Enquiry - New');
+    check('inbound lead: no brand, no campaign', inboundLeadPlan('New', '').campaigns.length, 0);
     check('Motability wins', sheetLeadType({ motability: true, condition: 'used' }), 'Motability');
     check('Motability from the lead', sheetLeadType({ purchaseType: 'Motability', condition: 'new' }), 'Motability');
     check('Motability from the campaign', sheetLeadType({ campaign: 'Motability Enquiry' }), 'Motability');
@@ -4094,7 +4100,7 @@
     const waitingForLead = draft.key === INBOUND_KEY;
     const plan = bookingRefs.diary ? diaryPlan(draft) : null;
     const withDiary = !!plan && !diaryAlreadyBooked(draft, plan);
-    bookingRefs.insert.textContent = waitingForLead ? 'Insert after the lead is created'
+    bookingRefs.insert.textContent = waitingForLead ? (inboundRun ? 'Working...' : 'Create customer, lead and booking')
       : withDiary ? (draft.inserted ? 'Update notes and book diary' : 'Insert and book diary')
       : draft.inserted ? 'Update Call Notes' : 'Insert into Call Notes';
     const why = result.errors.length ? `Fix first: ${result.errors[0]}` : '';
@@ -4105,7 +4111,7 @@
       node.title = blocked ? reason : node.dataset.title;
     };
     block(bookingRefs.notesOnly, result.errors.length > 0, why);
-    block(bookingRefs.insert, waitingForLead || result.errors.length > 0, why || 'Create the lead first');
+    block(bookingRefs.insert, (waitingForLead && inboundRun) || result.errors.length > 0, why || 'Already working on it');
     block(bookingRefs.diary, !!diaryRun || result.errors.length > 0 || !plan,
       why || (diaryRun ? 'A diary booking is running' : 'Needs a date and time first'));
   }
@@ -4214,8 +4220,9 @@
     }
     const actions = element('div', 'kn-bk-actions');
     const canDiary = draft.key !== INBOUND_KEY;
-    const insert = button('Insert into Call Notes', 'kn-primary', () => (canDiary ? insertAndBook(draft) : insertBooking(draft)));
-    insert.title = canDiary ? 'Puts the booking into Call Notes, books it in the diary and sets the outcome' : '';
+    const insert = button('Insert into Call Notes', 'kn-primary', () => (canDiary ? insertAndBook(draft) : createInboundBooking(draft)));
+    insert.title = canDiary ? 'Puts the booking into Call Notes, books it in the diary and sets the outcome'
+      : 'Creates the customer (unless one is open), adds the lead, then inserts the notes, books the diary and sets the outcome';
     bookingRefs.insert = insert;
     actions.appendChild(insert);
     if (canDiary) {
@@ -4569,14 +4576,14 @@
       }
       if (!newButton) {
         showToast('Accept the call first, then try again');
-        return;
+        return false;
       }
       newButton.click();
       modal = await waitFor(visibleCustomerModal, 3000);
     }
     if (!modal) {
       showToast('The New Customer form did not open');
-      return;
+      return false;
     }
     const filled = [];
     const put = (selector, value, label) => {
@@ -4595,6 +4602,155 @@
     showToast(saved
       ? `New customer saved (${filled.join(', ') || 'no changes'})`
       : `Filled ${filled.join(', ') || 'nothing new'} but it did not save. Check the form and press Save.`);
+    return saved;
+  }
+
+  /* ---------- inbound: customer, lead and booking in one go ---------- */
+
+  let inboundRun = false;
+  /* True while the new lead's sections are being opened and shut, so the
+     booking is not dropped when Call Notes goes out of view for a moment. */
+  let inboundSetupHold = false;
+  const INBOUND_SOURCE = 'Phone call';
+
+  /* Pure. What a new inbound lead is created as. kind: 'Motability', 'New',
+     'Used' or '' (not known), as sheetLeadType gives it. Each list holds the
+     wording to try, best first. */
+  function inboundLeadPlan(kind, brand) {
+    const request = kind === 'Motability' ? ['Motability']
+      : kind === 'New' ? ['Enquiry - New'] : kind === 'Used' ? ['Enquiry - Used'] : ['Enquiry - Unknown', 'Enquiry - New'];
+    return {
+      leadType: kind === 'New' || kind === 'Used' ? kind : 'Not Known',
+      source: INBOUND_SOURCE,
+      request,
+      campaigns: brand ? request.map((name) => `${brand} - ${name}`) : []
+    };
+  }
+
+  /* Chooses the first of the wanted options a list offers, waiting for a
+     list that fills in late. True when the list ends up on one of them. */
+  async function pickOffered(select, wanted) {
+    if (!select) return false;
+    const has = (text) => Array.from(select.options).some((o) => normaliseText(o.textContent).toLowerCase() === text.toLowerCase());
+    const found = await waitFor(() => wanted.find(has) || null, 4000);
+    if (!found) return false;
+    setLeadControl(select, found);
+    return selectedText(select).toLowerCase() === found.toLowerCase();
+  }
+
+  async function createInboundBooking(draft) {
+    if (inboundRun || !ownerTools()) return;
+    const result = buildCurrentBooking(draft);
+    if (!result || result.errors.length) return;
+    inboundRun = true;
+    const say = (kind, text) => {
+      state.bookingStatus = { kind, text };
+      if (state.open && state.view === 'booking') renderPalette();
+    };
+    const stop = (text) => {
+      say('error', `Stopped: ${text}. Carry on by hand from there.`);
+      showToast(`Inbound booking stopped: ${text}`);
+    };
+    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const callOutcome = () => Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible) || null;
+    const leadTabs = () => document.querySelectorAll('[ng-repeat^="tab in tabs"]');
+    try {
+      const vehicle = draft.data.vehicles[0] || {};
+      const kind = sheetLeadType({ motability: draft.data.type === 'motability', hasReg: !!realText(vehicle.reg), condition: vehicle.condition });
+      const engine = bookingEngine();
+      const make = realText(vehicle.make);
+      let brand = inbound.customer.brand || (make && engine ? engine.normaliseMake(make) : make);
+
+      // 1. The customer, unless one is already open on the call.
+      if (!callOutcome()) {
+        if (!realText(inbound.customer.name) || !realText(inbound.customer.mobile)) return stop('add the customer\'s name and mobile in the Customer step first');
+        say('ok', 'Creating the customer...');
+        if (!(await fillCustomerForm())) return stop('the customer was not saved');
+      }
+      inbound.pending = true;
+      const outcome = await waitFor(callOutcome, 10000);
+      if (!outcome) return stop('the customer\'s call page did not open');
+
+      // 2. Booking Opportunity brings up Add New Lead.
+      const current = selectedText(outcome);
+      if (!current || /^\(select/i.test(current)) {
+        if (!(await pickOffered(outcome, [INBOUND_BOOKING_CALL_OUTCOME]))) return stop(`could not choose "${INBOUND_BOOKING_CALL_OUTCOME}" as the call outcome`);
+      }
+      const add = await waitFor(() => findButtonByClick('button[ng-click^="createNewSalesLead"]'), 5000);
+      if (!add) return stop('Add New Lead did not appear');
+
+      // 3. The new lead.
+      say('ok', 'Adding the lead...');
+      const tabsBefore = leadTabs().length;
+      add.click();
+      const modal = await waitFor(() => Array.from(document.querySelectorAll('.modal')).find((m) => isVisible(m) && m.querySelector('input[name="salesOptions"]')) || null, 10000);
+      if (!modal) return stop('the Create Activity window did not open');
+      const regular = modal.querySelector('input[name="salesOptions"][value="true"]');
+      if (regular && !regular.checked) regular.click();
+      const badge = modal.querySelector('select[ng-model="selected.Badge"]');
+      if (badge && brand && selectedText(badge).toLowerCase() !== brand.toLowerCase()) setLeadControl(badge, brand);
+      if (!brand && badge && !/^\(select/i.test(selectedText(badge))) brand = selectedText(badge);
+      const plan = inboundLeadPlan(kind, brand);
+      const campaign = await waitFor(() => { const c = modal.querySelector('select[ng-model="selected.campaignID"]'); return c && c.options.length > 1 ? c : null; }, 10000);
+      if (!plan.campaigns.length || !(await pickOffered(campaign, plan.campaigns))) {
+        return stop(`pick the campaign (${plan.campaigns[0] || 'brand not known'}) in the window and press Save`);
+      }
+      await pause(300);
+      const save = Array.from(modal.querySelectorAll('button[ng-click="ok()"]')).find(isVisible);
+      if (!save) return stop('press Save in the Create Activity window');
+      save.click();
+      if (!(await waitFor(() => !modal.isConnected || !isVisible(modal), 15000))) return stop('the Create Activity window did not close');
+
+      // 4. The new lead's tab is the last one; its Call Notes moves the booking onto it.
+      await waitFor(() => leadTabs().length > tabsBefore, 10000);
+      const lastTab = Array.from(leadTabs()).pop();
+      if (lastTab && !lastTab.classList.contains('active')) lastTab.querySelector('a')?.click();
+      const onLead = await waitFor(() => { scanPage(); return state.target && leadKey() !== INBOUND_KEY ? state.target : null; }, 15000);
+      if (!onLead) return stop('the new lead\'s Call Notes did not show');
+      const lead = currentDraft();
+      const pane = onLead.closest('.tab-pane') || document;
+
+      // 5. The diary is opened and closed once before anything goes in Call Notes.
+      inboundSetupHold = true;
+      say('ok', 'Opening the diary once...');
+      const diaryButton = await leadDiaryButton();
+      if (!diaryButton) return stop('Manage Appointments was not found on the new lead');
+      diaryButton.click();
+      const diary = await waitFor(diaryModal, 15000);
+      if (!diary) return stop('the diary did not open');
+      await pause(800);
+      const close = Array.from(diary.querySelectorAll('button[ng-click="cancel()"]')).filter(isVisible)
+        .sort((a, b) => (/close/i.test(b.textContent) ? 1 : 0) - (/close/i.test(a.textContent) ? 1 : 0))[0];
+      close?.click();
+      if (!(await waitFor(() => !diaryModal(), 6000))) return stop('the diary did not close');
+
+      // 6. The lead's own drop downs.
+      const field = (name) => pane.querySelector(`select[ng-model="theActivity.SalesLead.LeadDetails.${name}"]`);
+      if (field('LeadTypeID') && !isVisible(field('LeadTypeID'))) {
+        await openLeadSection(pane, 'lead');
+        await waitFor(() => isVisible(field('LeadTypeID')), 3000);
+      }
+      const missed = [];
+      if (!(await pickOffered(field('LeadTypeID'), [plan.leadType]))) missed.push('Lead type');
+      if (brand && field('ChannelBadgeID') && selectedText(field('ChannelBadgeID')).toLowerCase() !== brand.toLowerCase() &&
+        !(await pickOffered(field('ChannelBadgeID'), [brand]))) missed.push('Brand');
+      if (!(await pickOffered(field('SourceOfEnquiryID'), [plan.source]))) missed.push('Source of enquiry');
+      if (!(await pickOffered(field('LeadRequestID'), plan.request))) missed.push('Lead request');
+      // Call Notes lives in Details, which the Lead section folds away.
+      if (!isVisible(onLead)) {
+        await openLeadSection(pane, 'details');
+        await waitFor(() => isVisible(onLead), 3000);
+      }
+      inboundSetupHold = false;
+      scanPage();
+      if (missed.length) return stop(`the lead is created but these were not set: ${missed.join(', ')}. Set them, then press Insert and book diary`);
+
+      // 7. Notes, the diary booking and the outcome, as on any lead.
+      await insertAndBook(currentDraft().key === lead.key ? currentDraft() : lead);
+    } finally {
+      inboundSetupHold = false;
+      inboundRun = false;
+    }
   }
 
   /* After the lead is created Konnect can lose the mobile. This opens Edit
