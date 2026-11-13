@@ -7473,7 +7473,7 @@ function linkResendAfterDecision() {
 // The decisions made by hand go back too, for any batch: the same text as
 // Copy review decisions.
 if (session) linkPost({ type: 'workTools:review', tsv: buildManualReviewDecisionsExport(session) });
-if (session && session.fromManager && session.linkEnded === 'done') linkResults(session, false);
+if (session && session.fromManager && session.linkEnded) linkResults(session, false);
 }
 
 function linkLineText() {

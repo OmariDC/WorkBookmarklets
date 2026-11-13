@@ -4712,6 +4712,12 @@ return false;
 function saveDeskResults(id, tsv, progress) {
 const parsed = parseLeadCheckerImportTsv(tsv);
 if (!parsed.headerOk) { writeDeskStatus(id, 'failed', 'The Lead Checker results could not be read.'); return; }
+// The lead cards follow the newer answer too, so the two never disagree.
+const held = loadLeadCheckerImportState().results;
+if (held && held.length) {
+saveLeadCheckerImportState({ rawInput: '', results: classifyLeadCheckerImportRows(refreshPostClosureResults(held, parsed.rows, new Date().toISOString())) });
+if (currentPanelMode === 'normal') redrawWhenNotTyping(redrawLeadsPanel);
+}
 saveSendThroughForDesk(parsed.rows);
 if (!savePostClosureForDesk(parsed.rows)) { writeDeskStatus(id, 'failed', 'The results could not be saved (browser storage full).'); return; }
 writeDeskStatus(id, progress ? 'checking' : 'done', progress ? `Lead Checker: ${progress.done} of ${progress.total} checked.` : `Lead Checker done: ${parsed.rows.length} checked.`);
@@ -5358,6 +5364,12 @@ check('a rechecked Send through lead keeps its agent, and the page holder is sta
 stampSendThroughAgents(mergeSendThrough([{ name: 'Sam Buyer', email: 'sam.buyer@example.com', checkedAt: now, agent: 'Agent Alpha' }], [{ name: 'Sam Buyer', email: 'sam.buyer@example.com', checkedAt: now, agent: '' }, { name: 'Al Sample', email: 'al.sample@example.com', checkedAt: now, agent: '' }], now),
 [{ name: 'Al Sample', email: 'AL.SAMPLE@example.com', assigned: true, agentName: 'agent  bravo' }], ['Agent Bravo']).leads.map((l) => [l.name, l.agent]),
 [['Sam Buyer', 'Agent Alpha'], ['Al Sample', 'Agent Bravo']]);
+const refreshed = refreshPostClosureResults([
+{ name: 'Jo Example', email: 'jo.example@example.com', phone: '', source: 'Post Closure Processing', created: 'T1', postClosureAction: 'check: needs contact?' },
+{ name: 'Sam Buyer', email: 'sam.buyer@example.com', phone: '', source: 'Customer First', created: 'T2', tier: 2, postClosureAction: '' }
+], [{ name: 'Jo Example', email: 'Jo.Example@example.com', postClosureAction: 'send back through', postClosureReason: 'Email only' }, { name: 'Sam Buyer', email: 'sam.buyer@example.com', postClosureAction: 'send back through' }], now);
+check('a later Parked Calls check updates the Post Closure card, keeping its lead time, and leaves other leads alone',
+refreshed.map((r) => [r.created, r.postClosureAction, r.postClosureReason || '']), [['T1', 'send back through', 'Email only'], ['T2', '', '']]);
 check('only Post Closure rows are kept for the desk', pc.map((r) => [r.name, r.postClosureAction, r.checkedAt]), [['Jo Example', 'send back through', now]]);
 const stored = [
 { name: 'Jo Example', email: 'jo.example@example.com', phone: '', postClosureAction: 'check: needs contact?', checkedAt: '2026-11-11T09:00:00.000Z' },
@@ -5542,6 +5554,21 @@ return classifyLeadCheckerImportRows(Array.from(byKey.values()));
 
 // Results from a paste or from the link, added to the lead cards' results.
 // Post Closure rows also go to the agent desktop's list.
+// Pure. A later Post Closure check of the same customer (a Parked Calls
+// check from the desk) replaces the Post Closure answer on the lead cards,
+// which keep their own lead time. Other results are left as they are.
+function refreshPostClosureResults(existing, deskRows, nowIso) {
+const latest = new Map();
+(deskRows || []).filter((r) => r && r.postClosureAction).forEach((r) => latest.set(deskResultKey(r), r));
+if (latest.size === 0) return existing || [];
+return (existing || []).map((r) => {
+const isPostClosure = !!r.postClosureAction || /^post closure processing$/i.test(String(r.source || '').trim());
+const newer = isPostClosure ? latest.get(deskResultKey(r)) : null;
+if (!newer) return r;
+return { ...r, postClosureAction: newer.postClosureAction, postClosureReason: newer.postClosureReason || '', postClosureEvidence: newer.postClosureEvidence || '', priorityRank: newer.priorityRank != null ? newer.priorityRank : r.priorityRank, checkedAt: nowIso };
+});
+}
+
 function addLeadCheckerResults(rows) {
 const merged = mergeLeadCheckerResults(loadLeadCheckerImportState().results, rows, new Date().toISOString());
 saveLeadCheckerImportState({ rawInput: '', results: merged });
