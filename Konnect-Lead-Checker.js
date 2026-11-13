@@ -2612,7 +2612,7 @@ return String(name || '').replace(/^\s*(mr|mrs|miss|ms|mx|dr)\b\.?\s+/i, '').rep
 // carrying one of the batch regs go first.
 function nationalCandidateIds(rows, expectedName, regs) {
 const withLinks = rows.filter((r) => r.link && r.customerId);
-// Letters only: "O'Brien", "O Brien" and "OBrien" are one name.
+// Letters only: "O'Hara", "O Hara" and "OHara" are one name.
 const key = (value) => normalizeCustomerName(value).replace(/[^a-z]/g, '');
 const name = key(expectedName);
 const exact = withLinks.filter((r) => name && key(r.customerName) === name);
