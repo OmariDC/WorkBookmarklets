@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.20.0'
+    version: '1.21.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -24,7 +24,7 @@
   /* Other staff get the call notes only: the phrase list, the shorthand and
      their settings. The whole booking system (the Booking Builder and its
      buttons and keys, the inbound Customer step, the diary, drafts, the
-     booking sheet row and the call outcome helper) is for the owner for now,
+     booking sheet row) is for the owner for now,
      and is on only while this flag is set on the page. The Work Tools
      bookmark sets it before loading; the Konnect Tools bookmark does not.
      Nothing is stored, so it cannot stay on by accident. To give someone
@@ -36,9 +36,10 @@
   // The stored switch earlier versions used is no longer read, so it is cleared.
   try { localStorage.removeItem('konnectNotes:bookingAccess:v1'); } catch (error) { /* storage blocked */ }
 
-  /* Owner only: the call outcome each Call Notes phrase stands for, by phrase
-     id (shorthand in the comment). A phrase not listed here sets nothing, and
-     "Update Outcomes (No Call Made)" is never set from a note. */
+  /* The call outcome each Call Notes phrase stands for, by phrase id
+     (shorthand in the comment). A phrase not listed here sets nothing.
+     "Update Outcomes (No Call Made)" is only ever set from the Email Only
+     notes in NO_CALL_PHRASES, as no call is made on those. */
   const MESSAGE_LEFT = 'No Answer Message Left';
   const NO_MESSAGE_LEFT = 'No Answer No Message Left';
   const CALL_OUTCOME_FOR_PHRASE = {
@@ -51,6 +52,18 @@
     'mail-box-full': NO_MESSAGE_LEFT, // mbf
     'precall-declined-vm': NO_MESSAGE_LEFT, // dvm, pdvm
     'line-failed-email-only': NO_MESSAGE_LEFT // lfe
+  };
+  const NO_CALL_MADE = 'Update Outcomes (No Call Made)';
+  const NO_CALL_PHRASES = ['email-only-lead-short', 'email-only-full']; // eo
+
+  /* The lead outcome a Call Notes phrase stands for, by phrase id. It is only
+     set for a note a person wrote (a real key press or a pick from the phrase
+     list). Lead Re setup presses the key itself and sets its own outcomes. */
+  const EMAIL_ONLY_OUTCOME = ['Customer Hub Team', 'Ongoing', 'Email Only Lead'];
+  const LEAD_OUTCOME_FOR_PHRASE = {
+    'email-only-lead-short': EMAIL_ONLY_OUTCOME, // eo
+    'email-only-full': EMAIL_ONLY_OUTCOME,
+    'line-failed-email-only': EMAIL_ONLY_OUTCOME // lfe
   };
 
   /* Owner only: the dealer names as the booking sheet spells them. */
@@ -621,7 +634,7 @@
   function scanPage() {
     clearTimeout(state.scanTimer);
     /* While the other lead's tab is brought forward, the booking stays on its own lead. */
-    if (pxMoveRun) {
+    if (pxMoveRun || noteOutcomeRun) {
       state.scanTimer = setTimeout(scanPage, 300);
       return;
     }
@@ -2462,6 +2475,10 @@
     check('email only sets nothing', CALL_OUTCOME_FOR_PHRASE['email-only-lead-short'], undefined);
     check('no call made is never set', Object.values(CALL_OUTCOME_FOR_PHRASE).some((v) => /no call made/i.test(v)), false);
     check('same letters', outcomeKey('No Answer - Message Left'), outcomeKey(MESSAGE_LEFT));
+    check('eo sets the Email Only lead outcome', (LEAD_OUTCOME_FOR_PHRASE['email-only-lead-short'] || []).join(' > '), 'Customer Hub Team > Ongoing > Email Only Lead');
+    check('lfe and the full note set it too', [LEAD_OUTCOME_FOR_PHRASE['line-failed-email-only'], LEAD_OUTCOME_FOR_PHRASE['email-only-full']].every((path) => path === EMAIL_ONLY_OUTCOME), true);
+    check('a voicemail note sets no lead outcome', LEAD_OUTCOME_FOR_PHRASE['vm-left'], undefined);
+    check('no call made only for notes with a lead outcome and no call', NO_CALL_PHRASES.every((id) => LEAD_OUTCOME_FOR_PHRASE[id] && !CALL_OUTCOME_FOR_PHRASE[id]), true);
     return failures;
   }
 
@@ -3038,7 +3055,8 @@
 
   /* Styled in place, as it must still show after Stop has removed the style
      sheet. "lead" is what happened, said first with an amber dot. "action"
-     ({ label, run }) adds one button and keeps the toast up a little longer. */
+     ({ label, run }, or a list of them) adds a button for each and keeps the
+     toast up a little longer. */
   function showToast(text, lead, action) {
     logActivity(text);
     const toast = document.createElement('div');
@@ -3066,17 +3084,18 @@
     } else {
       toast.textContent = text;
     }
-    if (action) {
+    const actions = [].concat(action || []);
+    actions.forEach((item) => {
       toast.style.pointerEvents = 'auto';
       const act = document.createElement('button');
       act.type = 'button';
-      act.textContent = action.label;
+      act.textContent = item.label;
       act.style.cssText = 'border:0;border-radius:8px;padding:5px 10px;font:inherit;cursor:pointer;background:#fff;color:#1c1c1e';
-      act.addEventListener('click', () => { toast.remove(); action.run(); });
+      act.addEventListener('click', () => { toast.remove(); item.run(); });
       toast.appendChild(act);
-    }
+    });
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), action ? 10000 : 4500);
+    setTimeout(() => toast.remove(), actions.length ? 10000 : 4500);
   }
 
   /* Sets a Konnect (AngularJS) box so its ng-model picks the value up. */
@@ -5130,27 +5149,135 @@
     return normaliseText(text).toLowerCase().replace(/[^a-z0-9]/g, '');
   }
 
+  /* Sets the call outcome when none is chosen yet. Returns { set: true },
+     { left, change } for a different one already chosen (change sets it and
+     is missing when the box does not offer it), or {} with nothing to say. */
+  function applyCallOutcome(wanted) {
+    const select = Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible);
+    if (!wanted || !select) return {};
+    const current = selectedText(select);
+    const option = Array.from(select.options).find((item) => outcomeKey(item.textContent) === outcomeKey(wanted));
+    const choose = () => !!(option && select.isConnected && setLeadControl(select, normaliseText(option.textContent)));
+    if (!current) return choose() ? { set: true } : {};
+    if (outcomeKey(current) === outcomeKey(wanted)) return {};
+    return { left: current, change: option ? choose : null };
+  }
+
+  function callOutcomeChange(wanted, change) {
+    return change ? { label: `Change to ${wanted}`, run: () => { if (change()) showToast(`Call outcome set: ${wanted}`); } } : null;
+  }
+
   /* For everyone, as part of the call notes. Sets the call outcome a Call
      Notes phrase stands for. One already chosen is left alone unless the
      agent presses the button in the toast. Nothing else on the lead is
      touched. */
   function setCallOutcomeForNote(phrase) {
     const wanted = CALL_OUTCOME_FOR_PHRASE[phrase.id];
-    if (!wanted) return;
-    const select = Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible);
-    if (!select) return;
-    const current = selectedText(select);
-    const option = Array.from(select.options).find((item) => outcomeKey(item.textContent) === outcomeKey(wanted));
-    const choose = () => {
-      if (option && select.isConnected && setLeadControl(select, normaliseText(option.textContent))) showToast(`Call outcome set: ${wanted}`);
-    };
-    if (!current) return choose();
-    if (outcomeKey(current) === outcomeKey(wanted)) return;
-    showToast(`Call outcome left as ${current}`, '', option ? { label: `Change to ${wanted}`, run: choose } : null);
+    const done = applyCallOutcome(wanted);
+    if (done.set) showToast(`Call outcome set: ${wanted}`);
+    else if (done.left) showToast(`Call outcome left as ${done.left}`, '', callOutcomeChange(wanted, done.change));
   }
 
-  /* Returns true when the phrase was written. */
-  function insertPhrase(phrase, attempt, rangeOverride) {
+  function leadSectionHeading(pane, title) {
+    return Array.from(pane.querySelectorAll('a.accordion-toggle, a[ng-click="toggleOpen()"]'))
+      .find((a) => isVisible(a) && normaliseText(a.textContent).toLowerCase() === title) || null;
+  }
+
+  /* Only one of the lead's sections is open at a time, so opening Outcomes
+     folds Call Notes away. This opens Details again if it has to, and puts
+     the typing position back where it was. */
+  async function backToCallNotes(pane, target, caret) {
+    const box = target.isConnected ? target : pane.querySelector('textarea[ng-model$="LeadDetails.Notes"]');
+    if (!box) return false;
+    if (!isVisible(box)) {
+      leadSectionHeading(pane, 'details')?.click();
+      await waitFor(() => isVisible(box), 3000);
+    }
+    if (!isVisible(box)) return false;
+    box.focus({ preventScroll: true });
+    const at = Math.min(caret, box.value.length);
+    box.setSelectionRange(at, at);
+    box.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    return box;
+  }
+
+  /* For everyone, as part of the call notes. After an Email Only note a
+     person wrote: the call outcome, then the lead outcome on that note's
+     lead, then back to Call Notes, with one toast for all of it. An outcome
+     already chosen is left alone unless the agent presses the button in the
+     toast ("force" is that press, which only sets the lead outcome). */
+  let noteOutcomeRun = false;
+  async function setOutcomesForNote(phrase, target, force) {
+    const path = LEAD_OUTCOME_FOR_PHRASE[phrase.id];
+    if (noteOutcomeRun || pxMoveRun || diaryRun) {
+      if (!force) setCallOutcomeForNote(phrase);
+      return;
+    }
+    noteOutcomeRun = true;
+    const name = path[path.length - 1];
+    const caret = target.selectionStart;
+    const pane = target.closest('.tab-pane') || document;
+    const said = [];
+    const actions = [];
+    let callSet = false;
+    let leadSet = false;
+    let box = null;
+    const wantedCall = CALL_OUTCOME_FOR_PHRASE[phrase.id] || (NO_CALL_PHRASES.includes(phrase.id) ? NO_CALL_MADE : '');
+    try {
+      const call = force ? {} : applyCallOutcome(wantedCall);
+      callSet = !!call.set;
+      if (call.left) {
+        said.push(`Call outcome left as ${call.left}`);
+        const change = callOutcomeChange(wantedCall, call.change);
+        if (change) actions.push(change);
+      }
+      const activity = leadScopeActivity(target);
+      const lists = () => Array.from(pane.querySelectorAll(OUTCOME_LISTS))
+        .filter((node) => isVisible(node) && leadScopeActivity(node) === activity);
+      if (!lists().length) {
+        /* A section that is open but still loading is not clicked, as that would fold it. */
+        const heading = leadSectionHeading(pane, 'outcomes');
+        const body = heading?.closest('.panel, .accordion-group')?.querySelector('.panel-collapse, .accordion-body');
+        if (heading && !(body && body.classList.contains('in'))) heading.click();
+      }
+      const shown = await waitFor(() => (lists().length ? lists() : null), 3000);
+      const current = (shown || []).map(selectedText);
+      const differs = current.some((text, level) => text && lettersOnly(text) !== lettersOnly(path[level]));
+      const complete = path.every((wanted, level) => lettersOnly(current[level]) === lettersOnly(wanted));
+      if (!shown) {
+        said.push('Lead outcome not set: the lead outcome lists did not appear');
+      } else if (differs && !force) {
+        said.push(`Lead outcome left as ${current.filter(Boolean).join(' > ')}`);
+        actions.push({ label: `Change to ${name}`, run: () => setOutcomesForNote(phrase, target, true) });
+      } else if (!complete) {
+        const missed = await chooseLeadOutcome(pane, activity, path);
+        /* The page redraws the lists after each choice, so they are read once more. */
+        const stayed = missed < 0 && await waitFor(() => path.every((wanted, level) => lettersOnly(selectedText(lists()[level])) === lettersOnly(wanted)), 1500);
+        if (missed >= 0) said.push(`Lead outcome not set: "${path[missed]}" could not be chosen`);
+        else if (!stayed) said.push(`Lead outcome not set: it did not stay as ${name}`);
+        else leadSet = true;
+      }
+    } catch (error) {
+      said.push('Lead outcome not set: the page did not respond as expected');
+    } finally {
+      try { box = await backToCallNotes(pane, target, caret); } catch (error) { /* said below */ }
+      noteOutcomeRun = false;
+    }
+    scanPage();
+    if (box && box === state.target) {
+      state.targetHadFocus = true;
+      state.lastSelection = { target: box, start: box.selectionStart, end: box.selectionEnd };
+    }
+    if (callSet && leadSet) said.unshift(`Call outcome and lead outcome set: ${name}`);
+    else if (callSet) said.unshift(`Call outcome set: ${wantedCall}`);
+    else if (leadSet) said.push(`Lead outcome set: ${name}`);
+    if (!box) said.push('Open Details yourself to get back to Call Notes');
+    if (said.length) showToast(said.join('. '), '', actions);
+  }
+
+  /* Returns true when the phrase was written. "pressedByTool" is a key press
+     another tool made, which sets no lead outcome. */
+  function insertPhrase(phrase, attempt, rangeOverride, pressedByTool) {
     scanPage();
     const isCatchAll = phrase?.category === 'catch-all';
     const target = isCatchAll ? state.postClosureTarget : state.target;
@@ -5238,7 +5365,8 @@
     state.targetHadFocus = true;
     state.lastSelection = { target, start: caret, end: caret };
     closePalette();
-    setCallOutcomeForNote(phrase);
+    if (LEAD_OUTCOME_FOR_PHRASE[phrase.id] && !pressedByTool) setOutcomesForNote(phrase, target);
+    else setCallOutcomeForNote(phrase);
     return true;
   }
 
@@ -5292,7 +5420,7 @@
     event.preventDefault();
     const end = target.selectionStart;
     const start = end - match[2].length;
-    insertPhrase(found.phrase, found.attempt, { start, end });
+    insertPhrase(found.phrase, found.attempt, { start, end }, !event.isTrusted);
   }
 
   function typingOutsidePalette(node) {

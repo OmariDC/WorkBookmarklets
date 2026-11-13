@@ -7,7 +7,12 @@
      lists. Part Exchange and Outcomes start folded. Each outcome list starts
      on an unknown "?" option that goes once a real one is chosen, as Konnect
      does. The ng-model names of the PX boxes are made up: the real ones are
-     not known. All values are fictional. -->
+     not known. All values are fictional.
+     window.mockOptions, set before buildLeads, turns on more of the real
+     page: oneOpen (only one section open at a time, starting on Details),
+     outcomeDelay (ms before the lists below a choice load) and blankLower
+     (the second and third lists keep a blank first option). A lead may
+     start with an outcome ([level 1, 2, 3]) and may have noEmailOnly. -->
 <style>
 body { font-family: Arial, sans-serif; margin: 0; padding: 10px 10px 10px 110px; background: #eee; }
 .userQuotesAffix { position: fixed; left: 10px; top: 60px; width: 80px; }
@@ -27,7 +32,7 @@ textarea { display: block; width: 520px; height: 60px; }
 </div>
 <div class="row"><b>Name</b> <span id="custName">Jo Example</span></div>
 <div class="row" id="emailRow"><b>Email</b> <span class="ng-scope" id="custEmail">jo@example.com</span></div>
-<div class="row"><label>Call Outcome</label> <select ng-model="selected.CallOutcome" id="callOutcome"><option>(Select a Call Outcome)</option><option>Spoke to Customer</option><option>No Answer - Message Left</option></select></div>
+<div class="row"><label>Call Outcome</label> <select ng-model="selected.CallOutcome" id="callOutcome"><option>(Select a Call Outcome)</option><option>Spoke to Customer</option><option>No Answer - Message Left</option><option>No Answer - No Message Left</option><option>Update Outcomes (No Call Made)</option></select></div>
 <button id="finished" onclick="window.finishedPresses += 1">Finished</button>
 <div id="leads"><ul class="nav nav-tabs" id="tabs"></ul><div class="tab-content" id="panes"></div></div>
 <script>
@@ -38,7 +43,7 @@ document.querySelector('#callOutcome').addEventListener('change', () => { window
 const OUTCOMES = {
   'Customer Hub Team': {
     Appointment: ['Face To Face', 'Phone Call'],
-    Ongoing: ['Defer to Site', 'Email Only Lead'],
+    Ongoing: ['In Progress with Dealer', 'Defer to Site', 'Email Only Lead'],
     'No Opportunity': ['Catch All', 'Duplicate Lead', 'Not Interested']
   },
   Sales: { ART: ['Appointment'] }
@@ -70,18 +75,20 @@ function pxBody() {
 }
 
 // The options a list offers. The unknown option is only there until a real one is chosen.
-function fillOutcomeList(select, names, chosen) {
-  select.innerHTML = (chosen ? '' : '<option value="?" selected></option>') +
+function fillOutcomeList(select, names, chosen, blank) {
+  select.innerHTML = (blank ? '<option value=""></option>' : chosen ? '' : '<option value="?" selected></option>') +
     names.map((name, index) => `<option value="number:${index + 11}"${name === chosen ? ' selected' : ''}>${name}</option>`).join('');
   select.style.display = names.length ? '' : 'none';
 }
-function drawOutcomes(pane, activity, lead) {
+// loadingFrom: the lists from that level down have not loaded yet.
+function drawOutcomes(pane, activity, lead, loadingFrom) {
   const [one, two, three] = pane.querySelectorAll('select[ng-model^="theActivity.SelectedOutcomeLevel"]');
+  const blank = !!(window.mockOptions || {}).blankLower;
   const level2 = OUTCOMES[activity.SelectedOutcomeLevel1] || {};
-  const level3 = (level2[activity.SelectedOutcomeLevel2] || []).filter((name) => !(lead.noDuplicate && name === 'Duplicate Lead'));
+  const level3 = (level2[activity.SelectedOutcomeLevel2] || []).filter((name) => !(lead.noDuplicate && name === 'Duplicate Lead') && !(lead.noEmailOnly && name === 'Email Only Lead'));
   fillOutcomeList(one, Object.keys(OUTCOMES), activity.SelectedOutcomeLevel1);
-  fillOutcomeList(two, Object.keys(level2), activity.SelectedOutcomeLevel2);
-  fillOutcomeList(three, level3, activity.SelectedOutcomeLevel3);
+  fillOutcomeList(two, loadingFrom && loadingFrom <= 2 ? [] : Object.keys(level2), activity.SelectedOutcomeLevel2, blank);
+  fillOutcomeList(three, loadingFrom && loadingFrom <= 3 ? [] : level3, activity.SelectedOutcomeLevel3, blank);
 }
 
 function section(title, body, open) {
@@ -97,6 +104,7 @@ function showTab(id) {
 
 window.buildLeads = function (leads) {
   window.tabShows = [];
+  const options = window.mockOptions || {};
   leads.forEach((lead) => {
     const px = lead.px || {};
     const activity = {
@@ -104,7 +112,7 @@ window.buildLeads = function (leads) {
       CampaignName: lead.campaign,
       OutcomeFullHierarchy: lead.hierarchy || 'None',
       CreatedDate: lead.created || '',
-      SelectedOutcomeLevel1: '', SelectedOutcomeLevel2: '', SelectedOutcomeLevel3: '',
+      SelectedOutcomeLevel1: (lead.outcome || [])[0] || '', SelectedOutcomeLevel2: (lead.outcome || [])[1] || '', SelectedOutcomeLevel3: (lead.outcome || [])[2] || '',
       SalesLead: { LeadDetails: { LeadRequestID: lead.request, Notes: '', HasPartExchange: !!px.on,
         PartExchange: { Brand: px.make || '', Model: px.model || '', Reg: px.reg || '', Mileage: px.mileage || '', Valuation: px.val || '' } } }
     };
@@ -120,7 +128,7 @@ window.buildLeads = function (leads) {
       section('Details', `<div class="form-group"><label>Lead Request</label><select ng-model="theActivity.SalesLead.LeadDetails.LeadRequestID"><option>(Select)</option><option selected>${lead.request}</option></select></div>` +
         `<div class="form-group"><label>Initial Notes</label><div><textarea id="init-${lead.id}"></textarea></div></div>` +
         `<div class="form-group"><label>Call Notes</label><footer class="text-primary"><textarea class="form-control" id="call-${lead.id}" ng-model="theActivity.SalesLead.LeadDetails.Notes"></textarea></footer></div>`, true) +
-      section('Vehicle of Interest', '<input placeholder="Reg Number"><input placeholder="Vehicle Brand"><input placeholder="Vehicle Model"><input placeholder="Fuel Type"><select><option>(Select)</option><option>New</option><option>Used</option></select>', true) +
+      section('Vehicle of Interest', '<input placeholder="Reg Number"><input placeholder="Vehicle Brand"><input placeholder="Vehicle Model"><input placeholder="Fuel Type"><select><option>(Select)</option><option>New</option><option>Used</option></select>', !options.oneOpen) +
       section('Part Exchange', lead.lazyPx ? '' : pxBody(), false) +
       section('Outcomes', '<select ng-model="theActivity.SelectedOutcomeLevel1"></select><select ng-model="theActivity.SelectedOutcomeLevel2"></select><select ng-model="theActivity.SelectedOutcomeLevel3"></select>', false);
     document.querySelector('#panes').appendChild(pane);
@@ -132,6 +140,7 @@ window.buildLeads = function (leads) {
       if (heading) {
         const body = heading.closest('.panel').querySelector('.panel-collapse');
         body.classList.toggle('in');
+        if (options.oneOpen) pane.querySelectorAll('.panel-collapse').forEach((other) => { if (other !== body) other.classList.remove('in'); });
         // A lazy Part Exchange section only draws its boxes when first opened.
         if (lead.lazyPx && heading.textContent === 'Part Exchange' && !body.querySelector('input')) {
           body.querySelector('.panel-body').innerHTML = pxBody();
@@ -156,7 +165,10 @@ window.buildLeads = function (leads) {
       activity[`SelectedOutcomeLevel${level}`] = text;
       for (let below = level + 1; below <= 3; below += 1) activity[`SelectedOutcomeLevel${below}`] = '';
       window.leadOutcomeChanges.push(lead.id);
-      drawOutcomes(pane, activity, lead);
+      if (options.outcomeDelay) {
+        drawOutcomes(pane, activity, lead, level + 1);
+        setTimeout(() => drawOutcomes(pane, activity, lead), options.outcomeDelay);
+      } else drawOutcomes(pane, activity, lead);
     });
 
     const tab = document.createElement('li');

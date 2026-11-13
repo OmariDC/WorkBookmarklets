@@ -3612,6 +3612,26 @@ try { localStorage.removeItem(SESSION_STORAGE_KEY); } catch (error) { /* ignore 
 
 const SETTINGS_STORAGE_KEY = 'konnectLeadChecker:settings:v1';
 
+// The small window Work Tools opens for Konnect Live. Work-Tools.js uses
+// the same names: the switch ('off' turns it off) and the window's last
+// size and place.
+const SMALL_WINDOW_NAME = 'workToolsLiveSmall';
+const SMALL_WINDOW_KEY = '_klcSmallWindow';
+const SMALL_WINDOW_BOX_KEY = '_klcSmallWindowBox';
+
+function smallWindowWanted() {
+try { return localStorage.getItem(SMALL_WINDOW_KEY) !== 'off'; } catch (error) { return true; }
+}
+
+// The page's own width and height are kept, as those are what a new
+// window is asked for.
+function saveSmallWindowBox() {
+if (window.name !== SMALL_WINDOW_NAME) return;
+const box = { width: window.innerWidth, height: window.innerHeight, left: window.screenX, top: window.screenY };
+if (!(box.width > 0 && box.height > 0)) return;
+try { localStorage.setItem(SMALL_WINDOW_BOX_KEY, JSON.stringify(box)); } catch (error) { /* ignore */ }
+}
+
 function loadSettings() {
 try {
 const raw = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY));
@@ -5872,6 +5892,15 @@ else console.info('KonnectLeadChecker evaluate-national self-test passed');
 const KLC_NAV_ITEM_ID = '_klcNavItem';
 const KLC_BADGE_ID = '_klcBadge';
 
+// Whether an element has a box inside the window. Konnect's menu bar hides
+// or folds away some of its items in a narrow window.
+function inWindowView(element) {
+if (!element || typeof element.getBoundingClientRect !== 'function') return false;
+const rect = element.getBoundingClientRect();
+return rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0
+&& rect.left < window.innerWidth && rect.top < window.innerHeight;
+}
+
 // Matches Konnect Live's own nav item markup and text-konnect-live colour
 // so it blends in as one of its icons.
 function buildBadge() {
@@ -5904,7 +5933,11 @@ ul.appendChild(li);
 // block, so appending put it on its own row.
 const collapseDiv = nav.querySelector('.navbar-collapse');
 if (collapseDiv) nav.insertBefore(ul, collapseDiv); else nav.appendChild(ul);
+// A narrow window can leave the item with no box or off the edge; the
+// floating button is used there so the panel can always be opened.
+if (inWindowView(a)) {
 return {
+inNav: true,
 clickTarget: a,
 show() { ul.style.display = ''; },
 hide() { ul.style.display = 'none'; },
@@ -5912,8 +5945,10 @@ remove() { ul.remove(); },
 setProgress() {}
 };
 }
+ul.remove();
+}
 
-debugLog('KonnectLeadChecker: navbar not found, falling back to a fixed badge');
+debugLog('KonnectLeadChecker: no visible navbar item, falling back to a fixed badge');
 const badge = document.createElement('div');
 badge.id = KLC_BADGE_ID;
 Object.assign(badge.style, {
@@ -5936,6 +5971,7 @@ badge.style.boxShadow = '0 4px 12px rgba(194,203,66,0.35)';
 });
 document.documentElement.appendChild(badge);
 return {
+inNav: false,
 clickTarget: badge,
 show() { badge.style.display = 'flex'; },
 hide() { badge.style.display = 'none'; },
@@ -6185,6 +6221,7 @@ ${menuItem('', 'shrink', 'Height: compact', ' data-height="300"')}
 ${menuItem('', 'list', 'Height: default', ' data-height="0"')}
 ${menuItem('', 'expand', 'Height: tall', ' data-height="700"')}
 <div class="ms"></div>
+${menuItem('menuSmallWindow', 'shrink', 'Small window: on', ' title="When on, Work Tools opens the Lead Checker in its own small window, which keeps a check running while you work in other tabs. Takes effect the next time Work Tools is clicked on Konnect Live."')}
 ${menuItem('btnReport', 'flag', 'Report a problem', ' data-close')}
 <button type="button" class="mi danger" role="menuitem" id="btnClearStop" title="Stops the check, clears this Lead Checker's batch and results, and closes the panel. Nothing in SLA Manager or Lead Re setup is cleared.">${svgIcon('stop', 14)}<span>Clear &amp; Stop</span></button>
 <div class="mn" id="menuVersion"></div>
@@ -6354,17 +6391,25 @@ badge.show();
 wireBadgeClick();
 
 // Angular re-renders of the nav don't preserve an injected element.
+let badgeNavState = '';
 function ensureBadgeAttached() {
-if (document.getElementById(KLC_NAV_ITEM_ID)) return;
-// A floating button made before Konnect's menu bar existed moves into the
-// bar once it appears.
-const fallback = document.getElementById(KLC_BADGE_ID);
-if (fallback && !konnectNavReady()) return;
-if (fallback) fallback.remove();
 const panelCurrentlyOpen = host.style.display === 'block';
+const navItem = document.getElementById(KLC_NAV_ITEM_ID);
+// Work Tools' Alt+H hides the button on purpose.
+if (document.getElementById('_workToolsHideStyle') && (navItem || document.getElementById(KLC_BADGE_ID))) return;
+// The item is in the bar: it stays unless the bar has stopped showing it
+// (the window was made narrow).
+if (navItem && (panelCurrentlyOpen || inWindowView(badge.clickTarget))) return;
+// A floating button moves into Konnect's menu bar once the bar appears
+// or the window changes width. Tried once for each such change.
+const fallback = document.getElementById(KLC_BADGE_ID);
+const navState = `${konnectNavReady()}|${window.innerWidth}`;
+if (fallback && (!konnectNavReady() || navState === badgeNavState)) return;
+badgeNavState = navState;
 badge = buildBadge();
 wireBadgeClick();
 if (panelCurrentlyOpen) badge.hide(); else badge.show();
+if (session) updateBadgeProgress(badge, orderedResults(session), session);
 }
 
 // Empty set means no filter. The name filter is transient, so not persisted.
@@ -7189,8 +7234,13 @@ onLoopExit(finished) { return linkLoopExit(finished); }
 // batch here and gets the results back without the clipboard. A tab opened
 // by hand has no link, and copy and paste works as before.
 const MANAGER_ORIGIN = 'https://konnectonlineservices.co.uk';
+// In the small window Work Tools opens, the opener is the Konnect Live tab
+// it was opened from, so Work Tools hands SLA Manager's window over.
 function managerWindow() {
-try { return window.opener && !window.opener.closed ? window.opener : null; } catch (error) { return null; }
+try {
+const manager = window.__workToolsManager || window.opener;
+return manager && !manager.closed ? manager : null;
+} catch (error) { return null; }
 }
 function linkPost(message) {
 const opener = managerWindow();
@@ -7623,6 +7673,7 @@ if (session) { session.cancelled = true; session.discarded = true; linkEnd(sessi
 stopManualOpen();
 destroyed = true;
 clearInterval(badgeTimer);
+clearInterval(smallBoxTimer);
 clearTimeout(batchWaitTimer);
 clearTimeout(pasteBoxInputDebounce);
 if (versionState.stop) versionState.stop();
@@ -7673,6 +7724,24 @@ host.style.display = 'none';
 badge.show();
 });
 
+// Work Tools reads this before it opens Konnect Live's small window.
+const menuSmallWindowEl = root.getElementById('menuSmallWindow');
+function syncSmallWindowMenu() {
+const on = smallWindowWanted();
+menuSmallWindowEl.querySelector('span').textContent = `Small window: ${on ? 'on' : 'off'}`;
+menuSmallWindowEl.setAttribute('role', 'menuitemcheckbox');
+menuSmallWindowEl.setAttribute('aria-checked', String(on));
+}
+menuSmallWindowEl.addEventListener('click', () => {
+try { localStorage.setItem(SMALL_WINDOW_KEY, smallWindowWanted() ? 'off' : 'on'); } catch (error) { /* stays as it was */ }
+syncSmallWindowMenu();
+});
+syncSmallWindowMenu();
+// The small window remembers the size and place the owner gave it.
+const smallBoxTimer = setInterval(saveSmallWindowBox, 5000);
+window.addEventListener('resize', saveSmallWindowBox);
+window.addEventListener('beforeunload', saveSmallWindowBox);
+
 // The More menu. Items marked data-close shut it; the rest stay so the
 // words that answer a press ("Copied 4") can be read.
 function setMenuOpen(open) {
@@ -7680,6 +7749,7 @@ moreMenuEl.classList.toggle('hidden', !open);
 moreBtn.setAttribute('aria-expanded', String(open));
 if (!open) return;
 syncHeightMenu();
+syncSmallWindowMenu();
 // Kept inside the window wherever the panel has been dragged to.
 moreMenuEl.style.maxHeight = `${Math.max(160, window.innerHeight - moreBtn.getBoundingClientRect().bottom - 16)}px`;
 moreMenuEl.scrollTop = 0;

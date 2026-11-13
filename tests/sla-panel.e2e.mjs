@@ -2,7 +2,7 @@
 // Browser tests for the SLA Manager panel against a small stand-in for the
 // Konnect Manager SLA page (built below): reading customer pop-ups, the busy
 // guard, Clear Queue, due tiles, merging results and keeping the panel's
-// state across redraws, the missed lead warning, Team today, Start my day and
+// state across redraws, the missed lead warning on both lists, Team today, Start my day and
 // Rescue. Needs Playwright with Chromium. Run from the repo root:
 //
 //   node tests/sla-panel.e2e.mjs
@@ -38,6 +38,7 @@ function check(name, ok, detail) {
 const MOCK = `<!doctype html><html><head><meta charset="utf-8"><title>Konnect Manager (stand-in)</title>
 <style>body{font-family:Arial;margin:0}table{border-collapse:collapse}td,th{border:1px solid #ddd;padding:4px;font-size:12px}.dropdown-menu{display:none}</style></head>
 <body><nav><ul class="nav navbar-nav"><li><a href="#/x">Client Config</a></li></ul></nav>
+<ul id="queueMenu"><li><a href="#/Queue/SalesLeadsPending">Customer Hub Leads Pending SLA</a></li><li><a href="#/Queue/PendingCustomerQueue">Pending Customers</a></li></ul>
 <i class="fa fa-refresh" ng-click="getData()"></i>
 <div id="view"></div>
 <iframe id="live" src="about:blank" style="display:none"></iframe>
@@ -76,9 +77,16 @@ window.openModal=(i)=>{const l=LEADS[i];window.OPENED[i]=(window.OPENED[i]||0)+1
  m.innerHTML='<button class="close">x</button>';m.querySelector('.close').onclick=close;
  document.body.appendChild(m); if(window.MODAL_FILL_DELAY) setTimeout(fill,window.MODAL_FILL_DELAY); else fill();};
 function renderQueue(){document.getElementById('view').innerHTML='<div title="Filter by Module"><span class="ng-binding">Customer Hub</span></div><button ng-click="ClearQueues()" onclick="window.CLEARED=(window.CLEARED||0)+1;if(!window.CLEAR_DOES_NOTHING)LEADS.forEach(l=>l[8]=null)">Clear Queues</button><ul>'+AGENTS.map((a,i)=>'<li ng-repeat="agent in fullqueue | filter: filterMessages"><div class="queueitem panel-heading"><div style="font-weight:bold">'+a.DisplayText+'</div></div><ul class="list-group">'+(i===0?'<li class="queueitem list-group-item"><span title="Fay Fields | fay@example.com | 07700900004">Fay</span></li>':'')+((window.QUEUE_DONE||{})[i]||[]).map(d=>'<li class="queueitem list-group-item" style="background-color: rgb(244, 244, 244);"><span title="'+d+'">done</span></li>').join('')+'</ul></li>').join('')+'</ul>';}
+// The Pending Customers page: its count, then every column as plain text.
+// PENDING_DELAY is how long the page takes to show.
+window.PENDING=[];
+function renderPending(){
+ document.getElementById('view').innerHTML='<h4>Pending Customers - '+PENDING.length+'</h4><table class="table"><tbody><tr>'+['Dealer','Brand','Customer','Reg','Email','Mobile','Landline','Campaign','Callback Type','Last Action Date','Next Action Date','Assign'].map(h=>'<th>'+h+'</th>').join('')+'</tr>'+
+ PENDING.map(l=>'<tr>'+[0,1,2,3,4,5,6,7,8,9,10].map(c=>'<td>'+l[c]+'</td>').join('')+'<td>'+(l[11]?l[11]:'<div class="dropdown ng-scope"></div>')+'</td></tr>').join('')+'</tbody></table>';
+}
 function renderOther(){document.getElementById('view').innerHTML='<p>Another Konnect page</p>';}
 window.NAVS=[];
-window.addEventListener('hashchange',()=>{ window.NAVS.push(location.hash); if(location.hash.includes('QueueByAgent')) setTimeout(renderQueue,200); else if(location.hash.includes('other')) renderOther(); else setTimeout(renderSla,200); });
+window.addEventListener('hashchange',()=>{ window.NAVS.push(location.hash); if(location.hash.includes('QueueByAgent')) setTimeout(renderQueue,200); else if(location.hash.includes('PendingCustomerQueue')) setTimeout(()=>{ if(location.hash.includes('PendingCustomerQueue')) renderPending(); },window.PENDING_DELAY||200); else if(location.hash.includes('other')) renderOther(); else setTimeout(renderSla,200); });
 renderSla();
 // Stands in for the Konnect Live tab, as in agent-desktop-mock/manager.html.
 window.toLive=[];
@@ -480,14 +488,15 @@ async function layoutAndMenus() {
 }
 
 // A stand-in for desktop notifications that records what would be shown.
-const fakeNotifications = (answer) => `
+// The watch only visits the other lead page where a test asks for it.
+const fakeNotifications = (answer, timing = 'scanMs: 1500, tickMs: 150, peekMs: Infinity') => `
   window.NOTES = []; window.ASKED = 0;
   class FakeNotification { constructor(title, options) { window.NOTES.push({ title, body: options.body }); } close() {}
     static requestPermission() { window.ASKED++; FakeNotification.permission = '${answer}'; return Promise.resolve('${answer}'); } }
   FakeNotification.permission = 'default';
   window.Notification = FakeNotification;
   document.hasFocus = () => true;
-  window.__slaWatchTiming = { scanMs: 1500, tickMs: 150 };
+  window.__slaWatchTiming = { ${timing} };
   window.REFRESHES = 0;
   document.querySelector('i.fa-refresh').addEventListener('click', () => { window.REFRESHES++; });`;
 const OWN_TITLE = 'Konnect Manager (stand-in)';
@@ -570,6 +579,135 @@ async function missedWarning() {
   check('turning it off restores the title', (await t.page.title()) === OWN_TITLE && await t.page.evaluate(() => !window._slaMissedWatchInterval && localStorage.getItem('_slaMissedWarning') === '0'));
   check('no page errors', t.errors.length === 0, t.errors);
   await t.context.close();
+}
+
+async function bothLists() {
+  console.log('\nMissed lead warning: both lists, the other one read by going to it and straight back');
+  const SLA_HASH = '#/Queue/SalesLeadsPending';
+  const PLACEHOLDER = 'Sun, 31 Dec 0000 23:58';
+  const t = await open(fakeNotifications('granted', 'scanMs: 4000, tickMs: 150, peekMs: 1000, idleMs: 300, emptyMs: 500, peekMaxMs: 20000'));
+  const title = () => t.page.title();
+  const notes = () => t.page.evaluate(() => window.NOTES.slice());
+  const navs = () => t.page.evaluate(() => window.NAVS.slice());
+  const state = () => t.page.evaluate(() => ({ hash: location.hash, sla: document.querySelectorAll('#view th').length === 9 }));
+  const visits = async () => (await navs()).filter((h) => h.includes('PendingCustomerQueue')).length;
+  const home = (hash) => waitFor(t.page, (h) => location.hash === h && !!document.querySelector('#view table') && !document.getElementById('_slaPageFlashOverlay'), hash, 8000);
+  // One far off, one with the placeholder for both dates, one that is also
+  // on the SLA list, one assigned and far off.
+  await t.page.evaluate(([hash, none]) => {
+    const sam = LEADS[1];
+    window.PENDING = [
+      ['Site A', 'Citroen', 'Pat Pending', 'AB21CDE', 'pat@example.com', '07700900021', '', 'General', 'New', none, at(40), null],
+      ['Site A', 'Peugeot', 'Rae Blank', 'AB22CDE', 'rae@example.com', '07700900022', '', 'General', 'New', none, none, null],
+      ['Site B', 'Peugeot', sam[0], sam[1], 'sam@example.com', '07700900002', '', sam[3], 'Auto Rescheduled', at(-60), at(8), null],
+      ['Site B', 'Vauxhall', 'Quinn Later', 'AB23CDE', 'quinn@example.com', '07700900023', '', 'General', 'Post Closure', at(-90), at(300), 'Agent Bravo']
+    ];
+    location.hash = hash;
+  }, [SLA_HASH, PLACEHOLDER]);
+  await sleep(500);
+  await openPanel(t.page);
+  await t.page.evaluate(() => { window.NAVS = []; window.OPENED = {}; window._toggleMissedWarning(null); });
+  await sleep(2500);
+  check('with the panel open and the tab in view nothing navigates', (await navs()).length === 0 && (await state()).hash === SLA_HASH, await navs());
+  const footer = () => t.page.evaluate(() => (document.getElementById('_slaWatchRead') || {}).textContent || '');
+  check('the footer says the Pending list has not been read yet', /^ · watch: SLA \d\d:\d\d, Pending not read yet$/.test(await footer()), await footer());
+  check('the title counts the SLA list alone until then', (await title()) === `(2 missed, 1 in 15) ${OWN_TITLE}`, await title());
+
+  // Panel hidden: the Pending page is visited and the tab comes back.
+  await t.page.evaluate(() => window._toggleMinimizePanel());
+  check('with the panel hidden the Pending page is read', await waitFor(t.page, () => /Pending \d\d:\d\d$/.test((document.getElementById('_slaWatchRead') || {}).textContent || ''), null, 8000), await footer());
+  await home(SLA_HASH);
+  check('and the hash ends where it started, on the SLA table', (await state()).hash === SLA_HASH && (await state()).sla && (await navs()).slice(0, 2).join() === `#/Queue/PendingCustomerQueue,${SLA_HASH}`, { state: await state(), navs: await navs() });
+  check('the footer line shows both times', /^ · watch: SLA \d\d:\d\d, Pending \d\d:\d\d$/.test(await footer()), await footer());
+  check('a lead on both lists is counted once and the placeholder date is ignored', (await title()) === `(2 missed, 1 in 15) ${OWN_TITLE}` && (await notes()).length === 0, { title: await title(), notes: await notes() });
+  check('the visit is not a reload and opens no customer pop-up', await t.page.evaluate(() => !!document.getElementById('_slaBadge') && Object.keys(window.OPENED).length === 0));
+
+  // A Pending lead comes due while the tab sits on the SLA page.
+  await t.page.evaluate(() => { PENDING[0][10] = at(4); });
+  await waitFor(t.page, () => window.NOTES.length > 0, null, 8000);
+  await home(SLA_HASH);
+  let shown = await notes();
+  check('a Pending lead coming due is notified, and says which list', shown.length === 1 && shown[0].body === '1 lead due within 5 minutes (1 Pending). Urgent and not assigned: 4.', shown);
+  check('and is in the title', (await title()) === `(2 missed, 1 in 5 min, 1 in 15) ${OWN_TITLE}`, await title());
+  check('the tab is back on the SLA page', (await state()).hash === SLA_HASH && (await state()).sla, await state());
+  await sleep(2500);
+  check('it is notified once, however many visits follow', (await notes()).length === 1 && (await visits()) >= 3, { notes: await notes(), visits: await visits() });
+  check('no customer name is in the title or the notification', !['Pat', 'Pending Customers', 'Sam', 'Buyer'].some((n) => shown[0].body.includes(n)) && !(await title()).replace(OWN_TITLE, '').match(/[A-Z]/));
+
+  // Never while a customer pop-up is open.
+  await home(SLA_HASH);
+  await t.page.evaluate(() => openModal(0));
+  await sleep(1200);
+  let before = await visits();
+  await sleep(3000);
+  check('nothing navigates while a customer pop-up is open', (await visits()) === before && (await state()).hash === SLA_HASH, { before, after: await visits() });
+  await t.page.evaluate(() => document.querySelector('.modal .close').click());
+  check('and the visits carry on once it has closed', await waitFor(t.page, (n) => window.NAVS.filter((h) => h.includes('PendingCustomerQueue')).length > n, before, 8000));
+
+  // The owner touches the page while the tab is away.
+  await home(SLA_HASH);
+  await t.page.evaluate(() => { window.PENDING_DELAY = 6000; });
+  await waitFor(t.page, () => location.hash.includes('PendingCustomerQueue'), null, 8000);
+  await t.page.mouse.move(300, 300);
+  check('the tab comes back at once when the owner touches the page', await waitFor(t.page, (h) => location.hash === h, SLA_HASH, 1000) && await home(SLA_HASH), await state());
+
+  // A page that never loads: the visit gives up and comes back.
+  await t.page.evaluate(() => { window.__slaWatchTiming.peekMaxMs = 1500; });
+  await sleep(400);
+  await waitFor(t.page, () => location.hash.includes('PendingCustomerQueue'), null, 8000);
+  const awayAt = Date.now();
+  check('a visit that takes too long gives up and comes back', await waitFor(t.page, (h) => location.hash === h, SLA_HASH, 4000) && Date.now() - awayAt < 3500 && await home(SLA_HASH), Date.now() - awayAt);
+  check('and the last read of the Pending list still counts', (await title()) === `(2 missed, 1 in 5 min, 1 in 15) ${OWN_TITLE}`, await title());
+  await t.page.evaluate(() => { window.PENDING_DELAY = 0; window.__slaWatchTiming.peekMaxMs = 20000; });
+
+  // Panel back in view: no more visits. Tab hidden: they start again.
+  await home(SLA_HASH);
+  await t.page.evaluate(() => window._toggleMinimizePanel());
+  await sleep(1500);
+  await home(SLA_HASH);
+  before = await visits();
+  await sleep(3000);
+  check('with the panel back in view the visits stop', (await visits()) === before && (await state()).hash === SLA_HASH, { before, after: await visits() });
+  await t.page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); });
+  check('with the tab hidden the Pending page is read though the panel is open', await waitFor(t.page, (n) => window.NAVS.filter((h) => h.includes('PendingCustomerQueue')).length > n, before, 12000));
+  await t.page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); });
+  await home(SLA_HASH);
+  check('and the tab is on the SLA page when the owner comes back', (await state()).hash === SLA_HASH && (await state()).sla, await state());
+
+  // Off: the title is the page's own and nothing more is visited.
+  await t.page.evaluate(() => { window._toggleMinimizePanel(); });
+  await waitFor(t.page, () => location.hash.includes('PendingCustomerQueue'), null, 8000);
+  await t.page.evaluate(() => window._toggleMissedWarning(null));
+  await home(SLA_HASH);
+  before = await visits();
+  await sleep(2500);
+  check('turning the warning off mid visit comes back, restores the title and stops the visits', (await title()) === OWN_TITLE && (await visits()) === before && (await state()).hash === SLA_HASH && (await footer()) === '' && await t.page.evaluate(() => !window._slaMissedWatchInterval), { title: await title(), state: await state(), footer: await footer() });
+
+  // On again, then Clear & Stop.
+  await t.page.evaluate(() => window._toggleMissedWarning(null));
+  check('on again, the Pending page is read again', await waitFor(t.page, (n) => window.NAVS.filter((h) => h.includes('PendingCustomerQueue')).length > n, before, 8000));
+  await waitFor(t.page, (own) => document.title === `(2 missed, 1 in 5 min, 1 in 15) ${own}`, OWN_TITLE, 8000);
+  await t.page.evaluate(() => window._slaResetBookmarklet());
+  await home(SLA_HASH);
+  before = await visits();
+  await sleep(2500);
+  check('Clear & Stop restores the title and stops the visits', (await title()) === OWN_TITLE && (await visits()) === before && (await state()).hash === SLA_HASH && await t.page.evaluate(() => !window._slaMissedWatchInterval), { title: await title(), state: await state() });
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.context.close();
+
+  // The tab left on the Pending page: the SLA list is the one visited.
+  const p = await open(fakeNotifications('granted', 'scanMs: 60000, tickMs: 150, peekMs: 1000, idleMs: 300, emptyMs: 500'));
+  await p.page.evaluate((none) => {
+    window.PENDING = [['Site A', 'Citroen', 'Pat Pending', 'AB21CDE', 'pat@example.com', '07700900021', '', 'General', 'New', none, at(12), null]];
+    location.hash = '#/Queue/PendingCustomerQueue';
+  }, PLACEHOLDER);
+  await waitFor(p.page, () => document.querySelectorAll('#view th').length === 12, null, 4000);
+  await sleep(1500);
+  await p.page.evaluate(() => { window.NAVS = []; window.OPENED = {}; localStorage.setItem('_slaPanelState', 'visible'); window._toggleMinimizePanel(); window._toggleMissedWarning(null); });
+  check('on the Pending page the SLA list is read and the tab comes back', await waitFor(p.page, (own) => document.title === `(2 missed, 2 in 15) ${own}`, OWN_TITLE, 10000) && await waitFor(p.page, () => location.hash === '#/Queue/PendingCustomerQueue' && document.querySelectorAll('#view th').length === 12, null, 8000), { title: await p.page.title(), navs: await p.page.evaluate(() => window.NAVS) });
+  check('and no customer pop-up is opened on the way', await p.page.evaluate(() => Object.keys(window.OPENED).length === 0), await p.page.evaluate(() => window.OPENED));
+  check('no page errors', p.errors.length === 0, p.errors);
+  await p.context.close();
 }
 
 async function fairShare() {
@@ -848,6 +986,7 @@ async function bookingsToday() {
 const started = Date.now();
 try {
   await missedWarning();
+  await bothLists();
   await fairShare();
   await startMyDay();
   await rescue();

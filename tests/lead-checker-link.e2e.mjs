@@ -381,6 +381,200 @@ for (const workerOn of [true, false]) {
   await t.close();
 }
 
+// ------------------------------------------------------------------
+// 8. The small window. Work Tools, clicked on the Konnect Live tab SLA
+//    Manager opened, moves the Lead Checker into a small window and hands
+//    it the link. Playwright does not block pop-ups, so a blocked one is
+//    played by window.open returning nothing.
+// ------------------------------------------------------------------
+const workTools = readFileSync(join(here, '..', 'Work-Tools.js'), 'utf8');
+const SMALL_DONE = 'The Lead Checker is running in the small window.';
+async function openForWorkTools(options = {}) {
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+  await context.route('**/*', (route) => {
+    const url = route.request().url();
+    if (url.startsWith('https://carbot.ai/konnectlive')) return route.fulfill({ contentType: 'text/html', body: livePage });
+    if (url.startsWith('https://konnectonlineservices.co.uk')) return route.fulfill({ contentType: 'text/html', body: managerPage });
+    if (/^https:\/\/raw\.githubusercontent\.com\/.*\/Konnect-Lead-Checker\.js/.test(url)) return route.fulfill({ contentType: 'text/plain', headers: { 'access-control-allow-origin': '*' }, body: script });
+    return route.abort();
+  });
+  // Every Konnect Live page notes its window.open calls, and starts on the
+  // login page when the test asks for that.
+  await context.addInitScript(() => {
+    if (location.hostname !== 'carbot.ai') return;
+    const open = window.open.bind(window);
+    window.__opens = [];
+    window.open = (...args) => { window.__opens.push(args); return localStorage.getItem('_testBlockPopups') ? null : open(...args); };
+    if (localStorage.getItem('_testLoggedOut')) window.addEventListener('DOMContentLoaded', () => window.mock.logOut());
+  });
+  const errors = [];
+  context.on('page', (page) => page.on('pageerror', (e) => errors.push(e.message)));
+  const manager = await context.newPage();
+  await manager.goto('https://konnectonlineservices.co.uk/manager');
+  // Notes which window each ready message came from, as SLA Manager does.
+  await manager.evaluate(() => {
+    window.readyFrom = [];
+    window.addEventListener('message', (event) => {
+      if (!event.data || event.data.type !== 'workTools:ready') return;
+      window.lastSource = event.source;
+      window.readyFrom.push(event.source === window.live || event.source === window.live2 ? 'tab' : 'other');
+    });
+  });
+  const t = {
+    context, manager, errors,
+    openTab: async (name) => {
+      const [tab] = await Promise.all([context.waitForEvent('page'), manager.evaluate((n) => { window[n] = window.open('https://carbot.ai/konnectlive/'); }, name || 'live')]);
+      await tab.waitForLoadState();
+      return tab;
+    },
+    // The bookmark: runs Work Tools on the page and does not wait for it.
+    click: (page) => page.evaluate((code) => { Function(code)(); }, workTools),
+    note: (page) => page.evaluate(() => { const n = document.getElementById('_workToolsSmallNote'); return n ? n.textContent : null; }),
+    checker: (page) => page.evaluate(() => (window.__konnectLeadChecker ? (window.__konnectLeadChecker.getSession ? 'running' : 'login') : 'none')),
+    running: (page, timeout = 20000) => page.waitForFunction(() => !!(window.__konnectLeadChecker && window.__konnectLeadChecker.getSession), null, { timeout }).then(() => true, () => false),
+    msgs: (type) => manager.evaluate((x) => window.msgs.filter((m) => !x || m.type === `workTools:${x}`), type),
+    waitFor: async (type, test, timeout = 30000) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeout) {
+        const hit = (await t.msgs(type)).find((m) => !test || test(m));
+        if (hit) return hit;
+        await manager.waitForTimeout(100);
+      }
+      return null;
+    },
+    close: () => context.close()
+  };
+  return t;
+}
+
+// The usual path, then a second click, then a small window that reloaded.
+{
+  const t = await openForWorkTools();
+  const tab = await t.openTab();
+  // The tab's own close is held back a moment, so it can be looked at first.
+  await tab.evaluate(() => { const close = window.close.bind(window); window.close = () => { window.__closeAsked = true; setTimeout(close, 1500); }; });
+  const [small] = await Promise.all([t.context.waitForEvent('page'), t.click(tab)]);
+  check('the Lead Checker runs in the small window', await t.running(small), await t.checker(small).catch((e) => String(e)));
+  const opens = await tab.evaluate(() => window.__opens);
+  const features = (opens[0] || [])[2] || '';
+  check('one small window is asked for, 520 by 420 at the bottom left', opens.length === 1 && opens[0][1] === 'workToolsLiveSmall' && /popup=yes/.test(features) && /width=520,height=420/.test(features) && /left=0,/.test(features) && /top=\d+$/.test(features), opens);
+  check('the small window is on the same Konnect Live address and carries the name', /^https:\/\/carbot\.ai\/konnectlive\//.test(small.url()) && (await small.evaluate(() => window.name)) === 'workToolsLiveSmall', small.url());
+  await tab.waitForFunction(() => window.__closeAsked, null, { timeout: 10000 }).catch(() => {});
+  const left = await tab.evaluate(() => ({ asked: !!window.__closeAsked, checker: !!window.__konnectLeadChecker, panel: !!document.getElementById('_klcPanelHost'), badge: !!(document.getElementById('_klcNavItem') || document.getElementById('_klcBadge')), note: (document.getElementById('_workToolsSmallNote') || {}).textContent }));
+  check('the tab does not run the Lead Checker and says where it is', left.asked && !left.checker && !left.panel && !left.badge && left.note === SMALL_DONE, left);
+  if (!tab.isClosed()) await tab.waitForEvent('close', { timeout: 10000 }).catch(() => {});
+  check('the tab closes itself', tab.isClosed());
+  const ready = await t.waitFor('ready');
+  const from = await t.manager.evaluate(() => ({ list: window.readyFrom, tabClosed: window.live.closed, sourceOpen: !!window.lastSource && !window.lastSource.closed }));
+  check('ready reaches SLA Manager from the small window, not the tab', ready && ready.state === 'idle' && from.list.length > 0 && from.list.every((x) => x === 'other') && from.tabClosed && from.sourceOpen, from);
+  check('the small window shows the link', (await small.evaluate(() => document.getElementById('_klcPanelHost').shadowRoot.getElementById('linkLine').textContent)) === 'Konnect Live: linked, ready.');
+
+  // A batch sent to the window that said ready, as SLA Manager sends it.
+  await t.manager.evaluate((tsv) => window.lastSource.postMessage({ type: 'workTools:batch', id: 'sw1', kind: 'leads', tsv }, 'https://carbot.ai'), batch(3, 'sw'));
+  const received = await t.waitFor('received');
+  check('a batch sent to that window is received after the tab has gone', received && received.id === 'sw1' && received.rows === 3, received);
+  const ended = await t.waitFor('ended', (m) => m.id === 'sw1', 60000);
+  check('the batch runs to the end in the small window', ended && ended.reason === 'done' && (await small.evaluate(() => window.mock.searches.length)) === 3, ended);
+
+  // The window's size and place are kept for next time.
+  await small.evaluate(() => window.dispatchEvent(new Event('resize')));
+  const kept = await small.evaluate(() => ({ box: JSON.parse(localStorage.getItem('_klcSmallWindowBox') || 'null'), width: window.innerWidth, height: window.innerHeight }));
+  check('the small window keeps its size and place', kept.box && kept.box.width === kept.width && kept.box.height === kept.height && Number.isFinite(kept.box.left) && Number.isFinite(kept.box.top), kept);
+
+  // A second click, on a new tab from SLA Manager, only shows the window.
+  await small.evaluate(() => { window.__same = true; });
+  const tab2 = await t.openTab('live2');
+  const pagesBefore = t.context.pages().length;
+  await t.click(tab2);
+  await tab2.waitForFunction((text) => (document.getElementById('_workToolsSmallNote') || {}).textContent === text, SMALL_DONE, { timeout: 10000 }).catch(() => {});
+  await tab2.waitForTimeout(1200);
+  const second = { note: await t.note(tab2), pages: t.context.pages().length, same: await small.evaluate(() => window.__same === true && !!window.__konnectLeadChecker.getSession()), tabChecker: await t.checker(tab2), closed: tab2.isClosed() };
+  check('a second click finds the window that is running and leaves it alone', second.note === SMALL_DONE && second.pages === pagesBefore && second.same && second.tabChecker === 'none' && !second.closed, second);
+
+  // The small window reloaded and lost the Lead Checker: it is put in again.
+  await small.reload();
+  await small.waitForLoadState();
+  await t.manager.evaluate(() => { window.msgs = []; window.readyFrom = []; });
+  await t.click(tab2);
+  check('after a reload the Lead Checker is put into the small window again', await t.running(small), await t.checker(small));
+  const again = await t.waitFor('ready');
+  if (!tab2.isClosed()) await tab2.waitForEvent('close', { timeout: 10000 }).catch(() => {});
+  check('it is linked again and the tab closes', !!again && (await t.manager.evaluate(() => window.readyFrom.every((x) => x === 'other'))) && tab2.isClosed() && t.context.pages().length === 2, t.context.pages().length);
+
+  // The switch in the More menu.
+  const host = small.locator('#_klcPanelHost');
+  await small.evaluate(() => window.__konnectLeadChecker.focus());
+  await host.locator('#moreBtn').click();
+  check('More shows the small window as on', (await host.locator('#menuSmallWindow').textContent()).trim() === 'Small window: on');
+  await host.locator('#menuSmallWindow').click();
+  check('pressing it turns the small window off for the next click', (await host.locator('#menuSmallWindow').textContent()).trim() === 'Small window: off' && (await small.evaluate(() => localStorage.getItem('_klcSmallWindow'))) === 'off');
+  await host.locator('#menuSmallWindow').click();
+  check('and on again', (await small.evaluate(() => localStorage.getItem('_klcSmallWindow'))) === 'on' && (await host.locator('#menuSmallWindow').getAttribute('aria-checked')) === 'true');
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.close();
+}
+
+// Pop-up blocked: the tab runs the Lead Checker as before and says why.
+{
+  const t = await openForWorkTools();
+  const tab = await t.openTab();
+  await tab.evaluate(() => localStorage.setItem('_testBlockPopups', '1'));
+  await t.click(tab);
+  check('with the pop-up blocked the Lead Checker runs in the tab', await t.running(tab), await t.checker(tab));
+  await tab.waitForFunction(() => !!document.getElementById('_workToolsSmallNote'), null, { timeout: 5000 }).catch(() => {});
+  check('the tab says to allow pop-ups', /^Allow pop-ups for Konnect Live to use the small window/.test((await t.note(tab)) || ''), await t.note(tab));
+  const ready = await t.waitFor('ready');
+  check('the tab is linked as before', !!ready && (await t.manager.evaluate(() => window.readyFrom.every((x) => x === 'tab'))) && t.context.pages().length === 2 && !tab.isClosed(), t.context.pages().length);
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.close();
+}
+
+// Switched off, and a Konnect Live tab opened by hand: both as before.
+{
+  const t = await openForWorkTools();
+  const tab = await t.openTab();
+  await tab.evaluate(() => localStorage.setItem('_klcSmallWindow', 'off'));
+  await t.click(tab);
+  check('switched off: the Lead Checker runs in the tab', await t.running(tab), await t.checker(tab));
+  const off = { opens: await tab.evaluate(() => window.__opens.length), note: await t.note(tab), pages: t.context.pages().length, ready: !!(await t.waitFor('ready')) };
+  check('switched off: no window is opened, nothing is said, the link is the tab', off.opens === 0 && off.note === null && off.pages === 2 && off.ready && (await t.manager.evaluate(() => window.readyFrom.every((x) => x === 'tab'))), off);
+  const box = await tab.evaluate(() => [
+    window.WorkTools.smallWindowBox(null, { availLeft: 0, availTop: 25, availWidth: 1440, availHeight: 875 }),
+    window.WorkTools.smallWindowBox({ width: 5000, height: 50, left: -900, top: 99999 }, { availLeft: 0, availTop: 0, availWidth: 1280, availHeight: 800 }),
+    window.WorkTools.smallWindowBox({ width: 600, height: 500, left: 300, top: 200 }, { availLeft: 0, availTop: 0, availWidth: 1280, availHeight: 800 })
+  ]);
+  check('the window is placed bottom left by default, and a kept size is held on the screen', JSON.stringify(box) === JSON.stringify([{ width: 520, height: 420, left: 0, top: 480 }, { width: 1280, height: 300, left: 0, top: 500 }, { width: 600, height: 500, left: 300, top: 200 }]), box);
+
+  await tab.evaluate(() => localStorage.removeItem('_klcSmallWindow'));
+  const own = await t.context.newPage();
+  await own.goto('https://carbot.ai/konnectlive/');
+  await t.click(own);
+  check('opened by hand: the Lead Checker runs in that tab', await t.running(own), await t.checker(own));
+  check('opened by hand: no window is opened and nothing is said', (await own.evaluate(() => window.__opens.length)) === 0 && (await t.note(own)) === null && t.context.pages().length === 3, t.context.pages().length);
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.close();
+}
+
+// Konnect Live is on its login page: the tab stays until the small window
+// is logged in and the Lead Checker has started there.
+{
+  const t = await openForWorkTools();
+  const tab = await t.openTab();
+  await tab.evaluate(() => localStorage.setItem('_testLoggedOut', '1'));
+  const [small] = await Promise.all([t.context.waitForEvent('page'), t.click(tab)]);
+  await small.waitForFunction(() => !!window.__konnectLeadChecker, null, { timeout: 20000 }).catch(() => {});
+  await tab.waitForFunction(() => /Log in on the small window/.test((document.getElementById('_workToolsSmallNote') || {}).textContent || ''), null, { timeout: 10000 }).catch(() => {});
+  const waiting = { small: await t.checker(small), tab: await t.checker(tab), note: await t.note(tab), closed: tab.isClosed(), ready: (await t.msgs('ready')).length };
+  check('on the login page the small window waits for the login and the tab stays', waiting.small === 'login' && waiting.tab === 'none' && /^Log in on the small window/.test(waiting.note || '') && !waiting.closed && waiting.ready === 0, waiting);
+  await small.evaluate(() => { localStorage.removeItem('_testLoggedOut'); window.mock.allowLogin = true; document.getElementById('loginBtn').click(); });
+  check('after the login the Lead Checker starts in the small window', await t.running(small), await t.checker(small));
+  if (!tab.isClosed()) await tab.waitForEvent('close', { timeout: 10000 }).catch(() => {});
+  const ready = await t.waitFor('ready');
+  check('it is linked from the small window and the tab closes', !!ready && tab.isClosed() && (await t.manager.evaluate(() => window.readyFrom.every((x) => x === 'other'))), await t.manager.evaluate(() => window.readyFrom));
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.close();
+}
+
 await browser.close();
 console.log(failures === 0 ? '\nAll Lead Checker link tests passed.' : `\n${failures} Lead Checker link test(s) FAILED.`);
 process.exit(failures === 0 ? 0 : 1);

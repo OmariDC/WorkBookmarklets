@@ -50,8 +50,8 @@ const EXPECTED = ['CLASSIFIED', 'TARGET_CREATED_DATETIME_NOT_FOUND', 'SEARCH_NO_
 
 const browser = await chromium.launch();
 
-async function openLinked() {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1 });
+async function openLinked(viewport = { width: 1280, height: 900 }) {
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
   await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: 'https://carbot.ai' });
   await context.route('**/*', (route) => {
     const url = route.request().url();
@@ -511,6 +511,49 @@ const RUN_BUSY = 'The Lead Checker is checking a batch. Pause it or wait, then t
   const ended = await t.waitFor('ended', (m) => m.id === 'v2', 60000);
   check('the batch finishes with the same results as an unbroken run', ended && ended.reason === 'done' && JSON.stringify(await t.outcomes()) === JSON.stringify(EXPECTED), await t.outcomes());
   check('the verify was answered once', (await t.msgs('verified')).length === 1, await t.msgs('verified'));
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.close();
+}
+
+// A narrow window, as the small window Work Tools opens for Konnect Live:
+// a customer is still found, and the button that opens the panel can still
+// be reached. The mock carries Bootstrap's rule that hides the menu bar
+// item between 768 and 991 pixels wide.
+for (const width of [480, 800]) {
+  const t = await openLinked({ width, height: 420 });
+  const ended = await t.runToEnd(`n${width}`);
+  check(`${width} wide: the batch finishes with the usual outcomes`, ended && ended.reason === 'done' && JSON.stringify(await t.outcomes()) === JSON.stringify(EXPECTED), await t.outcomes());
+  check(`${width} wide: the customer was found and their lead read`, (await t.live.evaluate(() => window.mock.openedIds.length)) > 0 && (await t.outcomes())[0] === 'CLASSIFIED');
+  const fits = await t.live.evaluate(() => { const r = document.getElementById('_klcPanelHost').getBoundingClientRect(); return { left: r.left, right: r.right, bottom: r.bottom, width: window.innerWidth, height: window.innerHeight }; });
+  check(`${width} wide: the panel fits in the window`, fits.left >= 0 && fits.right <= fits.width && fits.bottom <= fits.height, fits);
+  await (await t.more('#minBtn')).click();
+  // The button is looked for where a click would land.
+  const button = () => t.live.evaluate(() => {
+    const el = [document.querySelector('#_klcNavItem a'), document.getElementById('_klcBadge')].find((e) => { if (!e) return false; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.right <= window.innerWidth && r.top >= 0; });
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return { id: el.id || 'navItem', clickable: !!top && (top === el || el.contains(top)), x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  });
+  await t.live.waitForFunction(() => !!document.getElementById('_klcBadge') || !!document.querySelector('#_klcNavItem a'), null, { timeout: 5000 }).catch(() => {});
+  const found = await button();
+  check(`${width} wide: with the panel hidden its button is in view`, found && found.clickable && (width !== 800 || found.id === '_klcBadge'), found);
+  if (found) await t.live.mouse.click(found.x, found.y);
+  check(`${width} wide: the button opens the panel again`, await t.live.evaluate(() => document.getElementById('_klcPanelHost').style.display === 'block'));
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.close();
+}
+
+// A wide window made narrow while the panel is hidden: the button moves out
+// of the menu bar, and back when there is room again.
+{
+  const t = await openLinked();
+  await (await t.more('#minBtn')).click();
+  check('wide: the button is in the menu bar', await t.live.evaluate(() => !!document.querySelector('#_klcNavItem a') && !document.getElementById('_klcBadge')));
+  await t.live.setViewportSize({ width: 800, height: 420 });
+  check('made narrow: the floating button takes over', await t.live.waitForFunction(() => { const b = document.getElementById('_klcBadge'); return !!b && b.getBoundingClientRect().width > 0 && !document.getElementById('_klcNavItem'); }, null, { timeout: 8000 }).then(() => true, () => false));
+  await t.live.setViewportSize({ width: 1280, height: 900 });
+  check('made wide again: the button goes back into the menu bar', await t.live.waitForFunction(() => !!document.querySelector('#_klcNavItem a') && !document.getElementById('_klcBadge'), null, { timeout: 8000 }).then(() => true, () => false));
   check('no page errors', t.errors.length === 0, t.errors);
   await t.close();
 }

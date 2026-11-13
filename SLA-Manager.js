@@ -266,6 +266,12 @@ let refreshingLeads = false;
 // Clear Queue, the Queue check, the badge's queue scan and the scan after an
 // assign run.
 let navigating = false;
+// Set while the missed lead warning has the tab on the other lead page for a
+// moment, reading its table.
+let peeking = false;
+// The warning's table-only copy of each lead page: { leads, at }.
+const watchSnapshots = { sla: null, pending: null };
+const WATCH_READ_ID = '_slaWatchRead';
 // One guard for everything that scans, assigns or navigates, so two of them
 // never run over each other. Returns why the panel is busy, or null.
 function busyReason() {
@@ -274,6 +280,7 @@ if (extracting) return 'the leads are still loading';
 if (runningMorningChecks) return 'the morning checks are running';
 if (refreshingLeads) return 'the leads are being refreshed';
 if (navigating) return 'the agent queues are being read';
+if (peeking) return 'the other list is being read for the warning';
 return null;
 }
 function refuseIfBusy() {
@@ -760,7 +767,9 @@ removeStoredKey(AGENT_QUEUE_SNAPSHOT_KEY);
 // slightly greyer row. This is the one place that marker is read: if
 // Konnect changes how a done row looks, change it here.
 function isQueueRowDone(row) {
-return /background-color:\s*rgb\(244,\s*244,\s*244\)/.test(row.getAttribute('style') || '');
+if (/background-color:\s*rgb\(244,\s*244,\s*244\)/.test(row.getAttribute('style') || '')) return true;
+// A done row also shows the time it was done; a row still to do shows none.
+return Array.from(row.querySelectorAll('span')).some((el) => /^\d{1,2}:\d{2}$/.test((el.textContent || '').trim()));
 }
 
 // Pure. A short fingerprint of a queue row's customer, so the same done row
@@ -1302,6 +1311,12 @@ function findSlaPageHash() {
 const link = Array.from(document.querySelectorAll('a[href^="#/Queue/"]'))
 .find((a) => /leads pending sla/i.test(a.textContent || ''));
 return (link && link.getAttribute('href')) || SLA_PAGE_HASH;
+}
+const PENDING_PAGE_HASH = '#/Queue/PendingCustomerQueue';
+function findPendingPageHash() {
+const link = Array.from(document.querySelectorAll('a[href^="#/Queue/"]'))
+.find((a) => /^\s*pending customers\s*$/i.test(a.textContent || ''));
+return (link && link.getAttribute('href')) || PENDING_PAGE_HASH;
 }
 
 async function waitForSlaPage(timeout = 15000) {
@@ -6863,7 +6878,7 @@ ${renderMoreItem('sort', 'Sort by Lead Checker category', 'window._toggleLeadChe
 ${sizeItems}
 ${renderMoreItem('arrowUp', 'Back to top', `document.getElementById('${PANEL_ID}').querySelector('.panelContent').scrollTop = 0`)}
 ${renderMoreItem('list', 'List only view', 'window._toggleZenMode()', { ...needsLeads, state: zen ? 'on' : 'off', title: needsLeads.title || 'Hides Overview, Assign, Filters and Today so more leads fit' })}
-${renderMoreItem('bell', 'Warn me about leads going missed', 'window._toggleMissedWarning(this)', { state: isMissedWarningOn() ? 'on' : 'off', title: 'Counts leads not done yet, assigned or not, that are missed, due within 5 minutes and due within 15 in the tab title, with a desktop notification if the browser allows it. The SLA list is scanned again every 2 minutes while this is on' })}
+${renderMoreItem('bell', 'Warn me about leads going missed', 'window._toggleMissedWarning(this)', { state: isMissedWarningOn() ? 'on' : 'off', title: 'Counts leads not done yet, assigned or not, that are missed, due within 5 minutes and due within 15 in the tab title, with a desktop notification if the browser allows it. The SLA and Pending lists both count. The list in view is scanned again every 2 minutes while this is on, and the other is read while this tab or the panel is out of view' })}
 ${sep}
 ${renderMoreItem('refresh', 'Scan again', 'window._refreshLeadsAndPanel()', needsLeads)}
 ${renderMoreItem('user', 'Refresh agents', 'window._refreshAssignSection()', needsAssign)}
@@ -7196,7 +7211,7 @@ return `${count} lead${count === 1 ? '' : 's'}`;
 function leadsFooterText(customers, newCount, removedCount) {
 const assigned = customers.filter((c) => c.assigned).length;
 const changes = [newCount > 0 ? `${newCount} new` : '', removedCount > 0 ? `${removedCount} gone` : ''].filter(Boolean).map((part) => ` &middot; ${part}`).join('');
-return `${leadCountText(customers.length)} &middot; ${assigned} assigned &middot; ${escapeHtml(lastScannedLabel())}${changes}`;
+return `${leadCountText(customers.length)} &middot; ${assigned} assigned &middot; ${escapeHtml(lastScannedLabel())}${changes}<span id="${WATCH_READ_ID}" title="When the missed lead warning last read each list. The list this tab is not on is read only while the tab or this panel is out of view.">${escapeHtml(watchReadLine())}</span>`;
 }
 
 // Pass invalidateCache false for re-renders that only change Queue by Agent
@@ -8301,8 +8316,9 @@ initAssignSectionWheels();
 // due within 15, and a desktop notification says when more join each. A
 // lead is counted once, at its most urgent. Counts only, never
 // a customer's name. Off unless switched on in More. While it is on the
-// SLA list is scanned again every 2 minutes, since nothing else keeps it
-// fresh.
+// list in view is scanned again every 2 minutes, since nothing else keeps it
+// fresh, and both lead pages count: the one this tab is not on is read by
+// going to it and straight back while the tab or the panel is out of view.
 // ===================================================================
 
 const MISSED_WARNING_KEY = '_slaMissedWarning';
@@ -8311,11 +8327,19 @@ const MISSED_URGENT_MINUTES = 5;
 // scanMs: how often the list is scanned again. tickMs: how often the counts
 // are brought up to date in between, as leads come due with time alone. A
 // test may shorten these through window.__slaWatchTiming.
-const WATCH_TIMING = { scanMs: 120000, tickMs: 15000 };
+// peekMs: how often the other lead page is visited. peekMaxMs: when a visit
+// gives up. idleMs: how long the owner must have left a tab in view alone.
+// emptyMs: how long a table with no rows is waited on before it is believed.
+const WATCH_TIMING = { scanMs: 120000, tickMs: 15000, peekMs: 120000, peekMaxMs: 20000, idleMs: 30000, emptyMs: 4000, quietMs: 400 };
 function watchTiming() {
 return { ...WATCH_TIMING, ...(window.__slaWatchTiming || {}) };
 }
 let lastWatchScanAt = 0;
+let lastPeekAt = 0;
+let lastOwnerActivityAt = 0;
+// Set to end a visit to the other page early; peekWake makes its wait look.
+let peekStopped = false;
+let peekWake = null;
 // Leads already warned about, kept on window so clicking the bookmark again
 // does not warn about them twice.
 const missedWarned = window.__slaMissedWarned || (window.__slaMissedWarned = { due: {}, soon: {}, missed: {} });
@@ -8352,19 +8376,25 @@ return parts.length ? `(${parts.join(', ')}) ` : '';
 
 // Pure. One sentence for the leads newly due within 15 minutes or missed in
 // this scan, and one for those newly within 5.
-function missedNotificationText(dueCount, missedCount, waitingCount) {
+function missedNotificationText(dueCount, missedCount, waitingCount, split = '') {
 const leads = (n) => `${n} lead${n === 1 ? '' : 's'}`;
 const parts = [];
 if (dueCount) parts.push(`${leads(dueCount)} due within ${MISSED_WARNING_MINUTES} minutes`);
 if (missedCount) parts.push(parts.length ? `${missedCount} missed` : `${leads(missedCount)} missed`);
-return parts.length ? `${parts.join(', ')}.${waitingText(waitingCount)}` : '';
+return parts.length ? `${parts.join(', ')}${split}.${waitingText(waitingCount)}` : '';
+}
+// Pure. " (1 SLA, 1 Pending)": which list the leads in a notification are
+// from. Nothing when they are all SLA leads.
+function listSplitText(slaCount, pendingCount) {
+if (!pendingCount) return '';
+return ` (${[slaCount ? `${slaCount} SLA` : '', `${pendingCount} Pending`].filter(Boolean).join(', ')})`;
 }
 // Pure. How many of all the urgent leads nobody holds yet.
 function waitingText(waitingCount) {
 return waitingCount ? ` Urgent and not assigned: ${waitingCount}.` : ' All the urgent leads are with agents.';
 }
-function urgentNotificationText(soonCount, waitingCount) {
-return soonCount ? `${soonCount} lead${soonCount === 1 ? '' : 's'} due within ${MISSED_URGENT_MINUTES} minutes.${waitingText(waitingCount)}` : '';
+function urgentNotificationText(soonCount, waitingCount, split = '') {
+return soonCount ? `${soonCount} lead${soonCount === 1 ? '' : 's'} due within ${MISSED_URGENT_MINUTES} minutes${split}.${waitingText(waitingCount)}` : '';
 }
 
 // Pure. Which leads have not been warned about yet, and the record once
@@ -8381,7 +8411,7 @@ const missed = { ...was.missed };
 keys.due.forEach((k) => { due[k] = 1; });
 keys.soon.forEach((k) => { soon[k] = 1; due[k] = 1; });
 keys.missed.forEach((k) => { missed[k] = 1; });
-return { newDue: newDue.length, newSoon: newSoon.length, newMissed: newMissed.length, due, soon, missed };
+return { newDue: newDue.length, newSoon: newSoon.length, newMissed: newMissed.length, newKeys: { due: newDue, soon: newSoon, missed: newMissed }, due, soon, missed };
 }
 
 // The page's own title is whatever follows our counts, so a title Konnect
@@ -8408,57 +8438,323 @@ return false;
 }
 }
 
-// The SLA table as it stands when this tab is on it and nothing is using
-// it; otherwise the leads from the last scan, which still come due with time.
+// Pure. A due time the warning can trust. Konnect shows a date in the year
+// 0000 where there is none, which must not read as long overdue.
+function watchDueDate(value) {
+if (!value) return null;
+const date = new Date(value);
+return Number.isNaN(date.getTime()) || date.getFullYear() < 2000 ? null : date;
+}
+
+// Pure. What the warning keeps of a lead from either list. A Pending lead is
+// due at its Next Action Date. `same` is how a lead on both lists is known.
+function watchLead(lead, list) {
+const pending = list === PAGE_PENDING;
+const same = [lead.name, pending ? lead.reg : lead.registration, lead.campaign].map((v) => String(v || '').trim().toLowerCase().replace(/\s+/g, ' ')).join('||');
+return { key: pending ? `pending||${lead.key}` : lead.key, slaDate: watchDueDate(pending ? lead.nextActionDate : lead.slaDate), status: pending ? '' : lead.status, assigned: !!lead.assigned, list, same };
+}
+
+// Pure. Both lists as one, a lead on both counted once at its more urgent.
+function mergeWatchedLeads(slaLeads, pendingLeads) {
+const urgency = (l) => (l.status === 'Missed' ? -Infinity : (l.slaDate ? new Date(l.slaDate).getTime() : Infinity));
+const merged = slaLeads.slice();
+const indexBySame = new Map(merged.map((l, i) => [l.same, i]));
+pendingLeads.forEach((p) => {
+const i = indexBySame.get(p.same);
+if (i === undefined) merged.push(p);
+else if (urgency(p) < urgency(merged[i])) merged[i] = p;
+});
+return merged;
+}
+
+// Pure. "SLA 12:14, Pending 12:15", with its age once a read is getting old.
+function watchReadText(snapshots, now) {
+const part = (label, snapshot) => {
+if (!snapshot) return `${label} not read yet`;
+const minutes = Math.floor((now - snapshot.at) / 60000);
+const age = minutes >= 60 ? ` (${Math.floor(minutes / 60)} h old)` : (minutes >= 5 ? ` (${minutes} min old)` : '');
+return `${label} ${formatTimeForInput(new Date(snapshot.at))}${age}`;
+};
+return `${part('SLA', snapshots.sla)}, ${part('Pending', snapshots.pending)}`;
+}
+
+// The footer's note of when the warning last read each list.
+function watchReadLine() {
+if (!isMissedWarningOn() || !window._slaMissedWatchInterval) return '';
+return ` · watch: ${watchReadText(watchSnapshots, Date.now())}`;
+}
+function updateWatchReadLine() {
+const el = document.getElementById(WATCH_READ_ID);
+if (!el) return;
+const text = watchReadLine();
+if (el.textContent !== text) el.textContent = text;
+}
+
+// The table this tab is on, as it stands, when nothing is using it.
+function readPageInView() {
+if (busyReason()) return;
+const pageType = detectPageType();
+if (pageType === PAGE_SLA) watchSnapshots.sla = { leads: collectAssignableLeads().map((l) => watchLead(l, PAGE_SLA)), at: Date.now() };
+else if (pageType === PAGE_PENDING) watchSnapshots.pending = { leads: collectPendingCustomers().map((l) => watchLead(l, PAGE_PENDING)), at: Date.now() };
+}
+
+// Both lists: each page's last table read, or the leads from the last scan
+// where the warning has not read that page yet. They still come due with time.
 function watchedLeads() {
-if (!busyReason() && detectPageType() === PAGE_SLA) return collectAssignableLeads();
-return currentCustomers;
+readPageInView();
+const sla = watchSnapshots.sla ? watchSnapshots.sla.leads : currentCustomers.map((l) => watchLead(l, PAGE_SLA));
+const pending = watchSnapshots.pending ? watchSnapshots.pending.leads : currentPendingCustomers.map((l) => watchLead(l, PAGE_PENDING));
+return mergeWatchedLeads(sla, pending);
 }
 
 function updateMissedWarning() {
 if (!isMissedWarningOn()) return;
-const keys = missedWarningKeys(watchedLeads(), Date.now());
+const leads = watchedLeads();
+const keys = missedWarningKeys(leads, Date.now());
 setTitlePrefix(missedTitlePrefix(keys.missed.length, keys.soon.length, keys.due.length));
 const fresh = newMissedWarnings(keys, missedWarned);
 missedWarned.due = fresh.due;
 missedWarned.soon = fresh.soon;
 missedWarned.missed = fresh.missed;
+updateWatchReadLine();
 // With the panel in view the tiles already say it.
 if (!isPanelOutOfView()) return;
 const waiting = new Set(keys.waiting);
-showMissedNotification(urgentNotificationText(fresh.newSoon, waiting.size), 'sla-manager-due-5');
-showMissedNotification(missedNotificationText(fresh.newDue, fresh.newMissed, waiting.size), 'sla-manager-due-15');
+const listOf = new Map(leads.map((l) => [l.key, l.list]));
+const split = (newKeys) => {
+const pendingCount = newKeys.filter((k) => listOf.get(k) === PAGE_PENDING).length;
+return listSplitText(newKeys.length - pendingCount, pendingCount);
+};
+showMissedNotification(urgentNotificationText(fresh.newSoon, waiting.size, split(fresh.newKeys.soon)), 'sla-manager-due-5');
+showMissedNotification(missedNotificationText(fresh.newDue, fresh.newMissed, waiting.size, split([...fresh.newKeys.due, ...fresh.newKeys.missed])), 'sla-manager-due-15');
 }
 
 // Not while anything else is scanning, assigning, checking or sending, a
 // customer pop-up is open, or the user is in the More menu or a drop-down.
-function canWatchScan() {
+function canWatchWork() {
 if (busyReason() || dayRun.running || rescue.running || currentPanelMode === 'morningChecks') return false;
 if (findDetailModal()) return false;
 if (liveLink.sent || liveLink.queue.some((b) => b.from === 'manager')) return false;
 const menu = document.getElementById('_slaMoreMenu');
-if ((menu && !menu.hidden) || isHoldingPanelInput()) return false;
-return detectPageType() === PAGE_SLA;
+return !((menu && !menu.hidden) || isHoldingPanelInput());
+}
+function canWatchScan() {
+return canWatchWork() && !!detectPageType();
+}
+
+// The owner is part way through something on the page that leaving it would
+// lose: a text box or list has the cursor, or a menu or dialog is open. A
+// box in our own panel survives the visit, so it only counts in view.
+function isOwnerMidAction() {
+const active = document.activeElement;
+const inControl = !!active && typeof active.matches === 'function' && active.matches('input, textarea, select, [contenteditable=""], [contenteditable="true"]');
+if (inControl && (!document.hidden || !(panelElement && panelElement.contains(active)))) return true;
+return !!document.querySelector('.dropdown.open, .btn-group.open, .dropdown-menu.show, .modal-backdrop, [role="dialog"]');
+}
+
+// The other page is only visited where the owner will not see it happen:
+// the tab is hidden, or the panel is and the tab has been left alone.
+function canPeekOtherPage() {
+if (!canWatchWork() || isOwnerMidAction() || !detectPageType()) return false;
+if (document.hidden) return true;
+const panelShowing = !!panelElement && localStorage.getItem(PANEL_STATE_KEY) !== 'hidden';
+return !panelShowing && Date.now() - lastOwnerActivityAt >= watchTiming().idleMs;
+}
+
+function endPeekEarly() {
+peekStopped = true;
+if (peekWake) peekWake();
+}
+// The tool's own made-up events are not the owner.
+function onOwnerActivity(event) {
+if (event && event.isTrusted === false) return;
+lastOwnerActivityAt = Date.now();
+if (peeking) endPeekEarly();
+}
+function onWatchVisibility() {
+if (!document.hidden) onOwnerActivity();
+}
+// Kept on window so clicking the bookmark again takes the old listeners off.
+function listenForOwner(on) {
+if (window.__slaWatchUnlisten) { window.__slaWatchUnlisten(); window.__slaWatchUnlisten = null; }
+if (!on || typeof document.addEventListener !== 'function') return;
+const types = ['mousedown', 'mousemove', 'keydown', 'wheel', 'touchstart'];
+const options = { capture: true, passive: true };
+types.forEach((type) => document.addEventListener(type, onOwnerActivity, options));
+document.addEventListener('visibilitychange', onWatchVisibility);
+window.__slaWatchUnlisten = () => {
+types.forEach((type) => document.removeEventListener(type, onOwnerActivity, options));
+document.removeEventListener('visibilitychange', onWatchVisibility);
+};
+}
+
+// Waits for test() to hold. It looks whenever the page changes as well as on
+// a timer, and the deadline is by the clock, because a hidden tab's timers
+// run late. Gives null at the deadline, or when the visit is ended early.
+function waitForWatch(test, deadline, ignoreStop) {
+return new Promise((resolve) => {
+let timer = null;
+let done = false;
+const observer = new MutationObserver(() => look());
+const finish = (value) => {
+done = true;
+clearTimeout(timer);
+observer.disconnect();
+if (peekWake === look) peekWake = null;
+resolve(value);
+};
+function look() {
+if (done) return;
+if (!ignoreStop && peekStopped) { finish(null); return; }
+let value = null;
+try { value = test(); } catch (error) { value = null; }
+if (value) { finish(value); return; }
+if (Date.now() >= deadline) { finish(null); return; }
+clearTimeout(timer);
+timer = setTimeout(look, Math.max(20, Math.min(200, deadline - Date.now())));
+}
+peekWake = look;
+observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+look();
+});
+}
+
+// One turn of the page's own work. Not a timer, so a hidden tab does not
+// hold it back.
+function watchYield() {
+return new Promise((resolve) => {
+if (typeof MessageChannel === 'undefined') { setTimeout(resolve, 0); return; }
+const channel = new MessageChannel();
+channel.port1.onmessage = () => { channel.port1.close(); resolve(); };
+channel.port2.postMessage(0);
+});
+}
+
+// The count in the Pending page's heading, or null where it cannot be read.
+const PENDING_COUNT_PATTERN = new RegExp('Pending Customers\\s*-\\s*(\\d+)', 'i');
+function readPendingPageCount() {
+const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+let node = walker.nextNode();
+for (let seen = 0; node && seen < 5000; seen++, node = walker.nextNode()) {
+const match = PENDING_COUNT_PATTERN.exec(node.nodeValue || '');
+const parent = node.parentElement;
+if (match && parent && !/^(SCRIPT|STYLE)$/.test(parent.tagName) && !(panelElement && panelElement.contains(parent))) return Number(match[1]);
+}
+return null;
+}
+
+// Waits until the given lead page's table is showing with its rows in. A
+// table with no rows is believed when the page's own count says none, or
+// after emptyMs where there is no count to read.
+async function waitForListTable(pageType, deadline, ignoreStop) {
+const timing = watchTiming();
+const read = () => (pageType === PAGE_PENDING ? collectPendingCustomers() : collectAssignableLeads());
+let shownAt = 0;
+const loaded = () => {
+if (detectPageType() !== pageType) { shownAt = 0; return false; }
+if (!shownAt) shownAt = Date.now();
+const icon = findNativeLeadsRefreshIcon();
+if (icon && icon.classList.contains('fa-spin')) return false;
+if (read().length > 0) return true;
+const count = pageType === PAGE_PENDING ? readPendingPageCount() : null;
+return count === 0 || (count === null && Date.now() - shownAt >= timing.emptyMs);
+};
+for (;;) {
+if (!(await waitForWatch(loaded, deadline, ignoreStop))) return false;
+// The rows must still be the same after a pause before they are read.
+const before = read().length;
+if (document.hidden) { await watchYield(); await watchYield(); } else await sleep(timing.quietMs);
+if (!ignoreStop && peekStopped) return false;
+if (loaded() && read().length === before) return true;
+if (Date.now() >= deadline) return false;
+}
+}
+
+// A hash change within the page, never a reload. Replaces the history entry
+// so the visits do not pile up behind the Back button.
+function goToHashQuietly(hash) {
+try { if (hash.length > 1) window.location.replace(hash); } catch (error) { /* set below */ }
+if (window.location.hash !== hash) window.location.hash = hash;
+}
+
+// Reads the lead page this tab is not on: goes to it, reads its table only
+// and comes straight back to the hash the owner was on. Comes back at once
+// if the owner returns or touches the page, and gives up at peekMaxMs.
+async function peekOtherPage() {
+const home = detectPageType();
+if (!home) return;
+const other = home === PAGE_SLA ? PAGE_PENDING : PAGE_SLA;
+const homeHash = window.location.hash;
+const awayHash = other === PAGE_SLA ? findSlaPageHash() : findPendingPageHash();
+if (homeHash === awayHash) return;
+const deadline = Date.now() + watchTiming().peekMaxMs;
+const scroll = [window.scrollX, window.scrollY];
+const cacheBefore = cachedLeadsSnapshot;
+let leads = null;
+peeking = true;
+peekStopped = false;
+try {
+goToHashQuietly(awayHash);
+if (await waitForListTable(other, deadline, false)) {
+leads = (other === PAGE_PENDING ? collectPendingCustomers() : collectAssignableLeads()).map((l) => watchLead(l, other));
+}
+} catch (error) {
+console.warn('[SLA Manager] The other list could not be read for the missed lead warning:', error && error.message);
+} finally {
+try {
+// A hash that is no longer ours means the owner has gone somewhere
+// themselves, and that is where they stay.
+if (window.location.hash === awayHash) {
+goToHashQuietly(homeHash);
+await waitForListTable(home, Date.now() + 8000, true);
+if (typeof window.scrollTo === 'function') window.scrollTo(scroll[0], scroll[1]);
+}
+// Anything the panel drew while away was drawn from the wrong table.
+if (cachedLeadsSnapshot !== cacheBefore && window.location.hash === homeHash) {
+invalidateLeadsCache();
+redrawLeadsPanel();
+}
+} catch (error) {
+console.warn('[SLA Manager] The page did not settle after reading the other list:', error && error.message);
+} finally {
+peeking = false;
+}
+}
+if (leads && window._slaMissedWatchInterval) watchSnapshots[other] = { leads, at: Date.now() };
 }
 
 async function missedWatchTick() {
 if (!isMissedWarningOn()) { stopMissedWatch(); return; }
-if (Date.now() - lastWatchScanAt >= watchTiming().scanMs && canWatchScan()) {
+const timing = watchTiming();
+if (Date.now() - lastWatchScanAt >= timing.scanMs && canWatchScan()) {
 lastWatchScanAt = Date.now();
 try { await window._refreshLeadsAndPanel({ quiet: true }); } catch (error) { console.warn('[SLA Manager] The scan for the missed lead warning failed:', error && error.message); }
 if (!busyReason() && detectPageType() === PAGE_SLA) followAssignments(PAGE_SLA, collectAssignableLeads());
 }
-updateMissedWarning();
+if (window._slaMissedWatchInterval && Date.now() - lastPeekAt >= timing.peekMs && canPeekOtherPage()) {
+lastPeekAt = Date.now();
+await peekOtherPage();
+}
+// Not once Clear & Stop has ended the watch part way through a tick.
+if (window._slaMissedWatchInterval) updateMissedWarning();
 }
 
 function stopMissedWatch() {
 clearInterval(window._slaMissedWatchInterval);
 window._slaMissedWatchInterval = null;
+endPeekEarly();
+listenForOwner(false);
+watchSnapshots.sla = null;
+watchSnapshots.pending = null;
+updateWatchReadLine();
 }
 
 function startMissedWatch() {
 stopMissedWatch();
 lastWatchScanAt = Date.now();
+lastPeekAt = 0;
+lastOwnerActivityAt = Date.now();
+listenForOwner(true);
 window._slaMissedWatchInterval = setInterval(missedWatchTick, watchTiming().tickMs);
 updateMissedWarning();
 }
@@ -8499,6 +8795,23 @@ if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
 };
 const now = Date.now();
 const lead = (key, mins, over) => ({ key, slaDate: mins === null ? null : new Date(now + mins * 60000), status: 'Pending', assigned: false, ...over });
+const pendingRow = (name, nextActionDate, over) => ({ key: `${name}||AB12CDE||General||New||x`, name, reg: 'AB12CDE', campaign: 'General', nextActionDate, assigned: false, ...over });
+const slaRow = (name, mins, over) => ({ key: `${name}||AB12CDE||Web||General`, name, registration: 'AB12CDE', campaign: 'General', slaDate: new Date(now + mins * 60000), status: 'Pending', assigned: false, ...over });
+check('the placeholder date is never a due time', [watchDueDate(parseKonnectDate('Sun, 31 Dec 0000 23:58')), watchDueDate(null), watchDueDate('nonsense'), !!watchDueDate(parseKonnectDate('Fri, 13 Nov 2026 12:24'))], [null, null, null, true]);
+const pendingLead = watchLead(pendingRow('Jo Example', new Date(now + 4 * 60000), { assigned: true }), PAGE_PENDING);
+check('a Pending lead is due at its Next Action Date, under its own key', [pendingLead.key, pendingLead.list, pendingLead.assigned, pendingLead.status, new Date(pendingLead.slaDate).getTime()], ['pending||Jo Example||AB12CDE||General||New||x', PAGE_PENDING, true, '', now + 4 * 60000]);
+check('a Pending lead with the placeholder date has no due time', watchLead(pendingRow('Jo Example', parseKonnectDate('Sun, 31 Dec 0000 23:58')), PAGE_PENDING).slaDate, null);
+const both = mergeWatchedLeads(
+[watchLead(slaRow('Jo Example', 10), PAGE_SLA), watchLead(slaRow('Al Sample', 3), PAGE_SLA)],
+[watchLead(pendingRow('jo  example', new Date(now + 2 * 60000)), PAGE_PENDING), watchLead(pendingRow('Al Sample', new Date(now + 30 * 60000)), PAGE_PENDING), watchLead(pendingRow('Di Other', new Date(now - 60000)), PAGE_PENDING)]);
+check('a lead on both lists is counted once, at its more urgent', both.map((l) => `${l.list}:${l.same.split('||')[0]}`), ['pending:jo example', 'sla:al sample', 'pending:di other']);
+const bothKeys = missedWarningKeys(both, now);
+check('and the counts are over both lists', [bothKeys.missed.length, bothKeys.soon.length, bothKeys.due.length], [1, 2, 0]);
+check('which list a notification is from', [listSplitText(2, 0), listSplitText(1, 1), listSplitText(0, 2)], ['', ' (1 SLA, 1 Pending)', ' (2 Pending)']);
+check('the 5 minute notification across both lists', urgentNotificationText(2, 1, listSplitText(1, 1)), '2 leads due within 5 minutes (1 SLA, 1 Pending). Urgent and not assigned: 1.');
+check('the 15 minute notification across both lists', missedNotificationText(1, 1, 2, listSplitText(0, 2)), '1 lead due within 15 minutes, 1 missed (2 Pending). Urgent and not assigned: 2.');
+const readAt = new Date(2026, 10, 13, 12, 14).getTime();
+check('when each list was read', [watchReadText({ sla: { at: readAt }, pending: { at: readAt + 60000 } }, readAt + 120000), watchReadText({ sla: { at: readAt }, pending: null }, readAt + 9 * 60000), watchReadText({ sla: null, pending: { at: readAt } }, readAt + 125 * 60000)], ['SLA 12:14, Pending 12:15', 'SLA 12:14 (9 min old), Pending not read yet', 'SLA not read yet, Pending 12:14 (2 h old)']);
 const leads = [
 lead('a', -20, { status: 'Missed' }), lead('b', -1), lead('c', 4), lead('d', 15), lead('e', 16),
 lead('f', 3, { assigned: true }), lead('g', -30, { status: 'Missed', assigned: true }), lead('h', null), lead('i', 6)

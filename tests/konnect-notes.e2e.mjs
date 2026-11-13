@@ -705,13 +705,13 @@ async function ownerHelpers() {
 
   for (const [word, want] of [['ring1', 'No Answer - No Message Left'], ['eng1', 'No Answer - No Message Left'], ['rf1', 'No Answer - No Message Left'],
     ['mbf1', 'No Answer - No Message Left'], ['dvm1', 'No Answer - No Message Left'], ['lfe', 'No Answer - No Message Left'], ['book', 'No Answer - Message Left'],
-    ['ni', '(Select a Call Outcome)'], ['eo', '(Select a Call Outcome)'], ['ec', '(Select a Call Outcome)'], ['es', '(Select a Call Outcome)']]) {
+    ['eo', 'Update Outcomes (No Call Made)'], ['ni', '(Select a Call Outcome)'], ['ec', '(Select a Call Outcome)'], ['es', '(Select a Call Outcome)']]) {
     page = await fresh({ owner: true });
     await typeNote(page, word);
     now = await outcome(page);
     check(`owner: "${word}" gives ${want}`, now.text === want && (await page.inputValue('#callA')).trim() !== word, [now, await page.inputValue('#callA')]);
   }
-  check('owner: Update Outcomes (No Call Made) is never chosen by a note', now.text !== 'Update Outcomes (No Call Made)');
+  check('owner: Update Outcomes (No Call Made) is not chosen by a note that is not Email Only', now.text !== 'Update Outcomes (No Call Made)');
 
   page = await fresh({ owner: true, before: () => {
     const select = document.querySelector('#callOutcome');
@@ -1182,6 +1182,128 @@ async function pxOnAnotherLead() {
   check('no page errors on the part exchange runs', page.errors.length === 0, page.errors);
 }
 
+// An Email Only note a person writes sets the call outcome and the lead
+// outcome, then goes back to Call Notes. The page has the real accordion (one
+// section open at a time) and outcome lists that load a moment after a choice.
+async function emailOnlyOutcome() {
+  console.log('\nEmail Only note: call outcome, lead outcome, back to Call Notes');
+  const ID = 77000002;
+  const BOX = `#call-${ID}`;
+  const PATH = 'Customer Hub Team > Ongoing > Email Only Lead';
+  const start = (lead = {}, options = {}) => fresh({ owner: !!options.owner, page: 'two-leads.html',
+    before: `window.mockOptions = { oneOpen: true, outcomeDelay: 250, blankLower: true }; window.buildLeads(${JSON.stringify([{ id: ID, campaign: 'Vauxhall - Email Only', request: 'Email Enquiry', active: true, ...lead }])})` });
+  const snap = (page) => page.evaluate((id) => {
+    const call = document.querySelector('#callOutcome');
+    const box = document.querySelector(`#call-${id}`);
+    return {
+      call: call.options[call.selectedIndex].textContent,
+      callChanges: window.outcomeChanges,
+      lead: window.leadState(id).outcome.filter(Boolean).join(' > '),
+      leadChanges: window.leadOutcomeChanges.length,
+      open: Array.from(document.querySelectorAll('.panel')).filter((p) => p.querySelector('.panel-collapse.in')).map((p) => p.querySelector('a.accordion-toggle').textContent).join(),
+      focus: document.activeElement === box,
+      caret: box.selectionStart,
+      value: box.value,
+      inView: (() => { const r = box.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; })(),
+      toast: Array.from(document.querySelectorAll('.kn-toast')).map((n) => n.textContent).join(' | '),
+      buttons: Array.from(document.querySelectorAll('.kn-toast button')).map((b) => b.textContent),
+      finished: window.finishedPresses
+    };
+  }, ID);
+  const typeIn = async (page, word) => {
+    await page.click(BOX);
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type(`${word} `);
+  };
+  const toasted = (page) => page.waitForFunction(() => document.querySelector('.kn-toast'), null, { timeout: 12000 }).then(() => sleep(100));
+  const NOTE = 'EMAIL ONLY LEAD: jo@example.com\n';
+  const back = (now) => now.focus && now.open === 'Details' && now.inView;
+
+  for (const owner of [false, true]) {
+    const who = owner ? 'with the owner flag' : 'without the owner flag';
+    const page = await start({}, { owner });
+    await page.fill(BOX, 'Earlier note.\n');
+    await typeIn(page, 'eo');
+    await toasted(page);
+    let now = await snap(page);
+    check(`${who}: eo typed by hand sets Update Outcomes (No Call Made)`, now.call === 'Update Outcomes (No Call Made)' && now.callChanges === 1, now);
+    check(`${who}: eo sets the three lead outcome levels`, now.lead === PATH && now.leadChanges === 3, now);
+    check(`${who}: Details is open again and the focus is back in Call Notes, in view`, back(now), now);
+    check(`${who}: the caret is at the end of the note, after the phrase line`, now.value === `Earlier note.\n${NOTE}` && now.caret === now.value.length, now);
+    check(`${who}: one toast says both were set`, now.toast === 'Call outcome and lead outcome set: Email Only Lead' && now.buttons.length === 0, now.toast);
+    await page.keyboard.type('next words');
+    check(`${who}: typing carries on in Call Notes`, (await page.inputValue(BOX)) === `Earlier note.\n${NOTE}next words`, await page.inputValue(BOX));
+    check(`${who}: Finished is not pressed and there are no page errors`, now.finished === 0 && page.errors.length === 0, page.errors);
+  }
+
+  let page = await start();
+  await typeIn(page, 'lfe');
+  await toasted(page);
+  let now = await snap(page);
+  check('lfe sets No Answer - No Message Left and the lead outcome, and goes back', now.call === 'No Answer - No Message Left' && now.lead === PATH && back(now) && /^Line failed EMAIL LEAD ONLY: jo@example\.com\n$/.test(now.value) && now.caret === now.value.length, now);
+  check('lfe: the toast says both were set', now.toast === 'Call outcome and lead outcome set: Email Only Lead', now.toast);
+
+  // A call outcome already chosen is kept, and the lead outcome is still set.
+  page = await start();
+  await page.selectOption('#callOutcome', { label: 'Spoke to Customer' });
+  await page.evaluate(() => { window.outcomeChanges = 0; });
+  await typeIn(page, 'eo');
+  await toasted(page);
+  now = await snap(page);
+  check('a call outcome already chosen is kept, with its Change button, and the lead outcome is set', now.call === 'Spoke to Customer' && now.callChanges === 0 && now.lead === PATH && back(now) &&
+    now.toast.startsWith('Call outcome left as Spoke to Customer. Lead outcome set: Email Only Lead') && now.buttons.join() === 'Change to Update Outcomes (No Call Made)', now);
+
+  // The Email Only phrase picked from the phrase list counts as written by hand.
+  page = await start();
+  await page.click(BOX);
+  await page.keyboard.press('Alt+n');
+  await sleep(200);
+  await page.click('.kn-browse-button');
+  await page.fill('.kn-search', 'no valid contact method');
+  await sleep(200);
+  await page.keyboard.press('Enter');
+  await toasted(page);
+  now = await snap(page);
+  check('the full Email Only note picked from the phrase list: both outcomes set and back in Call Notes', /NO FURTHER CONTACT METHOD VALID\/GIVEN \*{4}\nEMAIL ADDRESS - jo@example\.com\n$/.test(now.value) && now.call === 'Update Outcomes (No Call Made)' && now.lead === PATH && back(now) && now.caret === now.value.length, now);
+
+  // A different lead outcome already set is kept until the button is pressed.
+  page = await start({ outcome: ['Customer Hub Team', 'Ongoing', 'Defer to Site'] });
+  await typeIn(page, 'eo');
+  await toasted(page);
+  now = await snap(page);
+  check('a different lead outcome is kept and said, with a Change button', now.lead === 'Customer Hub Team > Ongoing > Defer to Site' && now.leadChanges === 0 &&
+    now.toast.startsWith('Call outcome set: Update Outcomes (No Call Made). Lead outcome left as Customer Hub Team > Ongoing > Defer to Site') && now.buttons.join() === 'Change to Email Only Lead', now);
+  check('kept lead outcome: still back in Call Notes with Details open', back(now) && now.caret === now.value.length, now);
+  await page.click('.kn-toast button');
+  await toasted(page);
+  now = await snap(page);
+  check('the Change button sets Email Only Lead and goes back to Call Notes', now.lead === PATH && back(now) && now.caret === now.value.length && now.toast === 'Lead outcome set: Email Only Lead' && now.callChanges === 1, now);
+
+  // The same lead outcome already set says nothing about it.
+  page = await start({ outcome: ['Customer Hub Team', 'Ongoing', 'Email Only Lead'] });
+  await typeIn(page, 'eo');
+  await toasted(page);
+  now = await snap(page);
+  check('Email Only Lead already set: only the call outcome is said', now.lead === PATH && now.leadChanges === 0 && now.toast === 'Call outcome set: Update Outcomes (No Call Made)' && back(now), now);
+
+  // The third list does not offer Email Only Lead.
+  page = await start({ noEmailOnly: true });
+  await typeIn(page, 'eo');
+  await toasted(page);
+  now = await snap(page);
+  check('missing third option: it stops and says which', /Lead outcome not set: "Email Only Lead" could not be chosen/.test(now.toast) && !/Email Only Lead$/.test(now.lead), now);
+  check('missing third option: the note stays and it still goes back to Call Notes', now.value === NOTE && back(now) && now.caret === now.value.length && page.errors.length === 0, [now, page.errors]);
+
+  // The key press Lead Re setup makes: the phrase is written, the outcomes are its own job.
+  page = await start();
+  const typed = await leadResetTypes(page, BOX, 'eo');
+  await sleep(2000);
+  now = await snap(page);
+  check('the key press Lead Re setup makes expands eo', typed.prevented && typed.value === NOTE, typed);
+  check('and touches neither outcome, nor the open section', now.call === '(Select a Call Outcome)' && now.callChanges === 0 && now.lead === '' && now.leadChanges === 0 && now.open === 'Details' && now.toast === '', now);
+  check('no page errors on the Email Only notes', page.errors.length === 0, page.errors);
+}
+
 const started = Date.now();
 try {
   await layout();
@@ -1193,6 +1315,7 @@ try {
   await otherStaff();
   await ownerHelpers();
   await pxOnAnotherLead();
+  await emailOnlyOutcome();
 } catch (e) {
   failures++;
   console.log(`FAIL  test crashed: ${e && e.stack || e}`);
