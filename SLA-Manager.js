@@ -8359,7 +8359,8 @@ console.info('SLA Manager start-my-day self-test passed');
 
 // The agent statuses that count as free to take a rescued lead, matched on
 // the whole status as Konnect shows it.
-const FREE_AGENT_STATUSES = [/^available$/i, /^wrap[\s-]*up$/i, /^wash[\s-]*up$/i];
+// "Konnect Washup" is what Konnect shows for an agent who has just finished a call.
+const FREE_AGENT_STATUSES = [/^available$/i, /^(konnect\s+)?wrap[\s-]*up$/i, /^(konnect\s+)?wash[\s-]*up$/i];
 const RESCUE_WINDOW_MINUTES = 15;
 let rescue = { running: false, text: '' };
 
@@ -8457,7 +8458,7 @@ const check = (label, actual, expected) => {
 const a = JSON.stringify(actual); const e = JSON.stringify(expected);
 if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
 };
-check('free is Available or wrap up, on the whole status', ['Available', 'available ', 'Wrap Up', 'Wrapup', 'Wash up', 'Not Available', 'Shift Start', 'Live Chat', 'Toilet Break', ''].map((status) => isAgentFree({ status })), [true, true, true, true, true, false, false, false, false, false]);
+check('free is Available or wrap up, on the whole status', ['Available', 'available ', 'Wrap Up', 'Wrapup', 'Wash up', 'Konnect Washup', 'konnect wash-up', 'Not Available', 'Shift Start', 'Live Chat', 'Toilet Break', ''].map((status) => isAgentFree({ status })), [true, true, true, true, true, true, true, false, false, false, false, false]);
 const now = Date.now();
 const lead = (mins, over) => ({ slaDate: mins === null ? null : new Date(now + mins * 60000), status: 'Pending', assigned: false, ...over });
 check('missed or due within 15 minutes, queued or not', rescueCount([lead(-5, { status: 'Missed' }), lead(10, { assigned: true }), lead(15), lead(16), lead(null), lead(null, { status: 'Missed', assigned: true })], now), 4);
