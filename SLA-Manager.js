@@ -6196,10 +6196,76 @@ return prioritized.slice(0, effectiveLimit);
 
 // Shared by both assign sections, which only differ in the filters zone, the
 // run handler and the Email only bar (SLA page only).
+// BREAKS. An agent who goes onto a tea or lunch break is unticked once, at
+// the moment their status changes, so a manual tick while they are still
+// on the break is kept. Coming back ticks them again only if the untick was
+// this tool's and still stands.
+const BREAK_STATUSES = [/^tea\s*break$/i, /^lunch\s*break$/i];
+const BREAK_MEMORY_KEY = '_slaBreakMemory';
+function isOnBreak(status) {
+const text = String(status || '').trim();
+return BREAK_STATUSES.some((pattern) => pattern.test(text));
+}
+// Pure. memory: per agent id, { onBreak, unticked } from the last look.
+function applyBreakUnticks(agents, excludedIds, memory) {
+const excluded = new Set(excludedIds || []);
+const next = {};
+const went = [];
+(agents || []).forEach((a) => {
+const was = (memory || {})[a.id] || { onBreak: false, unticked: false };
+const now = isOnBreak(a.status);
+let unticked = was.unticked;
+if (now && !was.onBreak) {
+if (!excluded.has(a.id)) { excluded.add(a.id); unticked = true; went.push(a.name); }
+} else if (!now && was.onBreak) {
+if (was.unticked && excluded.has(a.id)) excluded.delete(a.id);
+unticked = false;
+} else if (now && was.unticked && !excluded.has(a.id)) {
+// Ticked again by hand during the break: leave them be when it ends.
+unticked = false;
+}
+next[a.id] = { onBreak: now, unticked };
+});
+return { excludedIds: Array.from(excluded), memory: next, went };
+}
+function breakUnticksFor(agents, settings) {
+let memory = {};
+try {
+const stored = JSON.parse(sessionStorage.getItem(BREAK_MEMORY_KEY) || 'null');
+if (stored && typeof stored === 'object') memory = stored;
+} catch (error) { /* starts again */ }
+const before = settings.excludedAgentIds || [];
+const result = applyBreakUnticks(agents, before, memory);
+try { sessionStorage.setItem(BREAK_MEMORY_KEY, JSON.stringify(result.memory)); } catch (error) { /* looked at afresh next time */ }
+if (result.excludedIds.slice().sort().join('|') !== before.slice().sort().join('|')) {
+saveAssignSettings({ excludedAgentIds: result.excludedIds });
+if (result.went.length) showToast(`${result.went.join(', ')} unticked: on a break. Tick them again if you still want them to get leads.`);
+}
+return result.excludedIds;
+}
+
+runSelfTest('breakUntickSelfTest', function breakUntickSelfTest() {
+const failures = [];
+const check = (label, actual, expected) => { if (JSON.stringify(actual) !== JSON.stringify(expected)) failures.push(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`); };
+const a = (status) => [{ id: '1', name: 'Agent Alpha', status }, { id: '2', name: 'Agent Bravo', status: 'Available' }];
+check('which statuses are breaks', ['Tea Break', 'lunch break', 'Toilet Break', 'Shift Start', 'Konnect Washup', ''].map(isOnBreak), [true, true, false, false, false, false]);
+const went = applyBreakUnticks(a('Tea Break'), [], {});
+check('going onto a break unticks once', [went.excludedIds, went.went], [['1'], ['Agent Alpha']]);
+const still = applyBreakUnticks(a('Tea Break'), [], went.memory);
+check('a tick by hand during the break is kept', [still.excludedIds, still.went], [[], []]);
+check('and they stay ticked when the break ends', applyBreakUnticks(a('Available'), [], still.memory).excludedIds, []);
+check('coming back ticks them again when the untick still stands', applyBreakUnticks(a('Available'), ['1'], went.memory).excludedIds, []);
+check('someone unticked by hand is left unticked through a break and after', applyBreakUnticks(a('Available'), ['1'], applyBreakUnticks(a('Lunch Break'), ['1'], {}).memory).excludedIds, ['1']);
+const second = applyBreakUnticks(a('Lunch Break'), [], applyBreakUnticks(a('Available'), [], still.memory).memory);
+check('a later break unticks again', second.excludedIds, ['1']);
+if (failures.length) reportSelfTestFailure('SLA Manager break-untick self-test FAILED:\n' + failures.join('\n'));
+else console.info('SLA Manager break-untick self-test passed');
+});
+
 function renderAssignSectionShell(settings, agents, runHandlerName, filtersZoneHtml, emailOnlyBarHtml, rescueBarHtml) {
 if (isZenModeOn()) return '';
 const filtersOpen = !!settings.filtersOpen;
-const excludedAgentIds = new Set(settings.excludedAgentIds || []);
+const excludedAgentIds = new Set(breakUnticksFor(agents, settings));
 const buttonDisabled = agents.length === 0;
 const emailOnlyOn = !!emailOnlyBarHtml && !!settings.emailOnly;
 return `
