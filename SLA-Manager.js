@@ -3224,7 +3224,7 @@ const rows = teamTodayRows(getAgentRoster().map((a) => a.name), fairShareTally(t
 const body = rows.length
 ? `<div class="sla-team" role="table" aria-label="Team today">
 <div role="row"><span class="h" role="columnheader">Agent</span><span class="h" role="columnheader" title="Leads this tool assigned to the agent today, then how many in Tier 1 / Tier 2 / Tier 3 / Tier 4">Assigned (by tier)</span><span class="h" role="columnheader">Done</span><span class="h" role="columnheader" title="Assigned by this tool, then seen unassigned or with someone else, as Clear Queue leaves them">Sent back</span></div>
-${rows.map((r) => `<div role="row" data-agent="${escapeHtml(r.name)}"><span role="cell" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</span><span role="cell">${escapeHtml(r.assigned)}</span><span role="cell">${escapeHtml(r.done)}</span><span role="cell">${escapeHtml(r.back)}</span></div>`).join('')}
+${rows.map((r) => `<div role="row" data-agent="${escapeHtml(r.name)}"><span role="cell" title="${escapeHtml(r.name)}">${escapeHtml(r.name)}</span><span role="cell" data-label="Assigned" title="Leads this tool assigned today, then Tier 1 / Tier 2 / Tier 3 / Tier 4">${escapeHtml(r.assigned)}</span><span role="cell" data-label="Done">${escapeHtml(r.done)}</span><span role="cell" data-label="Sent back">${escapeHtml(r.back)}</span></div>`).join('')}
 </div>`
 : '<span class="sla-small">Nothing assigned by this tool today, and the queues have not been read.</span>';
 return `<div id="_slaTeamToday" class="sla-card">
@@ -3463,11 +3463,12 @@ ${P} .sla-agsum .sla-sec { gap: 3px; }
 ${P} .sla-agents { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; max-height: 150px; overflow-y: auto; padding: 1px; }
 ${P} .sla-agents label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
 ${P} .sla-agents b { margin-left: auto; color: var(--wb-muted); font-weight: 600; }
-${P} .sla-team { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 4px 12px; font-size: 12px; font-variant-numeric: tabular-nums; align-items: baseline; }
-${P} .sla-team > div { display: contents; }
-${P} .sla-team .h { font-size: 11px; color: var(--wb-muted); font-weight: 600; }
-${P} .sla-team span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-${P} .sla-team span + span { text-align: right; white-space: nowrap; }
+${P} .sla-team { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+${P} .sla-team > div { display: flex; flex-wrap: wrap; gap: 1px 12px; align-items: baseline; }
+${P} .sla-team > div:first-child { display: none; }
+${P} .sla-team span:first-child { flex: 1 0 100%; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+${P} .sla-team span + span { color: var(--wb-muted); }
+${P} .sla-team span + span::before { content: attr(data-label) " "; }
 ${P} .sla-day { background: var(--wb-surface); }
 ${P} .sla-day[data-tone="warn"] { color: var(--wb-text, #1c1c1e); font-weight: 600; }
 ${P} .sla-ckl { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; flex-wrap: wrap; }

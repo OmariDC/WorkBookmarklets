@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.17.2'
+    version: '1.17.3'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2785,6 +2785,7 @@
       // it, so a refusal is read from its own message.
       const refusal = () => Array.from(document.querySelectorAll('.toast-error, .toast-warning')).filter(isVisible).map((t) => normaliseText(t.textContent)).filter(Boolean)[0] || '';
       const refusedBefore = refusal();
+      const appointmentBefore = (leadScopeActivity(state.target) || {}).SalesAppointmentID || 0;
       confirm.click();
       const done = await waitFor(() => (refusal() && refusal() !== refusedBefore) || !isVisible(confirm) || !confirm.isConnected, 10000);
       if (!done) return fail('Konnect did not confirm the appointment');
@@ -2797,6 +2798,18 @@
       close?.click();
       const closed = await waitFor(() => !diaryModal(), 6000);
       const who = free.person ? ` with ${free.person}` : '';
+      // Konnect shows a green tick on the lead's tab once the appointment
+      // is really in the diary, and gives the lead an appointment number.
+      // Either can take a moment, so their absence is only a warning.
+      const tabTick = () => {
+        const tab = document.querySelector('[ng-repeat^="tab in tabs"].active');
+        return !!tab && Array.from(tab.querySelectorAll('i, span')).some((n) => isVisible(n) && /check|tick|success/i.test(String(n.className)));
+      };
+      const inDiary = await waitFor(() => {
+        const now = (leadScopeActivity(state.target) || {}).SalesAppointmentID || 0;
+        return (now && now !== appointmentBefore) || tabTick() || null;
+      }, 6000);
+      const unconfirmed = inDiary ? '' : ' The green tick has not shown on the lead\'s tab yet: check it is in the diary.';
       draft.diaryBooked = diaryKey(plan);
       saveDraftNow();
       // Which outcome a National Reservation takes is not confirmed yet, so it is left to the agent.
@@ -2804,11 +2817,11 @@
         : draft.data.type === 'national' ? 'National Reservations have their outcome set by hand for now'
           : await setLeadOutcome(draft, plan);
       if (outcomeProblem) {
-        say('warn', `Diary booked: ${plan.label}, ${plan.type}${who}. Outcome not set: ${outcomeProblem}.${moved}`);
+        say('warn', `Diary booked: ${plan.label}, ${plan.type}${who}. Outcome not set: ${outcomeProblem}.${moved}${unconfirmed}`);
         showToast(`Diary booked. Set the outcome by hand: ${outcomeProblem}`);
         return false;
       }
-      say(moved ? 'warn' : 'ok', `Diary booked: ${plan.label}, ${plan.type}, ${plan.length}${who}. Outcome set to Customer Hub Team, Appointment, ${plan.type}.${moved}`);
+      say(moved || unconfirmed ? 'warn' : 'ok', `Diary booked: ${plan.label}, ${plan.type}, ${plan.length}${who}. Outcome set to Customer Hub Team, Appointment, ${plan.type}.${moved}${unconfirmed}`);
       showToast(`Diary booked and outcome set: ${plan.type}${who}`);
       return !moved;
     } finally {
