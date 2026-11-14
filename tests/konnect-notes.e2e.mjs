@@ -771,6 +771,61 @@ async function ownerHelpers() {
     row.innerHTML = keep;
     return out;
   });
+  // The real page: Customer Record lists the name as a table row, and the
+  // call holds the customer's record.
+  const realNames = await page.evaluate(() => {
+    const row = document.querySelector('#custName').closest('.row');
+    const keep = row.innerHTML;
+    row.innerHTML = '';
+    const table = document.createElement('table');
+    table.className = 'table table-striped';
+    table.innerHTML = '<tr><td>Name</td><td>Mrs J Example</td></tr><tr><td>Address</td><td>1 Example Road</td></tr>';
+    document.body.appendChild(table);
+    const out = { cell: KonnectNotes.customerNameFor(null) };
+    table.remove();
+    const real = window.angular;
+    const top = { Call: { RecentHistory: [{ AgentName: 'Sam Tester' }], Customer: { FullName: 'Mrs J Example', PostCode: 'AB1 2CD' } } };
+    let chain = top;
+    for (let i = 0; i < 15; i += 1) chain = { $parent: chain };
+    window.angular = { element: () => ({ scope: () => chain }) };
+    out.call = KonnectNotes.customerNameFor(null);
+    window.angular = real;
+    row.innerHTML = keep;
+    const state = KonnectNotes.mobileStateFrom;
+    out.mobile = [state('07700 900123', { Mobile1: '', Mobile2: null, Landline1: '01632 960123' }, null), state('07700 900123', { Mobile1: '07700900123' }, null),
+      state('07700 900123', { FullName: 'x' }, ['01632 960123']), state('07700 900123', null, ['+44 7700 900123']), state('07700 900123', null, null), state('', { Mobile1: '' }, null)].join();
+    return out;
+  });
+  check('name: read from the Customer Record table and from the call, fifteen scopes up; mobile: gone only on proof',
+    JSON.stringify(realNames) === JSON.stringify({ cell: 'Mrs J Example', call: 'Mrs J Example', mobile: 'gone,there,gone,there,unknown,unknown' }), realNames);
+
+  // Konnect drops the mobile on a new inbound lead: it is put back unasked,
+  // and a mobile still on the form is left alone.
+  const auto = await page.evaluate(async () => {
+    const held = KonnectNotes.inboundHeld;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<a ng-click="showCustomerModal($event)" id="editCust">Edit Customer Details...</a>' +
+      '<div class="modal" id="autoModal" style="display:none"><input ng-model="customer.FullName" value="Jo Example"><input ng-model="customer.Mobile1"><input ng-model="customer.Mobile2">' +
+      '<button ng-click="ok()" id="autoSave">Save</button><button ng-click="cancel()" id="autoCancel">Cancel</button></div>';
+    document.body.appendChild(wrap);
+    const modal = wrap.querySelector('#autoModal');
+    const log = [];
+    wrap.querySelector('#editCust').addEventListener('click', () => { modal.style.display = 'block'; log.push('opened'); });
+    wrap.querySelector('#autoSave').addEventListener('click', () => { modal.style.display = 'none'; log.push('saved ' + wrap.querySelector('[ng-model="customer.Mobile1"]').value); });
+    wrap.querySelector('#autoCancel').addEventListener('click', () => { modal.style.display = 'none'; log.push('cancelled'); });
+    Object.assign(held, { mobile: '07700900123', mobileLead: 'lead-x', name: 'Jo Example', nameLead: 'lead-x' });
+    const first = await KonnectNotes.autoReaddMobile('lead-x');
+    const after = { mobile: held.mobile, name: held.name };
+    Object.assign(held, { mobile: '07700900123', mobileLead: 'lead-x' });
+    const second = await KonnectNotes.autoReaddMobile('lead-x');
+    const stillHeld = held.mobile;
+    const other = await KonnectNotes.autoReaddMobile('lead-y');
+    Object.assign(held, { mobile: '', mobileLead: '', name: '', nameLead: '' });
+    wrap.remove();
+    return { first, after, second, stillHeld, other, log };
+  });
+  check('inbound mobile: a blank Mobile box is refilled and saved, a filled one is left, and another lead is not touched',
+    JSON.stringify(auto) === JSON.stringify({ first: 'added', after: { mobile: '', name: 'Jo Example' }, second: 'there', stillHeld: '07700900123', other: '', log: ['opened', 'saved 07700900123', 'opened', 'cancelled'] }), auto);
   check('name: read from the Name row, the lead, the customer, the call or a box, and never from the agent',
     JSON.stringify(names) === JSON.stringify({ row: 'Jo Example', lead: 'Jo Example', parts: 'Mrs Jo Example', customer: 'Jo Example', agentOnly: '', scope: 'Jo Example', call: 'Jo Example', box: 'Jo Example' }), names);
   check('the owner example row', await page.evaluate(() => KonnectNotes.buildSheetRow({ dealer: 'Stellantis &You Preston', name: 'Jo Example', year: 2026, month: 11, day: 14,

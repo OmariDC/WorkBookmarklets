@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.23.2'
+    version: '1.24.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -1726,7 +1726,12 @@
       Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible)].filter(Boolean);
     for (const node of nodes) {
       try {
-        for (let scope = window.angular?.element(node).scope(), depth = 0; scope && depth < 12; scope = scope.$parent, depth += 1) {
+        for (let scope = window.angular?.element(node).scope(), depth = 0; scope && depth < 30; scope = scope.$parent, depth += 1) {
+          // The call's own customer record: the name shown at the top of the page.
+          if (Object.prototype.hasOwnProperty.call(scope, 'Call') && scope.Call && scope.Call.Customer) {
+            const onCall = nameFromData(scope.Call.Customer, 0, true);
+            if (onCall) return onCall;
+          }
           for (const [key, onCustomer] of [['theActivity', false], ['Call', false], ['call', false], ['customer', true], ['Customer', true], ['selectedCustomer', true], ['theCustomer', true]]) {
             if (!Object.prototype.hasOwnProperty.call(scope, key)) continue;
             const found = nameFromData(scope[key], 0, onCustomer);
@@ -1741,11 +1746,12 @@
   /* Every "Name" label on the page, not only the first: the text beside it,
      or what is typed in a box beside it. */
   function pageNameRow() {
-    const labels = Array.from(document.querySelectorAll('b,strong,label,th,dt'))
+    // Customer Record lists the name as a table row: a "Name" cell, then the name.
+    const labels = Array.from(document.querySelectorAll('b,strong,label,th,dt,td'))
       .filter((node) => !node.closest(`#${PALETTE_ID}`) && /^(customer |full )?name:?$/i.test(ownText(node)));
     for (const label of labels.filter(isVisible).concat(labels.filter((node) => !isVisible(node)))) {
       if (label.tagName === 'TH') continue;
-      const row = label.closest('.row, .form-group, tr') || label.parentElement;
+      const row = label.closest(label.tagName === 'TD' ? 'tr' : '.row, .form-group, tr') || label.parentElement;
       const shown = normaliseText((row?.textContent || '').replace(label.textContent, ''));
       const typed = normaliseText(row?.querySelector('input[type="text"], input:not([type])')?.value || '');
       const found = shown || typed;
@@ -4907,6 +4913,12 @@
       const lead = currentDraft();
       const pane = onLead.closest('.tab-pane') || document;
 
+      // The mobile Konnect drops on some new leads is put straight back.
+      if (inbound.mobile) {
+        say('ok', 'Checking the mobile is still on the customer...');
+        await autoReaddMobile(lead.key);
+      }
+
       // 5. The diary is opened and closed once before anything goes in Call Notes.
       inboundSetupHold = true;
       say('ok', 'Opening the diary once...');
@@ -4955,37 +4967,106 @@
   /* After the lead is created Konnect can lose the mobile. This opens Edit
      Customer Details, puts it back in Mobile 1 and reselects the brand,
      which resets every time the form opens. The agent presses Save. */
-  async function readdMobile() {
+  /* Pure. Whether the customer still has a mobile, from Konnect's record
+     of them (its Mobile fields) or the numbers listed on the page. "gone"
+     needs proof: a record with every mobile blank, or a list without the
+     held number. Anything else is "unknown". */
+  function mobileStateFrom(held, record, listed) {
+    const tail = (value) => String(value == null ? '' : value).replace(/\D/g, '').slice(-10);
+    const want = tail(held);
+    if (!want) return 'unknown';
+    if (record && typeof record === 'object') {
+      const mobiles = Object.keys(record).filter((key) => /^mobile/i.test(key) && (record[key] == null || /^(string|number)$/.test(typeof record[key])));
+      if (mobiles.length) return mobiles.some((key) => tail(record[key]).length >= 10) ? 'there' : 'gone';
+    }
+    if (Array.isArray(listed)) {
+      if (listed.some((text) => tail(text) === want)) return 'there';
+      if (listed.length) return 'gone';
+    }
+    return 'unknown';
+  }
+
+  function inboundMobileState() {
+    let record = null;
+    try {
+      const node = Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible) || callNotesBox();
+      for (let scope = window.angular?.element(node).scope(), depth = 0; scope && depth < 30 && !record; scope = scope.$parent, depth += 1) {
+        if (Object.prototype.hasOwnProperty.call(scope, 'Call') && scope.Call && scope.Call.Customer) record = scope.Call.Customer;
+      }
+    } catch (error) { /* not an Angular page */ }
+    const listed = Array.from(document.querySelectorAll('[ng-repeat^="number in AllPhoneNumbers"]')).map((node) => node.textContent);
+    return mobileStateFrom(inbound.mobile, record, listed.length ? listed : null);
+  }
+
+  /* Konnect drops the mobile on some inbound leads the moment the lead is
+     made. With the number still held, this looks for that and puts it back
+     without being asked. The number stays held until it is saved, so the
+     Re-add mobile button is still there if anything goes wrong. */
+  let mobileAutoRun = false;
+  async function autoReaddMobile(key) {
+    if (mobileAutoRun || !inbound.mobile || (key && inbound.mobileLead !== key)) return '';
+    mobileAutoRun = true;
+    try {
+      // Konnect can take a moment to drop it, so "there" is looked at twice.
+      let seen = inboundMobileState();
+      if (seen === 'there') {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        seen = inboundMobileState();
+      }
+      if (seen === 'there') return 'there';
+      return await readdMobile({ auto: true, sure: seen === 'gone' });
+    } finally {
+      mobileAutoRun = false;
+    }
+  }
+
+  async function readdMobile(options) {
+    const auto = !!(options && options.auto);
     const mobile = inbound.mobile;
-    if (!mobile) return;
+    if (!mobile) return '';
     let modal = visibleCustomerModal();
     if (!modal) {
       const edit = findButtonByClick('a[ng-click^="showCustomerModal"], span[ng-click^="showCustomerModal"]', 'edit customer');
       if (!edit) {
-        showToast('Could not find Edit Customer Details on this screen');
-        return;
+        if (!auto) showToast('Could not find Edit Customer Details on this screen');
+        return '';
       }
       edit.click();
       modal = await waitFor(visibleCustomerModal, 3000);
     }
     if (!modal) {
-      showToast('Edit Customer Details did not open');
-      return;
+      showToast(auto ? 'Could not check the mobile: Edit Customer Details did not open. Use Re-add mobile.' : 'Edit Customer Details did not open');
+      return '';
     }
     const filled = [];
     const mobileBox = modal.querySelector('input[ng-model^="customer.Mobile"]');
+    if (auto) {
+      // The form's own Mobile boxes settle it: any number there is left alone.
+      await waitFor(() => normaliseText(modal.querySelector('input[ng-model="customer.FullName"]')?.value), 1500);
+      const has = Array.from(modal.querySelectorAll('input[ng-model^="customer.Mobile"]')).some((box) => String(box.value || '').replace(/\D/g, '').length >= 10);
+      if (has || !mobileBox) {
+        const cancel = Array.from(modal.querySelectorAll('button[ng-click="cancel()"]')).filter(isVisible).pop();
+        if (cancel) { cancel.click(); await waitFor(() => !modal.isConnected || !isVisible(modal), 3000); }
+        return has ? 'there' : '';
+      }
+    }
     if (mobileBox && setLeadControl(mobileBox, mobile)) filled.push('Mobile 1');
     const dealerSelect = modal.querySelector('select[ng-model="selected.dealer"]');
     const dealer = dealerSelect && !selectedText(dealerSelect) ? inbound.dealer : '';
     filled.push(...await setDealerAndBrand(modal, dealer, inbound.brand));
     const saved = await saveCustomerModal(modal);
     if (saved) {
-      showToast(`Mobile added back and saved${filled.length ? ` (${filled.join(', ')})` : ''}`);
+      showToast(`${auto ? 'Konnect had dropped the mobile: added back' : 'Mobile added back'} and saved${filled.length ? ` (${filled.join(', ')})` : ''}`);
+      // The typed name is kept for the booking sheet row.
+      const kept = { name: inbound.name, nameLead: inbound.nameLead };
       forgetInboundCustomer();
+      Object.assign(inbound, kept);
       if (state.open && state.view === 'booking') renderPalette();
-    } else {
-      showToast('Filled the form but it did not save. Check it and press Save.');
+      return 'added';
     }
+    showToast(auto ? 'Konnect dropped the mobile and the form did not save. Check it and press Save, or use Re-add mobile.'
+      : 'Filled the form but it did not save. Check it and press Save.');
+    return '';
   }
 
   /* Presses Save on the customer form once Konnect allows it, and reports
@@ -5030,6 +5111,8 @@
     inbound.dealer = inbound.customer.dealer;
     inbound.name = realText(inbound.customer.name);
     inbound.nameLead = inbound.name ? key : '';
+    // A lead made by hand gets the same check, once the page has settled.
+    if (inbound.mobile) setTimeout(() => { if (!inboundRun && !visibleCustomerModal()) autoReaddMobile(key); }, 1500);
     inbound.customer = blankCustomer();
     state.bookingStatus = { kind: 'ok', text: 'Booking carried over from the inbound call.' };
     return {
@@ -6012,6 +6095,9 @@
   KN.mergeRemoteConfig = mergeRemoteConfig;
   KN.buildSheetRow = buildSheetRow;
   KN.nameFromData = nameFromData;
+  KN.mobileStateFrom = mobileStateFrom;
+  KN.autoReaddMobile = autoReaddMobile;
+  KN.inboundHeld = inbound;
   KN.customerNameFor = customerNameFor;
   KN.sheetRowSelfTest = sheetRowSelfTest;
   KN.buildBookingCheck = buildBookingCheck;
