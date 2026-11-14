@@ -648,24 +648,37 @@
     return `${types.slice(0, -1).join(', ')} or ${types[types.length - 1]}`;
   }
 
-  /* The monthly budget as a figure, a most, a least or a range. The min and
-     max boxes win; the budget box may also be typed as "250-300",
-     "max 300", "up to 300", "min 250" or "250+". */
-  function budgetText(payment) {
+  /* An amount typed in one box as a figure, a most, a least or a range:
+     "300", "max 300" (or "up to 300", "<300"), "min 250" (or "250+",
+     ">250") and "250-300". Returns { exact } or { min, max }. */
+  function amountRange(value) {
+    const text = clean(value);
     const amount = '£?\\s*([\\d.,]+k?)';
-    let min = clean(payment.budgetMin);
-    let max = clean(payment.budgetMax);
-    let exact = clean(payment.budget);
-    const range = exact.match(new RegExp(`^${amount}\\s*(?:-|\u2013|to)\\s*${amount}$`, 'i'));
-    const most = exact.match(new RegExp(`^(?:max(?:imum)?|up to|under|below|no more than)\\s*${amount}$`, 'i'));
-    const least = exact.match(new RegExp(`^(?:min(?:imum)?|from|at least|over|above)\\s*${amount}$`, 'i')) || exact.match(new RegExp(`^${amount}\\s*\\+$`));
-    if (range) { min = min || range[1]; max = max || range[2]; exact = ''; }
-    else if (most) { max = max || most[1]; exact = ''; }
-    else if (least) { min = min || least[1]; exact = ''; }
+    const range = text.match(new RegExp(`^${amount}\\s*(?:-|\u2013|to)\\s*${amount}$`, 'i'));
+    if (range) return { min: range[1], max: range[2] };
+    const most = text.match(new RegExp(`^(?:max(?:imum)?|up to|under|below|no more than|<)\\s*${amount}$`, 'i'));
+    if (most) return { max: most[1] };
+    const least = text.match(new RegExp(`^(?:min(?:imum)?|from|at least|over|above|>)\\s*${amount}$`, 'i')) || text.match(new RegExp(`^${amount}\\s*\\+$`));
+    if (least) return { min: least[1] };
+    return { exact: text };
+  }
+
+  function budgetText(payment) {
+    const typed = amountRange(payment.budget);
+    const min = clean(payment.budgetMin) || typed.min;
+    const max = clean(payment.budgetMax) || typed.max;
     if (min && max) return `Budget ${money(min)} to ${money(max)} per month`;
     if (max) return `Max budget ${money(max)} per month`;
     if (min) return `Min budget ${money(min)} per month`;
-    return exact ? `Budget ${money(exact)} per month` : '';
+    return typed.exact ? `Budget ${money(typed.exact)} per month` : '';
+  }
+
+  function depositText(payment) {
+    const typed = amountRange(payment.deposit);
+    if (typed.min && typed.max) return `${money(typed.min)} to ${money(typed.max)} deposit`;
+    if (typed.max) return `Max ${money(typed.max)} deposit`;
+    if (typed.min) return `Min ${money(typed.min)} deposit`;
+    return typed.exact !== '' ? `${money(typed.exact)} deposit` : '';
   }
 
   function paymentLines(payment) {
@@ -673,7 +686,8 @@
     if (payment.kind === 'cash') return ['-Cash purchase'];
     if (payment.kind === 'cashOffers') return ['-Cash purchase | Looking to discuss available offers and price movement'];
     const parts = [financeTypeText(payment)];
-    if (clean(payment.deposit) !== '') parts.push(`${money(payment.deposit)} deposit`);
+    const deposit = depositText(payment);
+    if (deposit) parts.push(deposit);
     if (payment.term) parts.push(`${clean(payment.term).replace(/\s*(months?|m)$/i, '')} months`);
     if (payment.mpa) parts.push(`${normaliseMileage(payment.mpa) || clean(payment.mpa)} miles per annum`);
     const budget = budgetText(payment);

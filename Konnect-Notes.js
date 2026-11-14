@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.25.0'
+    version: '1.25.1'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -1635,7 +1635,7 @@
       category: '',
       px: { status: 'unmentioned', items: [{ make: '', model: '', reg: '', mileage: '', mileageUnknown: '', roughVal: '', finance: '', financeEnds: '', details: '' }] },
       sellingReason: '',
-      payment: { kind: 'unmentioned', financeType: '', financeTypes: [], deposit: '', term: '', mpa: '', budget: '', budgetMin: '', budgetMax: '', extra: '' },
+      payment: { kind: 'unmentioned', financeType: '', financeTypes: [], deposit: '', term: '', mpa: '', budget: '', extra: '' },
       reserved: false,
       onBehalfOf: '',
       notesText: '',
@@ -4038,19 +4038,22 @@
         typeChip(type, on, () => setTypes(['PCP', 'HP', 'PCH'].filter((t) => (t === type ? !on : p.financeTypes.includes(t)))), 'Pick every type they are interested in');
       });
       body.appendChild(types);
+      // Min and max boxes were tried and dropped: a draft holding them is
+      // folded into the one budget box.
+      if (p.budgetMin || p.budgetMax) {
+        p.budget = p.budgetMin && p.budgetMax ? `${p.budgetMin}-${p.budgetMax}` : p.budgetMax ? `max ${p.budgetMax}` : `min ${p.budgetMin}`;
+        delete p.budgetMin;
+        delete p.budgetMax;
+      }
+      // One box each: a figure, or "max 300", "min 250", "250-300".
       const row = element('div', 'kn-bk-row');
-      row.appendChild(bkInput('Deposit £', p.deposit, (value) => { p.deposit = value; changed(draft); }, { inputMode: 'numeric' }));
+      row.appendChild(bkInput('Deposit £', p.deposit, (value) => { p.deposit = value; changed(draft); }, { placeholder: '2000 or max 2000' }));
       row.appendChild(bkInput('Months', p.term, (value) => { p.term = value; changed(draft); }, { inputMode: 'numeric' }));
       body.appendChild(row);
       const row2 = element('div', 'kn-bk-row');
       row2.appendChild(bkInput('Miles / year', p.mpa, (value) => { p.mpa = value; changed(draft); }, { placeholder: '10000' }));
-      row2.appendChild(bkInput('Budget £ / month', p.budget, (value) => { p.budget = value; changed(draft); }, { placeholder: '300' }));
+      row2.appendChild(bkInput('Budget £ / month', p.budget, (value) => { p.budget = value; changed(draft); }, { placeholder: '300, max 300, 250-300' }));
       body.appendChild(row2);
-      // A most or a least, or both for a range, in place of one figure.
-      const row3 = element('div', 'kn-bk-row');
-      row3.appendChild(bkInput('Min budget £ / month', p.budgetMin || '', (value) => { p.budgetMin = value; changed(draft); }, { inputMode: 'numeric' }));
-      row3.appendChild(bkInput('Max budget £ / month', p.budgetMax || '', (value) => { p.budgetMax = value; changed(draft); }, { inputMode: 'numeric' }));
-      body.appendChild(row3);
       body.appendChild(bkInput('Other finance details', p.extra, (value) => { p.extra = value; changed(draft); }, { placeholder: 'Wants APR | Settlement figure' }));
     }
   }

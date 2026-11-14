@@ -274,6 +274,10 @@ test('Finance: one line, defaults to Discuss options, cash + finance', () => {
   assert.deepStrictEqual(lastLines({ kind: 'finance', budgetMin: '250', budgetMax: '300', budget: '280' }), ['-Finance: Discuss options | Budget £250 to £300 per month']);
   assert.deepStrictEqual(['250-300', '£250 to £300', 'max 300', 'up to £300', 'min 250', '250+'].map((budget) => lastLines({ kind: 'finance', budget })[0].split(' | ')[1]),
     ['Budget £250 to £300 per month', 'Budget £250 to £300 per month', 'Max budget £300 per month', 'Max budget £300 per month', 'Min budget £250 per month', 'Min budget £250 per month']);
+  assert.deepStrictEqual(['<300', '>250'].map((budget) => lastLines({ kind: 'finance', budget })[0].split(' | ')[1]), ['Max budget £300 per month', 'Min budget £250 per month']);
+  // The deposit box takes the same.
+  assert.deepStrictEqual(['0', 'max 2000', '1000+', '1000-2000'].map((deposit) => lastLines({ kind: 'finance', deposit })[0].split(' | ')[1]),
+    ['£0 deposit', 'Max £2000 deposit', 'Min £1000 deposit', '£1000 to £2000 deposit']);
   assert.deepStrictEqual(lastLines({ kind: 'cashOffers' }), ['-Cash purchase | Looking to discuss available offers and price movement']);
 });
 
