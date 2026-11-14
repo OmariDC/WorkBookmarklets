@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.22.2'
+    version: '1.22.3'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2465,7 +2465,7 @@
     check('inbound lead: Motability', planOf('Motability'), 'Not Known|Phone call|Motability|Vauxhall - Motability');
     check('inbound lead: new', planOf('New'), 'New|Phone call|Enquiry - New|Vauxhall - Enquiry - New');
     check('inbound lead: used', planOf('Used'), 'Used|Phone call|Enquiry - Used|Vauxhall - Enquiry - Used');
-    check('inbound lead: not known', planOf(''), 'Not Known|Phone call|Enquiry - Unknown/Enquiry - New|Vauxhall - Enquiry - Unknown/Vauxhall - Enquiry - New');
+    check('inbound lead: no car named', planOf(''), 'Not Known|Phone call|Enquiry - New|Vauxhall - Enquiry - New');
     check('inbound lead: no brand, no campaign', inboundLeadPlan('New', '').campaigns.length, 0);
     check('Motability wins', sheetLeadType({ motability: true, condition: 'used' }), 'Motability');
     check('Motability from the lead', sheetLeadType({ purchaseType: 'Motability', condition: 'new' }), 'Motability');
@@ -4648,11 +4648,12 @@
   const INBOUND_SOURCE = 'Phone call';
 
   /* Pure. What a new inbound lead is created as. kind: 'Motability', 'New',
-     'Used' or '' (not known), as sheetLeadType gives it. Each list holds the
-     wording to try, best first. */
+     'Used' or '' (no car named). The lead request is only ever Motability,
+     Enquiry - New or Enquiry - Used; with no car named it is Enquiry - New
+     and only the lead type says Not Known. */
   function inboundLeadPlan(kind, brand) {
     const request = kind === 'Motability' ? ['Motability']
-      : kind === 'New' ? ['Enquiry - New'] : kind === 'Used' ? ['Enquiry - Used'] : ['Enquiry - Unknown', 'Enquiry - New'];
+      : kind === 'Used' ? ['Enquiry - Used'] : ['Enquiry - New'];
     return {
       leadType: kind === 'New' || kind === 'Used' ? kind : 'Not Known',
       source: INBOUND_SOURCE,
@@ -4690,7 +4691,10 @@
     const leadTabs = () => document.querySelectorAll('[ng-repeat^="tab in tabs"]');
     try {
       const vehicle = draft.data.vehicles[0] || {};
-      const kind = sheetLeadType({ motability: draft.data.type === 'motability', hasReg: !!realText(vehicle.reg), condition: vehicle.condition });
+      // The Vehicle step shows New until Used is picked, so a named car with
+      // nothing picked is a new car, as the booking wording already says.
+      const named = !!(realText(vehicle.make) || realText(vehicle.model) || realText(vehicle.reg));
+      const kind = sheetLeadType({ motability: draft.data.type === 'motability', hasReg: !!realText(vehicle.reg), condition: vehicle.condition }) || (named ? 'New' : '');
       const engine = bookingEngine();
       const make = realText(vehicle.make);
       let brand = inbound.customer.brand || (make && engine ? engine.normaliseMake(make) : make);

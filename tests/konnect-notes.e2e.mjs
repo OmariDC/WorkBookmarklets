@@ -1120,6 +1120,8 @@ async function ownerHelpers() {
   await page.selectOption('.kn-bk-content select >> nth=0', { label: 'Preston' });
   await fillBooking(page, 'testdrive');
   await sleep(500);
+  // Nothing picked for new or used: the Vehicle step shows New, so the lead is made as new.
+  await page.evaluate(() => { KonnectNotes.state.booking.data.vehicles[0].condition = ''; });
   const oneButton = page.locator('.kn-bk-actions .kn-primary');
   check('inbound: the main button offers the whole job', /Create customer, lead and booking/.test(await oneButton.textContent()) && !(await oneButton.isDisabled()), await oneButton.textContent());
   await oneButton.click();
@@ -1127,9 +1129,9 @@ async function ownerHelpers() {
   const steps = await page.evaluate(() => window.steps);
   const at = (text) => steps.findIndex((step) => step.startsWith(text));
   check('inbound one button: Customer Call is pressed and the customer saved', at('customer call') === 0 && at('customer saved: Jo Example') === 1, steps);
-  check('inbound one button: Booking Opportunity, then a regular lead on the brand\'s used enquiry campaign', at('call outcome: Booking Opportunity') === 2 && at('lead saved: Peugeot - Enquiry - Used, regular true') === 3, steps);
+  check('inbound one button: Booking Opportunity, then a regular lead on the brand\'s new enquiry campaign', at('call outcome: Booking Opportunity') === 2 && at('lead saved: Peugeot - Enquiry - New, regular true') === 3, steps);
   check('inbound one button: the diary is opened once before anything is in Call Notes', at('diary opened, notes empty') === 4, steps);
-  check('inbound one button: lead type, brand, source and lead request are set', at('LeadTypeID: Used') > 4 && at('ChannelBadgeID: Peugeot') > 4 && at('SourceOfEnquiryID: Phone call') > 4 && at('LeadRequestID: Enquiry - Used') > 4, steps);
+  check('inbound one button: lead type, brand, source and lead request are set', at('LeadTypeID: New') > 4 && at('ChannelBadgeID: Peugeot') > 4 && at('SourceOfEnquiryID: Phone call') > 4 && at('LeadRequestID: Enquiry - New') > 4, steps);
   check('inbound one button: then the notes go in and the diary is booked', steps[steps.length - 1] === 'diary opened, notes written' && at('diary opened, notes written') > at('LeadRequestID'), steps);
   const ended = await page.evaluate(() => ({ notes: document.querySelector('#callA').value, call: document.querySelector('#callOutcome').selectedOptions[0].textContent,
     lead: Array.from(document.querySelectorAll('select[ng-model^="theActivity.SelectedOutcomeLevel"]')).map((x) => x.selectedOptions[0].textContent).join(' > '), from: KonnectNotes.state.booking.fromInbound, key: KonnectNotes.state.booking.key }));
