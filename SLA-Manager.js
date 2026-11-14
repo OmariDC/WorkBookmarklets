@@ -6762,8 +6762,13 @@ const leadCheckerResultIndex = buildLeadCheckerResultIndex(leadCheckerResults);
 const agentQueueSnapshot = loadAgentQueueSnapshot();
 // No hour-bucketing for Post Closure; every other callback type keeps the
 // due hour as the dominant key.
+// A new lead's true due time is the one the SLA page gave it, as last read
+// by the missed lead watch. Its Next Action Date is not it.
+const slaSeen = typeName === WATCHED_PENDING_TYPE ? loadSlaDatesSeen() : null;
+const slaTimeOf = (c) => (slaSeen ? pendingSlaDate(c, slaSeen) : null);
+const now = Date.now();
 const orderedCustomers = isLeadCheckerPrioritySortEnabled()
-? sortByLeadCheckerPriority(customers, leadCheckerResults, typeName === 'Post Closure' ? null : (c) => c.nextActionDate, { byHour: true })
+? sortByLeadCheckerPriority(customers, leadCheckerResults, typeName === 'Post Closure' ? null : (c) => slaTimeOf(c) || c.nextActionDate, { byHour: true })
 : customers;
 return renderCustomerCardListSection({
 label: typeName,
@@ -6772,13 +6777,16 @@ sectionId,
 toggleHandlerName: '_toggleCallbackType',
 renderRow: (c) => {
 const nextActionFull = c.nextActionDate ? c.nextActionDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'Unknown';
+const slaDate = slaTimeOf(c);
+const slaFull = slaDate ? slaDate.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+const due = slaDate ? slaDueDisplay({ slaDate, status: '' }, now) : null;
 return renderLeadRow({
 c,
 pageType: PAGE_PENDING,
-tone: '',
-dueText: c.nextActionDate ? formatTimeForInput(c.nextActionDate) : '',
-dueTone: 'mut',
-dueTitle: `Next action: ${nextActionFull}`,
+tone: due ? due.tone : '',
+dueText: due ? due.text : (c.nextActionDate ? formatTimeForInput(c.nextActionDate) : ''),
+dueTone: due ? due.tone : 'mut',
+dueTitle: due ? `SLA: ${slaFull}` : (slaSeen ? `Next action: ${nextActionFull}. The SLA page has not shown a time for this lead yet.` : `Next action: ${nextActionFull}`),
 leadChecker: findLeadCheckerResultForCustomerIndexed(c, leadCheckerResultIndex),
 queuePosition: findAgentQueuePositionInSnapshot({ email: c.email, phone: c.mobile }, agentQueueSnapshot),
 metaParts: [c.brand, shortCampaign(c.campaign)],
@@ -6787,6 +6795,7 @@ renderDetailRow('Mobile', renderCopyableField(c.mobile)),
 renderDetailRow('Email', renderCopyableField(c.email)),
 renderDetailRow('Landline', renderCopyableField(c.landline)),
 renderDetailRow('Campaign', escapeHtml(c.campaign || '')),
+slaFull ? renderDetailRow('SLA time', escapeHtml(slaFull)) : '',
 renderDetailRow('Next action', escapeHtml(nextActionFull))
 ].join('')
 });
@@ -8637,6 +8646,14 @@ Object.keys(remembered || {}).forEach((id) => { if (now - new Date(remembered[id
 slaLeads.forEach((l) => { if (l.slaDate) kept[watchSameId(l.same)] = new Date(l.slaDate).toISOString(); });
 return kept;
 }
+// Pure. The SLA page's time for a Pending lead, or null when none was seen.
+function pendingSlaDate(pendingLead, remembered) {
+const known = remembered && remembered[watchSameId(watchLead(pendingLead, PAGE_PENDING).same)];
+return known ? watchDueDate(known) : null;
+}
+// Set when a read of the SLA list changed the times kept, so the Pending
+// cards can be drawn again with them.
+let slaDatesChanged = false;
 function loadSlaDatesSeen() {
 try { return JSON.parse(sessionStorage.getItem(WATCH_SLA_DATES_KEY)) || {}; } catch (error) { return {}; }
 }
@@ -8682,7 +8699,10 @@ const pending = watchSnapshots.pending ? watchSnapshots.pending.leads : currentP
 // and one that is stuck or sitting in a queue can drop off the SLA list.
 // Automatic and manual reschedules are not warned about.
 const remembered = rememberSlaDates(loadSlaDatesSeen(), sla, Date.now());
-try { sessionStorage.setItem(WATCH_SLA_DATES_KEY, JSON.stringify(remembered)); } catch (error) { /* this visit still has them */ }
+try {
+const text = JSON.stringify(remembered);
+if (sessionStorage.getItem(WATCH_SLA_DATES_KEY) !== text) { sessionStorage.setItem(WATCH_SLA_DATES_KEY, text); slaDatesChanged = true; }
+} catch (error) { /* this visit still has them */ }
 return mergeWatchedLeads(sla, pending.filter((l) => l.type === WATCHED_PENDING_TYPE), remembered);
 }
 
@@ -8914,6 +8934,11 @@ await peekOtherPage();
 }
 // Not once Clear & Stop has ended the watch part way through a tick.
 if (window._slaMissedWatchInterval) updateMissedWarning();
+// New SLA times go straight onto the Pending cards.
+if (slaDatesChanged) {
+slaDatesChanged = false;
+if (detectPageType() === PAGE_PENDING && !busyReason()) redrawLeadsPanel();
+}
 }
 
 function stopMissedWatch() {
@@ -8986,6 +9011,7 @@ const both = mergeWatchedLeads(slaSeen,
 check('a lead on both lists is the SLA entry; one that left the SLA list keeps the SLA time seen for it; one never seen there has no due time', both.map((l) => `${l.list}:${l.same.split('||')[0]}:${l.slaDate ? Math.round((new Date(l.slaDate).getTime() - now) / 60000) : 'none'}`), ['sla:jo example:10', 'sla:al sample:3', 'pending:di other:4', 'pending:ed unknown:none']);
 const bothKeys = missedWarningKeys(both, now);
 check('so a Pending time that has passed never makes a lead missed', [bothKeys.missed.length, bothKeys.soon.length, bothKeys.due.length], [0, 2, 1]);
+check('a Pending card takes the SLA time seen for its lead, and none when the SLA page never showed it', [Math.round((pendingSlaDate(pendingRow('di  OTHER', new Date(now - 56 * 60000)), seenTimes).getTime() - now) / 60000), pendingSlaDate(pendingRow('Ed Unknown', new Date(now)), seenTimes), pendingSlaDate(pendingRow('Di Other', null), null)], [4, null, null]);
 check('remembered SLA times are kept by fingerprint and dropped after a shift', [Object.keys(seenTimes).length, 'old' in seenTimes, Object.keys(seenTimes).some((k) => /jo|example/i.test(k))], [3, false, false]);
 check('a Pending lead carries its callback type, so only new ones are watched', [watchLead(pendingRow('Jo Example', new Date(now + 60000), { callbackType: 'New' }), PAGE_PENDING).type, watchLead(pendingRow('Jo Example', new Date(now + 60000), { callbackType: 'Auto Rescheduled' }), PAGE_PENDING).type, watchLead(slaRow('Jo Example', 3), PAGE_SLA).type], ['New', 'Auto Rescheduled', '']);
 check('a lead still to do between done leads is stuck', [stuckQueueRows([true, false, true, true]), stuckQueueRows([false, false, true, true]), stuckQueueRows([true, true, false]), stuckQueueRows([false, true, false, false, true, false])], [[2], [], [], [3, 4]]);

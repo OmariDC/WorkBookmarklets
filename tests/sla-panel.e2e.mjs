@@ -710,6 +710,14 @@ async function bothLists() {
   await p.page.evaluate(() => { window.NAVS = []; window.OPENED = {}; localStorage.setItem('_slaPanelState', 'visible'); window._toggleMinimizePanel(); window._toggleMissedWarning(null); });
   check('on the Pending page the SLA list is read and the tab comes back', await waitFor(p.page, (own) => document.title === `(2 missed, 1 in 15) ${own}`, OWN_TITLE, 10000) && await waitFor(p.page, () => location.hash === '#/Queue/PendingCustomerQueue' && document.querySelectorAll('#view th').length === 12, null, 8000), { title: await p.page.title(), navs: await p.page.evaluate(() => window.NAVS) });
   check('and no customer pop-up is opened on the way', await p.page.evaluate(() => Object.keys(window.OPENED).length === 0), await p.page.evaluate(() => window.OPENED));
+  // The same lead is on the SLA list with a different time: the next read
+  // of the SLA page puts that time on its Pending card.
+  await p.page.evaluate(() => { LEADS.push(['Pat Pending', 'AB21CDE', 'Customer First', 'General', at(-50), at(-50), at(7), 'Pending', null, '07700900021', 'pat@example.com']); window._toggleMinimizePanel(); });
+  const patDue = () => p.page.evaluate(() => { const el = Array.from(document.querySelectorAll('.sla-due')).find((d) => /^SLA: /.test(d.title)); return el ? { text: el.textContent.trim(), tone: el.className } : null; });
+  await p.page.evaluate(() => { window._toggleMinimizePanel(); });
+  const gotSla = await waitFor(p.page, () => Array.from(document.querySelectorAll('.sla-due')).some((d) => /^SLA: /.test(d.title)), null, 12000);
+  const due = await patDue();
+  check('a new lead on the Pending page shows the time the SLA page gave it', gotSla && due && /^[67] ?m/i.test(due.text) && /bad/.test(due.tone), due);
   check('no page errors', p.errors.length === 0, p.errors);
   await p.context.close();
 }
