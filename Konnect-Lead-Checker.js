@@ -5562,17 +5562,20 @@ return `${r.postClosureAction}: ${r.postClosureReason}${shorthand ? ` (${shortha
 
 function buildRawNotesTsvForExtract(session) {
 const header = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created', 'InitialNotes', 'Tier', 'TierName', 'SubCategory', 'SubRank', 'Flags', 'Confidence', 'Reason', 'DedupeKey', 'PostClosureAction', 'PriorityRank', 'PostClosureReason', 'PostClosureEvidence'];
+// A tab or line break inside a value would shift every column after it,
+// and the Post Closure action would be lost on the way to SLA Manager.
+const cell = (value) => String(value == null ? '' : value).replace(/[\t\r\n]+/g, ' ').trim();
 const lines = orderedResults(session).map((r) => [
-r.name, r.phone, r.email, r.source, r.campaign, r.created,
+cell(r.name), cell(r.phone), cell(r.email), cell(r.source), cell(r.campaign), cell(r.created),
 (r.initialNotes || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
 // A Needs review row's tier is only a suggestion until someone accepts it.
 isNeedsReview(r) ? '' : String(r.tier || ''), isNeedsReview(r) ? '' : (r.tierName || ''), r.subCategory || '', String(r.subRank != null ? r.subRank : ''),
 (r.flags || []).join(', '),
 r.confidence || '',
 (r.reason || r.exception || '').replace(/\t/g, ' ').replace(/\r?\n/g, ' | '),
-r.dedupeKey || '', r.postClosureAction || '',
+cell(r.dedupeKey), cell(r.postClosureAction),
 String(bookingPriorityRankValue(r)),
-r.postClosureReason || '',
+cell(r.postClosureReason),
 String(r.postClosureEvidence || '').replace(/[\t\r\n]+/g, ' ')
 ].join('\t'));
 return [header.join('\t'), ...lines].join('\n');

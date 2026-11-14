@@ -5393,6 +5393,9 @@ const refreshed = refreshPostClosureResults([
 ], [{ name: 'Jo Example', email: 'Jo.Example@example.com', postClosureAction: 'send back through', postClosureReason: 'Email only' }, { name: 'Sam Buyer', email: 'sam.buyer@example.com', postClosureAction: 'send back through' }], now);
 check('a later Parked Calls check updates the Post Closure card, keeping its lead time, and leaves other leads alone',
 refreshed.map((r) => [r.created, r.postClosureAction, r.postClosureReason || '']), [['T1', 'send back through', 'Email only'], ['T2', '', '']]);
+check('a later Parked Calls "check" for the customer does not undo a send back found on the card\'s own lead',
+refreshPostClosureResults([{ name: 'Jo Example', email: 'jo.example@example.com', phone: '', source: '', created: 'T1', postClosureAction: 'send back through', postClosureReason: 'Email only' }],
+[{ name: 'Jo Example', email: 'jo.example@example.com', postClosureAction: 'check: needs contact?' }], now).map((r) => [r.postClosureAction, r.postClosureReason]), [['send back through', 'Email only']]);
 check('only Post Closure rows are kept for the desk', pc.map((r) => [r.name, r.postClosureAction, r.checkedAt]), [['Jo Example', 'send back through', now]]);
 const stored = [
 { name: 'Jo Example', email: 'jo.example@example.com', phone: '', postClosureAction: 'check: needs contact?', checkedAt: '2026-11-11T09:00:00.000Z' },
@@ -5588,6 +5591,10 @@ return (existing || []).map((r) => {
 const isPostClosure = !!r.postClosureAction || /^post closure processing$/i.test(String(r.source || '').trim());
 const newer = isPostClosure ? latest.get(deskResultKey(r)) : null;
 if (!newer) return r;
+// The card's answer is for its own lead; the Parked Calls check is for the
+// customer's newest Post Closure lead. A send back stands on what was found
+// on that lead, so a later "check" for the customer does not undo it.
+if (r.postClosureAction === 'send back through' && newer.postClosureAction !== 'send back through') return r;
 return { ...r, postClosureAction: newer.postClosureAction, postClosureReason: newer.postClosureReason || '', postClosureEvidence: newer.postClosureEvidence || '', priorityRank: newer.priorityRank != null ? newer.priorityRank : r.priorityRank, checkedAt: nowIso };
 });
 }
