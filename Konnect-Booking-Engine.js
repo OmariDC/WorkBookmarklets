@@ -632,16 +632,52 @@
 
   /* ---------- payment ---------- */
 
+  /* One finance type, or several the customer is open to: "PCP or HP".
+     financeTypes is the list the builder keeps; financeType is the older
+     single value, which may itself name more than one. */
+  function financeTypeText(payment) {
+    const given = Array.isArray(payment.financeTypes) && payment.financeTypes.length
+      ? payment.financeTypes
+      : String(payment.financeType || '').split(/\s*(?:,|\/|&|\+|\bor\b|\band\b)\s*/i);
+    const types = [];
+    given.map((type) => clean(type).replace(/^(pcp|hp|pch)$/i, (m) => m.toUpperCase())).forEach((type) => {
+      if (type && !types.some((had) => had.toLowerCase() === type.toLowerCase())) types.push(type);
+    });
+    if (!types.length) return 'Discuss options';
+    if (types.length === 1) return types[0];
+    return `${types.slice(0, -1).join(', ')} or ${types[types.length - 1]}`;
+  }
+
+  /* The monthly budget as a figure, a most, a least or a range. The min and
+     max boxes win; the budget box may also be typed as "250-300",
+     "max 300", "up to 300", "min 250" or "250+". */
+  function budgetText(payment) {
+    const amount = '£?\\s*([\\d.,]+k?)';
+    let min = clean(payment.budgetMin);
+    let max = clean(payment.budgetMax);
+    let exact = clean(payment.budget);
+    const range = exact.match(new RegExp(`^${amount}\\s*(?:-|\u2013|to)\\s*${amount}$`, 'i'));
+    const most = exact.match(new RegExp(`^(?:max(?:imum)?|up to|under|below|no more than)\\s*${amount}$`, 'i'));
+    const least = exact.match(new RegExp(`^(?:min(?:imum)?|from|at least|over|above)\\s*${amount}$`, 'i')) || exact.match(new RegExp(`^${amount}\\s*\\+$`));
+    if (range) { min = min || range[1]; max = max || range[2]; exact = ''; }
+    else if (most) { max = max || most[1]; exact = ''; }
+    else if (least) { min = min || least[1]; exact = ''; }
+    if (min && max) return `Budget ${money(min)} to ${money(max)} per month`;
+    if (max) return `Max budget ${money(max)} per month`;
+    if (min) return `Min budget ${money(min)} per month`;
+    return exact ? `Budget ${money(exact)} per month` : '';
+  }
+
   function paymentLines(payment) {
     if (!payment || !payment.kind || payment.kind === 'unmentioned') return [];
     if (payment.kind === 'cash') return ['-Cash purchase'];
     if (payment.kind === 'cashOffers') return ['-Cash purchase | Looking to discuss available offers and price movement'];
-    const type = clean(payment.financeType) ? clean(payment.financeType).replace(/^(pcp|hp|pch)$/i, (m) => m.toUpperCase()) : 'Discuss options';
-    const parts = [type];
+    const parts = [financeTypeText(payment)];
     if (clean(payment.deposit) !== '') parts.push(`${money(payment.deposit)} deposit`);
     if (payment.term) parts.push(`${clean(payment.term).replace(/\s*(months?|m)$/i, '')} months`);
     if (payment.mpa) parts.push(`${normaliseMileage(payment.mpa) || clean(payment.mpa)} miles per annum`);
-    if (payment.budget) parts.push(`Budget ${money(payment.budget)} per month`);
+    const budget = budgetText(payment);
+    if (budget) parts.push(budget);
     (payment.extras || []).map((x) => stripFullStop(capitalFirst(x))).filter(Boolean).forEach((x) => parts.push(x));
     const lines = [`-Finance: ${parts.join(' | ')}`];
     if (payment.kind === 'both') lines.push('-Cash purchase also being considered');

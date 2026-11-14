@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.24.1'
+    version: '1.25.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -1635,7 +1635,7 @@
       category: '',
       px: { status: 'unmentioned', items: [{ make: '', model: '', reg: '', mileage: '', mileageUnknown: '', roughVal: '', finance: '', financeEnds: '', details: '' }] },
       sellingReason: '',
-      payment: { kind: 'unmentioned', financeType: '', deposit: '', term: '', mpa: '', budget: '', extra: '' },
+      payment: { kind: 'unmentioned', financeType: '', financeTypes: [], deposit: '', term: '', mpa: '', budget: '', budgetMin: '', budgetMax: '', extra: '' },
       reserved: false,
       onBehalfOf: '',
       notesText: '',
@@ -4015,20 +4015,42 @@
     const p = draft.data.payment;
     body.appendChild(bkChips(PAYMENT_KINDS, p.kind, (value) => { p.kind = value; changed(draft, true); }));
     if (p.kind === 'finance' || p.kind === 'both') {
-      body.appendChild(bkChips([
-        { value: '', label: 'Not sure' },
-        { value: 'PCP', label: 'PCP' },
-        { value: 'HP', label: 'HP' },
-        { value: 'PCH', label: 'PCH' }
-      ], p.financeType, (value) => { p.financeType = value; changed(draft, true); }, 'kn-bk-sub'));
+      // More than one type can be on: a customer may be open to PCP or HP.
+      // A draft from before this has the single financeType only.
+      if (!Array.isArray(p.financeTypes)) p.financeTypes = p.financeType ? [p.financeType] : [];
+      const setTypes = (types) => {
+        p.financeTypes = types;
+        p.financeType = types.join(' or ');
+        changed(draft, true);
+      };
+      const types = element('div', 'kn-bk-chips kn-bk-sub');
+      const typeChip = (text, on, press, title) => {
+        const chip = element('button', `kn-chip${on ? ' kn-active' : ''}`, text);
+        chip.type = 'button';
+        chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+        if (title) chip.title = title;
+        chip.addEventListener('click', press);
+        types.appendChild(chip);
+      };
+      typeChip('Not sure', !p.financeTypes.length, () => setTypes([]));
+      ['PCP', 'HP', 'PCH'].forEach((type) => {
+        const on = p.financeTypes.includes(type);
+        typeChip(type, on, () => setTypes(['PCP', 'HP', 'PCH'].filter((t) => (t === type ? !on : p.financeTypes.includes(t)))), 'Pick every type they are interested in');
+      });
+      body.appendChild(types);
       const row = element('div', 'kn-bk-row');
       row.appendChild(bkInput('Deposit £', p.deposit, (value) => { p.deposit = value; changed(draft); }, { inputMode: 'numeric' }));
       row.appendChild(bkInput('Months', p.term, (value) => { p.term = value; changed(draft); }, { inputMode: 'numeric' }));
       body.appendChild(row);
       const row2 = element('div', 'kn-bk-row');
       row2.appendChild(bkInput('Miles / year', p.mpa, (value) => { p.mpa = value; changed(draft); }, { placeholder: '10000' }));
-      row2.appendChild(bkInput('Budget £ / month', p.budget, (value) => { p.budget = value; changed(draft); }, { inputMode: 'numeric' }));
+      row2.appendChild(bkInput('Budget £ / month', p.budget, (value) => { p.budget = value; changed(draft); }, { placeholder: '300' }));
       body.appendChild(row2);
+      // A most or a least, or both for a range, in place of one figure.
+      const row3 = element('div', 'kn-bk-row');
+      row3.appendChild(bkInput('Min budget £ / month', p.budgetMin || '', (value) => { p.budgetMin = value; changed(draft); }, { inputMode: 'numeric' }));
+      row3.appendChild(bkInput('Max budget £ / month', p.budgetMax || '', (value) => { p.budgetMax = value; changed(draft); }, { inputMode: 'numeric' }));
+      body.appendChild(row3);
       body.appendChild(bkInput('Other finance details', p.extra, (value) => { p.extra = value; changed(draft); }, { placeholder: 'Wants APR | Settlement figure' }));
     }
   }
@@ -6089,6 +6111,7 @@
   KN.scanPage = scanPage;
   KN.findTopEmail = findTopEmail;
   KN.state = state;
+  KN.currentDraft = currentDraft;
   KN.openBooking = openBooking;
   KN.readLead = readLead;
   /* Pure builders, exposed for the tests. */

@@ -263,6 +263,17 @@ test('Finance: one line, defaults to Discuss options, cash + finance', () => {
     ['-Finance: PCP | £0 deposit | 48 months | 10000 miles per annum | Budget £300 per month']);
   assert.deepStrictEqual(lastLines({ kind: 'finance', budget: '250' }), ['-Finance: Discuss options | Budget £250 per month']);
   assert.deepStrictEqual(lastLines({ kind: 'both' }), ['-Finance: Discuss options', '-Cash purchase also being considered']);
+  // More than one finance type, from the builder's list or an older single value.
+  assert.deepStrictEqual(lastLines({ kind: 'finance', financeTypes: ['PCP', 'HP'] }), ['-Finance: PCP or HP']);
+  assert.deepStrictEqual(lastLines({ kind: 'finance', financeTypes: ['PCP', 'HP', 'PCH'], financeType: 'PCP' }), ['-Finance: PCP, HP or PCH']);
+  assert.deepStrictEqual(lastLines({ kind: 'finance', financeType: 'pcp / hp' }), ['-Finance: PCP or HP']);
+  assert.deepStrictEqual(lastLines({ kind: 'finance', financeTypes: [], financeType: 'HP' }), ['-Finance: HP']);
+  // A most, a least or a range for the monthly budget.
+  assert.deepStrictEqual(lastLines({ kind: 'finance', budgetMax: '300' }), ['-Finance: Discuss options | Max budget £300 per month']);
+  assert.deepStrictEqual(lastLines({ kind: 'finance', budgetMin: '250' }), ['-Finance: Discuss options | Min budget £250 per month']);
+  assert.deepStrictEqual(lastLines({ kind: 'finance', budgetMin: '250', budgetMax: '300', budget: '280' }), ['-Finance: Discuss options | Budget £250 to £300 per month']);
+  assert.deepStrictEqual(['250-300', '£250 to £300', 'max 300', 'up to £300', 'min 250', '250+'].map((budget) => lastLines({ kind: 'finance', budget })[0].split(' | ')[1]),
+    ['Budget £250 to £300 per month', 'Budget £250 to £300 per month', 'Max budget £300 per month', 'Max budget £300 per month', 'Min budget £250 per month', 'Min budget £250 per month']);
   assert.deepStrictEqual(lastLines({ kind: 'cashOffers' }), ['-Cash purchase | Looking to discuss available offers and price movement']);
 });
 

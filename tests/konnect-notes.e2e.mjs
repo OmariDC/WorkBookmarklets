@@ -334,6 +334,26 @@ async function bookingAndRoutes() {
   check('13 booking buttons are disabled while something is missing', blocked.slice(0, 3).every((b) => b[1] === true) && blocked[3][1] === false, blocked);
   check('12 Clear says what it clears', /Clear notes and form/.test(blocked[3][0]), blocked[3]);
 
+  // Finance: more than one type can be on, and the budget takes a most and a least.
+  await page.evaluate(() => { KonnectNotes.state.booking.openSection = 'payment'; KonnectNotes.openBooking(); });
+  await sleep(200);
+  await page.click('.kn-bk-content .kn-chip:text-is("Finance")');
+  for (const type of ['PCP', 'HP']) { await sleep(150); await page.click(`.kn-bk-content .kn-chip:text-is("${type}")`); }
+  await sleep(150);
+  const financeBox = (label) => `.kn-bk-content label:has-text("${label}") input, .kn-bk-content .kn-bk-field:has-text("${label}") input`;
+  await page.fill(financeBox('Min budget'), '250');
+  await page.fill(financeBox('Max budget'), '300');
+  await sleep(200);
+  const finance = await page.evaluate(() => ({
+    on: Array.from(document.querySelectorAll('.kn-bk-content .kn-bk-sub .kn-chip.kn-active')).map((c) => c.textContent),
+    payment: KonnectNotes.currentDraft().data.payment,
+    lines: KonnectBookingEngine.paymentLines ? KonnectBookingEngine.paymentLines(KonnectNotes.currentDraft().data.payment) : null
+  }));
+  check('finance: PCP and HP are both on, with a budget range kept on the draft', JSON.stringify(finance.on) === '["PCP","HP"]' && JSON.stringify(finance.payment.financeTypes) === '["PCP","HP"]' && finance.payment.budgetMin === '250' && finance.payment.budgetMax === '300', finance);
+  await page.click('.kn-bk-content .kn-chip:text-is("Not sure")');
+  await sleep(150);
+  check('finance: Not sure clears the types', await page.evaluate(() => KonnectNotes.currentDraft().data.payment.financeTypes.length === 0 && KonnectNotes.currentDraft().data.payment.financeType === ''));
+
   // Item 10: yesterday is an error until the year is confirmed.
   const dates = await page.evaluate(() => {
     const now = new Date();
