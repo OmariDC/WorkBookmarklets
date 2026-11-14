@@ -121,40 +121,42 @@ async function notesCorrectness() {
   check('1 Initial Notes copied into Call Notes as whole lines appear once', await typeCad(page) ===
     `Web enquiry: used 208\nCallback after 5pm\n1 - VM left -- Sam Tester\n${CAD}`, await page.inputValue('#pcA'));
 
-  // Item 2: repeats inside one box are kept; repeats between boxes are not.
+  // Item 2: Initial Notes keep their own repeats; every later line is written once.
   page = await fresh();
   await page.fill('#initA', 'Part exchange:\nNo\nFinance:\nNo\nTest drive:\nYes');
   await page.fill('#callA', '1 - VM left -- Sam Tester\nNo answer\n1 - VM left -- Sam Tester');
   const repeated = await typeCad(page);
-  check('2 repeated lines inside Initial Notes and Call Notes are kept', repeated ===
-    `Part exchange:\nNo\nFinance:\nNo\nTest drive:\nYes\n1 - VM left -- Sam Tester\nNo answer\n1 - VM left -- Sam Tester\n${CAD}`, repeated);
+  check('2 repeats inside Initial Notes are kept, a line repeated in Call Notes is written once', repeated ===
+    `Part exchange:\nNo\nFinance:\nNo\nTest drive:\nYes\n1 - VM left -- Sam Tester\nNo answer\n${CAD}`, repeated);
   await page.keyboard.press('Enter');
   await page.keyboard.type('cad ');
   await sleep(150);
   check('2 running it again adds nothing twice', (await page.inputValue('#pcA')).trim() === repeated, await page.inputValue('#pcA'));
 
-  // Item 3: another tab with the same Initial Notes is not this lead.
-  const twoLeads = async (leadA, leadB) => {
+  // Item 3: the other tab with the same Initial Notes holds the clean Call
+  // Notes (a Post Closure lead and the lead it was raised for). Each attempt
+  // leaves its Post Closure Notes at the bottom of this lead's Call Notes.
+  const twoLeads = async (initB, callA) => {
     const p = await fresh({ before: `(() => {
-      ${leadA ? `document.querySelector('#paneA').dataset.leadId = '${leadA}';` : ''}
-      ${leadB ? `document.querySelector('#paneB').dataset.leadId = '${leadB}';` : ''}
-      document.querySelector('#initB').value = 'Web enquiry: used 208, callback please';
-      document.querySelector('#callB').value = 'LEAD B: 1 - VM left -- Other Agent';
+      document.querySelector('#paneA').dataset.leadId = '77000001';
+      document.querySelector('#paneB').dataset.leadId = '77000002';
+      document.querySelector('#initB').value = ${JSON.stringify(initB)};
+      document.querySelector('#callB').value = '1 - VM left -- Other Agent';
       document.querySelector('#pcWrapB').style.display = 'none';
     })()` });
     await p.fill('#initA', 'Web enquiry: used 208, callback please');
-    await p.fill('#callA', 'LEAD A: spoke to customer');
+    await p.fill('#callA', callA);
     const pc = await typeCad(p);
     return { p, pc, callA: await p.inputValue('#callA'), callB: await p.inputValue('#callB') };
   };
-  let r = await twoLeads('', '');
-  check('3 no lead ID on the page: Call Notes untouched', r.callA === 'LEAD A: spoke to customer' && !/LEAD B/.test(r.pc) && r.callB === 'LEAD B: 1 - VM left -- Other Agent', r);
-  r = await twoLeads('77000001', '77000002');
-  check('3 a different lead ID: Call Notes untouched', r.callA === 'LEAD A: spoke to customer' && !/LEAD B/.test(r.pc), r);
-  r = await twoLeads('77000001', '77000001');
-  check('3 the same lead ID: the second mount of this lead is still used', r.callA === 'LEAD B: 1 - VM left -- Other Agent' && /LEAD B/.test(r.pc) && /LEAD A/.test(r.pc), r);
+  const MESSY = `1 - VM left -- Other Agent\nWeb enquiry: used 208, callback please\n1 - VM left -- Other Agent\n${CAD}\nWeb enquiry: used 208, callback please 1 - VM left -- Other Agent ${CAD}\n2 - no answer -- Sam Tester`;
+  let r = await twoLeads('Some other enquiry altogether', MESSY);
+  check('3 a tab with other Initial Notes is not used: Call Notes untouched', r.callA === MESSY && r.callB === '1 - VM left -- Other Agent', r);
+  r = await twoLeads('Web enquiry: used 208, callback please', MESSY);
+  check('3 the same Initial Notes on the other tab: earlier attempts are taken out of Call Notes', r.callA === '1 - VM left -- Other Agent' && r.callB === '1 - VM left -- Other Agent', r);
+  check('3 and Post Closure Notes hold each line once', r.pc === `Web enquiry: used 208, callback please\n1 - VM left -- Other Agent\n2 - no answer -- Sam Tester\n${CAD}`, r.pc);
   await r.p.keyboard.press('Control+z');
-  check('3 Ctrl+Z puts both boxes back', await r.p.inputValue('#callA') === 'LEAD A: spoke to customer' && await r.p.inputValue('#pcA') === '', [await r.p.inputValue('#callA'), await r.p.inputValue('#pcA')]);
+  check('3 Ctrl+Z puts both boxes back', await r.p.inputValue('#callA') === MESSY && await r.p.inputValue('#pcA') === '', [await r.p.inputValue('#callA'), await r.p.inputValue('#pcA')]);
 
   // Item 4: a shorthand that writes nothing says so on the page.
   page = await fresh();
@@ -402,7 +404,7 @@ async function pureBuilders() {
     selectedText: 'CATCH ALL LINE',
     ignoredLines: ['cad']
   }));
-  check('plan: whole lines only, repeats kept inside a box, dropped between boxes', plan.postClosureValue === 'Finance\nNo\nRefinance wanted\nmy own note\nmy own note\nCATCH ALL LINE' && plan.shouldCleanCall === false, plan);
+  check('plan: short Initial Notes are only taken out as whole lines, and each later line is written once', plan.postClosureValue === 'Finance\nNo\nRefinance wanted\nmy own note\nCATCH ALL LINE' && plan.shouldCleanCall === false, plan);
   check('plan: no Initial Notes gives no plan', await page.evaluate(() => KonnectNotes.buildPostClosurePlan({ initialText: ' \n', activeCallText: 'x', selectedText: 'y' })) === null);
 
   // Item 14: standard phrase updates reach a locally edited list.

@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.24.0'
+    version: '1.24.1'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -491,31 +491,22 @@
     return false;
   }
 
-  /* The lead a notes pane belongs to, from the page's own data. Empty when
-     the page does not say, and then nothing is assumed about the pane. */
-  function paneLeadId(notes) {
-    const node = notes?.call?.editor || notes?.initial?.editor || notes?.panel;
-    const activity = node ? leadScopeActivity(node) : null;
-    return activity && activity.ID != null ? String(activity.ID) : '';
-  }
-
-  /* Konnect can mount the same lead twice. A second pane only counts as this
-     lead when the page gives both the same lead ID: matching Initial Notes
-     is not proof, as two leads can carry the same web enquiry text. */
+  /* A Post Closure lead and the lead it was raised for sit in two tabs with
+     the same Initial Notes. The other tab's Call Notes are the clean copy:
+     Konnect adds each attempt's Post Closure Notes to the bottom of this
+     lead's Call Notes, and they are taken back out from there. */
   function findMountedDuplicateNoteSet(activeNotes) {
     if (!activeNotes?.panel || !activeNotes.initial?.editor) return null;
     const tabContent = activeNotes.panel.parentElement;
     if (!tabContent?.classList?.contains('tab-content')) return null;
 
-    const activeLeadId = paneLeadId(activeNotes);
     const activeInitialKey = noteValueKey(activeNotes.initial.editor.value);
-    if (!activeLeadId || !activeInitialKey) return null;
+    if (!activeInitialKey) return null;
 
     const candidates = Array.from(tabContent.children)
       .filter((panel) => panel !== activeNotes.panel && panel.classList?.contains('tab-pane'))
       .map(panelNoteSet)
       .filter((notes) => notes?.initial?.editor && notes.call?.editor)
-      .filter((notes) => paneLeadId(notes) === activeLeadId)
       .filter((notes) => noteValueKey(notes.initial.editor.value) === activeInitialKey);
 
     candidates.sort((a, b) => {
@@ -5420,9 +5411,10 @@
     return '';
   }
 
-  /* Takes a known block (the Initial Notes, say) out of other notes only
-     where it appears as the same whole lines in the same order. Words inside
-     a longer line are never touched. */
+  /* Takes a known block (the Initial Notes, say) out of other notes where it
+     appears as the same whole lines in the same order. A block of four
+     words or more is also taken out where Konnect has run it into one line;
+     anything shorter is left, so words inside a longer line are not cut. */
   function removeKnownNoteBlocks(value, knownValues) {
     let lines = cleanNoteLines(value);
     knownValues.forEach((known) => {
@@ -5436,6 +5428,12 @@
         else { kept.push(lines[index]); index += 1; }
       }
       lines = kept;
+      const tokens = normaliseText(known).split(' ').filter(Boolean);
+      if (tokens.length < 4 || tokens.join(' ').length < 20) return;
+      const pattern = new RegExp('(^|\\s)' + tokens
+        .map((token) => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+        .join('\\s+') + '(?=\\s|$)', 'ig');
+      lines = cleanNoteLines(lines.join('\n').replace(pattern, '\n'));
     });
     return lines.join('\n');
   }
@@ -5496,20 +5494,23 @@
     );
     const selectedLines = meaningfulNoteLines(input?.selectedText || '', ignoredLineKeys);
 
-    /* A line is dropped only when an earlier box already gave it. Lines
-       repeated inside one box ("No" under two questions, the same attempt
-       twice) are real and stay. */
+    /* Initial Notes keep their own repeats ("No" under two questions).
+       After them every line is written once: each attempt's notes come
+       back in Call Notes, so the same lines turn up again and again. */
     const output = [];
     const seen = new Set();
-    [initialLines, canonicalCallLines, existingLines, migratedCallLines, selectedLines].forEach((source) => {
-      const keys = [];
+    initialLines.forEach((line) => { if (noteLineKey(line)) output.push(line); });
+    initialLines.forEach((line) => seen.add(noteLineKey(line)));
+    // The note being written goes last, even when an earlier attempt left
+    // the same line further up.
+    const writing = new Set(selectedLines.map(noteLineKey));
+    [canonicalCallLines, existingLines, migratedCallLines, selectedLines].forEach((source) => {
       source.forEach((line) => {
         const key = noteLineKey(line);
-        if (!key || seen.has(key)) return;
-        keys.push(key);
+        if (!key || seen.has(key) || (source !== selectedLines && writing.has(key))) return;
+        seen.add(key);
         output.push(line);
       });
-      keys.forEach((key) => seen.add(key));
     });
     return {
       postClosureValue: output.join('\n'),

@@ -332,7 +332,7 @@ async function postClosureAcrossLeads() {
     status: 'Shift Start',
     customers: [{ id: 'sam', name: 'Sam Buyer', email: 'sam.buyer@example.com', phone: '07700 900102', parked: true, leads: [
       lead(0, { OutcomeFullHierarchy: 'Sales -> Not Interested', initial: 'Asked about a van', created: '2026-11-01T09:00:00', pcBox: true }),
-      lead(1, { OutcomeFullHierarchy: 'Sales -> Customer Hub Team -> Ongoing -> Email Only Lead', initial: 'Wants a used 208', created: '2026-11-12T20:10:00', pcBox: true }),
+      lead(1, { OutcomeFullHierarchy: 'Sales -> Customer Hub Team -> Ongoing -> Email Only Lead', initial: 'Wants a used 208', created: '2026-11-12T20:10:00', pcBox: true, detailsClosed: true, realModel: true }),
       lead(2, { OutcomeFullHierarchy: 'None', SourceName: 'Post Closure Processing', initial: 'Wants a  used 208', created: '2026-11-14T10:09:00', pcBox: false })
     ] }]
   }, { _workToolsDeskResults: { results: [sendBack('Sam Buyer', 'sam.buyer@example.com', '07700 900102', 'Email only')] } });
@@ -343,6 +343,10 @@ async function postClosureAcrossLeads() {
   const notes = await page.evaluate(() => ['sam-0', 'sam-1'].map((id) => document.querySelector(`[data-lead="${id}"] .pcNotes`).value));
   check('the note is on the lead with the same Initial Notes, not the other earlier lead', notes[0] === '' && notes[1].includes('Catch All'), notes);
   check('the outcome is on the Post Closure lead only', review.events.some((e) => /^level3:sam-2:Catch All/.test(e)) && !review.events.some((e) => /^level\d:sam-[01]:/.test(e)), review.events);
+  // Each lead is reached by one press on its own tab, and only the folded
+  // section in the way is opened: no other tab or section heading is pressed.
+  const presses = review.events.filter((e) => /^(tab|section):/.test(e));
+  check('one press per tab and per folded section, nothing else pressed', JSON.stringify(presses) === JSON.stringify(['tab:sam-1', 'section:sam-1:Details', 'tab:sam-2', 'section:sam-2:Outcomes']), presses);
   check('no page errors', errors.length === 0, errors);
   await context.close();
 }

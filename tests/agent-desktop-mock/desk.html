@@ -1,5 +1,5 @@
 <!doctype html><html><head><meta charset="utf-8"><title>Mock agent desktop: Post Closure, Email Only and Send through</title>
-<style>.hide { display: none; } .tab-pane { display: none; } .tab-pane.active { display: block; } textarea { display: block; width: 300px; }</style>
+<style>.hide { display: none; } .tab-pane { display: none; } .tab-pane.active { display: block; } .panel-collapse { display: none; } .panel-collapse.in { display: block; } textarea { display: block; width: 300px; }</style>
 </head><body>
 <!-- Mock of the agent desktop for the Post Closure send back, Email Only and
      Send through runs in Lead-Reset.js. The test calls window.mock.setup() with the
@@ -171,18 +171,26 @@ function buildCall(c, outcome) {
 function drawLeads(c, callScope) {
  c.leads.forEach((l, i) => {
   const scope = { theActivity: l.activity, $parent: callScope };
-  const li = document.createElement('li'); li.setAttribute('ng-repeat', 'tab in tabs');
-  li.innerHTML = `<a ng-click="select()">${esc(l.CampaignName)}</a>`;
-  li.querySelector('a').addEventListener('click', () => activate(i));
+  // As Konnect draws it: each lead's tab heading is repeated per lead, the
+  // panes are repeated as "tab in tabs", and a pane's own links are the
+  // headings of its sections (Details, Lead, Outcomes), which fold.
+  const li = document.createElement('li'); li.setAttribute('ng-repeat', 'theActivity in liveActivities'); li.__scope = scope;
+  li.innerHTML = `<a ng-click="select()" class="ng-binding">${esc(l.CampaignName)}</a>`;
+  li.querySelector('a').addEventListener('click', () => { events.push('tab:' + l.ID); activate(i); });
   $('tabs').appendChild(li);
-  const marker = document.createElement('div'); marker.setAttribute('ng-repeat', 'theActivity in liveActivities'); marker.__scope = scope;
-  $('acts').appendChild(marker);
-  const pane = document.createElement('div'); pane.className = 'tab-pane'; pane.__scope = scope; pane.dataset.lead = l.ID;
+  const pane = document.createElement('div'); pane.className = 'tab-pane'; pane.setAttribute('ng-repeat', 'tab in tabs'); pane.__scope = scope; pane.dataset.lead = l.ID;
+  const section = (name, open, body) => `<div class="panel panel-default" data-section="${name}"><div class="panel-heading"><h4 class="panel-title"><a class="accordion-toggle" ng-click="toggleOpen()">${name}</a></h4></div><div class="panel-collapse collapse${open ? ' in' : ''}"><div class="panel-body">${body}</div></div></div>`;
   // Laid out as Konnect Notes expects: Call Notes in footer.text-primary.
-  pane.innerHTML = `<div class="form-group"><label>Initial Notes</label><div><textarea readonly class="initialNotes"></textarea></div></div>`
+  pane.innerHTML = section('Details', !l.detailsClosed, `<div class="form-group"><label>Initial Notes</label><div><textarea readonly class="initialNotes"></textarea></div></div>`
    + `<div class="form-group"><label>Call Notes</label><footer class="text-primary"><textarea ng-model="theActivity.SalesLead.LeadDetails.Notes" class="form-control callNotes"></textarea></footer></div>`
-   + ((l.pcBox === undefined ? l.SourceName === 'Post Closure Processing' : l.pcBox) ? `<div class="form-group"><label>Post Closure Notes</label><div><textarea ng-model="theActivity.SalesLead.PostClosureNotes" class="form-control pcNotes"></textarea></div></div>` : '')
-   + `<div class="outcomes"><select ng-model="theActivity.SelectedOutcomeLevel1"></select><select ng-model="theActivity.SelectedOutcomeLevel2"></select><select ng-model="theActivity.SelectedOutcomeLevel3"></select></div>`;
+   + ((l.pcBox === undefined ? l.SourceName === 'Post Closure Processing' : l.pcBox) ? `<div class="form-group"><label>Post Closure Notes</label><div><textarea ng-model="theActivity.SalesLead.${l.realModel ? 'LeadDetails.' : ''}PostClosureNotes" class="form-control pcNotes"></textarea></div></div>` : ''))
+   + section('Lead', false, '<select ng-model="theActivity.SalesLead.LeadDetails.LeadTypeID"><option>Used</option></select>')
+   + section('Outcomes', !!l.outcomesOpen, `<div class="outcomes"><select ng-model="theActivity.SelectedOutcomeLevel1"></select><select ng-model="theActivity.SelectedOutcomeLevel2"></select><select ng-model="theActivity.SelectedOutcomeLevel3"></select></div>`);
+  pane.querySelectorAll('.accordion-toggle').forEach((a) => a.addEventListener('click', () => {
+   const panel = a.closest('.panel');
+   events.push(`section:${l.ID}:${panel.dataset.section}`);
+   panel.querySelector('.panel-collapse').classList.toggle('in');
+  }));
   pane.querySelector('.initialNotes').value = l.initial || '';
   pane.querySelector('.callNotes').value = l.activity.SalesLead.LeadDetails.Notes;
   if (pane.querySelector('.pcNotes')) pane.querySelector('.pcNotes').value = l.activity.SalesLead.PostClosureNotes;

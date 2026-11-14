@@ -787,7 +787,7 @@ let value = null;
 try { value = fn(); } catch (error) { value = null; }
 if (value) return value;
 if (Date.now() > end) return null;
-await sleep(intervalMs || 250);
+await sleep(intervalMs || 100);
 }
 }
 
@@ -807,7 +807,7 @@ const now = signature(list);
 if (now !== last) { last = now; changedAt = Date.now(); }
 if (list.length ? Date.now() - changedAt >= quietMs : Date.now() - started >= emptyMs) return list;
 if (Date.now() - started > emptyMs + 20000) return list;
-await sleep(250);
+await sleep(100);
 }
 }
 
@@ -918,7 +918,7 @@ return String((lead && (lead.ID || lead.ActivityGuid)) || activity.ID || '');
 
 // The customer's leads once Konnect has finished drawing them.
 function settledLeads() {
-return settledList(liveActivities, (list) => list.map(({ activity }) => activityKey(activity)).join(','), 12000, 1000);
+return settledList(liveActivities, (list) => list.map(({ activity }) => activityKey(activity)).join(','), 12000, 600);
 }
 
 function statusButton() {
@@ -1223,14 +1223,43 @@ if (!activity) return [];
 return Array.from(document.querySelectorAll(selector)).filter((el) => belongsTo(el, activity));
 }
 
-// Opens the closed section around a control so the result can be seen.
+// Whether a section is open, from the page's own state rather than from
+// what can be seen: a section on a tab that is not in front is hidden
+// whether it is open or not, and pressing an open one's heading folds it.
+function sectionIsOpen(panel, toggle, el) {
+const scope = scopeOf(toggle);
+if (scope && typeof scope.isOpen === 'boolean') return scope.isOpen;
+const body = panel.querySelector('.panel-collapse');
+if (body) return body.classList.contains('in');
+return panel.classList.contains('panel-open') || isVisible(el);
+}
+
+// Opens the closed section around a control. True when it pressed the heading.
 function revealSection(el) {
 const panel = el && el.closest('.panel');
-// A control already in view needs nothing: pressing the heading again
-// would fold the section away.
-if (!panel || panel.classList.contains('panel-open') || isVisible(el)) return;
+if (!panel || isVisible(el)) return false;
 const toggle = panel.querySelector('.accordion-toggle, a[ng-click="toggleOpen()"]');
-if (toggle) toggle.click();
+if (!toggle || sectionIsOpen(panel, toggle, el)) return false;
+toggle.click();
+return true;
+}
+
+// A lead's control once it can be seen, opening its section if that is
+// what hides it. null when it stays hidden.
+async function shown(el) {
+if (!el) return null;
+if (!isVisible(el) && revealSection(el)) await waitFor(() => isVisible(el), 1500, 50);
+return isVisible(el) ? el : null;
+}
+
+// Opens one of a lead's sections by its heading ("Outcomes"), for when the
+// controls inside are not drawn until it is open.
+function openSectionNamed(activity, name) {
+const toggle = controlsOf(activity, '.accordion-toggle, a[ng-click="toggleOpen()"]').find((a) => normalise(a.textContent) === normalise(name));
+const panel = toggle && toggle.closest('.panel');
+if (!panel || sectionIsOpen(panel, toggle, null)) return false;
+toggle.click();
+return true;
 }
 
 // The new lead's own Call Notes box (LeadDetails.Notes), the one Konnect
@@ -1492,11 +1521,10 @@ box.setSelectionRange(before.length, before.length);
 try { document.execCommand('insertText', false, text); } catch (error) { /* set below */ }
 if (box.value !== before + text) setFieldValue(box, before + text);
 box.setSelectionRange(box.value.length, box.value.length);
-await sleep(200);
+await sleep(50);
 const space = new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true });
 box.dispatchEvent(space);
-await sleep(500);
-if (!space.defaultPrevented || !SHORTHAND_MARKERS[word].test(box.value)) {
+if (!space.defaultPrevented || !await pollUntil(() => SHORTHAND_MARKERS[word].test(box.value), 800, 50)) {
 saved.forEach(([b, value]) => { if (b.value !== value) setFieldValue(b, value); });
 return false;
 }
@@ -1506,7 +1534,7 @@ return true;
 async function chooseCallOutcome(text) {
 const select = visibleFirst(document.querySelectorAll('select[ng-model="selected.CallOutcome"]'));
 if (!select || !chooseByText(select, text)) throw new NeedsYou(`Set the call outcome to "${text}" yourself.`);
-await sleep(600);
+await sleep(200);
 return `Call outcome: ${text}`;
 }
 
@@ -1523,11 +1551,16 @@ async function setLeadOutcome(activity, path, pick) {
 const indexIn = pick || chooseOptionIndex;
 const picked = [];
 if (!activity) throw new NeedsYou(`The lead was not found, so its outcome was left alone. Set it to ${path.join(' > ')} yourself, or skip this one.`);
-const first = controlsOf(activity, 'select[ng-model^="theActivity.SelectedOutcomeLevel"]')[0];
-if (first) revealSection(first);
+// The Outcomes section may be folded, and its lists may not be drawn
+// until it is open: opened once, by its lists or else by its heading.
+let opened = false;
 for (let level = 0; level < path.length; level++) {
 const select = await waitFor(() => {
 const s = outcomeLevelSelects(activity)[level];
+if (!s && !opened && !outcomeLevelSelects(activity).length) {
+const hidden = controlsOf(activity, 'select[ng-model^="theActivity.SelectedOutcomeLevel"]')[0];
+opened = hidden ? revealSection(hidden) : openSectionNamed(activity, 'Outcomes');
+}
 return s && indexIn(optionTexts(s), path[level]) >= 0 ? s : null;
 }, 8000);
 if (!select) throw new NeedsYou(`Could not choose "${path[level]}". Set the lead outcome to ${path.join(' > ')} yourself.`);
@@ -1535,11 +1568,12 @@ const wanted = pick ? optionTexts(select)[pick(optionTexts(select), path[level])
 picked.push(wanted);
 if (normalise(selectedText(select)) !== normalise(wanted)) {
 if (!chooseByText(select, wanted)) throw new NeedsYou(`Could not choose "${path[level]}". Set the lead outcome to ${path.join(' > ')} yourself.`);
-await sleep(600);
+await sleep(150);
 }
 }
-const chosen = outcomeLevelSelects(activity).slice(0, path.length).map(selectedText);
-if (chosen.map(normalise).join('|') !== picked.map(normalise).join('|')) throw new NeedsYou(`The lead outcome did not stay as ${path.join(' > ')}. Set it yourself.`);
+const stayed = () => outcomeLevelSelects(activity).slice(0, path.length).map(selectedText).map(normalise).join('|') === picked.map(normalise).join('|');
+await sleep(300);
+if (!stayed() && !await waitFor(stayed, 1500)) throw new NeedsYou(`The lead outcome did not stay as ${path.join(' > ')}. Set it yourself.`);
 return `Lead outcome: ${path.join(' > ')}`;
 }
 
@@ -1564,14 +1598,35 @@ if (!await waitFor(() => !onCallPage(), 30000)) throw new NeedsYou('The call did
 return 'Finished';
 }
 
-// The lead's tab to the front, so its notes boxes are the visible ones.
+// Each lead's own tab heading. Konnect repeats the headings per lead and
+// draws the panes apart from them, so a heading is found from its lead.
+// The links inside a pane are its section headings, never tabs.
+function leadTabs() {
+const tabs = [];
+const seen = new Set();
+document.querySelectorAll('[ng-repeat^="theActivity in liveActivities"]').forEach((el) => {
+const scope = scopeOf(el);
+const activity = scope && scope.theActivity;
+if (!activity || seen.has(activity) || el.closest('.tab-pane')) return;
+const link = el.matches('a') ? el : el.querySelector('a[ng-click^="select"]') || (el.tagName === 'LI' ? el.querySelector('a') : null);
+if (!link) return;
+seen.add(activity);
+tabs.push({ activity, el, link });
+});
+return tabs;
+}
+
+// The lead's tab to the front, so its notes boxes are the visible ones:
+// one press on its own heading.
 async function bringLeadIntoView(activity) {
+if (!activity) return false;
 if (leadInView() === activity) return true;
-const links = Array.from(document.querySelectorAll('[ng-repeat^="tab in tabs"] a'));
+const own = leadTabs().filter((tab) => tab.activity === activity).map((tab) => tab.link);
+// Headings that cannot be told apart by lead are tried in turn.
+const links = own.length ? own : Array.from(document.querySelectorAll('.nav-tabs a, a[ng-click="select()"]')).filter((a) => !a.closest('.tab-pane, .tab-content'));
 for (const link of links) {
 link.click();
-await sleep(600);
-if (leadInView() === activity) return true;
+if (await waitFor(() => leadInView() === activity, 1500, 50)) return true;
 }
 return false;
 }
@@ -1635,7 +1690,6 @@ const row = matchPerson(rows, lead);
 if (!row) throw new NeedsYou(`${lead.name} is not in your Parked Calls. Skip them, or open them yourself and carry on.`, { carryOnLabel: 'Opened, carry on' });
 (row.confirm || row.tr).click();
 if (!await waitFor(onCallPage, 20000)) throw new NeedsYou(`${lead.name} did not open. Press Open on them yourself.`, { carryOnLabel: 'Opened, carry on' });
-await sleep(1000);
 return `Opened ${lead.name}`;
 }
 
@@ -1713,10 +1767,9 @@ const PC_NOTES = 'textarea[ng-model$="LeadDetails.PostClosureNotes"]';
 // On the lead it was raised for first, then the Post Closure lead itself.
 let box = null;
 for (const holder of [ctx.original, ctx.activity].filter(Boolean)) {
-await bringLeadIntoView(holder);
-const own = controlsOf(holder, PC_NOTES)[0];
-if (own && !isVisible(own)) { revealSection(own); await sleep(400); }
-box = (own && isVisible(own) ? own : null) || findLabelledBox('post closure notes');
+// Another lead's tab still in front: its boxes are not this lead's.
+if (!await bringLeadIntoView(holder) && leadInView()) continue;
+box = await shown(controlsOf(holder, PC_NOTES)[0]) || findLabelledBox('post closure notes');
 if (box) { ctx.notesOn = holder; break; }
 }
 // No box on the Post Closure lead and no proven match: the owner says
@@ -1724,15 +1777,18 @@ if (box) { ctx.notesOn = holder; break; }
 if (!box && !ctx.original && (ctx.originalChoices || []).length) {
 ctx.original = leadPickedByAgent(ctx, ctx.originalChoices, 'Post Closure Notes are on the lead this one was raised for, and it is not certain which that is.');
 await bringLeadIntoView(ctx.original);
-const own = controlsOf(ctx.original, PC_NOTES)[0];
-if (own && !isVisible(own)) { revealSection(own); await sleep(400); }
-box = (own && isVisible(own) ? own : null) || findLabelledBox('post closure notes');
+box = await shown(controlsOf(ctx.original, PC_NOTES)[0]) || findLabelledBox('post closure notes');
 if (box) ctx.notesOn = ctx.original;
 }
 const typeIt = { carryOnLabel: 'Typed it, check again', onConfirm: () => {} };
 if (!box) throw new NeedsYou(`Could not find Post Closure Notes. Type ${lead.shorthand} there and press space yourself.`, typeIt);
-if (SHORTHAND_MARKERS[lead.shorthand].test(box.value)) return `${lead.shorthand.toUpperCase()} note already in Post Closure Notes`;
-if (!await typeShorthand(box, lead.shorthand, [callNotesBoxOf(ctx.notesOn || ctx.activity)])) {
+// Earlier attempts leave their notes at the bottom of Call Notes. Konnect
+// Notes takes them back out when it writes the note, so it is written
+// again while any are there.
+const callBox = callNotesBoxOf(ctx.notesOn || ctx.activity);
+const tidyCall = !!callBox && /catch\s+all\s+return\s+lead/i.test(callBox.value);
+if (SHORTHAND_MARKERS[lead.shorthand].test(box.value) && !tidyCall) return `${lead.shorthand.toUpperCase()} note already in Post Closure Notes`;
+if (!await typeShorthand(box, lead.shorthand, [callBox])) {
 throw new NeedsYou(`Konnect Notes did not write the note, so the notes were put back as they were. Type ${lead.shorthand} in Post Closure Notes and press space yourself.`, typeIt);
 }
 ctx.wrote = `the ${lead.shorthand.toUpperCase()} note`;
@@ -2689,6 +2745,9 @@ return Number.isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-GB');
 function leadInView() {
 const entries = liveActivities();
 if (entries.length === 1) return entries[0].activity;
+// The page marks the tab in front itself.
+const front = leadTabs().filter((tab) => tab.el.classList.contains('active'));
+if (front.length === 1) return front[0].activity;
 const visible = entries.filter(({ activity }) => controlsOf(activity, 'select, textarea, button, input').some(isVisible));
 return visible.length === 1 ? visible[0].activity : null;
 }
