@@ -389,6 +389,8 @@ let finishedOutcomes = null;
   check('a National batch runs on the mock', verdicts.join('|') === 'national|Re setup|Not found', verdicts);
   await t.avatar(0).click();
   check('National: the lead created at that time is opened', await t.waitState(/^Morgan Reedwell is open: timeline and lead\.$/) && (await t.page()).lead === '1386301', [await t.state(), await t.page()]);
+  // The customer's two leads are one row: the second lead's button is inside it.
+  await t.panel('#resultsBody .customer[data-key="0"] .customer-summary').click();
   await t.avatar(1).click();
   check('National: no lead at that time, timeline only', await t.waitState(/^Morgan Reedwell is open, timeline only: the lead for 07\/11\/2026 08:00 was not found\.$/) && (await t.page()).modals === 0, await t.state());
   check('no page errors', t.errors.length === 0, t.errors);

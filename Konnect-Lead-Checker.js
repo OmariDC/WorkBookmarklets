@@ -2748,65 +2748,51 @@ return variants.filter((v, i) => v.length >= 3 && variants.indexOf(v) === i);
 
 async function searchAndOpenNationalCustomer(group, session) {
 const sample = group.rows[0];
-// Konnect's name search does not match names with a title in front.
-let search = { status: 'SEARCH_NO_RESULTS' };
-let name = '';
-for (const variant of nameSearchVariants(sample.name)) {
-name = variant;
-search = await runCustomerSearch('name', variant, session);
-if (search.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
-if (search.status === 'OK' && nationalCandidateIds(search.rows, sample.name).length > 0) break;
-}
-// Nothing by name: the reg (or lead reference) is the other way in.
-if (search.status !== 'OK') {
-for (const reg of group.rows.map((r) => r.reg).filter(Boolean)) {
-const byReg = await runCustomerSearch('reg', reg, session);
-if (byReg.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
-if (byReg.status === 'OK') { search = Object.assign(byReg, { spec: { type: 'reg', value: reg } }); break; }
-}
-}
-if (search.status !== 'OK') return { status: 'FAILED', exception: search.status };
-
 const regs = group.rows.map((r) => r.reg).filter(Boolean);
-const ids = nationalCandidateIds(search.rows, sample.name, regs);
-if (ids.length === 0) return { status: 'FAILED', exception: 'CUSTOMER_NOT_LINKED' };
-const single = ids.length === 1;
-if (single) {
+const cancelled = { status: 'FAILED', exception: 'CANCELLED' };
+const found = { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
+const tried = new Set();
+// The first search that gave a record: where to land if no record holds
+// the leads, so each lead can say "Not found" against a real timeline.
+let fallback = null;
+let lastStatus = 'SEARCH_NO_RESULTS';
+// Every way in is tried until a record's timeline holds one of these
+// leads: the name (titles off, apostrophes three ways), then each reg. A
+// first match that is a namesake, or a second profile, does not end it.
+const ways = nameSearchVariants(sample.name).map((value) => ({ type: 'name', value }))
+.concat(regs.map((value) => ({ type: 'reg', value })));
+for (const spec of ways) {
+const search = await runCustomerSearch(spec.type, spec.value, session);
+if (search.status === 'CANCELLED') return cancelled;
+if (search.status !== 'OK') { lastStatus = search.status; continue; }
+const all = nationalCandidateIds(search.rows, sample.name, spec.type === 'reg' ? [spec.value] : regs);
+const ids = all.filter((id) => !tried.has(id));
+if (!fallback && all.length) fallback = { spec, ids: all };
+if (ids.length === 0) { if (all.length === 0) lastStatus = 'CUSTOMER_NOT_LINKED'; continue; }
+ids.forEach((id) => tried.add(id));
+const openById = (id) => openSearchResultById(runCustomerSearch, spec, id, session);
+if (ids.length === 1) {
+// One record: opened straight from these results, without searching again.
 const row = search.rows.find((r) => r.customerId === ids[0]);
-const timelineState = await openCustomerAndWaitForTimeline(row);
-if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
-if (timelineState.state === 'FAILED') return { status: 'FAILED', exception: 'TIMELINE_TIMEOUT' };
+let state = await openCustomerAndWaitForTimeline(row);
+if (isCancelled(session)) return cancelled;
+// A timeline that did not load is given one more try.
+if (state.state === 'FAILED') state = await openById(ids[0]);
+if (isCancelled(session)) return cancelled;
+if (state.state === 'FAILED') { lastStatus = 'TIMELINE_TIMEOUT'; continue; }
 await waitForTimelineItemsSettled();
-// One record with the name is usually the person, but it can be a
-// namesake: only stop here when it holds one of these leads.
-if (await countGroupLeadsOnTimeline(group, session) > 0) return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
-if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
+if (await countGroupLeadsOnTimeline(group, session) > 0) return found;
+} else if (await openRecordHoldingLeads(ids, group, session, undefined, openById)) {
+return found;
 }
-
-const spec = search.spec || { type: 'name', value: name };
-const byName = (id) => openSearchResultById(runCustomerSearch, spec, id, session);
-// More than one record: keep the one whose timeline holds these leads.
-let chosen = single ? null : await openRecordHoldingLeads(ids, group, session, undefined, byName);
-if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
-// None of the name matches holds them: the reg points straight at the record.
-for (const reg of chosen ? [] : regs) {
-const byReg = await runCustomerSearch('reg', reg, session);
-if (byReg.status === 'CANCELLED') return { status: 'FAILED', exception: 'CANCELLED' };
-if (byReg.status !== 'OK') continue;
-const regIds = nationalCandidateIds(byReg.rows, sample.name, [reg]).filter((id) => !ids.includes(id));
-if (regIds.length === 0) continue;
-chosen = await openRecordHoldingLeads(regIds, group, session, undefined, (id) => openSearchResultById(runCustomerSearch, { type: 'reg', value: reg }, id, session));
-if (chosen) break;
+if (isCancelled(session)) return cancelled;
 }
-if (!chosen && single) {
-// Still the only record with the name: open it again so each lead
-// reports "Not found" against its timeline.
-const state = await byName(ids[0]);
+if (!fallback) return { status: 'FAILED', exception: lastStatus };
+if (fallback.ids.length > 1) return { status: 'FAILED', exception: 'LEAD_NOT_ON_MATCHING_CUSTOMERS' };
+const state = await openSearchResultById(runCustomerSearch, fallback.spec, fallback.ids[0], session);
+if (isCancelled(session)) return cancelled;
 if (state.state === 'FAILED') return { status: 'FAILED', exception: 'TIMELINE_TIMEOUT' };
-return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
-}
-if (!chosen) return { status: 'FAILED', exception: 'LEAD_NOT_ON_MATCHING_CUSTOMERS' };
-return { status: 'OK', matchMethod: 'name', noEligibleEvents: false };
+return found;
 }
 
 runSelfTest('nationalSearchSelfTest', function nationalSearchSelfTest() {
@@ -3045,9 +3031,13 @@ if (spoke) return verdict('OK', `Closed as ${finalOutcome} after speaking to the
 }
 // Passed to Enquiry Max after the full run of calls is a normal close.
 // The calls can be spread over this customer's other leads.
-const callsSince = (allItems || []).filter((i) => isAttemptItem(i) && (eventTimeMs(i.EventTime) || 0) >= (createdMs || 0) - 2 * 60 * 1000).length;
-const fullRun = Math.max(attempts || 0, callsSince);
-if (/sent direct to enquiry max/i.test(finalOutcome) && fullRun >= NATIONAL_FULL_RUN_ATTEMPTS) return verdict('OK', `Closed as ${finalOutcome} after ${fullRun} attempts`);
+// Updating the outcomes without ringing is not an attempt.
+const callsSince = (allItems || []).filter((i) => isAttemptItem(i) && !/outcome of update outcomes/i.test(String(i.BelowLineTitle || ''))
+&& (eventTimeMs(i.EventTime) || 0) >= (createdMs || 0) - 2 * 60 * 1000).length;
+const fullRun = Math.max(Number.isFinite(exportAttempts) && exportAttempts > 0 ? exportAttempts : 0, callsSince);
+// The same goes for Email Only: rung the full number of times with no
+// answer, the customer is left to email and there is nothing to set up.
+if (/sent direct to enquiry max|email only/i.test(finalOutcome) && fullRun >= NATIONAL_FULL_RUN_ATTEMPTS) return verdict('OK', `Closed as ${finalOutcome} after ${fullRun} attempts`);
 // Misdirected: the agent decided it was not a sales lead. Right only if
 // the lead itself confirms that, which needs its window read (see
 // resolveMisdirected), so it starts as Check.
@@ -3254,27 +3244,49 @@ return r.status === 'EXCEPTION' ? 'Check' : (r.verdict || 'Check');
 function renderNationalResultsHtml(results, nameFilter, ui) {
 const filtered = results.filter((r) => !nameFilter || String(r.name || '').toLowerCase().includes(nameFilter));
 if (filtered.length === 0) return '<div class="empty-state">No results yet. Press Start.</div>';
-return NATIONAL_VERDICT_ORDER.map((verdict, index) => {
-const rows = filtered.filter((r) => nationalVerdictOf(r) === verdict);
-if (rows.length === 0) return '';
-const color = NATIONAL_VERDICT_COLORS[verdict];
-const key = 100 + index;
-const customers = rows.map((r) => {
-const reason = r.status === 'EXCEPTION' ? `Could not check: ${exceptionLabel(r.exception)}` : (r.verdictReason || '');
+const reasonOf = (r) => (r.status === 'EXCEPTION' ? `Could not check: ${exceptionLabel(r.exception)}` : (r.verdictReason || ''));
+const leadLines = (r) => {
 const lines = [
-['Reason', reason], ['Lead', `${r.activityId || '-'} (Konnect ${r.leadId || '-'})`], ['Created', r.created],
+['Reason', reasonOf(r)], ['Lead', `${r.activityId || '-'} (Konnect ${r.leadId || '-'})`], ['Created', r.created],
 ['Final outcome', r.finalOutcome], ['Attempts', r.attempts != null ? String(r.attempts) : ''],
 ['Enquiry Max', r.enquiryMaxDealer], ['Follow-up notes', r.followUpNotes]
 ];
-if (verdict === RE_SETUP) lines.push(['Campaign to set up again', r.resetCampaign]);
+if (nationalVerdictOf(r) === RE_SETUP) lines.push(['Campaign to set up again', r.resetCampaign]);
+return kvHtml(lines.filter(([, v]) => v).map(([k, v]) => [k, escapeHtmlForUi(v)])) + nationalChangeHtml(r);
+};
+// The check is per lead, but a customer with several National leads is
+// one person: they are shown once, under their most pressing verdict, with
+// each lead inside.
+const rank = (r) => NATIONAL_VERDICT_ORDER.indexOf(nationalVerdictOf(r));
+const customers = [];
+const byName = new Map();
+filtered.forEach((r) => {
+const key = normalizeCustomerName(r.name) || `row:${r.inputIndex}`;
+if (!byName.has(key)) { byName.set(key, []); customers.push(byName.get(key)); }
+byName.get(key).push(r);
+});
+return NATIONAL_VERDICT_ORDER.map((verdict, index) => {
+const group = customers.filter((leads) => Math.min(...leads.map(rank)) === index);
+if (group.length === 0) return '';
+const color = NATIONAL_VERDICT_COLORS[verdict];
+const key = 100 + index;
+const rowsHtml = group.map((leads) => {
+const lead = leads.find((r) => rank(r) === index);
+const reason = reasonOf(lead);
+const several = leads.length > 1;
+const meta = several ? `${leads.length} National leads · ${reason}` : reason;
+const body = several
+// Each lead keeps its own initials button, which opens that lead.
+? leads.map((r) => `<div class="reason" style="display: flex; align-items: center; gap: 8px; color: ${readableTextColor(NATIONAL_VERDICT_COLORS[nationalVerdictOf(r)])}; font-weight: 700;">${r === lead ? '' : ui.avatar(r, NATIONAL_VERDICT_COLORS[nationalVerdictOf(r)])}<span>${escapeHtmlForUi(nationalVerdictOf(r))} · lead created ${escapeHtmlForUi(r.created || '-')}</span></div>${leadLines(r)}`).join('')
+: leadLines(lead);
 // The group heading says the verdict once, so the rows carry the reason.
 return resultRowHtml({
-key: r.inputIndex, open: ui.isCustomerOpen(r.inputIndex), avatar: ui.avatar(r, color), name: r.name, title: reason, meta: reason,
-openTag: ui.openTag ? ui.openTag(r) : '', note: ui.openNote ? ui.openNote(r) : '',
-body: kvHtml(lines.filter(([, v]) => v).map(([k, v]) => [k, escapeHtmlForUi(v)])) + nationalChangeHtml(r)
+key: lead.inputIndex, open: ui.isCustomerOpen(lead.inputIndex), avatar: ui.avatar(lead, color), name: lead.name, title: reason, meta,
+openTag: ui.openTag ? leads.map((r) => ui.openTag(r)).find(Boolean) || '' : '', note: ui.openNote ? leads.map((r) => ui.openNote(r)).find(Boolean) || '' : '',
+body
 });
 }).join('');
-return resultGroupHtml(key, verdict, color, rows.length, ui.isTierOpen(key, verdict !== 'OK'), customers);
+return resultGroupHtml(key, verdict, color, group.length, ui.isTierOpen(key, verdict !== 'OK'), rowsHtml);
 }).join('');
 }
 
@@ -5988,6 +6000,17 @@ check('spoken to and not interested is OK with no send', run(1400040, notInteres
 const notSpoken = [created(1400041, '10T09:00'), call(1400041, '10T09:30', 'Update Outcomes (No Call Made)', `Sales -> Customer Hub Team -> No Appointment -> Not Interested at ${NAT}`)];
 check('not interested without a conversation is still Re setup', run(1400041, notSpoken, { exportOutcome: 'Not Interested', attempts: '1', lastContact: '10/11/2026 09:30' }).verdict, RE_SETUP);
 check('an automatic reschedule on the fourth attempt is OK, earlier is a Check', [run(1400040, notInterested, { state: 'In Progress', exportHint: 'open-auto', exportOutcome: 'In Market - wont commit to appointment yet', attempts: '4' }).verdict, run(1400040, notInterested, { state: 'In Progress', exportHint: 'open-auto', attempts: '2' }).verdict], ['OK', 'Check']);
+const emailOnlyRun = [created(1400050, '09T16:01'), call(1400050, '09T16:01', 'Update Outcomes (No Call Made)', `No Activity Outcome at ${NAT}`), call(1400050, '10T16:03', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400050, '11T12:34', 'Manual Reschedule', `No Activity Outcome at ${NAT}`),
+call(1400050, '12T09:48', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400050, '12T10:35', 'No Answer - No Message Left', `Sales -> Customer Hub Team -> Ongoing -> Email Only Lead at ${NAT}`)];
+check('Email Only after four real calls is OK', run(1400050, emailOnlyRun, { exportOutcome: 'Email Only Lead', lastContact: '12/11/2026 10:35' }).verdict, 'OK');
+check('Email Only after three real calls and an outcome update is still Re setup', run(1400050, emailOnlyRun.slice(0, 4).concat(emailOnlyRun.slice(5)), { exportOutcome: 'Email Only Lead', lastContact: '12/11/2026 10:35' }).verdict, RE_SETUP);
+const twoLeadsHtml = renderNationalResultsHtml([
+{ inputIndex: 0, status: 'CLASSIFIED', name: 'Mr Sam Buyer', verdict: 'OK', verdictReason: 'Sent to Preston', created: '01/11/2026 10:00' },
+{ inputIndex: 1, status: 'CLASSIFIED', name: 'Sam Buyer', verdict: RE_SETUP, verdictReason: 'nowhere', created: '02/11/2026 10:00' },
+{ inputIndex: 2, status: 'CLASSIFIED', name: 'Jo Example', verdict: 'OK', verdictReason: 'fine', created: '03/11/2026 10:00' }
+], '', { isCustomerOpen: () => false, isTierOpen: (k, d) => d, avatar: () => '' });
+check('a customer with two National leads is one row, under the worse verdict, with both leads inside', [(twoLeadsHtml.match(/class="customer[ "]/g) || []).length, /2 National leads · nowhere/.test(twoLeadsHtml), twoLeadsHtml.indexOf('nowhere') < twoLeadsHtml.indexOf('Jo Example'), /Sent to Preston/.test(twoLeadsHtml), (twoLeadsHtml.match(/national-change/g) || []).length], [2, true, true, true, 3]);
+
 // Misdirected starts as Check; the lead details decide it.
 const misdirectedLead = [created(1400023, '08T20:24')];
 check('Misdirected starts as Check', run(1400023, misdirectedLead, { exportOutcome: 'Misdirected - Created VR Message', attempts: '1', lastContact: '09/11/2026 12:52' }).verdict, 'Check');
