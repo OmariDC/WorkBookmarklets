@@ -1584,7 +1584,7 @@ return settledList(() => readSearchRows().rows, (rows) => rows.map((r) => r.tr.t
 // opened until the page itself shows Shift Start.
 let parkedUnderShiftStart = '';
 // Leaving Parked Calls ends that: the status may change before the next visit.
-window.addEventListener('hashchange', () => { if (!/\/search\/parked/i.test(location.hash)) parkedUnderShiftStart = ''; });
+if (typeof window.addEventListener === 'function') window.addEventListener('hashchange', () => { if (!/\/search\/parked/i.test(location.hash)) parkedUnderShiftStart = ''; });
 async function goToParked() {
 const already = onParkedPage();
 // Already in Parked Calls, put there by this tool under Shift Start.
