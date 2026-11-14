@@ -256,10 +256,13 @@ let finishedOutcomes = null;
   check('open over the link on a finished batch works and changes nothing', opened && opened.ok === true && opened.text === 'Morgan Reedwell is open: timeline and lead.' && (await t.snapshot()) === before2 && (await t.page()).lead === '1386301', opened);
 
   // Logged out.
-  await t.live.evaluate(() => window.mock.logOut());
+  // The wait for a log in is cut short for the test; the mock refuses the press.
+  await t.live.evaluate(() => { window.__klcShared.loginForRequestMs = 1200; window.mock.logOut(); });
   await t.avatar(0).click();
   await t.live.waitForTimeout(300);
-  check('logged out: said straight away, nothing is searched', /^Konnect Live is logged out\./.test(await t.state()) && !(await t.page()).busy, await t.state());
+  check('logged out: said straight away while it tries to log in, nothing is searched', /^Konnect Live is logged out\. Logging in/.test(await t.state()) && !(await t.page()).busy, await t.state());
+  await t.live.waitForTimeout(1800);
+  check('still logged out after the wait: it says to log in', /^Konnect Live is logged out\. Log in, then try again\.$/.test(await t.state()), await t.state());
   await t.clearMsgs();
   await t.send({ type: 'workTools:open', row: OPEN_ROW });
   const out = await t.waitFor('opened', null, 5000);
@@ -485,7 +488,7 @@ const RUN_BUSY = 'The Lead Checker is checking a batch. Pause it or wait, then t
   check('the link state is untouched: nothing but the answer and idle', quiet.every((m) => (m.type === 'workTools:ready' && m.state === 'idle' && m.batchId === null) || m.type === 'workTools:verified') && quiet.filter((m) => m.type === 'workTools:verified').length === 1, quiet.map((m) => [m.type, m.state]));
   check('the state line says what was found', (await t.state()) === 'Casey Bookwell: in the diary, outcome set, sent to the dealership.', await t.state());
 
-  await t.live.evaluate(() => { window.mock.logOut(); window.mock.searches = []; });
+  await t.live.evaluate(() => { window.__klcShared.loginForRequestMs = 1200; window.mock.logOut(); window.mock.searches = []; });
   await t.clearMsgs();
   await t.send({ type: 'workTools:verify', id: 'bk-10', row: VERIFY_ROW, since: at(13, 10, 0) });
   const out = await t.waitFor('verified', null, 5000);

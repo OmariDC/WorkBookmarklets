@@ -554,11 +554,16 @@ async function openForWorkTools(options = {}) {
   // Logged out while nothing is being checked: Login is still pressed, once
   // the password is in its box, and the box is announced to the page first.
   await own.evaluate(() => { window.mock.loginClicks = 0; window.mock.allowLogin = true; window.mock.logOut(); });
-  await new Promise((r) => setTimeout(r, 2500));
-  check('idle and logged out, password box empty: Login is not pressed', (await own.evaluate(() => window.mock.loginClicks)) === 0, await own.evaluate(() => window.mock.loginClicks));
+  await own.mouse.click(5, 5);
+  await new Promise((r) => setTimeout(r, 3500));
+  check('idle and logged out, password box empty: Login is not pressed, even when the page is touched', (await own.evaluate(() => window.mock.loginClicks)) === 0, await own.evaluate(() => window.mock.loginClicks));
+  // The browser releases the saved password when the owner touches the page.
   await own.evaluate(() => { const box = document.querySelector('#loginForm input'); window.ANNOUNCED = 0; box.addEventListener('input', () => { window.ANNOUNCED += 1; }); box.value = 'x'; });
+  await new Promise((r) => setTimeout(r, 1500));
+  check('nothing is polled: with the password there but the page untouched, Login waits', (await own.evaluate(() => window.mock.loginClicks)) === 0, await own.evaluate(() => window.mock.loginClicks));
+  await own.mouse.click(5, 5);
   const backIn = await own.waitForFunction(() => !document.getElementById('loginForm'), null, { timeout: 6000 }).then(() => true, () => false);
-  check('idle and logged out, password in its box: Login is pressed once and the page is back in', backIn && (await own.evaluate(() => window.mock.loginClicks === 1 && window.ANNOUNCED >= 1)), await own.evaluate(() => [window.mock.loginClicks, window.ANNOUNCED]));
+  check('idle and logged out, one touch with the password in its box: Login is pressed once and the page is back in', backIn && (await own.evaluate(() => window.mock.loginClicks === 1 && window.ANNOUNCED >= 1)), await own.evaluate(() => [window.mock.loginClicks, window.ANNOUNCED]));
   check('no page errors', t.errors.length === 0, t.errors);
   await t.close();
 }

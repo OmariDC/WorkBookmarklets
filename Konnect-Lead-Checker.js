@@ -1350,7 +1350,10 @@ if (existing) { resolve(existing); return; }
 const timer = setTimeout(() => { observer.disconnect(); resolve(null); }, pageLimit(timeout));
 const observer = new MutationObserver(() => {
 const el = document.querySelector(selector);
-if (el) { clearTimeout(timer); observer.disconnect(); resolve(el); }
+if (el) { clearTimeout(timer); observer.disconnect(); resolve(el); return; }
+// The page has jumped to the login screen: what is waited for will not
+// come, so the wait ends now and the run can log in first.
+if (/^#\/login/i.test(location.hash) && onLoginPage()) { clearTimeout(timer); observer.disconnect(); resolve(null); }
 });
 observer.observe(document.body, { childList: true, subtree: true });
 });
@@ -2653,6 +2656,7 @@ const limit = pageLimit(timeout);
 let sawSpinner = false;
 while (Date.now() - startedAt < limit) {
 await sleep(200);
+if (onLoginPage()) return null;
 if (isSearchSpinnerActive(findSearchSpinnerIcon())) { sawSpinner = true; continue; }
 const elapsed = Date.now() - startedAt;
 const changed = searchGridSignature() !== before;
@@ -4786,16 +4790,20 @@ login.click();
 return true;
 }
 
-// Konnect Live also logs out while nothing is being checked. This keeps
-// watching for as long as this copy of the tool is the one on the page, so
-// the next thing sent to it does not find it logged out.
+// Konnect logs out after a spell of no use but leaves the old page showing:
+// the login screen only appears when something next touches the page. So
+// nothing is polled. Login is pressed at the two moments that matter: when
+// the page jumps to the login screen, and when the owner touches that
+// screen (which is when the browser releases the saved password).
 const loginWatch = (window.__klcLoginWatch = {});
-(async function watchForLogin() {
-while (window.__klcLoginWatch === loginWatch) {
-await sleep(1000);
-try { pressLoginWhenFilled(); } catch (error) { /* tried again in a second */ }
+function tryLoginSoon() {
+if (window.__klcLoginWatch !== loginWatch) return;
+[300, 1200, 3000].forEach((ms) => setTimeout(() => { try { pressLoginWhenFilled(); } catch (error) { /* the next moment tries again */ } }, ms));
 }
-})();
+if (typeof window.addEventListener === 'function') {
+window.addEventListener('hashchange', () => { if (/^#\/login/i.test(location.hash)) tryLoginSoon(); });
+['pointerdown', 'keydown'].forEach((type) => document.addEventListener(type, () => { if (window.__klcLoginWatch === loginWatch && onLoginPage()) tryLoginSoon(); }, true));
+}
 
 async function reLogin(uiHandle, waitMs) {
 lcNotices.loggedOut = true;
@@ -6693,6 +6701,7 @@ let openNoteUntil = 0;
 let openNoteKey = null;
 const LOGGED_OUT_NOTE = 'Konnect Live is logged out. Log in, then try again.';
 const RUN_BUSY_NOTE = 'The Lead Checker is checking a batch. Pause it or wait, then try again.';
+const LOGGING_IN_NOTE = 'Konnect Live is logged out. Logging in: click once on this window if it waits.';
 
 function stopManualOpen() {
 if (openInFlight) { openInFlight.token.cancelled = true; openInFlight = null; }
@@ -6729,7 +6738,32 @@ return { ok: false, lead: false, text };
 // never runs beside a run step, and a newer request replaces this one
 // rather than running with it. Changes no result and no position in the
 // batch. Resolves to { ok, lead, text }; text is what the state line says.
+// For a single request (open a customer, check a booking) that finds the
+// page logged out: logs back in, giving the owner a short while to touch
+// the window if the password is not there yet. True once the page is in.
+async function logInForRequest() {
+if (!onLoginPage()) return true;
+openNote = LOGGING_IN_NOTE;
+openNoteUntil = 0;
+render();
+const until = Date.now() + (klcShared.loginForRequestMs || 20000);
+while (Date.now() < until && onLoginPage()) { pressLoginWhenFilled(); await sleep(500); }
+if (onLoginPage()) return false;
+await sleep(klcShared.loginForRequestMs ? 300 : 1500);
+return true;
+}
+
 async function openRowByHand(key, row, group, result) {
+let reply = await openRowByHandOnce(key, row, group, result);
+// Logged out, often found only part way (the page shows it once it is
+// used): log in, then open it again. One wait, then it says to log in.
+if (reply.text === LOGGED_OUT_NOTE) {
+if (await logInForRequest()) reply = await openRowByHandOnce(key, row, group, result);
+else { openNote = LOGGED_OUT_NOTE; render(); }
+}
+return reply;
+}
+async function openRowByHandOnce(key, row, group, result) {
 const s = session;
 if (destroyed) return { ok: false, lead: false, text: '' };
 openNoteKey = key;
@@ -6808,6 +6842,14 @@ openRowByHand(`link:${++linkOpenCount}`, row, { rows: [row] }, null)
 // a run or an open like an open does. Changes no result. Answered once.
 let linkVerifyCount = 0;
 async function verifyBooking(row, since) {
+let reply = await verifyBookingOnce(row, since);
+if (reply.text === LOGGED_OUT_NOTE) {
+if (await logInForRequest()) reply = await verifyBookingOnce(row, since);
+else { openNote = LOGGED_OUT_NOTE; render(); }
+}
+return reply;
+}
+async function verifyBookingOnce(row, since) {
 const no = (text) => ({ ok: false, found: false, appointment: false, outcome: false, sent: false, text });
 if (destroyed) return no('');
 const busy = pageBusyReason();
