@@ -2908,6 +2908,26 @@ const last = lines[0].split('->').pop().trim();
 return last.replace(/\s+at\s+[^>]+$/i, '').trim();
 }
 
+// Every outcome a call entry lists, one per "Sales -> ..." line.
+function outcomeLinesOf(description) {
+return String(description || '').split(/\r?\n/).map((l) => l.trim()).filter((l) => /^sales\s*->/i.test(l))
+.map((l) => l.split('->').pop().trim().replace(/\s+at\s+[^>]+$/i, '').trim());
+}
+
+// Pure. How a lead ended as its own timeline tells it: the outcomes on its
+// last call, and how many real calls it had (an outcome update is not one).
+function leadEndingFrom(items) {
+const calls = items.filter((i) => Number(i.TimelineItemType) === 3).sort((a, b) => (eventTimeMs(a.EventTime) || 0) - (eventTimeMs(b.EventTime) || 0));
+const last = calls[calls.length - 1];
+const outcomes = last ? outcomeLinesOf(last.Description) : [];
+return {
+outcomes,
+maxAttempts: outcomes.length > 0 && outcomes.every((o) => /max attempts/i.test(o)),
+anyMaxAttempts: outcomes.some((o) => /max attempts/i.test(o)),
+realCalls: calls.filter((i) => isAttemptItem(i) && !/outcome of update outcomes/i.test(String(i.BelowLineTitle || ''))).length
+};
+}
+
 // Agreed standards for a Misdirected closure: the lead was never a sales
 // enquiry. A Service Plan request, either named in the campaign's lead
 // request or as the MB Mail aftersales notes ("Annual Mileage: ...
@@ -2978,6 +2998,10 @@ const open = /in progress/i.test(String(batchRow.state || ''));
 // 3 and 4. Acceptable closing outcomes.
 if (!open && /max attempts/i.test(finalOutcome)) return verdict('OK', `Closed as ${finalOutcome} after ${attempts || batchRow.attempts || '?'} attempts`);
 if (!open && NATIONAL_ADMIN_OUTCOMES.test(finalOutcome)) return verdict('OK', `Closed as ${finalOutcome}`);
+// The export's outcome can lag behind the lead: when the last call on its
+// own timeline lists only Max Attempts, that is how it ended.
+const ownEnding = leadEndingFrom(own);
+if (!open && ownEnding.maxAttempts) return verdict('OK', `Closed as ${ownEnding.outcomes[0]} on its last call`);
 // 5. Still being worked.
 if (open) {
 // By the last attempt there is no next call to schedule by hand.
@@ -3006,7 +3030,12 @@ if (again) {
 const theirs = (allItems || []).filter((i) => String(i.LeadID) === String(again.LeadID)).sort(byTime);
 const theirOutcome = theirs.filter((i) => Number(i.TimelineItemType) === 3).map((i) => outcomeFromCallDescription(i.Description)).filter(Boolean).pop() || '';
 const theirSend = theirs.some((i) => Number(i.TimelineItemType) === 2 && emDealerOf(i) && !isNationalDealer(emDealerOf(i)));
-const wentNowhere = !theirSend && NATIONAL_DEAD_END_OUTCOMES.test(theirOutcome) && !/max attempts/i.test(theirOutcome);
+// The newer lead counts as properly worked when its last call says Max
+// Attempts or it had the full run of calls, whatever an earlier call on it
+// said (an Email Only set on the day it was made, say).
+const theirEnding = leadEndingFrom(theirs);
+const workedThrough = theirEnding.anyMaxAttempts || theirEnding.realCalls >= NATIONAL_FULL_RUN_ATTEMPTS;
+const wentNowhere = !theirSend && !workedThrough && NATIONAL_DEAD_END_OUTCOMES.test(theirOutcome) && !/max attempts/i.test(theirOutcome);
 if (!wentNowhere) return verdict('OK', `Already set up again as a new lead on ${formatShortTime(eventTimeMs(again.EventTime))}`);
 }
 // Booked and passed on: later calls (the customer ringing in, a follow
@@ -6010,6 +6039,14 @@ const twoLeadsHtml = renderNationalResultsHtml([
 { inputIndex: 2, status: 'CLASSIFIED', name: 'Jo Example', verdict: 'OK', verdictReason: 'fine', created: '03/11/2026 10:00' }
 ], '', { isCustomerOpen: () => false, isTierOpen: (k, d) => d, avatar: () => '' });
 check('a customer with two National leads is one row, under the worse verdict, with both leads inside', [(twoLeadsHtml.match(/class="customer[ "]/g) || []).length, /2 National leads · nowhere/.test(twoLeadsHtml), twoLeadsHtml.indexOf('nowhere') < twoLeadsHtml.indexOf('Jo Example'), /Sent to Preston/.test(twoLeadsHtml), (twoLeadsHtml.match(/national-change/g) || []).length], [2, true, true, true, 3]);
+
+// Live case, 14 Nov: an old Email Only lead, set up again; the new lead had
+// Email Only set on the day it was made and ended on Max Attempts.
+const reSetUpThenMax = emailOnly.concat([created(1400060, '09T16:01'), call(1400060, '09T16:01', 'Update Outcomes (No Call Made)', `Sales -> Customer Hub Team -> Ongoing -> Email Only Lead at ${NAT}`),
+call(1400060, '10T16:03', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400060, '12T10:35', 'No Answer - No Message Left', `Sales -> National Used Stock -> No Opportunity -> Max Attempts Reached -  No Answer at ${NAT}\r\nSales -> Customer Hub Team -> Ongoing -> Email Only Lead at ${NAT}`)]);
+check('a newer lead that ended on Max Attempts covers the old one, whatever was set on it first', run(1400003, reSetUpThenMax, {}).verdict, 'OK');
+check('and that newer lead is OK itself even when the export still says Email Only', run(1400060, reSetUpThenMax.filter((i) => i.LeadID === 1400060).slice(0, 3).concat([call(1400060, '12T10:35', 'No Answer - No Message Left', `Sales -> National Used Stock -> No Opportunity -> Max Attempts Reached -  No Answer at ${NAT}`)]), { exportOutcome: 'Email Only Lead', attempts: '2', lastContact: '12/11/2026 10:35' }).verdict, 'OK');
+check('how a lead ended: every outcome on its last call, and its real calls', (() => { const e = leadEndingFrom(reSetUpThenMax.filter((i) => i.LeadID === 1400060)); return [e.outcomes.length, e.maxAttempts, e.anyMaxAttempts, e.realCalls]; })(), [2, false, true, 2]);
 
 // Misdirected starts as Check; the lead details decide it.
 const misdirectedLead = [created(1400023, '08T20:24')];
