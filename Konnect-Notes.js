@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.22.1'
+    version: '1.22.2'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -1829,23 +1829,32 @@
     return label?.closest('.form-group, .row')?.querySelector('select') || null;
   }
 
+  /* The Part Exchange switch. Konnect draws it as a <toggle> element on some
+     pages and as a plain box with its own click on others. */
+  function pxSwitchNode(panel) {
+    return panel?.querySelector('toggle') || panel?.querySelector('[ng-click^="onSwitch"]') || null;
+  }
+
   function pxSwitchOn(panel) {
-    const toggle = panel?.querySelector('toggle');
+    const toggle = pxSwitchNode(panel);
     if (!toggle) return null;
     try {
       const ng = window.angular;
-      const model = toggle.getAttribute('ng-model');
+      const holder = toggle.hasAttribute('ng-model') ? toggle : toggle.closest('[ng-model]');
+      const model = holder?.getAttribute('ng-model');
       if (ng && model) {
-        const scope = ng.element(toggle).scope();
+        const scope = ng.element(holder).scope();
         if (scope) {
           const value = scope.$eval(model);
           if (typeof value === 'boolean') return value;
         }
       }
     } catch (error) {
-      // Fall back to the toggle's classes below.
+      // Fall back to what the switch shows below.
     }
-    const control = toggle.querySelector('.toggle');
+    const box = toggle.querySelector('input[type="checkbox"]');
+    if (box) return box.checked;
+    const control = toggle.matches('.toggle') ? toggle : toggle.querySelector('.toggle');
     if (!control) return null;
     return !control.classList.contains('off');
   }
@@ -3152,9 +3161,17 @@
     return upper[word] || word.replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
+  /* Turns the switch on the way a person does, by pressing it, so Konnect's
+     own handler runs and draws the PX boxes. Setting the value directly is
+     the fallback where there is nothing to press. */
   function turnPxSwitchOn(panel) {
-    const toggle = panel?.querySelector('toggle');
-    if (!toggle || pxSwitchOn(panel) !== false) return false;
+    const toggle = pxSwitchNode(panel);
+    if (!toggle || pxSwitchOn(panel) === true) return false;
+    const press = toggle.matches('[ng-click^="onSwitch"]') ? toggle : toggle.querySelector('[ng-click^="onSwitch"]');
+    if (press) {
+      press.click();
+      return true;
+    }
     try {
       const ng = window.angular;
       const model = toggle.getAttribute('ng-model');
@@ -3219,10 +3236,12 @@
     }
     const switched = turnPxSwitchOn(pxPanel);
     if (switched) updated.push('PX switch on');
-    return new Promise((resolve) => {
-      /* The PX boxes can be redrawn when the switch changes. */
+    const pxBox = () => leadPanel(activeLeadPane() || pane, 'part exchange')?.querySelector('input[placeholder="Vehicle Brand"], input[placeholder="Reg Number"]');
+    /* The PX boxes are drawn once the switch is on, which can take a moment. */
+    return waitFor(pxBox, switched ? 2500 : 300).then((found) => new Promise((resolve) => {
+      if (!found) updated.push('part exchange NOT written: its boxes did not show, add it to the lead by hand');
       setTimeout(() => {
-        const panel = leadPanel(activeLeadPane(), 'part exchange');
+        const panel = leadPanel(activeLeadPane() || pane, 'part exchange');
         const names = tidy(item.make, item.model);
         put(panel, 'Vehicle Brand', names.make, 'PX Brand');
         put(panel, 'Vehicle Model', names.model, 'PX Model');
@@ -3235,7 +3254,7 @@
         saveDraftSoon();
         resolve(updated);
       }, switched ? 150 : 0);
-    });
+    }));
   }
 
   /* ---------- part exchange held on another lead ---------- */
