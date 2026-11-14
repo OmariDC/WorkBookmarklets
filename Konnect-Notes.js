@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.22.3'
+    version: '1.22.4'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2464,7 +2464,8 @@
     const planOf = (kind) => { const p = inboundLeadPlan(kind, 'Vauxhall'); return `${p.leadType}|${p.source}|${p.request.join('/')}|${p.campaigns.join('/')}`; };
     check('inbound lead: Motability', planOf('Motability'), 'Not Known|Phone call|Motability|Vauxhall - Motability');
     check('inbound lead: new', planOf('New'), 'New|Phone call|Enquiry - New|Vauxhall - Enquiry - New');
-    check('inbound lead: used', planOf('Used'), 'Used|Phone call|Enquiry - Used|Vauxhall - Enquiry - Used');
+    check('inbound lead: used, with the plain campaign as the fallback', planOf('Used'), 'Used|Phone call|Enquiry - Used|Vauxhall - Enquiry - Used/Enquiry - Used');
+    check('inbound lead: used with no brand still has the plain campaign', inboundLeadPlan('Used', '').campaigns.join(), 'Enquiry - Used');
     check('inbound lead: no car named', planOf(''), 'Not Known|Phone call|Enquiry - New|Vauxhall - Enquiry - New');
     check('inbound lead: no brand, no campaign', inboundLeadPlan('New', '').campaigns.length, 0);
     check('Motability wins', sheetLeadType({ motability: true, condition: 'used' }), 'Motability');
@@ -4658,7 +4659,8 @@
       leadType: kind === 'New' || kind === 'Used' ? kind : 'Not Known',
       source: INBOUND_SOURCE,
       request,
-      campaigns: brand ? request.map((name) => `${brand} - ${name}`) : []
+      // A used car of a make with no campaign of its own takes the plain one.
+      campaigns: (brand ? request.map((name) => `${brand} - ${name}`) : []).concat(kind === 'Used' ? ['Enquiry - Used'] : [])
     };
   }
 
@@ -4770,7 +4772,9 @@
       }
       const missed = [];
       if (!(await pickOffered(field('LeadTypeID'), [plan.leadType]))) missed.push('Lead type');
-      if (brand && field('ChannelBadgeID') && selectedText(field('ChannelBadgeID')).toLowerCase() !== brand.toLowerCase() &&
+      // A make Konnect has no brand for is left as the lead has it.
+      const brandOffered = brand && field('ChannelBadgeID') && Array.from(field('ChannelBadgeID').options).some((o) => normaliseText(o.textContent).toLowerCase() === brand.toLowerCase());
+      if (brandOffered && selectedText(field('ChannelBadgeID')).toLowerCase() !== brand.toLowerCase() &&
         !(await pickOffered(field('ChannelBadgeID'), [brand]))) missed.push('Brand');
       if (!(await pickOffered(field('SourceOfEnquiryID'), [plan.source]))) missed.push('Source of enquiry');
       if (!(await pickOffered(field('LeadRequestID'), plan.request))) missed.push('Lead request');

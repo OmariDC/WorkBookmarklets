@@ -4765,6 +4765,38 @@ return () => { finished = true; if (release) release(); };
 // press of Login is tried (it works where the browser allows it) and the
 // boxes are never written to. Otherwise the tab is flagged and the run
 // waits for the agent's own Login press, then carries on by itself.
+// Presses Login once the browser has put the saved password in the box.
+// The boxes are announced to the page first: a browser fills them without
+// telling Konnect, which then sends an empty form. Never pressed with the
+// password box empty, and not more than once every few seconds.
+let loginPressedAt = 0;
+function pressLoginWhenFilled() {
+if (!onLoginPage() || Date.now() - loginPressedAt < 4000) return false;
+const password = document.querySelector('input[type="password"]');
+if (!password || !password.value) return false;
+const login = Array.from(document.querySelectorAll('button[ng-click="login()"], button.btn-login')).find((b) => b.offsetWidth || b.offsetHeight);
+if (!login) return false;
+const form = password.closest('form') || document;
+Array.from(form.querySelectorAll('input')).filter((input) => input.value && /^(text|email|password|)$/i.test(input.getAttribute('type') || '')).forEach((input) => {
+input.dispatchEvent(new Event('input', { bubbles: true }));
+input.dispatchEvent(new Event('change', { bubbles: true }));
+});
+loginPressedAt = Date.now();
+login.click();
+return true;
+}
+
+// Konnect Live also logs out while nothing is being checked. This keeps
+// watching for as long as this copy of the tool is the one on the page, so
+// the next thing sent to it does not find it logged out.
+const loginWatch = (window.__klcLoginWatch = {});
+(async function watchForLogin() {
+while (window.__klcLoginWatch === loginWatch) {
+await sleep(1000);
+try { pressLoginWhenFilled(); } catch (error) { /* tried again in a second */ }
+}
+})();
+
 async function reLogin(uiHandle, waitMs) {
 lcNotices.loggedOut = true;
 notifyNoticesChanged();
@@ -4804,15 +4836,10 @@ stopFlash = startTitleFlash('Press Login to carry on');
 // is there (any click or key press on the page is enough), Login is pressed
 // for them. It is never pressed again with the box still empty.
 const startedAt = Date.now();
-let pressedAt = 0;
 while (Date.now() - startedAt < (waitMs || 30 * 60 * 1000)) {
 await sleep(500);
 if (!onLoginPage()) { lcNotices.stopped = null; notifyNoticesChanged(); await sleep(1500); return true; }
-const box = document.querySelector('input[type="password"]');
-if (box && box.value && Date.now() - pressedAt > 4000) {
-const login = Array.from(document.querySelectorAll('button[ng-click="login()"], button.btn-login')).find((b) => b.offsetWidth || b.offsetHeight);
-if (login) { pressedAt = Date.now(); login.click(); }
-}
+pressLoginWhenFilled();
 }
 return false;
 } finally {
