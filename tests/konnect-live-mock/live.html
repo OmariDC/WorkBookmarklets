@@ -135,15 +135,18 @@ nav { background: #222; height: 50px; }
   document.getElementById('btnSearch').addEventListener('click', () => {
     const text = input.value;
     mock.searches.push(text);
-    spinner.classList.remove('ng-hide');
+    // mock.noSpinner: the search never shows its spinner. mock.rowsLateMs:
+    // the count shows that long before the rows are drawn.
+    if (!mock.noSpinner) spinner.classList.remove('ng-hide');
     setTimeout(() => {
       grid.innerHTML = '';
       const none = /none/i.test(text);
-      if (!none) {
+      const draw = () => {
         const customer = customerFor(text);
         grid.innerHTML = `<div role="row" row-index="0"><div col-id="CustomerName"><a ng-click="navToConnectedCustomer(${customer.id})">${customer.name}</a></div><div col-id="DealerName">Preston</div><div col-id="RegistrationNumber">${customer.reg}</div><div col-id="Summary"></div></div>`;
         grid.querySelector('a').addEventListener('click', () => openCustomer(customer));
-      }
+      };
+      if (!none) { if (mock.rowsLateMs) setTimeout(draw, mock.rowsLateMs); else draw(); }
       found.textContent = none ? '0' : '1';
       spinner.classList.add('ng-hide');
     }, mock.searchDelay);

@@ -1381,8 +1381,18 @@ input.dispatchEvent(new Event('change', { bubbles: true }));
 await sleep(20);
 setNativeValue(input, value);
 input.dispatchEvent(new Event('change', { bubbles: true }));
-await sleep(pagePause(150));
+// The pause only gives the page time to take the value in. Where the page
+// itself says it already has it, there is nothing to wait for.
+if (!searchModelHolds(input, value)) await sleep(pagePause(150));
 return input.value === value;
+}
+
+// True when the page's own model for this box already holds the value.
+function searchModelHolds(input, value) {
+try {
+const model = window.angular && window.angular.element(input).controller('ngModel');
+return !!model && model.$modelValue === value;
+} catch (error) { return false; }
 }
 
 function readSearchResultRows() {
@@ -1476,6 +1486,9 @@ if (state.eligiblePinkEntries !== undefined) state.timelineRoot = timelineRoot;
 return state;
 }
 
+// How long a ready timeline must hold the same entries before it is read.
+const TIMELINE_SETTLE_MS = 150;
+
 function waitForTimelineReady(timeout = 10000) {
 return new Promise((resolve) => {
 const startedAt = Date.now();
@@ -1503,7 +1516,7 @@ if (stillReady && recheck.eligiblePinkEntries === lastEntryCount) {
 finish(recheck);
 }
 // Otherwise the next mutation/poll tick re-drives check() itself.
-}, pagePause(300));
+}, pagePause(TIMELINE_SETTLE_MS));
 }
 
 function check() {
@@ -2639,6 +2652,11 @@ ordered.forEach((r) => { if (!ids.includes(r.customerId)) ids.push(r.customerId)
 return ids.slice(0, 5);
 }
 
+// How often a running search is looked at, and how long its list must hold
+// still to count as finished when no spinner was seen.
+const SEARCH_POLL_MS = 50;
+const SEARCH_SETTLE_MS = 300;
+
 function searchGridSignature() {
 return readSearchResultRows().map((r) => r.customerId || r.customerName).join('|') + '#' + (findRecordsFoundValue() || '');
 }
@@ -2650,23 +2668,41 @@ async function submitSearchAndSettle(timeout = 20000) {
 const button = findSearchButton();
 if (!button || button.disabled) return null;
 const before = searchGridSignature();
+// The spinner is watched as well as polled, so a search that starts and
+// ends between two looks is still seen and is not waited out.
+let sawSpinner = false;
+const icon = findSearchSpinnerIcon();
+const watcher = icon && typeof MutationObserver === 'function'
+? new MutationObserver(() => { if (isSearchSpinnerActive(icon)) sawSpinner = true; }) : null;
+if (watcher) watcher.observe(icon, { attributes: true, attributeFilter: ['class'] });
 button.click();
 const startedAt = Date.now();
 const limit = pageLimit(timeout);
-let sawSpinner = false;
+let lastSignature = before;
+let stableSince = startedAt;
+try {
 while (Date.now() - startedAt < limit) {
-await sleep(200);
+await sleep(SEARCH_POLL_MS);
 if (onLoginPage()) return null;
 if (isSearchSpinnerActive(findSearchSpinnerIcon())) { sawSpinner = true; continue; }
-const elapsed = Date.now() - startedAt;
-const changed = searchGridSignature() !== before;
-if (sawSpinner || (changed && elapsed > pagePause(1000)) || elapsed > pageLimit(6000)) {
+const now = Date.now();
+const elapsed = now - startedAt;
+const signature = searchGridSignature();
+if (signature !== lastSignature) { lastSignature = signature; stableSince = now; }
+const settled = signature !== before && now - stableSince >= pagePause(SEARCH_SETTLE_MS);
+if (sawSpinner || settled || elapsed > pageLimit(6000)) {
 const raw = findRecordsFoundValue();
-if (raw !== null && raw !== '' && !isNaN(Number(raw))) return Number(raw);
-return readSearchResultRows().length;
+const count = raw !== null && raw !== '' && !isNaN(Number(raw)) ? Number(raw) : null;
+// Records are counted before their rows are drawn: the rows are
+// waited for, so a found customer is never read as an empty list.
+if (count > 0 && readSearchResultRows().length === 0 && elapsed < pageLimit(6000)) continue;
+return count !== null ? count : readSearchResultRows().length;
 }
 }
 return null;
+} finally {
+if (watcher) watcher.disconnect();
+}
 }
 
 // Opens one search result the way a person does: by clicking its row.

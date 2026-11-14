@@ -326,6 +326,31 @@ for (const workerOn of [true, false]) {
   await t.close();
 }
 
+// Speed: a search is not waited out longer than it takes, and rows drawn
+// after the count are still read. In this mock batch every other lead has
+// no customer, and the found customers have no lead events.
+{
+  const t = await openLinked();
+  await t.live.evaluate(() => { window.mock.searchDelay = 20; window.mock.rowsLateMs = 250; });
+  await t.send({ type: 'workTools:batch', id: 's1', kind: 'leads', tsv: batch(4, 'late') });
+  const late = await t.waitFor('ended', null, 40000);
+  const lateResults = await t.live.evaluate(() => Object.values(window.__konnectLeadChecker.getSession().results).map((r) => r.exception || r.status));
+  check('rows drawn after the count are waited for, so the customer is opened, not read as an empty list', late && late.reason === 'done' && lateResults.join() === 'SEARCH_NO_RESULTS,NO_ELIGIBLE_LEAD_EVENTS,SEARCH_NO_RESULTS,NO_ELIGIBLE_LEAD_EVENTS', lateResults);
+
+  // No spinner at all, and a fast search: each lead takes well under a second.
+  await t.clearMsgs();
+  await t.live.evaluate(() => { window.mock.rowsLateMs = 0; window.mock.noSpinner = true; window.mock.searches = []; });
+  const startedAt = Date.now();
+  await t.send({ type: 'workTools:batch', id: 's2', kind: 'leads', tsv: batch(6, 'quick') });
+  const quick = await t.waitFor('ended', null, 40000);
+  const perLead = (Date.now() - startedAt) / 6;
+  const quickResults = await t.live.evaluate(() => Object.values(window.__konnectLeadChecker.getSession().results).map((r) => r.exception || r.status));
+  check('a search with no spinner is still read right', quick && quick.reason === 'done' && quickResults.join() === 'SEARCH_NO_RESULTS,NO_ELIGIBLE_LEAD_EVENTS,SEARCH_NO_RESULTS,NO_ELIGIBLE_LEAD_EVENTS,SEARCH_NO_RESULTS,NO_ELIGIBLE_LEAD_EVENTS', quickResults);
+  check('and is not waited out: under 0.9 seconds a lead', perLead < 900, Math.round(perLead));
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.close();
+}
+
 // A paste over a running batch: the old run stops first, then the new one starts.
 {
   const t = await openLinked();
