@@ -3138,6 +3138,16 @@ try { return angular.element(el).scope().item || null; } catch (error) { return 
 }).filter(Boolean);
 }
 
+// A list from the lead window. The window loads its lists with the lead, so
+// one that already holds entries is read as it stands. Only an empty one
+// has its tab opened and waited for, in case it was still loading.
+async function readModalList(modal, tabLabel, expr) {
+const ready = scopeItemsFor(modal, expr);
+if (ready.length) return ready;
+if (await clickModalTab(modal, tabLabel)) await waitForRepeat(modal, expr, 1500);
+return scopeItemsFor(modal, expr);
+}
+
 async function clickModalTab(modal, label) {
 const tab = Array.from(modal.querySelectorAll('a.nav-link')).find((a) => a.textContent.replace(/\s+/g, ' ').trim() === label);
 if (!tab) return false;
@@ -3175,10 +3185,8 @@ const campaign = extractCampaignField(panel);
 details.campaign = campaign.primary || '';
 details.leadRequest = campaign.parenthetical || '';
 details.initialNotes = extractInitialNotes(panel) || '';
-if (await clickModalTab(modal, 'Follow Up')) await waitForRepeat(modal, 'item in surveyDetailData', 1500);
-details.followUp = scopeItemsFor(modal, 'item in surveyDetailData');
-if (await clickModalTab(modal, 'Call History')) await waitForRepeat(modal, 'item in surveyAttemptData', 1500);
-details.callHistory = scopeItemsFor(modal, 'item in surveyAttemptData').map((c) => ({ date: c.ContactDate, outcome: c.OutcomeDisplayText, type: c.ContactType }));
+details.followUp = await readModalList(modal, 'Follow Up', 'item in surveyDetailData');
+details.callHistory = (await readModalList(modal, 'Call History', 'item in surveyAttemptData')).map((c) => ({ date: c.ContactDate, outcome: c.OutcomeDisplayText, type: c.ContactType }));
 return details;
 } catch (error) {
 return null;
@@ -4169,8 +4177,7 @@ if (validation.ok) {
 const initialNotes = extractInitialNotes(modalState.panel);
 let followUp = [];
 if (isPostClosureEntry(row, panelFields, candidate.row)) {
-if (await clickModalTab(modalState.modal, 'Follow Up')) await waitForRepeat(modalState.modal, 'item in surveyDetailData', 1500);
-followUp = scopeItemsFor(modalState.modal, 'item in surveyDetailData');
+followUp = await readModalList(modalState.modal, 'Follow Up', 'item in surveyDetailData');
 }
 validated.push({ candidate, panelFields, initialNotes, followUp, warnings: validation.warnings || [] });
 } else {
@@ -4715,6 +4722,18 @@ if (recentCompletions.length > 5) recentCompletions.length = 5;
 // already have results, so the index from before the step is not it.
 let lastStepGroupIndex = -1;
 
+// Where a run's time went, in whole numbers only: no customer data.
+const runTiming = { leads: 0, findMs: 0, readMs: 0, startedAt: 0 };
+function resetRunTiming() { runTiming.leads = 0; runTiming.findMs = 0; runTiming.readMs = 0; runTiming.startedAt = Date.now(); }
+// Pure. "1.1 s a lead (finding 0.3, reading 0.6, other 0.2)", or '' with no leads.
+function runTimingText(timing, now) {
+if (!timing.leads || !timing.startedAt) return '';
+const per = (ms) => (ms / timing.leads / 1000).toFixed(1);
+const total = Math.max(now - timing.startedAt, timing.findMs + timing.readMs);
+return `${per(total)} s a lead (finding ${per(timing.findMs)}, reading ${per(timing.readMs)}, other ${per(total - timing.findMs - timing.readMs)})`;
+}
+window.KonnectLeadChecker.runTimingText = () => runTimingText(runTiming, Date.now());
+
 async function stepOnce(session, uiHandle) {
 if (session.done || session.cancelled) return false;
 // Re-checked on every call: after retryExceptions rewinds to an earlier
@@ -4729,7 +4748,9 @@ const group = session.groups[session.groupIndex];
 // set back to 0 on load and on resume, when the page may have moved.
 if (session.rowInGroupIndex === 0) {
 uiHandle.setState(`Searching for ${group.rows[0].name}...`, group.rows[0].name, null);
+const findStarted = Date.now();
 const openResult = await searchAndOpenCustomer(group, session);
+runTiming.findMs += Date.now() - findStarted;
 if (openResult.status !== 'OK' || openResult.noEligibleEvents) {
 const exception = openResult.status !== 'OK' ? openResult.exception : 'NO_ELIGIBLE_LEAD_EVENTS';
 group.rows.forEach((row) => {
@@ -4747,7 +4768,10 @@ group.customerMatchMethod = openResult.matchMethod;
 const rowIndex = group.rows.findIndex((r) => !session.results[r.inputIndex]);
 const row = group.rows[rowIndex];
 uiHandle.setState(row.created ? `Reading lead at ${row.created}...` : 'Reading the lead...', group.rows[0].name, row.created || (row.mode === 'postClosureList' ? 'newest Post Closure lead' : ''));
+const readStarted = Date.now();
 const result = row.mode === 'national' ? await processNationalRow(row, session, group) : await processLeadRow(row, session);
+runTiming.readMs += Date.now() - readStarted;
+runTiming.leads++;
 result.customerMatchMethod = group.customerMatchMethod;
 recordResult(session, row.inputIndex, result);
 
@@ -4929,6 +4953,7 @@ isRunning = true;
 session.cancelled = false;
 session.stoppedOnError = false;
 const releaseLock = holdRunLock();
+resetRunTiming();
 let stopHiddenFlash = null;
 let failure = null;
 const endHiddenWait = () => {
@@ -5005,7 +5030,8 @@ hidePageFlashOverlay();
 // Results and the ending go to SLA Manager before the state changes on
 // screen, so it never hears "idle" about a batch it has not seen end.
 const said = typeof uiHandle.onLoopExit === 'function' ? uiHandle.onLoopExit(session) : '';
-uiHandle.setState(said || (failure ? 'Stopped on an error' : (session.cancelled ? 'Cancelled' : (session.done ? 'Done' : 'Paused'))));
+const speed = runTimingText(runTiming, Date.now());
+uiHandle.setState((said || (failure ? 'Stopped on an error' : (session.cancelled ? 'Cancelled' : (session.done ? 'Done' : 'Paused')))) + (speed && session.done ? ` · ${speed}` : ''));
 }
 }
 
@@ -5016,6 +5042,8 @@ const a = JSON.stringify(actual);
 const e = JSON.stringify(expected);
 if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
 }
+
+check('run timing reads per lead, and is blank with no leads', [runTimingText({ leads: 10, findMs: 3000, readMs: 6000, startedAt: 1000 }, 12000), runTimingText({ leads: 0, findMs: 0, readMs: 0, startedAt: 1 }, 5)], ['1.1 s a lead (finding 0.3, reading 0.6, other 0.2)', '']);
 
 const batch = [
 'Name\tPhone\tEmail\tSource\tCampaign\tCreated',
