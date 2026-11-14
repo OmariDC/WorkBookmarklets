@@ -1138,6 +1138,80 @@ async function ownerHelpers() {
   check('inbound one button: notes written, outcome Appointment > Test Drive, booking on the new lead', /208/.test(ended.notes) && ended.call === 'Booking Opportunity' && ended.lead === 'Customer Hub Team > Appointment > Test Drive' && ended.from === true && ended.key !== 'inbound', ended);
   check('inbound one button: no page errors', page.errors.length === 0, page.errors);
 
+  // A customer Konnect already has: their profile is opened from the search
+  // and a new lead is added. The booking never goes on the lead they had.
+  page = await fresh({ booking: true, owner: true, hash: '#!/select-call-type/calldirection/inbound/x', before: `(() => {
+    window.steps = [];
+    const tabs = document.querySelector('.tab-content').parentElement;
+    const tabList = document.querySelector('#salesTab-1').parentElement;
+    window.held = [tabList, tabs];
+    tabList.remove(); tabs.remove();
+    const outcomeRow = document.querySelector('#callOutcome').closest('.row');
+    outcomeRow.style.display = 'none';
+    const add = (html) => { const d = document.createElement('div'); d.innerHTML = html; document.body.appendChild(d); return d; };
+    const call = add('<button ng-click="setCallType(\\'Customer\\')" id="custCall">Customer Call</button>');
+    const leadModal = add('<div class="modal" id="leadModal" style="display:none"><label><input type="radio" name="salesOptions" value="true">Regular Sales Lead</label><label><input type="radio" name="salesOptions" value="false" checked>The Sales Event</label>' +
+      '<select ng-model="selected.Badge"><option>(Select a Brand)</option><option>Peugeot</option></select><select ng-model="selected.campaignID"><option>(Select a Campaign)</option><option>Peugeot - Enquiry - New</option><option>Peugeot - Enquiry - Used</option></select><button ng-click="ok()" id="leadSave">Save</button></div>');
+    document.querySelector('#custCall').addEventListener('click', () => { window.steps.push('customer call');
+      call.innerHTML = '<input ng-model="searchText" id="searchBox"><button id="btnSearchCustomers">Search</button><table id="found"><thead><tr><th></th><th>Name</th><th>Dealer</th><th>Best Number</th><th>Confirm</th></tr></thead><tbody></tbody></table>';
+      document.querySelector('#btnSearchCustomers').addEventListener('click', () => {
+        document.querySelector('#found tbody').innerHTML = '<tr><td></td><td>Jo Example</td><td>Preston</td><td>07700900123</td><td><button ng-click="eventHandler(1)" id="confirmJo">Confirm</button></td></tr>';
+        document.querySelector('#confirmJo').addEventListener('click', () => {
+          window.steps.push('existing customer opened');
+          call.innerHTML = '';
+          document.body.appendChild(window.held[0]); document.body.appendChild(window.held[1]);
+          // They already have one lead: its tab is the one showing.
+          const a = document.querySelector('#salesTab-1'), b = document.querySelector('#salesTab-2');
+          a.style.display = 'none'; a.classList.remove('active'); b.classList.add('active'); b.setAttribute('ng-repeat', 'tab in tabs');
+          document.querySelector('#paneA').classList.remove('active');
+          document.querySelector('#paneB').classList.add('active');
+          document.querySelector('#paneB').dataset.leadId = '9001';
+          const select = document.querySelector('#callOutcome');
+          select.innerHTML = '<option>(Select a Call Outcome)</option><option>Booking Opportunity</option><option>No Booking</option>';
+          outcomeRow.style.display = '';
+          location.hash = '#!/call/inbound/customer/1';
+          select.addEventListener('change', () => { window.steps.push('call outcome: ' + select.selectedOptions[0].textContent);
+            if (!document.querySelector('#addLead')) { add('<button ng-click="createNewSalesLead();" id="addLead">Add New Lead</button>'); document.querySelector('#addLead').addEventListener('click', () => { document.querySelector('#leadModal').style.display = 'block'; }); } });
+        });
+      });
+    });
+    document.querySelector('#leadSave').addEventListener('click', () => {
+      window.steps.push('lead saved: ' + document.querySelector('[ng-model="selected.campaignID"]').selectedOptions[0].textContent);
+      document.querySelector('#leadModal').style.display = 'none';
+      // The new lead's tab is added last and shown.
+      const a = document.querySelector('#salesTab-1'), b = document.querySelector('#salesTab-2');
+      a.style.display = ''; a.setAttribute('ng-repeat', 'tab in tabs'); a.parentElement.appendChild(a);
+      a.classList.add('active'); b.classList.remove('active');
+      document.querySelector('#paneB').classList.remove('active');
+      const pane = document.querySelector('#paneA');
+      pane.classList.add('active');
+      const list = (name, options) => '<select ng-model="theActivity.SalesLead.LeadDetails.' + name + '"><option>(Select)</option>' + options.map((o) => '<option>' + o + '</option>').join('') + '</select>';
+      pane.insertAdjacentHTML('beforeend', list('LeadTypeID', ['New', 'Not Known', 'Used']) + list('ChannelBadgeID', ['Peugeot', 'Vauxhall']) + list('SourceOfEnquiryID', ['Post Closure Processing', 'Phone call']) + list('LeadRequestID', ['Enquiry - New', 'Enquiry - Used', 'Motability']));
+      (0, eval)(window.addDiaryScript);
+    });
+  })()` });
+  await page.evaluate((script) => { window.addDiaryScript = script; }, addDiary);
+  await sleep(400);
+  await page.click('#kn-inbound-launcher');
+  await page.waitForSelector('.kn-bk-content', { timeout: 5000 });
+  await page.fill('.kn-bk-content input[placeholder="07700 900123"]', '07700 900123');
+  await page.click('.kn-bk-content .kn-bk-search-button');
+  const useButton = page.locator('.kn-bk-content .kn-bk-existing');
+  await useButton.waitFor({ timeout: 8000 });
+  check('existing customer: the search offers to use them with a new lead', (await useButton.textContent()) === 'Use Jo Example (Preston) and add a new lead', await useButton.textContent());
+  await useButton.click();
+  await page.waitForFunction(() => /Customer opened/.test(document.querySelector('.kn-bk-status')?.textContent || ''), null, { timeout: 8000 });
+  await fillBooking(page, 'testdrive');
+  await sleep(500);
+  const held = await page.evaluate(() => ({ key: KonnectNotes.state.booking.key, button: document.querySelector('.kn-bk-actions .kn-primary').textContent, oldNotes: document.querySelector('#callB').value, oldShown: !!document.querySelector('#callB').offsetParent }));
+  check('existing customer: with their old lead in view the booking still waits for a new one', held.key === 'inbound' && held.button === 'Create new lead and booking' && held.oldShown && held.oldNotes === '', held);
+  await page.click('.kn-bk-actions .kn-primary');
+  await booked(page, 1);
+  const route = await page.evaluate(() => ({ steps: window.steps, newNotes: document.querySelector('#callA').value, oldNotes: document.querySelector('#callB').value, key: KonnectNotes.state.booking.key }));
+  check('existing customer: no new customer is made, a new lead is added', route.steps.join(' | ') === 'customer call | existing customer opened | call outcome: Booking Opportunity | lead saved: Peugeot - Enquiry - Used', route.steps);
+  check('existing customer: the booking is on the new lead and the old lead is untouched', /208/.test(route.newNotes) && route.oldNotes === '' && route.key === 'lead-4242', route);
+  check('existing customer: no page errors', page.errors.length === 0, page.errors);
+
   // Work Tools sets the flag before Konnect Notes loads.
   const workTools = readFileSync(join(repo, 'Work-Tools.js'), 'utf8');
   const flagAt = workTools.indexOf('window.KonnectNotesOwner = true');
@@ -1264,6 +1338,20 @@ async function pxOnAnotherLead() {
   await sleep(400);
   now = await after(page);
   check('boxes not on the page yet: that tab is opened, read and left again', now.draftPx.items[0].reg === 'AB12CDE' && now.px.outcome[2] === 'Duplicate Lead' && now.activeTab === 'salesTab-77000002' && (await status(page)) === DONE, [now.draftPx, await status(page)]);
+  // As Konnect really is: the booking lead's Part Exchange section is folded,
+  // its switch is not on the page until the section is opened, and opening
+  // it folds Details (and Call Notes) away.
+  page = await fresh({ owner: true, page: 'two-leads.html', before: `window.mockOptions = { oneOpen: true }; window.buildLeads(${JSON.stringify([pxLead(), bookingLead({ lazyPx: true })])})` });
+  await page.click('#call-77000002');
+  await page.keyboard.press('Alt+b');
+  await page.waitForFunction(() => window.KonnectBookingEngine && document.querySelector('.kn-bk-actions'), null, { timeout: 5000 });
+  await page.click(PRESS);
+  await finished(page);
+  await sleep(600);
+  now = await after(page);
+  const folded = await page.evaluate(() => ({ notes: !!document.querySelector('#call-77000002').offsetParent, key: KonnectNotes.state.booking.key }));
+  check('folded Part Exchange: the section is opened, the switch pressed and the boxes filled', now.booking.pxOn === true && now.booking.px.Reg === 'AB12CDE' && now.booking.px.Brand === 'Ford' && now.booking.px.Mileage === '45000', now.booking);
+  check('folded Part Exchange: Details is open again and the booking is still on its lead', folded.notes && folded.key === 'lead-77000002', folded);
   check('no page errors on the part exchange runs', page.errors.length === 0, page.errors);
 }
 

@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.22.4'
+    version: '1.23.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -1703,7 +1703,7 @@
      shown (never the name itself, as the key is stored). */
   let leadKeyCache = null;
   function leadKey() {
-    if (!state.target && (inboundScreen() || inbound.pending)) return INBOUND_KEY;
+    if (holdingForNewLead() || (!state.target && (inboundScreen() || inbound.pending))) return INBOUND_KEY;
     const activity = leadScopeActivity(state.target);
     if (activity && activity.ID != null) return `lead-${activity.ID}`;
     if (leadKeyCache && leadKeyCache.target === state.target && Date.now() - leadKeyCache.at < 2000) return leadKeyCache.key;
@@ -2224,9 +2224,9 @@
     draft.inserted = text;
     draft.typedUsed = [];
     saveDraftNow();
-    writeBookingToLead(draft).then((updated) => {
+    state.leadWrite = writeBookingToLead(draft).then((updated) => {
       if (updated.length) showToast(`Lead updated: ${updated.join(', ')}`);
-    });
+    }).catch(() => {});
     if (note) {
       state.bookingStatus = { kind: 'warn', text: note };
       renderPalette();
@@ -2302,6 +2302,9 @@
       return;
     }
     if (!insertBooking(draft, { keepOpen: true })) return;
+    /* The lead's boxes are finished first: writing the part exchange opens
+       and shuts lead sections, which must not cross with the diary. */
+    await state.leadWrite;
     const booked = await bookInDiary(draft);
     offerSheetRow(draft);
     if (booked) closePalette();
@@ -3201,9 +3204,10 @@
       const split = engine.splitMakeModel(realText(make), realText(model));
       return { make: engine.normaliseMake(split.make), model: engine.normaliseModel(split.model) };
     };
-    const put = (panel, placeholder, value, label, onlyIfEmpty) => {
+    const put = (panel, placeholder, value, label, onlyIfEmpty, model) => {
       if (!value) return;
-      const control = panel?.querySelector(`input[placeholder="${placeholder}"]`);
+      const control = panel?.querySelector(`input[placeholder="${placeholder}"]`) ||
+        (model ? panel?.querySelector(`input[ng-model$="LeadDetails.${model}"]`) : null);
       if (!control) return;
       if (onlyIfEmpty && realText(control.value)) return;
       if (setLeadControl(control, value)) updated.push(label);
@@ -3230,32 +3234,56 @@
     const item = d.px.items[0];
     const wantPx = (d.type === 'valuation' || d.px.status === 'yes') && item &&
       (realText(item.make) || realText(item.model) || realText(item.reg) || realText(item.mileage));
-    const pxPanel = leadPanel(pane, 'part exchange');
-    if (!wantPx || !pxPanel) {
+    if (!wantPx) {
       saveDraftSoon();
       return Promise.resolve(updated);
     }
-    const switched = turnPxSwitchOn(pxPanel);
-    if (switched) updated.push('PX switch on');
-    const pxBox = () => leadPanel(activeLeadPane() || pane, 'part exchange')?.querySelector('input[placeholder="Vehicle Brand"], input[placeholder="Reg Number"]');
-    /* The PX boxes are drawn once the switch is on, which can take a moment. */
-    return waitFor(pxBox, switched ? 2500 : 300).then((found) => new Promise((resolve) => {
-      if (!found) updated.push('part exchange NOT written: its boxes did not show, add it to the lead by hand');
-      setTimeout(() => {
-        const panel = leadPanel(activeLeadPane() || pane, 'part exchange');
+    return (async () => {
+      const livePane = () => activeLeadPane() || pane;
+      const panelNow = () => leadPanel(livePane(), 'part exchange');
+      const shownSwitch = () => {
+        const node = pxSwitchNode(panelNow());
+        return node && isVisible(node.matches('[ng-click^="onSwitch"]') ? node : (node.querySelector('[ng-click^="onSwitch"], .toggle') || node)) ? node : null;
+      };
+      const pxBox = () => Array.from(panelNow()?.querySelectorAll('input[placeholder="Vehicle Brand"], input[placeholder="Reg Number"], input[ng-model$="LeadDetails.PXMake"]') || []).find(isVisible) || null;
+      /* Konnect only draws the switch once the Part Exchange section is open,
+         and opening it folds Details away, so the booking is held on its lead
+         meanwhile and Details is opened again afterwards. */
+      const heldBefore = inboundSetupHold;
+      let opened = false;
+      inboundSetupHold = true;
+      try {
+        if (!shownSwitch() && !pxBox()) {
+          opened = await openLeadSection(livePane(), 'part exchange');
+          if (opened) await waitFor(() => shownSwitch() || pxBox(), 2500);
+        }
+        const switched = turnPxSwitchOn(panelNow());
+        if (switched) updated.push('PX switch on');
+        /* The PX boxes are drawn once the switch is on, which can take a moment. */
+        const found = await waitFor(pxBox, switched ? 2500 : 300);
+        if (!found) updated.push('part exchange NOT written: its boxes did not show, add it to the lead by hand');
+        await new Promise((resolve) => setTimeout(resolve, switched ? 150 : 0));
+        const panel = panelNow();
         const names = tidy(item.make, item.model);
-        put(panel, 'Vehicle Brand', names.make, 'PX Brand');
-        put(panel, 'Vehicle Model', names.model, 'PX Model');
-        put(panel, 'Reg Number', engine.normaliseReg(realText(item.reg)), 'PX Reg');
-        put(panel, 'Mileage', engine.normaliseMileage(realText(item.mileage)), 'PX Mileage');
-        put(panel, 'Valuation', String(realText(item.roughVal)).replace(/[^\d.]/g, ''), 'PX Valuation');
+        put(panel, 'Vehicle Brand', names.make, 'PX Brand', false, 'PXMake');
+        put(panel, 'Vehicle Model', names.model, 'PX Model', false, 'PXModel');
+        put(panel, 'Reg Number', engine.normaliseReg(realText(item.reg)), 'PX Reg', false, 'PXRegistrationNumber');
+        put(panel, 'Mileage', engine.normaliseMileage(realText(item.mileage)), 'PX Mileage', false, 'PXMileage');
+        put(panel, 'Valuation', String(realText(item.roughVal)).replace(/[^\d.]/g, ''), 'PX Valuation', false, 'PXValuation');
         const lead = readLead();
         Object.entries(lead.pxFields).forEach(([path, value]) => { draft.leadSeen[path] = value; });
         if (lead.pxOn !== null) draft.leadSeen['px.on'] = lead.pxOn ? 'on' : 'off';
-        saveDraftSoon();
-        resolve(updated);
-      }, switched ? 150 : 0);
-    }));
+        // Details is only opened again where opening Part Exchange folded it.
+        if (opened && state.target && !isVisible(state.target)) {
+          await openLeadSection(livePane(), 'details');
+          await waitFor(() => isVisible(state.target), 2000);
+        }
+      } finally {
+        inboundSetupHold = heldBefore;
+      }
+      saveDraftSoon();
+      return updated;
+    })();
   }
 
   /* ---------- part exchange held on another lead ---------- */
@@ -4135,7 +4163,7 @@
     const waitingForLead = draft.key === INBOUND_KEY;
     const plan = bookingRefs.diary ? diaryPlan(draft) : null;
     const withDiary = !!plan && !diaryAlreadyBooked(draft, plan);
-    bookingRefs.insert.textContent = waitingForLead ? (inboundRun ? 'Working...' : 'Create customer, lead and booking')
+    bookingRefs.insert.textContent = waitingForLead ? (inboundRun ? 'Working...' : holdingForNewLead() ? 'Create new lead and booking' : 'Create customer, lead and booking')
       : withDiary ? (draft.inserted ? 'Update notes and book diary' : 'Insert and book diary')
       : draft.inserted ? 'Update Call Notes' : 'Insert into Call Notes';
     const why = result.errors.length ? `Fix first: ${result.errors[0]}` : '';
@@ -4374,8 +4402,20 @@
     brand: '',
     dealer: '',
     callAt: 0,
-    callLead: ''
+    callLead: '',
+    // The call page of an existing customer opened to be given a new lead.
+    newLeadOn: ''
   };
+
+  /* True while an existing customer is open and the inbound booking is
+     waiting for a new lead, so it is not put on a lead they already have. */
+  function holdingForNewLead() {
+    if (!inbound.newLeadOn) return false;
+    // 'opening': the customer was just pressed and their page is on its way.
+    if (inbound.pending && (inbound.newLeadOn === 'opening' || location.hash === inbound.newLeadOn)) return true;
+    inbound.newLeadOn = '';
+    return false;
+  }
 
   /* Owner only. The builder was opened, or the customer searched, on the
      inbound screens: the next lead whose Call Notes appears is that call's
@@ -4563,6 +4603,7 @@
     await new Promise((resolve) => setTimeout(resolve, 600));
     const matches = searchMatches();
     if (matches) {
+      inbound.matches = matches.slice(0, 6);
       state.bookingStatus = matchesStatus(matches);
       if (state.open && state.view === 'booking') renderPalette();
     }
@@ -4585,6 +4626,41 @@
       const dealer = dealerCol >= 0 ? cells[dealerCol] : '';
       return dealer ? `${name} (${dealer})` : name;
     }).filter(Boolean);
+  }
+
+  /* The rows of Konnect's customer search, each with the control that opens it. */
+  function searchRowsToOpen() {
+    const table = Array.from(document.querySelectorAll('table'))
+      .find((node) => isVisible(node) && /best number/i.test(node.tHead?.textContent || node.textContent.slice(0, 400)));
+    return Array.from(table?.tBodies[0]?.rows || []).filter(isVisible).map((row) => ({
+      row,
+      open: row.querySelector('button[ng-click^="eventHandler"]') ||
+        row.cells[row.cells.length - 1]?.querySelector('button, a, input[type="button"], [ng-click]') || null
+    }));
+  }
+
+  /* Opens a customer Konnect already has, to be given a new lead. Nothing
+     from their earlier leads is used: the booking waits for the new one. */
+  async function openExistingCustomer(index) {
+    const found = searchRowsToOpen()[index];
+    const say = (kind, text) => {
+      state.bookingStatus = { kind, text };
+      if (state.open && state.view === 'booking') renderPalette();
+    };
+    if (!found || !found.open) return say('error', 'That customer could not be opened from here. Press Confirm on them in Konnect, then press the main button.');
+    const callOutcome = () => Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible) || null;
+    inbound.pending = true;
+    inbound.matches = [];
+    // Held from before the press, so their old lead never takes the booking.
+    inbound.newLeadOn = 'opening';
+    found.open.click();
+    if (!(await waitFor(callOutcome, 15000))) {
+      inbound.newLeadOn = '';
+      return say('error', 'The customer did not open. Press Confirm on them in Konnect.');
+    }
+    inbound.newLeadOn = location.hash;
+    scanPage();
+    say('ok', 'Customer opened. Press "Create new lead and booking": the booking goes on a new lead, not one they already have.');
   }
 
   function matchesStatus(matches) {
@@ -4680,6 +4756,8 @@
     const result = buildCurrentBooking(draft);
     if (!result || result.errors.length) return;
     inboundRun = true;
+    // Stored now, so the lead that takes the booking over gets it as it stands.
+    saveDraftNow();
     const say = (kind, text) => {
       state.bookingStatus = { kind, text };
       if (state.open && state.view === 'booking') renderPalette();
@@ -4722,6 +4800,7 @@
       // 3. The new lead.
       say('ok', 'Adding the lead...');
       const tabsBefore = leadTabs().length;
+      const leadBefore = leadScopeActivity(state.target)?.ID;
       add.click();
       const modal = await waitFor(() => Array.from(document.querySelectorAll('.modal')).find((m) => isVisible(m) && m.querySelector('input[name="salesOptions"]')) || null, 10000);
       if (!modal) return stop('the Create Activity window did not open');
@@ -4745,7 +4824,17 @@
       await waitFor(() => leadTabs().length > tabsBefore, 10000);
       const lastTab = Array.from(leadTabs()).pop();
       if (lastTab && !lastTab.classList.contains('active')) lastTab.querySelector('a')?.click();
-      const onLead = await waitFor(() => { scanPage(); return state.target && leadKey() !== INBOUND_KEY ? state.target : null; }, 15000);
+      const onLead = await waitFor(() => {
+        scanPage();
+        /* On a customer who already had leads, the booking is let go only
+           once the new lead's own Call Notes is the one in view. */
+        if (inbound.newLeadOn && state.target && isVisible(state.target)) {
+          const last = Array.from(leadTabs()).pop();
+          const now = leadScopeActivity(state.target)?.ID;
+          if (leadTabs().length > tabsBefore && (!last || last.classList.contains('active')) && (now == null || now !== leadBefore)) inbound.newLeadOn = '';
+        }
+        return state.target && leadKey() !== INBOUND_KEY ? state.target : null;
+      }, 15000);
       if (!onLead) return stop('the new lead\'s Call Notes did not show');
       const lead = currentDraft();
       const pane = onLead.closest('.tab-pane') || document;
@@ -4847,6 +4936,7 @@
 
   function forgetInboundCustomer() {
     inbound.customer = blankCustomer();
+    inbound.matches = [];
     inbound.mobile = '';
     inbound.mobileLead = '';
     inbound.brand = '';
@@ -4899,6 +4989,10 @@
     searchRow.appendChild(button('Search', 'kn-bk-search-button', searchKonnect));
     body.appendChild(element('div', 'kn-bk-group', 'Contact'));
     body.appendChild(searchRow);
+    /* Customers Konnect already has for this number: one press opens theirs. */
+    (inbound.matches || []).forEach((label, index) => {
+      body.appendChild(button(`Use ${label} and add a new lead`, 'kn-bk-add kn-bk-existing', () => openExistingCustomer(index)));
+    });
     body.appendChild(element('div', 'kn-muted kn-bk-gap', 'New customer? Add their details below and press Create new customer.'));
     body.appendChild(bkInput('Name', c.name, update('name')));
     body.appendChild(bkInput('Email', c.email, update('email')));
