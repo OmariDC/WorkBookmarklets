@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.25.1'
+    version: '1.26.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -794,6 +794,18 @@
       .kn-bk-small { flex: 1 1 0; }
       .kn-bk-narrow { flex: 0 0 96px; }
       .kn-bk-days { display: flex; gap: 5px; overflow-x: auto; padding: 1px 1px 6px; margin-bottom: 6px; }
+      .kn-bk-cal-toggle { margin: 0 0 8px; }
+      .kn-bk-cal { margin-bottom: 8px; padding: 8px; border-radius: 12px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+      .kn-bk-cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+      .kn-bk-cal-title { font-size: 13px; }
+      .kn-bk-cal-step { border: none; background: #f2f2f7; color: #1c1c1e; width: 28px; height: 28px; border-radius: 999px; font-size: 16px; line-height: 1; cursor: pointer; }
+      .kn-bk-cal-step:disabled { color: #aeaeb2; cursor: not-allowed; }
+      .kn-bk-cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+      .kn-bk-cal-name { text-align: center; font-size: 11px; font-weight: 600; color: #6e6e73; padding-bottom: 2px; }
+      .kn-bk-cal-day { padding: 6px 0 !important; text-align: center; border-radius: 8px !important; min-width: 0; }
+      .kn-bk-cal-day:disabled { background: transparent !important; color: #aeaeb2 !important; box-shadow: none !important; cursor: not-allowed; }
+      .kn-bk-cal-today { outline: 1px solid #f9772e; }
+      .kn-bk-cal-holiday { color: #b23a0a; }
       .kn-bk-day { display: flex !important; flex-direction: column; align-items: center; min-width: 42px; padding: 5px 6px !important; border-radius: 10px !important; }
       .kn-bk-day:disabled { opacity: 0.35; cursor: default; }
       .kn-bk-day-name { font-size: 10.5px; font-weight: 600; }
@@ -819,7 +831,8 @@
       .kn-bk-other-px .kn-bk-notice-actions { flex-wrap: wrap; }
       .kn-bk-footer { flex: 0 0 auto; padding: 0 10px 9px; background: #f2f2f7; }
       .kn-bk-preview-card { margin-bottom: 8px; padding: 9px 10px; border-radius: 12px; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
-      .kn-bk-preview-label { margin-bottom: 5px; font-size: 11.5px; font-weight: 700; color: #4b5565; }
+      .kn-bk-preview-label { font-size: 11.5px; font-weight: 700; color: #4b5565; cursor: pointer; }
+      .kn-bk-preview-card[open] .kn-bk-preview-label { margin-bottom: 5px; }
       .kn-bk-preview { max-height: 96px; margin: 0; padding: 8px; overflow: auto; border-radius: 8px; background: #f2f2f7; color: #1c1c1e; font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
       /* With no lead nothing can be inserted yet, so on a short screen the preview gives its room to the Customer step. */
       @media (max-height: 960px) { .kn-bk-inbound .kn-bk-preview { max-height: 60px; } }
@@ -2826,25 +2839,20 @@
     // than there are times. The box is the one sitting under the time's
     // heading; where the page gives no positions, widths are counted instead.
     const span = (cell) => Math.max(1, Number(cell.colSpan) || 1);
-    const column = headerCells.slice(0, headerAt).reduce((sum, th) => sum + span(th), 0);
-    const headerBox = headerCells[headerAt].getBoundingClientRect();
-    const middle = headerBox.width > 0 ? headerBox.left + headerBox.width / 2 : null;
-    const cellUnder = (cells) => {
-      if (middle !== null) {
-        const under = cells.find((cell) => { const box = cell.getBoundingClientRect(); return box.width > 0 && box.left <= middle && middle < box.right; });
+    const rows = Array.from(table.querySelectorAll('tbody tr')).filter(isVisible);
+    const boxUnder = (cells, at) => {
+      const box = headerCells[at].getBoundingClientRect();
+      const mid = box.width > 0 ? box.left + box.width / 2 : null;
+      if (mid !== null) {
+        const under = cells.find((cell) => { const b = cell.getBoundingClientRect(); return b.width > 0 && b.left <= mid && mid < b.right; });
         if (under) return under;
       }
-      let at = 0;
-      return cells.find((cell) => { const from = at; at += span(cell); return column >= from && column < at; }) || null;
+      const col = headerCells.slice(0, at).reduce((sum, th) => sum + span(th), 0);
+      let from = 0;
+      return cells.find((cell) => { const start = from; from += span(cell); return col >= start && col < from; }) || null;
     };
-    const rows = Array.from(table.querySelectorAll('tbody tr')).filter(isVisible);
-    // A greyed "very soon" box can still be booked, so it is used when no
-    // one has a clear box at that time. Past and blocked boxes never are.
-    for (const refuse of [/past|soon|blocked/i, /past|blocked/i])
-    for (const row of rows) {
-      const cells = Array.from(row.children);
-      const cell = cellUnder(cells);
-      if (!cell || !cell.matches('td[ng-click^="SelectTimeSlot"]')) continue;
+    const isFree = (cell, refuse) => {
+      if (!cell || !cell.matches('td[ng-click^="SelectTimeSlot"]')) return false;
       // Every box holds a hidden "BLOCKED" and a hidden name button, so only
       // what is actually shown counts.
       const text = normaliseText(cell.innerText);
@@ -2852,11 +2860,29 @@
       // A booked box keeps the customer's name in its button even when
       // Konnect hides the button, so the name counts whether shown or not.
       const booked = Array.from(cell.querySelectorAll('button')).some((b) => normaliseText(b.textContent));
-      if (text || booked || refuse.test(titles)) continue;
+      return !(text || booked || refuse.test(titles));
+    };
+    // An hour takes two boxes: the next half hour must be free for the same
+    // person, or Konnect will not take the appointment. The last time of
+    // the day has no next box to look at.
+    const needsNext = plan.length === '60 minutes' && headerAt + 1 < headerCells.length && /^\d{1,2}:\d{2}$/.test(headers[headerAt + 1]);
+    let halfOnly = false;
+    // A greyed "very soon" box can still be booked, so it is used when no
+    // one has a clear box at that time. Past and blocked boxes never are.
+    for (const refuse of [/past|soon|blocked/i, /past|blocked/i])
+    for (const row of rows) {
+      const cells = Array.from(row.children);
+      const cell = boxUnder(cells, headerAt);
+      if (!isFree(cell, refuse)) continue;
+      if (needsNext) {
+        const next = boxUnder(cells, headerAt + 1);
+        if (next !== cell && !isFree(next, /past|blocked/i)) { halfOnly = true; continue; }
+      }
       // The name cell also lists the person's brand letters on a second line.
       const nameText = cells[0] && cells[0] !== cell ? String(cells[0].innerText || '').split('\n')[0] : '';
       return { cell, person: normaliseText(nameText).replace(/(\s+[A-Z],)+\s*[A-Z]$/, '').replace(/\s+[A-Z](,\s*[A-Z])+$/, '') };
     }
+    if (halfOnly) return { error: `no one has a full hour free from ${plan.time}: the ${headers[headerAt + 1]} box after it is taken. Pick another time` };
     return { error: `no one is free at ${plan.time} on that day` };
   }
 
@@ -3832,6 +3858,60 @@
     }
     body.appendChild(strip);
 
+    // A whole month to pick from, folded away until asked for: for a
+    // booking further off than the two weeks above.
+    const pickDay = (day) => {
+      d.day = String(day.getDate()).padStart(2, '0');
+      d.month = String(day.getMonth() + 1).padStart(2, '0');
+      // Picked from the calendar, so the year is not in doubt.
+      d.year = String(day.getFullYear());
+      untag(draft, 'when');
+      changed(draft, true);
+    };
+    const more = button(draft.calendarOpen ? 'Hide calendar' : 'Later date: open calendar', 'kn-bk-add kn-bk-cal-toggle', () => {
+      draft.calendarOpen = !draft.calendarOpen;
+      draft.calendarOffset = 0;
+      changed(draft, true);
+    });
+    more.setAttribute('aria-expanded', draft.calendarOpen ? 'true' : 'false');
+    body.appendChild(more);
+    if (draft.calendarOpen) {
+      const offset = Math.max(0, Math.min(11, Number(draft.calendarOffset) || 0));
+      const first = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+      const cal = element('div', 'kn-bk-cal');
+      const head = element('div', 'kn-bk-cal-head');
+      const step = (label, by, name, off) => {
+        const arrow = button(label, 'kn-bk-cal-step', () => { draft.calendarOffset = offset + by; changed(draft, true); });
+        arrow.setAttribute('aria-label', name);
+        arrow.disabled = off;
+        return arrow;
+      };
+      head.appendChild(step('\u2039', -1, 'Earlier month', offset === 0));
+      head.appendChild(element('strong', 'kn-bk-cal-title', first.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })));
+      head.appendChild(step('\u203A', 1, 'Later month', offset === 11));
+      cal.appendChild(head);
+      const grid = element('div', 'kn-bk-cal-grid');
+      ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach((name) => grid.appendChild(element('span', 'kn-bk-cal-name', name)));
+      for (let blank = (first.getDay() + 6) % 7; blank > 0; blank -= 1) grid.appendChild(element('span', 'kn-bk-cal-blank'));
+      const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+      const lastDay = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+      for (let n = 1; n <= lastDay; n += 1) {
+        const day = new Date(first.getFullYear(), first.getMonth(), n);
+        const active = Number(d.day) === n && Number(d.month) === day.getMonth() + 1 && (!d.year || Number(d.year) === day.getFullYear());
+        const cell = element('button', `kn-chip kn-bk-cal-day${active ? ' kn-active' : ''}${day.getTime() === startOfToday.getTime() ? ' kn-bk-cal-today' : ''}`, String(n));
+        cell.type = 'button';
+        const holiday = engine.bankHolidayName ? engine.bankHolidayName(day) : '';
+        if (day < startOfToday) cell.disabled = true;
+        else if (!engine.availableSlots(day, typeInput, { now: new Date() }).length) { cell.disabled = true; cell.title = 'No times on this day'; }
+        else if (holiday) { cell.title = `${holiday}: site hours may differ`; cell.classList.add('kn-bk-cal-holiday'); }
+        cell.setAttribute('aria-label', day.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }));
+        cell.addEventListener('click', () => pickDay(day));
+        grid.appendChild(cell);
+      }
+      cal.appendChild(grid);
+      body.appendChild(cal);
+    }
+
     const row = element('div', 'kn-bk-row');
     let monthInput = null;
     const dayField = bkInput('Day', d.day, (value, input) => {
@@ -4182,7 +4262,10 @@
     const dated = readout.confirmYear
       ? `${String(d.day).padStart(2, '0')}/${String(d.month).padStart(2, '0')}/${readout.confirmYear}` : '';
     const errors = result.errors.map((text) => (dated && text.includes(dated) ? `Confirm the date ${dated}` : text));
-    list('Before you can insert:', errors, 'kn-bk-error', '');
+    // While sections are still needed, the chips at the top already say
+    // so: the list is kept for what they do not cover.
+    const stillNeeded = visibleSections(d).some((section) => sectionRequired(section, d) && sectionMissing(draft, section.id));
+    if (!stillNeeded) list('Before you can insert:', errors, 'kn-bk-error', '');
     list('Check:', result.warnings, 'kn-bk-warn', 'kn-bk-issue-warn');
   }
 
@@ -4358,8 +4441,13 @@
     });
 
     const footer = element('div', draft.key === INBOUND_KEY ? 'kn-bk-footer kn-bk-inbound' : 'kn-bk-footer');
-    const previewCard = element('div', 'kn-bk-preview-card');
-    previewCard.appendChild(element('div', 'kn-bk-preview-label', 'Goes into Call Notes'));
+    // Folded while the booking is still being filled in, so the steps
+    // have the room; open once it is ready, or when the owner opens it.
+    const previewCard = element('details', 'kn-bk-preview-card');
+    const filling = visibleSections(draft.data).some((section) => sectionRequired(section, draft.data) && sectionMissing(draft, section.id));
+    previewCard.open = state.previewOpen == null ? !filling : state.previewOpen;
+    previewCard.appendChild(element('summary', 'kn-bk-preview-label', 'Preview: goes into Call Notes'));
+    previewCard.addEventListener('toggle', () => { if (previewCard.open !== !filling) state.previewOpen = previewCard.open; else state.previewOpen = null; });
     const preview = element('pre', 'kn-bk-preview');
     bookingRefs.preview = preview;
     previewCard.appendChild(preview);

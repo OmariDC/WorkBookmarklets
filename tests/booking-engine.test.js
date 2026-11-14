@@ -257,6 +257,14 @@ test('Multiple vehicles: same model variants, identical, different makes', () =>
   'Customer is booked in on 10/11 at 10:00 to test drive the used Peugeot 208 (AA11AAA and BB22BBB)');
 });
 
+test('Time: typed as it is said on a call', () => {
+  const E = require('../Konnect-Booking-Engine.js');
+  const t = (text) => { const r = E.resolveTime(text); return r.error ? 'error' : r.text; };
+  assert.deepStrictEqual(['2', '2pm', '230', '2.30', 'half 2', 'half past 2', '14:30', '9', '10am', '11.30', '7'].map(t),
+    ['14:00', '14:00', '14:30', '14:30', '14:30', '14:30', '14:30', '09:00', '10:00', '11:30', '19:00']);
+  assert.deepStrictEqual(['2.15', 'soon', '25'].map(t), ['error', 'error', 'error']);
+});
+
 test('Finance: one line, defaults to Discuss options, cash + finance', () => {
   const lastLines = (payment) => build({ ...D, type: 'testdrive', vehicles: NEW_MM, payment }).lines.slice(4);
   assert.deepStrictEqual(lastLines({ kind: 'finance', financeType: 'pcp', deposit: '0', term: '48', mpa: '10k', budget: '300' }),

@@ -354,6 +354,32 @@ async function bookingAndRoutes() {
   await sleep(150);
   check('finance: Not sure clears the types', await page.evaluate(() => KonnectNotes.currentDraft().data.payment.financeTypes.length === 0 && KonnectNotes.currentDraft().data.payment.financeType === ''));
 
+  // The month calendar is folded away until asked for; a day picked from
+  // it needs no year confirming, however far ahead.
+  await page.evaluate(() => { KonnectNotes.state.booking.openSection = 'when'; KonnectNotes.openBooking(); });
+  await sleep(200);
+  const calendarAtFirst = await page.evaluate(() => ({ grid: !!document.querySelector('.kn-bk-cal'), toggle: document.querySelector('.kn-bk-cal-toggle')?.textContent, preview: document.querySelector('.kn-bk-preview-card').open, errors: /Before you can insert/.test(document.querySelector('.kn-bk-issues').textContent) }));
+  check('calendar: folded until opened, and while filling in the preview is folded with no second list of what is missing', calendarAtFirst.grid === false && /open calendar/.test(calendarAtFirst.toggle || '') && calendarAtFirst.preview === false && calendarAtFirst.errors === false, calendarAtFirst);
+  await page.click('.kn-bk-cal-toggle');
+  await sleep(150);
+  for (let i = 0; i < 3; i += 1) { await page.click('.kn-bk-cal-step[aria-label="Later month"]'); await sleep(120); }
+  const calendarDay = await page.evaluate(() => {
+    const cell = Array.from(document.querySelectorAll('.kn-bk-cal-day')).filter((c) => !c.disabled)[10];
+    const out = { label: cell.getAttribute('aria-label'), title: document.querySelector('.kn-bk-cal-title').textContent, names: Array.from(document.querySelectorAll('.kn-bk-cal-name')).map((n) => n.textContent).join(' ') };
+    cell.click();
+    return out;
+  });
+  await sleep(200);
+  const picked = await page.evaluate(() => {
+    const d = KonnectNotes.state.booking.data;
+    const readout = document.querySelector('[data-role="date-readout"]');
+    return { day: d.day, month: d.month, year: d.year, weekday: new Date(Number(d.year), Number(d.month) - 1, Number(d.day)).toLocaleDateString('en-GB', { weekday: 'long' }), error: readout.classList.contains('kn-bk-error'), confirm: !!document.querySelector('.kn-bk-confirm-year'), active: document.querySelectorAll('.kn-bk-cal-day.kn-active').length };
+  });
+  check('calendar: three months on, the day pressed is the one set, with its year and nothing to confirm', calendarDay.names === 'Mon Tue Wed Thu Fri Sat Sun' && calendarDay.label.startsWith(picked.weekday) && calendarDay.label.includes(String(Number(picked.day))) && /^\d{4}$/.test(picked.year) && !picked.error && !picked.confirm && picked.active === 1, { calendarDay, picked });
+  await page.click('.kn-bk-cal-toggle');
+  await sleep(150);
+  await page.evaluate(() => { const d = KonnectNotes.state.booking.data; d.day = ''; d.month = ''; d.year = ''; KonnectNotes.openBooking(); });
+
   // Item 10: yesterday is an error until the year is confirmed.
   const dates = await page.evaluate(() => {
     const now = new Date();
@@ -1161,9 +1187,10 @@ async function ownerHelpers() {
   page = await fresh({ booking: true, owner: true, before: addDiary });
   await page.evaluate(() => {
     const table = document.querySelector('.modal table');
-    table.querySelector('thead tr').innerHTML = '<th>Name</th><th>13:30</th><th>14:00</th><th>14:30</th><th>15:00</th>';
+    table.querySelector('thead tr').innerHTML = '<th>Name</th><th>13:30</th><th>14:00</th><th>14:30</th><th>15:00</th><th>15:30</th>';
     table.querySelector('tbody tr').innerHTML = '<td>Alex Advisor</td><td ng-click="SelectTimeSlot(0)" id="early" style="width:60px;height:24px;border:1px solid #999"></td>' +
-      '<td ng-click="SelectTimeSlot(1)" id="slot" style="width:60px;height:24px;border:1px solid #999"></td><td ng-click="SelectTimeSlot(2)" colspan="2" style="height:24px;border:1px solid #999"><button>Sam Buyer</button></td>';
+      '<td ng-click="SelectTimeSlot(1)" id="slot" style="width:60px;height:24px;border:1px solid #999"></td><td ng-click="SelectTimeSlot(2)" id="after" style="width:60px;height:24px;border:1px solid #999"></td>' +
+      '<td ng-click="SelectTimeSlot(3)" colspan="2" style="height:24px;border:1px solid #999"><button>Sam Buyer</button></td>';
     window.picked = [];
     table.addEventListener('click', (event) => { if (event.target.id) window.picked.push(event.target.id); }, true);
   });
@@ -1173,6 +1200,36 @@ async function ownerHelpers() {
   await page.click('.kn-bk-actions .kn-primary');
   await booked(page, 1);
   check('diary: a wide box later in the row does not shift the time picked', JSON.stringify(await page.evaluate(() => window.picked)) === '["slot"]', await page.evaluate(() => window.picked));
+
+  // An hour needs the next half hour too. Someone free at 14:00 but booked
+  // at 14:30 is passed over for someone with the whole hour; when no one
+  // has it, nothing is pressed and the builder says which box is taken.
+  const hourDiary = (second) => `(() => {
+    const table = document.querySelector('.modal table');
+    const box = 'style="width:60px;height:24px;border:1px solid #999"';
+    table.querySelector('thead tr').innerHTML = '<th>Name</th><th>14:00</th><th>14:30</th>';
+    table.querySelector('tbody').innerHTML = '<tr><td>Alex Advisor</td><td ng-click="SelectTimeSlot(1)" id="halfOnly" ' + box + '></td><td ng-click="SelectTimeSlot(2)" ' + box + '><button>Sam Buyer</button></td></tr>' +
+      ${second ? `'<tr><td>Bea Advisor</td><td ng-click="SelectTimeSlot(3)" id="slot" ' + box + '></td><td ng-click="SelectTimeSlot(4)" id="afterB" ' + box + '></td></tr>'` : `''`};
+    window.picked = [];
+    table.addEventListener('click', (event) => { if (event.target.id) window.picked.push(event.target.id); }, true);
+  })()`;
+  page = await fresh({ booking: true, owner: true, before: addDiary });
+  await page.evaluate(hourDiary(true));
+  await openBuilder(page);
+  await fillBooking(page, 'view');
+  await sleep(300);
+  await page.click('.kn-bk-actions .kn-primary');
+  await booked(page, 1);
+  check('diary: an hour goes to the person with the next half hour free too', JSON.stringify(await page.evaluate(() => window.picked)) === '["slot"]' && /with Bea Advisor/.test(await page.evaluate(() => (KonnectNotes.state.bookingStatus || {}).text || '')), await page.evaluate(() => [window.picked, (KonnectNotes.state.bookingStatus || {}).text]));
+  page = await fresh({ booking: true, owner: true, before: addDiary });
+  await page.evaluate(hourDiary(false));
+  await openBuilder(page);
+  await fillBooking(page, 'view');
+  await sleep(300);
+  await page.click('.kn-bk-actions .kn-primary');
+  await page.waitForFunction(() => /Diary booking stopped/.test(document.body.textContent), null, { timeout: 15000 });
+  const noHour = await page.evaluate(() => ({ picked: window.picked, made: window.diaryMade, said: (KonnectNotes.state.bookingStatus || {}).text }));
+  check('diary: no one with the full hour: nothing pressed, and it says which box is taken', noHour.picked.length === 0 && noHour.made === 0 && /no one has a full hour free from 14:00: the 14:30 box after it is taken/.test(noHour.said || ''), noHour);
 
   // One button on an inbound call: customer, Booking Opportunity, the new
   // lead, the diary opened and closed once, the lead's drop downs, then the

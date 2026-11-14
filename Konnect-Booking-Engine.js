@@ -272,12 +272,16 @@
   function resolveTime(time) {
     const text = clean(time).toLowerCase();
     if (!text) return { error: 'Pick a time for the appointment' };
-    const match = text.match(/^(\d{1,2})(?::?(\d{2}))?\s*(am|pm)?$/);
+    // As it is said on a call: "2", "2pm", "230", "2.30", "half 2".
+    const half = text.match(/^half(?:\s+past)?\s+(\d{1,2})\s*(am|pm)?$/);
+    const match = half ? [half[0], half[1], '30', half[2]] : text.match(/^(\d{1,2})(?:[:.]?(\d{2}))?\s*(am|pm)?$/);
     if (!match) return { error: `"${time}" is not a time` };
     let hour = Number(match[1]);
     const minute = Number(match[2] || 0);
     if (match[3] === 'pm' && hour < 12) hour += 12;
     if (match[3] === 'am' && hour === 12) hour = 0;
+    // No am or pm on 1 to 7: no site is open then in the morning, so it is the afternoon.
+    if (!match[3] && hour >= 1 && hour <= 7) hour += 12;
     if (hour > 23) return { error: `"${time}" is not a time` };
     if (minute !== 0 && minute !== 30) return { error: 'Times must be on :00 or :30' };
     return { hour, minute, text: `${pad(hour)}:${pad(minute)}` };
