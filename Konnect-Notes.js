@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.23.1'
+    version: '1.23.2'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -1697,6 +1697,71 @@
     return normaliseText((row?.textContent || '').replace(label.textContent, '')).slice(0, 80);
   }
 
+  /* Pure. A customer's name out of one of the page's data objects: the
+     lead, the call or the customer. Keys that name the agent or a dealer
+     are never read, and a plain FullName counts only on a customer. */
+  function nameFromData(value, depth, onCustomer) {
+    if (!value || typeof value !== 'object' || depth > 3 || Array.isArray(value)) return '';
+    const text = (v) => (typeof v === 'string' ? normaliseText(v) : '');
+    const direct = text(value.CustomerName) || text(value.CustomerFullName) || (onCustomer ? text(value.FullName) || text(value.Name) : '');
+    if (direct) return direct;
+    const first = text(value.Forename) || text(value.FirstName);
+    const last = text(value.Surname) || text(value.LastName);
+    if ((first || last) && (onCustomer || 'Surname' in value || 'Forename' in value)) return normaliseText(`${text(value.Title)} ${first} ${last}`);
+    let keys = [];
+    try { keys = Object.keys(value); } catch (error) { return ''; }
+    for (const key of keys.slice(0, 80)) {
+      if (/^\$|user|agent|advisor|dealer|owner|staff|employee/i.test(key)) continue;
+      const child = value[key];
+      if (!child || typeof child !== 'object') continue;
+      const found = nameFromData(child, depth + 1, onCustomer || /customer|contact/i.test(key));
+      if (found) return found;
+    }
+    return '';
+  }
+
+  /* The name as Konnect holds it for the open lead or call. */
+  function scopeCustomerName() {
+    const nodes = [state.target, callNotesBox(),
+      Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible)].filter(Boolean);
+    for (const node of nodes) {
+      try {
+        for (let scope = window.angular?.element(node).scope(), depth = 0; scope && depth < 12; scope = scope.$parent, depth += 1) {
+          for (const [key, onCustomer] of [['theActivity', false], ['Call', false], ['call', false], ['customer', true], ['Customer', true], ['selectedCustomer', true], ['theCustomer', true]]) {
+            if (!Object.prototype.hasOwnProperty.call(scope, key)) continue;
+            const found = nameFromData(scope[key], 0, onCustomer);
+            if (found) return found;
+          }
+        }
+      } catch (error) { /* not an Angular page */ }
+    }
+    return '';
+  }
+
+  /* Every "Name" label on the page, not only the first: the text beside it,
+     or what is typed in a box beside it. */
+  function pageNameRow() {
+    const labels = Array.from(document.querySelectorAll('b,strong,label,th,dt'))
+      .filter((node) => !node.closest(`#${PALETTE_ID}`) && /^(customer |full )?name:?$/i.test(ownText(node)));
+    for (const label of labels.filter(isVisible).concat(labels.filter((node) => !isVisible(node)))) {
+      if (label.tagName === 'TH') continue;
+      const row = label.closest('.row, .form-group, tr') || label.parentElement;
+      const shown = normaliseText((row?.textContent || '').replace(label.textContent, ''));
+      const typed = normaliseText(row?.querySelector('input[type="text"], input:not([type])')?.value || '');
+      const found = shown || typed;
+      if (found && found.length <= 80 && /[a-z]/i.test(found)) return found;
+    }
+    return '';
+  }
+
+  /* The customer's name for the booking sheet and the booking check, from
+     wherever the page has it. The name typed on an inbound call is the last
+     resort, for the lead that call became. */
+  function customerNameFor(draft) {
+    return pageNameRow() || scopeCustomerName() ||
+      (draft && inbound.nameLead === draft.key ? normaliseText(inbound.name) : '');
+  }
+
   /* A draft belongs to one lead. Tab ids such as "salesTab-1" come round
      again for the next customer, so the key is the lead's own ID where the
      page gives it, and otherwise the tab plus a fingerprint of the customer
@@ -2377,8 +2442,7 @@
     const vehicle = input.vehicles[0] || {};
     return {
       dealer: leadDealer() || (draft.fromInbound ? inbound.dealer : ''),
-      // The page's Name row is not always found; the lead holds the name too.
-      name: findTopName() || normaliseText((leadScopeActivity(state.target) || {}).SalesLead?.CustomerName || ''),
+      name: customerNameFor(draft),
       year: date.error ? '' : date.year,
       month: date.error ? '' : date.month,
       day: date.error ? '' : date.day,
@@ -2433,7 +2497,7 @@
     copy.style.cssText = `${buttonCss}background:#fff;color:#1c1c1e`;
     copy.addEventListener('click', async () => {
       const copied = await copyText(buildSheetRow(facts));
-      copy.textContent = copied ? 'Copied' : 'Copy was blocked';
+      copy.textContent = !copied ? 'Copy was blocked' : facts.name ? 'Copied' : 'Copied, but no name was found: type it in';
       if (copied) setTimeout(() => toast.remove(), 1500);
     });
     const dismiss = document.createElement('button');
@@ -4941,6 +5005,8 @@
   function forgetInboundCustomer() {
     inbound.customer = blankCustomer();
     inbound.matches = [];
+    inbound.name = '';
+    inbound.nameLead = '';
     inbound.mobile = '';
     inbound.mobileLead = '';
     inbound.brand = '';
@@ -4962,6 +5028,8 @@
     inbound.mobileLead = inbound.mobile ? key : '';
     inbound.brand = inbound.customer.brand;
     inbound.dealer = inbound.customer.dealer;
+    inbound.name = realText(inbound.customer.name);
+    inbound.nameLead = inbound.name ? key : '';
     inbound.customer = blankCustomer();
     state.bookingStatus = { kind: 'ok', text: 'Booking carried over from the inbound call.' };
     return {
@@ -5943,6 +6011,8 @@
   KN.buildPostClosurePlan = buildPostClosurePlan;
   KN.mergeRemoteConfig = mergeRemoteConfig;
   KN.buildSheetRow = buildSheetRow;
+  KN.nameFromData = nameFromData;
+  KN.customerNameFor = customerNameFor;
   KN.sheetRowSelfTest = sheetRowSelfTest;
   KN.buildBookingCheck = buildBookingCheck;
   KN.mergeBookingChecks = mergeBookingChecks;

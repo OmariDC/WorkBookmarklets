@@ -747,6 +747,32 @@ async function ownerHelpers() {
   // Helper 2: the booking sheet row, on a lead.
   const failures = await page.evaluate(() => KonnectNotes.sheetRowSelfTest());
   check('the sheet row self-test passes', Array.isArray(failures) && failures.length === 0, failures);
+  // The customer's name, from wherever the page has it.
+  const names = await page.evaluate(() => {
+    const from = (data, onCustomer) => KonnectNotes.nameFromData(data, 0, !!onCustomer);
+    const row = document.querySelector('#custName').closest('.row');
+    const out = { row: KonnectNotes.customerNameFor(null) };
+    out.lead = from({ ID: 1, SalesLead: { CustomerName: ' Jo  Example ' } });
+    out.parts = from({ Customer: { Title: 'Mrs', Forename: 'Jo', Surname: 'Example' } });
+    out.customer = from({ FullName: 'Jo Example' }, true);
+    out.agentOnly = from({ FullName: 'Sam Tester', User: { FullName: 'Sam Tester' }, Agent: { CustomerName: 'Sam Tester' }, DealerContact: { FullName: 'Sam Tester' } });
+    // The Name row gone from the page: Konnect's own data answers.
+    const keep = row.innerHTML;
+    row.innerHTML = '';
+    const real = window.angular;
+    window.angular = { element: () => ({ scope: () => ({ theActivity: { ID: 5, SalesLead: { Customer: { Forename: 'Jo', Surname: 'Example' } } } }) }) };
+    out.scope = KonnectNotes.customerNameFor(null);
+    window.angular = { element: () => ({ scope: () => ({ theActivity: { ID: 5 }, $parent: { Call: { Customer: { FullName: 'Jo Example' } } } }) }) };
+    out.call = KonnectNotes.customerNameFor(null);
+    // A Name label with a box beside it.
+    row.innerHTML = '<label>Name</label> <input type="text" value="Jo Example">';
+    window.angular = real;
+    out.box = KonnectNotes.customerNameFor(null);
+    row.innerHTML = keep;
+    return out;
+  });
+  check('name: read from the Name row, the lead, the customer, the call or a box, and never from the agent',
+    JSON.stringify(names) === JSON.stringify({ row: 'Jo Example', lead: 'Jo Example', parts: 'Mrs Jo Example', customer: 'Jo Example', agentOnly: '', scope: 'Jo Example', call: 'Jo Example', box: 'Jo Example' }), names);
   check('the owner example row', await page.evaluate(() => KonnectNotes.buildSheetRow({ dealer: 'Stellantis &You Preston', name: 'Jo Example', year: 2026, month: 11, day: 14,
     diaryType: 'Face To Face', condition: 'used', inDiary: true })) === 'Preston\tJo Example\t14 November 2026\tFace to Face\tOutbound lead\tUsed\t\tY');
 
