@@ -973,8 +973,14 @@ if (button && normalise(button.textContent) === normalise(STATUS_WHILE_RESETTING
 const item = byText(document, '[ng-click^="setMakeBusy"]', /^shift start$/i)[0];
 if (!item) throw new NeedsYou('Could not find the Shift Start status. Set your status to Shift Start yourself.');
 item.click();
-// The button is drawn again when the status changes, so it is looked up afresh.
-const ok = await pollUntil(() => !button || normalise(currentStatus()) === normalise(STATUS_WHILE_RESETTING), 5000);
+// The button is drawn again when the status changes, so it is looked up
+// afresh. A press that did not take is made once more.
+let ok = await pollUntil(() => !button || normalise(currentStatus()) === normalise(STATUS_WHILE_RESETTING), 3000);
+if (!ok) {
+const again = byText(document, '[ng-click^="setMakeBusy"]', /^shift start$/i)[0];
+if (again) again.click();
+ok = await pollUntil(() => normalise(currentStatus()) === normalise(STATUS_WHILE_RESETTING), 4000);
+}
 if (!ok) throw new NeedsYou('Your status did not change to Shift Start. Set it yourself.');
 return 'Status set to Shift Start';
 }
@@ -1572,16 +1578,34 @@ return settledList(() => readSearchRows().rows, (rows) => rows.map((r) => r.tr.t
 }
 
 // Shift Start comes first every time, so no lead presents and no inbound is
-// forced while Parked Calls is open.
+// forced while Parked Calls is open: Konnect can leave an agent showing as
+// Available in there and push them out. The status can only be read and set
+// on the idle screen, so that is where this starts, and Parked Calls is not
+// opened until the page itself shows Shift Start.
+let parkedUnderShiftStart = '';
+// Leaving Parked Calls ends that: the status may change before the next visit.
+window.addEventListener('hashchange', () => { if (!/\/search\/parked/i.test(location.hash)) parkedUnderShiftStart = ''; });
 async function goToParked() {
 const already = onParkedPage();
+// Already in Parked Calls, put there by this tool under Shift Start.
+if (already && parkedUnderShiftStart === location.hash) { await settledParkedRows(); return 'On Parked Calls'; }
+parkedUnderShiftStart = '';
 if (!already && onCallPage()) throw new NeedsYou('A call is open. Finish or park it yourself, then carry on.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
+if (!onIdlePage()) {
+const back = byClick(document, 'goBackToIdleView');
+if (back) back.click();
+if (!await waitFor(onIdlePage, 8000)) throw new NeedsYou('Go back to the idle screen and set your status to Shift Start, then press again.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
+await sleep(300);
+}
 const status = await ensureShiftStart();
 if (/^Status set/.test(status)) addLog(status);
-if (!already) {
 // Changing status redraws the idle screen, which undoes a move made too
 // soon after it.
 if (/^Status set/.test(status)) await sleep(700);
+// Checked once more on the page before going in.
+if (normalise(currentStatus()) !== normalise(STATUS_WHILE_RESETTING)) {
+throw new NeedsYou('Your status is not showing Shift Start. Set it yourself, then press again.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
+}
 // The page's own button is pressed: Konnect sends an address typed for it
 // straight back to the idle screen. Its label carries a count.
 const parkedNav = () => byClick(document, 'navToParkedCustomers')
@@ -1591,9 +1615,9 @@ if (nav) nav.click(); else location.hash = '#!/search/parked';
 // One more press if the first was swallowed by the redraw.
 if (!await waitFor(onParkedPage, 5000)) { const again = parkedNav(); if (again) again.click(); }
 if (!await waitFor(onParkedPage, 12000)) throw new NeedsYou('Parked Calls did not open. Open it yourself.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
-}
+parkedUnderShiftStart = location.hash;
 await settledParkedRows();
-return already ? 'On Parked Calls' : 'Opened Parked Calls';
+return 'Opened Parked Calls';
 }
 
 async function openParkedCustomer(ctx, lead) {
@@ -2152,7 +2176,9 @@ try {
 await goToParked();
 rows = readSearchRows().rows;
 } catch (error) {
-if (!halted && !(error instanceof Halted)) addLog(error.message);
+// Said in the panel, not only the log: a press that did nothing looked
+// like the button was broken.
+if (!halted && !(error instanceof Halted)) { addLog(error.message); state.notice = { text: error.message, shiftStart: isAvailable() }; render(); }
 return;
 } finally {
 state.checking = false;
