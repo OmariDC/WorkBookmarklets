@@ -321,6 +321,32 @@ async function emailOnly() {
   await context.close();
 }
 
+// As Konnect really lays it out: Post Closure Notes sit on the lead the Post
+// Closure lead was raised for, the outcome on the Post Closure lead. The
+// right earlier lead is the one with the same Initial Notes, not simply the
+// other lead.
+async function postClosureAcrossLeads() {
+  console.log('\nPost Closure: the note on the lead it was raised for, the outcome on the Post Closure lead');
+  const lead = (n, over) => ({ ID: `sam-${n}`, CampaignName: 'Enquiry - Used', SourceName: 'AA Cars', notes: '', ...over });
+  const { context, page, errors } = await openDesk({
+    status: 'Shift Start',
+    customers: [{ id: 'sam', name: 'Sam Buyer', email: 'sam.buyer@example.com', phone: '07700 900102', parked: true, leads: [
+      lead(0, { OutcomeFullHierarchy: 'Sales -> Not Interested', initial: 'Asked about a van', created: '2026-11-01T09:00:00', pcBox: true }),
+      lead(1, { OutcomeFullHierarchy: 'Sales -> Customer Hub Team -> Ongoing -> Email Only Lead', initial: 'Wants a used 208', created: '2026-11-12T20:10:00', pcBox: true }),
+      lead(2, { OutcomeFullHierarchy: 'None', SourceName: 'Post Closure Processing', initial: 'Wants a  used 208', created: '2026-11-14T10:09:00', pcBox: false })
+    ] }]
+  }, { _workToolsDeskResults: { results: [sendBack('Sam Buyer', 'sam.buyer@example.com', '07700 900102', 'Email only')] } });
+  await page.click('#_leadResetPanel [data-action=view][data-view=pc]');
+  await page.click('#_leadResetPanel [data-action=startPc]');
+  const review = await settle(page);
+  check('it reaches the check before Finished without asking which lead', /Carry on to press Finished/.test(review.paused || ''), review.paused || review.log);
+  const notes = await page.evaluate(() => ['sam-0', 'sam-1'].map((id) => document.querySelector(`[data-lead="${id}"] .pcNotes`).value));
+  check('the note is on the lead with the same Initial Notes, not the other earlier lead', notes[0] === '' && notes[1].includes('Catch All'), notes);
+  check('the outcome is on the Post Closure lead only', review.events.some((e) => /^level3:sam-2:Catch All/.test(e)) && !review.events.some((e) => /^level\d:sam-[01]:/.test(e)), review.events);
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
 // A customer found by phone whose email differs: "This is them" must still
 // find the Post Closure lead, so the outcome never lands on another lead.
 async function postClosureOtherEmail() {
@@ -1250,7 +1276,7 @@ async function parkedMixedPass() {
   await context.close();
 }
 
-const tests = [postClosureNoReview, postClosureWithReview, postClosureOtherEmail, emailOnly, secondLoadSkipAndStop, slowPage, notesPutBack, emailOnlyChecks,
+const tests = [postClosureNoReview, postClosureWithReview, postClosureAcrossLeads, postClosureOtherEmail, emailOnly, secondLoadSkipAndStop, slowPage, notesPutBack, emailOnlyChecks,
   emailOnlyClearAndStop, pauseReopensThePanel, buttonBesideKonnectNotes, sharedStorage, realKonnectNotes, parkedCallsThroughManager, deskWaitsItsTurn, deskBeforeManager,
   sendThroughPresents, sendThroughStop, sendThroughStayAvailable, sendThroughTwoOpenLeads, parkedMixedPass];
 const only = process.argv.slice(2);

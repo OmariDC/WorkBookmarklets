@@ -96,7 +96,8 @@ window.mock = {
   mock.notesMode = data.notes || '';
   customers = data.customers.map((c) => ({ ...c, leads: c.leads.map((l) => ({ ...l, activity: {
    ID: l.ID, CampaignName: l.CampaignName, OutcomeFullHierarchy: l.OutcomeFullHierarchy || 'None',
-   SalesLead: { SourceName: l.SourceName, EmailAddress: c.email, CustomerName: c.name, LeadDetails: { Notes: l.notes || '' }, PostClosureNotes: l.pcNotes || '' }
+   SalesLeadJsonData: l.json || '', CreatedDate: l.created || '',
+   SalesLead: { SourceName: l.SourceName, EmailAddress: c.email, CustomerName: c.name, LeadDetails: { Notes: l.notes || '', InitialNotes: l.initial || '' }, PostClosureNotes: l.pcNotes || '' }
   } })) }));
   queue = (data.queue || []).slice();
   setStatus(data.status || 'Shift Start');
@@ -180,7 +181,7 @@ function drawLeads(c, callScope) {
   // Laid out as Konnect Notes expects: Call Notes in footer.text-primary.
   pane.innerHTML = `<div class="form-group"><label>Initial Notes</label><div><textarea readonly class="initialNotes"></textarea></div></div>`
    + `<div class="form-group"><label>Call Notes</label><footer class="text-primary"><textarea ng-model="theActivity.SalesLead.LeadDetails.Notes" class="form-control callNotes"></textarea></footer></div>`
-   + (l.SourceName === 'Post Closure Processing' ? `<div class="form-group"><label>Post Closure Notes</label><div><textarea ng-model="theActivity.SalesLead.PostClosureNotes" class="form-control pcNotes"></textarea></div></div>` : '')
+   + ((l.pcBox === undefined ? l.SourceName === 'Post Closure Processing' : l.pcBox) ? `<div class="form-group"><label>Post Closure Notes</label><div><textarea ng-model="theActivity.SalesLead.PostClosureNotes" class="form-control pcNotes"></textarea></div></div>` : '')
    + `<div class="outcomes"><select ng-model="theActivity.SelectedOutcomeLevel1"></select><select ng-model="theActivity.SelectedOutcomeLevel2"></select><select ng-model="theActivity.SelectedOutcomeLevel3"></select></div>`;
   pane.querySelector('.initialNotes').value = l.initial || '';
   pane.querySelector('.callNotes').value = l.activity.SalesLead.LeadDetails.Notes;

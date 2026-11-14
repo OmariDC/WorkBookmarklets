@@ -572,6 +572,14 @@ const leads = resetLeadsFrom(parsed.results);
 check('only Re setup leads are kept', leads.map((l) => [l.activityId, l.campaign, l.reg]), [['70000002', 'Vauxhall - Offer Request - New', 'AB12 CDE']]);
 check('an older export saying Reset still counts', resetLeadsFrom([{ Verdict: 'Reset', Customer: 'Jo Example' }]).map((l) => l.name), ['Jo Example']);
 check('no notes in the export means none until the page supplies them', leads[0].notes, '');
+const pcLead = { ID: 9, CreatedDate: '2026-11-14T10:09:00', CampaignName: 'Enquiry - Used', VehicleID: 5, SalesLeadJsonData: '{"a":1}', SalesLead: { SourceName: 'Post Closure Processing', Description: 'Wants a used 208', LeadDetails: { InitialNotes: 'Wants a used 208' } } };
+const older = (id, over) => ({ ID: id, CreatedDate: '2026-11-12T20:10:00', CampaignName: 'Enquiry - Used', VehicleID: 5, SalesLeadJsonData: '', SalesLead: { SourceName: 'Cargurus', Description: '', LeadDetails: { InitialNotes: '' } }, ...over });
+const idOf = (m) => [m.lead ? m.lead.ID : null, m.why || '', (m.close || []).map((a) => a.ID)];
+check('the lead with the same lead data is the one it was raised for', idOf(matchOriginalLead(pcLead, [older(1), older(2, { SalesLeadJsonData: '{"a":1}' })])), [2, 'the same lead data', []]);
+check('or the same Initial Notes, however they are spaced', idOf(matchOriginalLead(pcLead, [older(1), older(3, { SalesLead: { SourceName: 'Cargurus', LeadDetails: { InitialNotes: ' wants a  used 208 ' } } })])), [3, 'the same Initial Notes', []]);
+check('the same car and campaign alone is not proof, and neither is being the only other lead', idOf(matchOriginalLead(pcLead, [older(1)])), [null, '', [1]]);
+check('two leads with the same data are for the owner to tell apart, newest first', idOf(matchOriginalLead(pcLead, [older(1, { SalesLeadJsonData: '{"a":1}', CreatedDate: '2026-11-10T09:00:00' }), older(2, { SalesLeadJsonData: '{"a":1}' })])), [null, '', [2, 1]]);
+check('a lead made after it, or another Post Closure lead, is never the one', idOf(matchOriginalLead(pcLead, [older(4, { SalesLeadJsonData: '{"a":1}', CreatedDate: '2026-11-14T11:00:00' }), older(5, { SalesLeadJsonData: '{"a":1}', SalesLead: { SourceName: 'Post Closure Processing' } })])), [null, '', []]);
 check('summary counts', leadSummaryText([{ activityId: '1', name: 'A' }, { activityId: '2', name: 'B' }, { activityId: '3', name: 'C' }], { byActivity: { 1: 'Done', 2: 'Skipped' } }), '1 done, 1 skipped, 1 left');
 check('title stripped', stripNameTitle('Mrs Jo Example'), 'Jo Example');
 const rows = [
@@ -1644,6 +1652,35 @@ if (inView && candidates.includes(inView)) return inView;
 throw new NeedsYou(`${what} Open the right lead's tab yourself and carry on, or skip this one.`, { carryOnLabel: 'Its tab is open, carry on', onConfirm: () => { ctx.useLeadInView = true; } });
 }
 
+// Pure. The lead a Post Closure lead was raised for, out of the customer's
+// other leads. Konnect copies the enquiry onto the Post Closure lead, so the
+// two share the same lead data and the same Initial Notes: either one
+// matching is proof. Sharing only the car and campaign is not, and neither
+// is being the only other lead. Returns { lead, why } when exactly one lead
+// is proven, else { lead: null, close } with the nearest ones for the owner.
+function matchOriginalLead(postClosure, others) {
+const text = (value) => String(value == null ? '' : value).replace(/\s+/g, ' ').trim().toLowerCase();
+const notesOf = (a) => text(a && a.SalesLead && a.SalesLead.LeadDetails && a.SalesLead.LeadDetails.InitialNotes);
+const madeAt = (a) => new Date((a && a.CreatedDate) || 0).getTime() || 0;
+const candidates = (others || []).filter((a) => a && a !== postClosure
+&& !/post closure processing/i.test(String((a.SalesLead && a.SalesLead.SourceName) || ''))
+&& (!madeAt(postClosure) || !madeAt(a) || madeAt(a) <= madeAt(postClosure)));
+const same = (get) => candidates.filter((a) => get(postClosure) && get(a) === get(postClosure));
+const proofs = [
+['the same lead data', same((a) => text(a.SalesLeadJsonData))],
+['the same Initial Notes', same(notesOf)],
+['the same description', same((a) => text(a.SalesLead && a.SalesLead.Description))]
+];
+for (const [why, found] of proofs) {
+if (found.length === 1) return { lead: found[0], why };
+// Several leads carry the same enquiry: the newest before it is the one
+// it was raised for only when the others are older copies of it.
+if (found.length > 1) return { lead: null, close: found.slice().sort((a, b) => madeAt(b) - madeAt(a)) };
+}
+const close = candidates.filter((a) => (postClosure.VehicleID && a.VehicleID === postClosure.VehicleID) || text(a.CampaignName) === text(postClosure.CampaignName));
+return { lead: null, close: (close.length ? close : candidates).slice().sort((a, b) => madeAt(b) - madeAt(a)) };
+}
+
 async function findPostClosureLead(ctx, lead) {
 await settledLeads();
 const found = await waitFor(() => {
@@ -1658,17 +1695,44 @@ if (lead.email && email && email !== normalise(lead.email) && !ctx.allowOtherEma
 throw new NeedsYou(`This customer's email is not the one the Lead Checker checked, so this may be the wrong ${lead.name}. Skip them, or carry on if this is them.`, { carryOnLabel: 'This is them, carry on', confirms: 'Said this is the right customer', onConfirm: () => { ctx.allowOtherEmail = true; } });
 }
 ctx.activity = activity;
-if (!await bringLeadIntoView(activity)) throw new NeedsYou('Open the Post Closure lead\'s tab yourself, then carry on.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
-return 'Post Closure lead found';
+// The note goes on the lead it was raised for, the outcome on the Post
+// Closure lead: two tabs when the customer has both.
+const others = liveActivities().map(({ activity: a }) => a).filter((a) => a !== activity);
+// Only a proven match is used here. Where there is none, the note step
+// looks on the Post Closure lead itself and asks only if it has to.
+const match = others.length ? matchOriginalLead(activity, others) : { lead: null, close: [] };
+ctx.original = match.lead || null;
+ctx.originalChoices = match.lead ? [] : match.close;
+if (!await bringLeadIntoView(ctx.original || activity)) throw new NeedsYou('Open the tab of the lead the Post Closure lead was raised for, then carry on.', { carryOnLabel: 'Done, carry on', onConfirm: () => {} });
+return ctx.original ? 'Post Closure lead found, with the lead it was raised for' : 'Post Closure lead found';
 }
 
 async function writePostClosureNote(ctx, lead) {
 needKonnectNotes();
-const box = findLabelledBox('post closure notes');
+const PC_NOTES = 'textarea[ng-model$="LeadDetails.PostClosureNotes"]';
+// On the lead it was raised for first, then the Post Closure lead itself.
+let box = null;
+for (const holder of [ctx.original, ctx.activity].filter(Boolean)) {
+await bringLeadIntoView(holder);
+const own = controlsOf(holder, PC_NOTES)[0];
+if (own && !isVisible(own)) { revealSection(own); await sleep(400); }
+box = (own && isVisible(own) ? own : null) || findLabelledBox('post closure notes');
+if (box) { ctx.notesOn = holder; break; }
+}
+// No box on the Post Closure lead and no proven match: the owner says
+// which lead it was raised for, and the note goes there.
+if (!box && !ctx.original && (ctx.originalChoices || []).length) {
+ctx.original = leadPickedByAgent(ctx, ctx.originalChoices, 'Post Closure Notes are on the lead this one was raised for, and it is not certain which that is.');
+await bringLeadIntoView(ctx.original);
+const own = controlsOf(ctx.original, PC_NOTES)[0];
+if (own && !isVisible(own)) { revealSection(own); await sleep(400); }
+box = (own && isVisible(own) ? own : null) || findLabelledBox('post closure notes');
+if (box) ctx.notesOn = ctx.original;
+}
 const typeIt = { carryOnLabel: 'Typed it, check again', onConfirm: () => {} };
 if (!box) throw new NeedsYou(`Could not find Post Closure Notes. Type ${lead.shorthand} there and press space yourself.`, typeIt);
 if (SHORTHAND_MARKERS[lead.shorthand].test(box.value)) return `${lead.shorthand.toUpperCase()} note already in Post Closure Notes`;
-if (!await typeShorthand(box, lead.shorthand, [callNotesBoxOf(ctx.activity)])) {
+if (!await typeShorthand(box, lead.shorthand, [callNotesBoxOf(ctx.notesOn || ctx.activity)])) {
 throw new NeedsYou(`Konnect Notes did not write the note, so the notes were put back as they were. Type ${lead.shorthand} in Post Closure Notes and press space yourself.`, typeIt);
 }
 ctx.wrote = `the ${lead.shorthand.toUpperCase()} note`;
@@ -1681,7 +1745,7 @@ const SEND_BACK_RUN = [
 { label: 'Find the Post Closure lead', run: findPostClosureLead },
 { label: 'Write CAD or CAH in Post Closure Notes', run: writePostClosureNote },
 { label: 'Call outcome: Update Outcomes', run: () => chooseCallOutcome(OUTCOME_UPDATE_ONLY) },
-{ label: 'Lead outcome: Customer Hub Team > No Opportunity > Catch All', run: (ctx, lead) => setLeadOutcome(ctx.activity, SEND_BACK_OUTCOME_PATH.concat(lead.outcome)) },
+{ label: 'Lead outcome: Customer Hub Team > No Opportunity > Catch All', run: async (ctx, lead) => { await bringLeadIntoView(ctx.activity); return setLeadOutcome(ctx.activity, SEND_BACK_OUTCOME_PATH.concat(lead.outcome)); } },
 { label: 'Next status: Shift Start', run: () => setNextStatus(STATUS_WHILE_RESETTING), part: 'finish' },
 { label: 'Check before Finished', run: reviewBeforeFinish, part: 'finish' },
 { label: 'Press Finished', run: pressFinished, part: 'finish' }
