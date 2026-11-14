@@ -159,6 +159,13 @@ nav { background: #222; height: 50px; }
     view.innerHTML = '<div class="ng-scope"><div class="row timeline-editing-header">' + customer.name + ' <i title="Refreshing..." ng-show="loading" class="fa ng-hide">.</i><i title="Refresh" ng-show="!loading" class="fa ng-hide">R</i></div><div style="margin-top:80px;"></div></div>';
     const timeline = view.querySelector('div[style="margin-top:80px;"]');
     customer.entries.forEach((entry) => timeline.appendChild(timelineRow(customer, entry)));
+    // As on the real page, each row's parent scope can give the list the
+    // rows were drawn from. mock.listShort: the list says it holds more.
+    // mock.tall: the timeline is long and scrolled to its newest entry.
+    const drawn = Array.from(timeline.children);
+    drawn.forEach((row) => { row.__scope.$parent = { $eval: () => (mock.noList ? null : drawn.map((r) => r.__scope.item).concat(mock.listShort ? [{}] : [])) }; });
+    view.style.paddingTop = mock.tall ? '4000px' : '';
+    if (mock.tall) window.scrollTo(0, document.body.scrollHeight);
     setTimeout(() => {
       const ready = view.querySelector('i[title="Refresh"]');
       if (ready) ready.classList.remove('ng-hide');

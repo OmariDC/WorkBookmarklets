@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.23.0'
+    version: '1.23.1'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2304,6 +2304,8 @@
     if (!insertBooking(draft, { keepOpen: true })) return;
     /* The lead's boxes are finished first: writing the part exchange opens
        and shuts lead sections, which must not cross with the diary. */
+    state.bookingStatus = { kind: 'ok', text: 'Updating the lead (part exchange and vehicle boxes)...' };
+    if (state.open && state.view === 'booking') renderPalette();
     await state.leadWrite;
     const booked = await bookInDiary(draft);
     offerSheetRow(draft);
@@ -2996,6 +2998,7 @@
         const tab = document.querySelector('[ng-repeat^="tab in tabs"].active');
         return !!tab && Array.from(tab.querySelectorAll('i, span')).some((n) => isVisible(n) && /check|tick|success/i.test(String(n.className)));
       };
+      say('ok', `Appointment made: ${plan.label}. Waiting for Konnect to show it on the lead...`);
       const inDiary = await waitFor(() => {
         const now = (leadScopeActivity(state.target) || {}).SalesAppointmentID || 0;
         return (now && now !== appointmentBefore) || tabTick() || null;
@@ -3006,6 +3009,7 @@
       const toCheck = recordBookingCheck(draft, plan)
         ? ' Konnect Live will be checked in a few minutes (see Bookings in SLA Manager).' : '';
       // Which outcome a National Reservation takes is not confirmed yet, so it is left to the agent.
+      say('ok', 'In the diary. Setting the outcome...');
       const outcomeProblem = !closed ? 'the diary did not close'
         : draft.data.type === 'national' ? 'National Reservations have their outcome set by hand for now'
           : await setLeadOutcome(draft, plan);

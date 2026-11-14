@@ -139,6 +139,29 @@ const OPEN_ROW = { name: 'Morgan Reedwell', phone: '', email: 'morgan.reedwell@e
   await t.live.waitForTimeout(400);
   check('each request is answered once', (await t.msgs('opened')).length === 1, await t.msgs('opened'));
 
+  // Older entries: a long timeline scrolled to its newest entry. Where the
+  // page's own list matches what is drawn, nothing is scrolled or waited for.
+  await t.live.evaluate(() => { window.mock.tall = true; });
+  await t.clearMsgs();
+  await t.send({ type: 'workTools:open', row: OPEN_ROW });
+  await t.waitFor('opened');
+  const older = async () => t.live.evaluate(async () => {
+    window.scrollTo(0, document.body.scrollHeight);
+    const before = window.scrollY;
+    const started = performance.now();
+    const result = await window.KonnectLeadChecker.loadOlderTimelineEntries();
+    return { ms: Math.round(performance.now() - started), moved: window.scrollY !== before, before, drawn: window.KonnectLeadChecker.timelineFullyDrawn(), loaded: result.loadedNewEntries };
+  });
+  const whole = await older();
+  check('a whole history already drawn is not scrolled or waited for', whole.before > 0 && whole.drawn === true && whole.moved === false && whole.ms < 150 && whole.loaded === false, whole);
+  await t.live.evaluate(() => { window.mock.listShort = true; });
+  const more = await older();
+  check('a list holding more than is drawn is still scrolled for older entries', more.drawn === false && more.moved === true && more.ms >= 350, more);
+  await t.live.evaluate(() => { window.mock.listShort = false; window.mock.noList = true; });
+  const unknown = await older();
+  check('and so is one the page cannot vouch for', unknown.drawn === false && unknown.moved === true, unknown);
+  await t.live.evaluate(() => { window.mock.noList = false; window.mock.tall = false; document.querySelectorAll('.modal').forEach((m) => m.remove()); });
+
   await t.clearMsgs();
   await t.live.evaluate((row) => window.postMessage({ type: 'workTools:open', row }, '*'), OPEN_ROW);
   await t.live.waitForTimeout(800);

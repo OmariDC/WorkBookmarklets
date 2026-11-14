@@ -2401,9 +2401,41 @@ node = node.parentElement;
 return null;
 }
 
+// Pure. True when the entries drawn are exactly the ones in the page's own
+// list, so there is nothing older left to bring in.
+function drawnMatchesList(repeatText, drawnCount, readList) {
+const text = String(repeatText || '');
+// A list cut short on purpose (limitTo) can still have more to show.
+if (!drawnCount || /limitTo/i.test(text)) return false;
+const expr = text.replace(/^\s*\w+\s+in\s+/, '').replace(/\s+track\s+by\s[\s\S]*$/, '').trim();
+if (!expr) return false;
+const list = readList(expr);
+return Array.isArray(list) && list.length === drawnCount;
+}
+
+function timelineFullyDrawn() {
+try {
+if (typeof angular === 'undefined') return false;
+const ready = getTimelineReadyState().state;
+if (ready !== 'READY_WITH_SALES_LEADS' && ready !== 'READY_WITH_ZERO_ELIGIBLE_SALES_LEADS') return false;
+const rows = getAllTimelineRows();
+if (!rows.length) return false;
+const scope = angular.element(rows[0]).scope();
+const parent = scope && scope.$parent;
+if (!parent || typeof parent.$eval !== 'function') return false;
+return drawnMatchesList(rows[0].getAttribute('ng-repeat'), rows.length, (expr) => parent.$eval(expr));
+} catch (error) {
+return false;
+}
+}
+
+// Konnect draws a customer's whole history at once. Where the page's own
+// list confirms that, scrolling up for older entries is skipped: it would
+// only wait for entries that cannot come. Anything less sure scrolls.
 async function loadOlderTimelineEntries(maxAttempts = 3, settleMs = 400) {
 const timelineRoot = findTimelineRoot();
 if (!timelineRoot) return { status: 'TIMELINE_SCROLL_CONTAINER_UNKNOWN', loadedNewEntries: false };
+if (timelineFullyDrawn()) return { status: 'OK', loadedNewEntries: false, scrollContainer: 'none' };
 
 const scrollTarget = findScrollableAncestor(timelineRoot);
 const beforeKeys = new Set(getLoadedLeadEntries().map(timelineEntryKey));
@@ -2708,20 +2740,27 @@ if (watcher) watcher.disconnect();
 // Opens one search result the way a person does: by clicking its row.
 // The ID in a row's link is not always the one in the timeline address
 // (Konnect resolves it on click), so the address is never built by hand.
-// The search is run again first, so the rows clicked are always fresh.
-async function openSearchResultById(searchFn, spec, customerId, session) {
+// The search is run again first, so the rows clicked are always fresh,
+// unless the caller hands over rows it has only just read (opts.rows) and
+// they are still on the page. opts.enough ends the settling wait early.
+async function openSearchResultById(searchFn, spec, customerId, session, opts = {}) {
+const onSearch = /^#\/search/i.test(window.location.hash);
+let row = onSearch && opts.rows ? opts.rows.find((r) => r.customerId === customerId && r.link && r.link.isConnected) : null;
+if (!row) {
 const again = await searchFn(spec.type, spec.value, session);
 if (again.status !== 'OK') return { state: 'FAILED' };
-const row = again.rows.find((r) => r.customerId === customerId && r.link);
+row = again.rows.find((r) => r.customerId === customerId && r.link);
+}
 if (!row) return { state: 'FAILED' };
 const state = await openCustomerAndWaitForTimeline(row, 15000);
-if (state.state !== 'FAILED') await waitForTimelineItemsSettled();
+if (state.state !== 'FAILED') await waitForTimelineItemsSettled(6000, opts.enough);
 return state;
 }
 
 // The timeline can still be filling in after it reports ready. Waits until
-// the number of entries has stopped changing.
-async function waitForTimelineItemsSettled(maxMs = 6000) {
+// the number of entries has stopped changing, or until enough() says what
+// is needed is already there.
+async function waitForTimelineItemsSettled(maxMs = 6000, enough) {
 const startedAt = Date.now();
 const limit = pageLimit(maxMs);
 let last = -1;
@@ -2730,7 +2769,12 @@ while (Date.now() - startedAt < limit) {
 const n = getAllTimelineRows().length;
 if (n !== last) { last = n; stableSince = Date.now(); }
 else if (n > 0 && Date.now() - stableSince > pagePause(800)) return n;
-await sleep(200);
+if (n > 0 && enough) {
+let done = false;
+try { done = !!enough(); } catch (error) { done = false; }
+if (done) return n;
+}
+await sleep(50);
 }
 return last;
 }
@@ -2757,9 +2801,14 @@ return found;
 async function openRecordHoldingLeads(ids, group, session, holdsLead, openById) {
 let best = { id: null, found: 0 };
 let openId = null;
-for (const id of ids) {
+// With every lead of the group found and the whole history drawn, the
+// timeline has nothing left to settle. National checks always wait it out.
+const enough = holdsLead ? () => timelineFullyDrawn() && group.rows.every((r) => holdsLead(r)) : undefined;
+for (let i = 0; i < ids.length; i++) {
+const id = ids[i];
 if (isCancelled(session)) return null;
-const state = await openById(id);
+// The first record is opened from the search just run.
+const state = await openById(id, { first: i === 0, enough });
 if (state.state === 'FAILED') continue;
 openId = id;
 const found = await countGroupLeadsOnTimeline(group, session, holdsLead);
@@ -2810,7 +2859,7 @@ const ids = all.filter((id) => !tried.has(id));
 if (!fallback && all.length) fallback = { spec, ids: all };
 if (ids.length === 0) { if (all.length === 0) lastStatus = 'CUSTOMER_NOT_LINKED'; continue; }
 ids.forEach((id) => tried.add(id));
-const openById = (id) => openSearchResultById(runCustomerSearch, spec, id, session);
+const openById = (id, opts = {}) => openSearchResultById(runCustomerSearch, spec, id, session, { rows: opts.first ? search.rows : null, enough: opts.enough });
 if (ids.length === 1) {
 // One record: opened straight from these results, without searching again.
 const row = search.rows.find((r) => r.customerId === ids[0]);
@@ -3376,6 +3425,8 @@ window.KonnectLeadChecker.timelineEntryKey = timelineEntryKey;
 window.KonnectLeadChecker.reLogin = reLogin;
 window.KonnectLeadChecker.closeLeadModal = closeLeadModal;
 window.KonnectLeadChecker.loadOlderTimelineEntries = loadOlderTimelineEntries;
+window.KonnectLeadChecker.timelineFullyDrawn = timelineFullyDrawn;
+window.KonnectLeadChecker.drawnMatchesList = drawnMatchesList;
 window.KonnectLeadChecker.normalizeEmail = normalizeEmail;
 window.KonnectLeadChecker.normalizePhone = normalizePhone;
 window.KonnectLeadChecker.parseBatchInput = parseBatchInput;
@@ -4045,7 +4096,7 @@ return { status: 'OK', matchMethod: attempt.type, noEligibleEvents: false };
 
 // Several records (or a name search): keep the one holding the lead.
 const chosen = await openRecordHoldingLeads(candidateIds, group, session, holdsLead,
-(id) => openSearchResultById(runCustomerSearch, { type: attempt.type, value: attempt.value }, id, session));
+(id, opts = {}) => openSearchResultById(runCustomerSearch, { type: attempt.type, value: attempt.value }, id, session, { rows: opts.first ? search.rows : null, enough: opts.enough }));
 if (isCancelled(session)) return { status: 'FAILED', exception: 'CANCELLED' };
 if (chosen) return { status: 'OK', matchMethod: attempt.type, noEligibleEvents: false };
 lastException = attempt.needsLeadProof ? 'LEAD_NOT_ON_MATCHING_CUSTOMERS' : 'CUSTOMER_AMBIGUOUS';
@@ -5043,6 +5094,14 @@ const e = JSON.stringify(expected);
 if (a !== e) failures.push(`${label}: expected ${e}, got ${a}`);
 }
 
+check('a drawn timeline matches its list only when the counts agree', [
+drawnMatchesList('item in customerTimeLine | filter: applyFilter', 3, () => [1, 2, 3]),
+drawnMatchesList('item in customerTimeLine | filter: applyFilter', 3, () => [1, 2, 3, 4]),
+drawnMatchesList('item in customerTimeLine | limitTo: shown', 3, () => [1, 2, 3]),
+drawnMatchesList('item in customerTimeLine track by item.ID', 2, (expr) => (expr === 'customerTimeLine' ? [1, 2] : null)),
+drawnMatchesList('item in customerTimeLine', 0, () => []),
+drawnMatchesList('item in customerTimeLine', 2, () => null)
+], [true, false, false, true, false, false]);
 check('run timing reads per lead, and is blank with no leads', [runTimingText({ leads: 10, findMs: 3000, readMs: 6000, startedAt: 1000 }, 12000), runTimingText({ leads: 0, findMs: 0, readMs: 0, startedAt: 1 }, 5)], ['1.1 s a lead (finding 0.3, reading 0.6, other 0.2)', '']);
 
 const batch = [
