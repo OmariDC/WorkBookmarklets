@@ -581,6 +581,26 @@ async function missedWarning() {
   await t.context.close();
 }
 
+// A page that reloads takes the tool with it: the next start says what the
+// tool was doing, and a reload during a read of the other list turns that
+// reading off for the tab.
+async function reloadedPage() {
+  console.log('\nA reloaded page is explained at the next start');
+  const t = await open();
+  await t.page.reload();
+  await t.page.addScriptTag({ content: slaScript });
+  const idleText = await t.page.evaluate(() => (document.getElementById('_slaLinkToast') || {}).textContent || '');
+  check('reload with the tool idle: said so, and not blamed on the tool', /^This page reloaded at \d\d:\d\d with SLA Manager idle/.test(idleText) && /not SLA Manager that reloaded it/.test(idleText), idleText);
+  check('reading the other list stays on', await t.page.evaluate(() => sessionStorage.getItem('_slaPeekOff')) === null);
+  await t.page.evaluate(() => sessionStorage.setItem('_slaUnloadNote', JSON.stringify({ at: Date.now(), peeking: true, refreshing: false, hidden: true })));
+  await t.page.addScriptTag({ content: slaScript });
+  const peekText = await t.page.evaluate(() => (document.getElementById('_slaLinkToast') || {}).textContent || '');
+  check('reload during a read of the other list: said so and that reading is turned off', /while SLA Manager was reading the other list/.test(peekText) && await t.page.evaluate(() => sessionStorage.getItem('_slaPeekOff')) === '1', peekText);
+  check('the note is used up, so it is only said once', await t.page.evaluate(() => sessionStorage.getItem('_slaUnloadNote')) === null);
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.context.close();
+}
+
 async function bothLists() {
   console.log('\nMissed lead warning: both lists, the other one read by going to it and straight back');
   const SLA_HASH = '#/Queue/SalesLeadsPending';
@@ -1015,6 +1035,7 @@ const started = Date.now();
 try {
   await missedWarning();
   await bothLists();
+  await reloadedPage();
   await fairShare();
   await startMyDay();
   await rescue();

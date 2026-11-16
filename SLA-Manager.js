@@ -7814,6 +7814,8 @@ window.__workToolsLinkTick = null;
 window.__workToolsOnLiveMessage = null;
 window.__workToolsOnDeskRequest = null;
 window.__slaOnTodayStorage = null;
+// A reload after Clear & Stop is nothing to report.
+window.__slaNoteUnload = null;
 liveLink.queue = liveLink.queue.filter((b) => b.from !== 'manager');
 if (liveLink.sent && liveLink.sent.batch.from === 'manager') liveLink.sent = null;
 // Bookings still to be checked are kept for next time; the checked go.
@@ -8801,10 +8803,41 @@ if (inControl && (!document.hidden || !(panelElement && panelElement.contains(ac
 return !!document.querySelector('.dropdown.open, .btn-group.open, .dropdown-menu.show, .modal-backdrop, [role="dialog"]');
 }
 
+// A page that reloads takes the tool with it, and nothing says why. What
+// the tool was doing as the page went is noted for this tab, so the next
+// start can say so. If it went while the other list was being read, that
+// reading is turned off for the tab, so it cannot keep happening.
+const UNLOAD_NOTE_KEY = '_slaUnloadNote';
+const PEEK_OFF_KEY = '_slaPeekOff';
+function peekTurnedOff() {
+try { return sessionStorage.getItem(PEEK_OFF_KEY) === '1'; } catch (error) { return false; }
+}
+function noteUnload() {
+try { sessionStorage.setItem(UNLOAD_NOTE_KEY, JSON.stringify({ at: Date.now(), peeking, refreshing: refreshingLeads, hidden: document.hidden })); } catch (error) { /* nothing to note it in */ }
+}
+// Pure. What to say about the last time this page went, or ''.
+function unloadNoteText(note, now) {
+if (!note || !(now - note.at >= 0 && now - note.at < 12 * 60 * 60 * 1000)) return '';
+const when = formatTimeForInput(new Date(note.at));
+if (note.peeking) return `This page reloaded at ${when} while SLA Manager was reading the other list for the warning. That reading is now off in this tab so it cannot happen again. Please report it.`;
+if (note.refreshing) return `This page reloaded at ${when} while SLA Manager was refreshing the leads. Please report it.`;
+return `This page reloaded at ${when} with SLA Manager idle${note.hidden ? ' and the tab in the background' : ''}, so it was not SLA Manager that reloaded it.`;
+}
+function reportLastUnload() {
+let note = null;
+try { note = JSON.parse(sessionStorage.getItem(UNLOAD_NOTE_KEY) || 'null'); sessionStorage.removeItem(UNLOAD_NOTE_KEY); } catch (error) { note = null; }
+const text = unloadNoteText(note, Date.now());
+if (!text) return;
+if (note.peeking) { try { sessionStorage.setItem(PEEK_OFF_KEY, '1'); } catch (error) { /* said all the same */ } }
+showToast(text);
+console.info(`[SLA Manager] ${text}`);
+}
+
 // The other page is only visited where the owner is not using this tab:
 // the tab is hidden, or it has been left alone and either the owner is in
 // another window (panel open or not) or the panel is hidden.
 function canPeekOtherPage() {
+if (peekTurnedOff()) return false;
 if (!canWatchWork() || isOwnerMidAction() || !detectPageType()) return false;
 if (document.hidden) return true;
 if (Date.now() - lastOwnerActivityAt < watchTiming().idleMs) return false;
@@ -9407,6 +9440,13 @@ pendingPageType = pageType;
 purgeExpiredStoredData();
 ensureWheelStyles();
 createBadge();
+// One listener per page, calling the newest copy.
+window.__slaNoteUnload = noteUnload;
+if (!window.__slaUnloadListening && typeof window.addEventListener === 'function') {
+window.__slaUnloadListening = true;
+window.addEventListener('pagehide', () => { if (window.__slaNoteUnload) window.__slaNoteUnload(); });
+}
+reportLastUnload();
 if (isMissedWarningOn()) startMissedWatch();
 console.info('✅ SLA Manager ready');
 })();
