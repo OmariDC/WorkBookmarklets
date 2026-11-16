@@ -970,12 +970,6 @@ const tsMatch = text.match(/Message from Consumer at \w{3}, \w{3} \d{1,2}, \d{4}
 if (tsMatch) {
 const msg = text.slice(tsMatch.index + tsMatch[0].length);
 const msgLower = msg.toLowerCase();
-// Autotrader's own stock wording and nothing else, in the second shape:
-// the car is in the lead, the customer has said no more (manual review:
-// Warm). The first shape stays Likely Booking, as the spec has it.
-if (/^the consumer sent/i.test(tsMatch[0]) && /^\s*(hi,?\s*)?i'?m interested in this [^.]{2,60}\.\s*please could you contact me back\.?\s*$/i.test(msg)) {
-return R(4, 'Used Enquiry: Vehicle in Lead', 9, 'medium', 'Autotrader stock message naming the car, nothing more said (manual review).');
-}
 if (/i'?m interested in finance for this/i.test(msgLower)) { flagCtx.finance = true; return R(3, 'Autotrader Enquiry', 8, 'high', 'Autotrader finance button (Section 7.13).'); }
 if (/i can offer £/i.test(msgLower) && /ready to purchase|do not have a px/i.test(msgLower)) {
 return R(4, 'Offer Made: Price Offer', 5, 'medium', 'Autotrader firm price offer (Section 5, Tier 4 rank 5).');
@@ -3695,10 +3689,11 @@ const cases = [
 ['T133', 'Lead ID: 00Qa200000EXAMPLE5 | Marketing Code: Google-DemandGen-Model | Customer Comments: -', 'Peugeot - Enquiry - New', 'Customer First', 5, 'medium'],
 ['T134', 'Comment Line #1: The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/citroen/service/offers/citroen-we-care', 'PX Valuation - Used', 'Robins & Day Website', 5, 'medium'],
 // Review decisions of 16 Nov: confirmed tiers no longer need review, a bare
-// used website lead and Autotrader's stock message are Warm, and Autofunnel
+// used website lead is Warm, Autotrader's second message shape is read like
+// its first, and Autofunnel
 // notes are recognised with each field on its own line.
 ['T136', 'Sourced from Robins & Day Website.', 'Enquiry - Used', 'Robins & Day Website', 4, 'medium'],
-['T137', "Customer message #1: The Consumer sent this message on 2026-11-15 18:46:00: Hi, I'm interested in this Citroen C5 Aircross. Please could you contact me back.", 'Autotrader - Enquiry - Used', 'Autotrader - Online Store', 4, 'medium'],
+['T137', "Customer message #1: The Consumer sent this message on 2026-11-15 18:46:00: Hi, I'm interested in this Citroen C5 Aircross. Please could you contact me back.", 'Autotrader - Enquiry - Used', 'Autotrader - Online Store', 3, 'medium'],
 ['T138', 'Customer message #1: The Consumer sent this message on 2026-11-15 18:46:00: Could I come and see it on Saturday at 11am?', 'Autotrader - Enquiry - Used', 'Autotrader - Online Store', 1],
 ['T139', 'Misc: The following information was present in the lead:\nFranchise = DS\nMobile = 07700900101\nUniqueID = abcdef\nBatch = 929874', 'Enquiry - Used', 'Autofunnel', 5, 'medium'],
 ['T140', 'Message from customer: I am interested in your 2018 Peugeot 5008 1.2 Puretech Gt Line 5dr. You can reach me by email at jo@example.com or phone at 07700 900102. Thank you! (CarGurus IMV: £11,155 / Deal rating: Good Deal)', 'Enquiry - Used', 'Cargurus', 4, 'medium'],
