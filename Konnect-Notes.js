@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.29.1'
+    version: '1.29.2'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -5031,6 +5031,13 @@
       const make = realText(vehicle.make);
       let brand = inbound.customer.brand || (make && engine ? engine.normaliseMake(make) : make);
 
+      // A customer who is already on Konnect can book at any dealership,
+      // depending on where the car is, so the one they had before is never
+      // assumed: it has to be chosen for this booking.
+      if (callOutcome() && !wantedDealer) {
+        say('error', 'Choose the dealership for this booking in the Customer step, then press again. This customer is already on Konnect, and their new lead would start on the dealer they had before.');
+        return;
+      }
       // 1. The customer, unless one is already open on the call.
       if (!callOutcome()) {
         if (!realText(inbound.customer.name) || !realText(inbound.customer.mobile)) return stop('add the customer\'s name and mobile in the Customer step first');

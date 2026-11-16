@@ -1403,6 +1403,16 @@ async function ownerHelpers() {
   await sleep(500);
   const held = await page.evaluate(() => ({ key: KonnectNotes.state.booking.key, button: document.querySelector('.kn-bk-actions .kn-primary').textContent, oldNotes: document.querySelector('#callB').value, oldShown: !!document.querySelector('#callB').offsetParent }));
   check('existing customer: with their old lead in view the booking still waits for a new one', held.key === 'inbound' && held.button === 'Create new lead and booking' && held.oldShown && held.oldNotes === '', held);
+  // No dealership chosen for this booking: it stops before anything is done.
+  const stepsBefore = (await page.evaluate(() => window.steps)).length;
+  await page.click('.kn-bk-actions .kn-primary');
+  await sleep(600);
+  const unchosen = await page.evaluate(() => ({ steps: window.steps.length, said: document.querySelector('.kn-bk-status-error')?.textContent || '' }));
+  check('existing customer: with no dealership chosen for this booking it stops and asks for one', unchosen.steps === stepsBefore && /Choose the dealership for this booking in the Customer step/.test(unchosen.said), unchosen);
+  await page.evaluate(() => { KonnectNotes.state.booking.openSection = 'customer'; KonnectNotes.openBooking(); });
+  await page.waitForSelector('.kn-bk-content select', { timeout: 5000 });
+  await page.selectOption('.kn-bk-content select >> nth=0', { label: 'Preston' });
+  await sleep(300);
   await page.click('.kn-bk-actions .kn-primary');
   await booked(page, 1);
   const route = await page.evaluate(() => ({ steps: window.steps, newNotes: document.querySelector('#callA').value, oldNotes: document.querySelector('#callB').value, key: KonnectNotes.state.booking.key }));
