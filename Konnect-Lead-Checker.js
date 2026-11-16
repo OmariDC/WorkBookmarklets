@@ -2162,7 +2162,7 @@ return Math.floor(new Date(parsed.year, parsed.month, parsed.day, parsed.hour, p
 
 // Several calls can fall in the window; what matters is whether they
 // agree on which lead.
-function findMatchingCallLeadId(targetCreatedText, referenceDate) {
+function findMatchingCallLeadId(targetCreatedText, referenceDate, toleranceMinutes = CALL_MATCH_TOLERANCE_MINUTES, latestOnly = false) {
 const referenceNow = referenceDate || new Date();
 const target = parseSlaCreated(targetCreatedText, referenceNow);
 if (!target) return { target: null, status: 'NO_TARGET', leadId: null };
@@ -2174,9 +2174,14 @@ const rawTimestamp = extractCallTimestamp(row);
 const parsed = rawTimestamp ? parseTimelineTimestamp(rawTimestamp, referenceNow) : null;
 return { row, parsed, minutes: minutesSinceEpoch(parsed), item: readTimelineItemScope(row) };
 })
-.filter((c) => c.minutes !== null && c.minutes <= targetMinutes && targetMinutes - c.minutes <= CALL_MATCH_TOLERANCE_MINUTES);
+.filter((c) => c.minutes !== null && c.minutes <= targetMinutes && targetMinutes - c.minutes <= toleranceMinutes);
 
 if (withinWindow.length === 0) return { target, status: 'NO_CALL_MATCH', leadId: null };
+if (latestOnly) {
+const latest = withinWindow.reduce((a, b) => (b.minutes > a.minutes ? b : a));
+const id = latest.item && latest.item.LeadID != null ? String(latest.item.LeadID) : null;
+return id ? { target, status: 'OK', leadId: id } : { target, status: 'LEAD_ID_UNREADABLE', leadId: null };
+}
 
 const resolvedLeadIds = withinWindow
 .map((c) => (c.item && c.item.LeadID != null ? String(c.item.LeadID) : null))
@@ -2218,6 +2223,34 @@ const rawTimestamp = extractTimelineTimestamp(leadRow);
 const parsed = rawTimestamp ? parseTimelineTimestamp(rawTimestamp, referenceNow) : null;
 return { status: 'OK', candidate: { row: leadRow, rawTimestamp, parsed, leadId: callMatch.leadId } };
 }
+
+// An agent who stays in a lead long before pressing Finished leaves Last
+// Actioned well after the call's own time. The last call in this longer
+// window before it names the lead.
+const LATE_FINISH_TOLERANCE_MINUTES = 180;
+
+// The lead for a time that matched nothing exactly: the lead of the last
+// call before it, else the only lead on the timeline. Only reads what is
+// loaded, so callers load older entries first. The lead window still has to
+// validate (its own date and the source) before it is used.
+function findLooseLeadCandidate(targetCreatedText, referenceDate, allowOnlyLead = true) {
+const referenceNow = referenceDate || new Date();
+const late = findMatchingCallLeadId(targetCreatedText, referenceNow, LATE_FINISH_TOLERANCE_MINUTES, true);
+let entry = late.status === 'OK' ? findLeadEntryByLeadId(late.leadId) : null;
+let looseMatch = entry ? 'lateCall' : '';
+if (!entry && allowOnlyLead) {
+const entries = getLoadedLeadEntries();
+if (entries.length === 1) { entry = entries[0]; looseMatch = 'onlyLead'; }
+}
+if (!entry) return null;
+const rawTimestamp = extractTimelineTimestamp(entry);
+return { row: entry, rawTimestamp, parsed: rawTimestamp ? parseTimelineTimestamp(rawTimestamp, referenceNow) : null, leadId: extractVisibleLeadId(entry), looseMatch };
+}
+
+const LOOSE_MATCH_WARNINGS = {
+lateCall: 'The time given matched no lead or call exactly: matched to the lead of the last call before it.',
+onlyLead: 'The time given matched no lead or call: matched as the only lead on the timeline.'
+};
 
 function findLeadClickTarget(row) {
 return row.querySelector('a.connected-customer-timeline-centre-pink > i[ng-click^="showDetails("]');
@@ -2368,6 +2401,7 @@ window.KonnectLeadChecker.openLeadModal = openLeadModal;
 window.KonnectLeadChecker.extractLeadPanelFields = extractLeadPanelFields;
 window.KonnectLeadChecker.extractInitialNotes = extractInitialNotes;
 window.KonnectLeadChecker.validateLeadCandidate = validateLeadCandidate;
+window.KonnectLeadChecker.findLooseLeadCandidate = findLooseLeadCandidate;
 
 function timelineEntryKey(row) {
 const timestamp = extractTimelineTimestamp(row) || '';
@@ -4073,7 +4107,11 @@ return { status: 'SEARCH_TIMEOUT' };
 // True when the open timeline has a lead created at this row's time.
 function timelineHoldsSlaLead(row) {
 if (row.mode === 'postClosureList') return findNewestPostClosureCandidates(new Date()).length > 0;
-return findMatchingLeadCandidates(row.created, new Date()).candidates.length > 0;
+const now = new Date();
+if (findMatchingLeadCandidates(row.created, now).candidates.length > 0) return true;
+// A Pending lead carries Last Actioned, which only a call can match. The
+// only-lead rule is no proof here: every record could have just one lead.
+return !!findLooseLeadCandidate(row.created, now, false);
 }
 
 // Email first, then phone, then the name as a last resort. An attempt that
@@ -4159,8 +4197,11 @@ if (workingCandidates.length === 0) {
 // fallback. SLA rows always match above, so no row type is needed.
 const callFallback = await findLeadCandidateViaCallFallback(row.created, session, referenceNow);
 if (callFallback.status === 'CANCELLED') return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
+const loose = callFallback.status === 'OK' || String(row.source || '').toLowerCase() === 'post closure processing' ? null : findLooseLeadCandidate(row.created, referenceNow);
 if (callFallback.status === 'OK') {
 workingCandidates = [callFallback.candidate];
+} else if (loose) {
+workingCandidates = [loose];
 } else if (callFallback.status === 'AMBIGUOUS_CALL_MATCH' && String(row.source || '').toLowerCase() === 'post closure processing') {
 const fallbackLeadId = findUnambiguousPostClosureLeadId();
 const decision = postClosureSendBackReason(fallbackLeadId);
@@ -4250,7 +4291,8 @@ let followUp = [];
 if (isPostClosureEntry(row, panelFields, candidate.row)) {
 followUp = await readModalList(modalState.modal, 'Follow Up', 'item in surveyDetailData');
 }
-validated.push({ candidate, panelFields, initialNotes, followUp, warnings: validation.warnings || [] });
+const looseWarning = LOOSE_MATCH_WARNINGS[candidate.looseMatch];
+validated.push({ candidate, panelFields, initialNotes, followUp, warnings: (looseWarning ? [looseWarning] : []).concat(validation.warnings || []) });
 } else {
 debugLog('[KonnectLeadChecker] validation rejected candidate:', validation.reason);
 candidateFailures.push('LEAD_VALIDATION_FAILED');
@@ -4455,6 +4497,10 @@ if (callFallback.status === 'CANCELLED') return { status: 'CANCELLED' };
 if (callFallback.status === 'OK') candidates = [callFallback.candidate];
 }
 const postClosure = /post closure processing/i.test(String(row.source || ''));
+if (candidates.length === 0 && row.mode !== 'postClosureList' && !postClosure) {
+const loose = findLooseLeadCandidate(row.created, referenceNow);
+if (loose) candidates = [loose];
+}
 const byHeading = () => {
 const entry = postClosure ? findLeadEntryByLeadId(findUnambiguousPostClosureLeadId()) : null;
 return entry && !candidates.some((c) => c.row === entry) ? [leadCandidateFromEntry(entry, referenceNow)] : [];

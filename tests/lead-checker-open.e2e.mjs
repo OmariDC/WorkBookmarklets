@@ -586,6 +586,31 @@ for (const width of [480, 800]) {
   await t.close();
 }
 
+// ------------------------------------------------------------------
+// A time that matches nothing exactly: an agent stayed in the lead long
+// before pressing Finished, so Last Actioned is well after the call.
+// ------------------------------------------------------------------
+{
+  const t = await openLinked();
+  const late = [HEADER,
+    ['Jo Tavistock', '', 'jo.tavistock@example.com', 'Robins & Day Website', 'Peugeot - Enquiry - New', 'Sun, 8 Nov 2026 12:15'].join('\t'),
+    ['Morgan Reedwell', '', 'morgan.reedwell@example.com', 'Customer First', 'Enquiry - New', 'Tue, 10 Nov 2026 12:30'].join('\t'),
+    ['Alex Twinley', '', 'alex.twinley@example.com', 'Customer First', 'Enquiry - New', 'Thu, 12 Nov 2026 10:40'].join('\t'),
+    ['Jo Tavistock', '', 'jo.tavistock@example.com', 'Customer First', 'Enquiry - New', 'Sun, 8 Nov 2026 12:15'].join('\t')
+  ].join('\n');
+  await t.send({ type: 'workTools:batch', id: 'late1', kind: 'leads', tsv: late });
+  await t.waitFor('ended', (m) => m.id === 'late1', 90000);
+  const got = await t.live.evaluate(() => { const s = window.__konnectLeadChecker.getSession(); return s.rows.map((r) => { const x = s.results[r.inputIndex]; return { outcome: x.exception || x.status, lead: x.visibleLeadId || null, warnings: x.warnings || [] }; }); });
+  check('only lead on the timeline is used when the time matches nothing', got[0].lead === '1386400' && got[0].outcome === 'CLASSIFICATION_REVIEW_REQUIRED' && /only lead on the timeline/.test(got[0].warnings.join(' ')), got[0]);
+  check('two leads: the lead of the last call before the time is used', got[1].lead === '1386301' && got[1].outcome === 'CLASSIFIED' && /last call before it/.test(got[1].warnings.join(' ')), got[1]);
+  check('two records: the one with a call near the time is kept', got[2].lead === '1386502' && got[2].outcome === 'CLASSIFIED', got[2]);
+  const twins = (await t.live.evaluate(() => window.mock.openedIds)).filter((id) => id === 700500 || id === 700501);
+  check('the right record is the one left open', twins[twins.length - 1] === 700501, twins);
+  check('an only lead from another source is still refused', got[3].lead === null && got[3].outcome === 'LEAD_VALIDATION_FAILED', got[3]);
+  check('no page errors', t.errors.length === 0, t.errors);
+  await t.close();
+}
+
 await browser.close();
 console.log(failures === 0 ? `\nAll ${passes} Lead Checker open tests passed.` : `\n${failures} Lead Checker open test(s) FAILED (${passes} passed).`);
 process.exit(failures === 0 ? 0 : 1);

@@ -26,6 +26,9 @@ nav { background: #222; height: 50px; }
        13 Nov 2026: an appointment made at 10:02, its call outcome at 10:04
        and the send to the dealership at 10:06, after an earlier send at
        09:10 and an appointment from 2 Nov.
+     - A search containing "twinley" finds two records called Alex Twinley,
+       each with one lead: the first with an old call, the second with a
+       call on 12 Nov 2026 at 10:04.
      - Any other search finds one customer whose timeline has no sales leads.
      window.mock.logOut() swaps the page for the login form; pressing Login
      brings it back. -->
@@ -66,6 +69,13 @@ nav { background: #222; height: 50px; }
       lead(1386301, '10 Nov 2026 09:05', '2026-11-10T09:05:00', 'Customer First', 'Enquiry - New', 'Test Drive', 'Would like to test drive a 2008 this coming Saturday.'),
       lead(1386302, '9 Nov 2026 14:00', '2026-11-09T14:00:00', 'Post Closure Processing', 'Enquiry - Used', '', 'Customer Comments: -')
     ] },
+    twinley: { id: 700500, name: 'Alex Twinley', phone: '07700 900324', reg: 'GH78JKL', entries: [
+      { kind: 'call', id: 1386501, shown: '2 Nov 2026 15:07', iso: '2026-11-02T15:07:00', title: 'Agent A called the customer' },
+      lead(1386501, '2 Nov 2026 15:00', '2026-11-02T15:00:00', 'Customer First', 'Enquiry - New', 'Test Drive', 'Would like to test drive a 208 next week.')
+    ], twin: { id: 700501, name: 'Alex Twinley', phone: '07700 900324', reg: 'GH78JKM', entries: [
+      { kind: 'call', id: 1386502, shown: '12 Nov 2026 10:04', iso: '2026-11-12T10:04:00', title: 'Agent A called the customer' },
+      lead(1386502, '12 Nov 2026 01:00', '2026-11-12T01:00:00', 'Customer First', 'Enquiry - New', 'Test Drive', 'Would like to test drive a 2008 this coming Saturday.')
+    ] } },
     tavistock: { id: 700300, name: 'Jo Tavistock', phone: '07700 900322', reg: 'CD34EFG', entries: [
       lead(1386400, '8 Nov 2026 11:30', '2026-11-08T11:30:00', 'Robins & Day Website', 'Peugeot - Enquiry - New', '', 'Can I come in on Saturday at 10am to see it? Also I need to ask about my warranty on the old car')
     ] }
@@ -143,8 +153,10 @@ nav { background: #222; height: 50px; }
       const none = /none/i.test(text);
       const draw = () => {
         const customer = customerFor(text);
-        grid.innerHTML = `<div role="row" row-index="0"><div col-id="CustomerName"><a ng-click="navToConnectedCustomer(${customer.id})">${customer.name}</a></div><div col-id="DealerName">Preston</div><div col-id="RegistrationNumber">${customer.reg}</div><div col-id="Summary"></div></div>`;
-        grid.querySelector('a').addEventListener('click', () => openCustomer(customer));
+        const records = customer.twin ? [customer, customer.twin] : [customer];
+        grid.innerHTML = records.map((c, i) => `<div role="row" row-index="${i}"><div col-id="CustomerName"><a ng-click="navToConnectedCustomer(${c.id})">${c.name}</a></div><div col-id="DealerName">Preston</div><div col-id="RegistrationNumber">${c.reg}</div><div col-id="Summary"></div></div>`).join('');
+        grid.querySelectorAll('a').forEach((a, i) => a.addEventListener('click', () => openCustomer(records[i])));
+        found.textContent = String(records.length);
       };
       if (!none) { if (mock.rowsLateMs) setTimeout(draw, mock.rowsLateMs); else draw(); }
       found.textContent = none ? '0' : '1';
