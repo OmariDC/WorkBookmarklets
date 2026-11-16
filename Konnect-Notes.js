@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.29.0'
+    version: '1.29.1'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -3006,7 +3006,7 @@
     // the booking is put in the lead's dealer drop down first, as the diary
     // follows it. The dealers that take no booking are still refused below.
     if (draft.data.type === 'national' && !diaryModal()) {
-      const wanted = draft.data.nationalDealer || '';
+      const wanted = nationalDealerWanted(draft.data);
       const stop = (text) => { state.bookingStatus = { kind: 'error', text }; renderPalette(); return false; };
       if (!wanted && (!leadDealer() || blockedDiaryDealer(leadDealer()))) {
         return stop(`The lead's dealer is ${leadDealer() ? `"${leadDealer()}"` : 'not set'}. Choose the dealership to book at (above the buttons), then press again. Nothing was put in the diary.`);
@@ -3855,6 +3855,15 @@
   /* National Reservation only: the dealership it is booked at. Choosing one
      changes the lead's dealer drop down when the diary is booked. Shown by
      the buttons so it is in view whichever step is open. */
+  /* The dealership picked in the booking, while it still stands: a dealer
+     changed by hand on the lead after the pick is the newer choice. */
+  function nationalDealerWanted(d) {
+    if (!d.nationalDealer) return '';
+    const now = leadDealer();
+    if (normaliseText(now).toLowerCase() === d.nationalDealer.toLowerCase()) return d.nationalDealer;
+    return normaliseText(now) === normaliseText(d.nationalDealerLeadWas || '') ? d.nationalDealer : '';
+  }
+
   function renderNationalDealer(draft, body) {
     const d = draft.data;
     const names = (() => {
@@ -3863,17 +3872,17 @@
       return (offered.length > 1 ? offered : KONNECT_DEALERS).filter((name) => name && !/^\(?select/i.test(name) && !blockedDiaryDealer(name) && !/service bookings/i.test(name));
     })();
     const now = leadDealer();
-    if (!d.nationalDealer && now && !blockedDiaryDealer(now) && names.includes(now)) d.nationalDealer = now;
+    const shown = nationalDealerWanted(d) || (now && !blockedDiaryDealer(now) && names.includes(now) ? now : '');
     const wrap = element('label', 'kn-bk-field kn-bk-gap');
     wrap.appendChild(element('span', 'kn-bk-label', 'Dealership to book at'));
     const pick = element('select', 'kn-input kn-bk-national-dealer');
     [['', '(Choose a dealership)'], ...names.map((name) => [name, dealerLabel(name)])].forEach(([value, label]) => {
       const option = element('option', '', label);
       option.value = value;
-      if (value === (d.nationalDealer || '')) option.selected = true;
+      if (value === shown) option.selected = true;
       pick.appendChild(option);
     });
-    pick.addEventListener('change', () => { d.nationalDealer = pick.value; changed(draft, false); });
+    pick.addEventListener('change', () => { d.nationalDealer = pick.value; d.nationalDealerLeadWas = leadDealer(); changed(draft, false); });
     pick.addEventListener('keydown', (event) => event.stopPropagation());
     wrap.appendChild(pick);
     body.appendChild(wrap);
@@ -5009,6 +5018,9 @@
     const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const callOutcome = () => Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible) || null;
     const leadTabs = () => document.querySelectorAll('[ng-repeat^="tab in tabs"]');
+    // The dealership chosen in the Customer step, noted before the booking
+    // moves onto the lead and the customer details are let go.
+    const wantedDealer = inbound.customer.dealer || '';
     try {
       const vehicle = draft.data.vehicles[0] || {};
       // The Vehicle step shows New until Used is picked, so a named car with
@@ -5083,6 +5095,21 @@
       if (inbound.mobile) {
         say('ok', 'Checking the mobile is still on the customer...');
         await autoReaddMobile(lead.key);
+      }
+
+      // An existing customer's new lead starts on the dealer Konnect holds
+      // for them. The dealership chosen for this booking goes on the lead
+      // before the diary opens, as the diary follows the lead's dealer.
+      const sameDealer = (x, y) => dealerLabel(normaliseText(x)).toLowerCase() === dealerLabel(normaliseText(y)).toLowerCase();
+      if (wantedDealer && leadDealer() && !sameDealer(leadDealer(), wantedDealer)) {
+        let dealerBox = leadDealerSelect();
+        if (dealerBox && !isVisible(dealerBox)) { await openLeadSection(pane, 'lead'); await pause(300); dealerBox = leadDealerSelect() || dealerBox; }
+        const offered = dealerBox ? Array.from(dealerBox.options).map((o) => normaliseText(o.textContent)).find((name) => sameDealer(name, wantedDealer)) : '';
+        if (offered) setLeadControl(dealerBox, offered);
+        if (!offered || !sameDealer(dealerBox.options[dealerBox.selectedIndex]?.textContent, wantedDealer)) {
+          return stop(`the lead is on ${dealerLabel(leadDealer())}, not ${dealerLabel(wantedDealer)}: change the lead's dealer, then book the diary`);
+        }
+        await pause(400);
       }
 
       // 5. The diary is opened and closed once before anything goes in Call Notes.

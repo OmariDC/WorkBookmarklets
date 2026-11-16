@@ -1299,6 +1299,11 @@ async function ownerHelpers() {
       pane.insertAdjacentHTML('beforeend', list('LeadTypeID', ['New', 'Not Known', 'Used']) + list('ChannelBadgeID', ['Peugeot', 'Vauxhall']) + list('SourceOfEnquiryID', ['Post Closure Processing', 'Phone call']) + list('LeadRequestID', ['Enquiry - New', 'Enquiry - Used', 'Motability']));
       pane.addEventListener('change', (event) => { const model = event.target.getAttribute('ng-model') || ''; if (/LeadDetails\\./.test(model)) window.steps.push(model.split('.').pop() + ': ' + event.target.selectedOptions[0].textContent); });
       (0, eval)(window.addDiaryScript);
+      // Konnect starts the new lead on the dealer it holds for the customer.
+      const leadDealerBox = pane.querySelector('select[ng-model="theActivity.SalesLead.DealerID"]');
+      leadDealerBox.innerHTML = '<option>(Select a Dealer)</option><option selected>Stellantis &amp;You Crawley</option><option>Stellantis &amp;You Preston</option>';
+      window.dealersAtOpen = [];
+      document.querySelector('#openDiary').addEventListener('click', () => window.dealersAtOpen.push(leadDealerBox.selectedOptions[0].textContent));
       document.querySelector('#openDiary').addEventListener('click', () => window.steps.push('diary opened, notes ' + (document.querySelector('#callA').value ? 'written' : 'empty')));
     });
   })()` });
@@ -1319,6 +1324,8 @@ async function ownerHelpers() {
   await booked(page, 1);
   const steps = await page.evaluate(() => window.steps);
   const at = (text) => steps.findIndex((step) => step.startsWith(text));
+  const openedOn = await page.evaluate(() => window.dealersAtOpen);
+  check('inbound one button: the dealership chosen in the booking is on the lead before the diary opens, both times', openedOn.length === 2 && openedOn.every((d) => d === 'Stellantis &You Preston'), openedOn);
   check('inbound one button: Customer Call is pressed and the customer saved', at('customer call') === 0 && at('customer saved: Jo Example') === 1, steps);
   check('inbound one button: Booking Opportunity, then a regular lead on the brand\'s new enquiry campaign', at('call outcome: Booking Opportunity') === 2 && at('lead saved: Peugeot - Enquiry - New, regular true') === 3, steps);
   check('inbound one button: the diary is opened once before anything is in Call Notes', at('diary opened, notes empty') === 4, steps);
