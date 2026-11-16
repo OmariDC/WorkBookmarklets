@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.26.0'
+    version: '1.26.1'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -3072,7 +3072,6 @@
       await new Promise((resolve) => setTimeout(resolve, 600));
       if (refusal() && refusal() !== refusedBefore) return fail(`Konnect refused it ("${refusal().slice(0, 80)}"). Nothing was booked`);
       // The diary stays open after Confirm, so close it before the outcome.
-      await new Promise((resolve) => setTimeout(resolve, 400));
       const close = Array.from(modal.querySelectorAll('button[ng-click="cancel()"]')).filter(isVisible)
         .sort((a, b) => (/close/i.test(b.textContent) ? 1 : 0) - (/close/i.test(a.textContent) ? 1 : 0))[0];
       close?.click();
@@ -3085,12 +3084,12 @@
         const tab = document.querySelector('[ng-repeat^="tab in tabs"].active');
         return !!tab && Array.from(tab.querySelectorAll('i, span')).some((n) => isVisible(n) && /check|tick|success/i.test(String(n.className)));
       };
-      say('ok', `Appointment made: ${plan.label}. Waiting for Konnect to show it on the lead...`);
-      const inDiary = await waitFor(() => {
+      // Watched while the outcome is being set, not before it: the outcome
+      // does not need the tick, and waiting for it held everything up.
+      const inDiaryLater = waitFor(() => {
         const now = (leadScopeActivity(state.target) || {}).SalesAppointmentID || 0;
         return (now && now !== appointmentBefore) || tabTick() || null;
       }, 6000);
-      const unconfirmed = inDiary ? '' : ' The green tick has not shown on the lead\'s tab yet: check it is in the diary.';
       draft.diaryBooked = diaryKey(plan);
       saveDraftNow();
       const toCheck = recordBookingCheck(draft, plan)
@@ -3100,6 +3099,9 @@
       const outcomeProblem = !closed ? 'the diary did not close'
         : draft.data.type === 'national' ? 'National Reservations have their outcome set by hand for now'
           : await setLeadOutcome(draft, plan);
+      // Only what is left of the watch is waited for, and only when the
+      // tick has still not shown by the time the outcome is set.
+      const unconfirmed = (await inDiaryLater) ? '' : ' The green tick has not shown on the lead\'s tab yet: check it is in the diary.';
       if (outcomeProblem) {
         say('warn', `Diary booked: ${plan.label}, ${plan.type}${who}. Outcome not set: ${outcomeProblem}.${moved}${unconfirmed}`);
         showToast(`Diary booked. Set the outcome by hand: ${outcomeProblem}${toCheck && '.'}${toCheck}`);
