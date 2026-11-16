@@ -596,7 +596,8 @@ for (const width of [480, 800]) {
     ['Jo Tavistock', '', 'jo.tavistock@example.com', 'Robins & Day Website', 'Peugeot - Enquiry - New', 'Sun, 8 Nov 2026 12:15'].join('\t'),
     ['Morgan Reedwell', '', 'morgan.reedwell@example.com', 'Customer First', 'Enquiry - New', 'Tue, 10 Nov 2026 12:30'].join('\t'),
     ['Alex Twinley', '', 'alex.twinley@example.com', 'Customer First', 'Enquiry - New', 'Thu, 12 Nov 2026 10:40'].join('\t'),
-    ['Jo Tavistock', '', 'jo.tavistock@example.com', 'Customer First', 'Enquiry - New', 'Sun, 8 Nov 2026 12:15'].join('\t')
+    ['Jo Tavistock', '', 'jo.tavistock@example.com', 'Customer First', 'Enquiry - New', 'Sun, 8 Nov 2026 12:15'].join('\t'),
+    ['Robin Pairwell', '', 'robin.pairwell@example.com', 'Customer First', 'Enquiry - New', 'Thu, 12 Nov 2026 10:40'].join('\t')
   ].join('\n');
   await t.send({ type: 'workTools:batch', id: 'late1', kind: 'leads', tsv: late });
   await t.waitFor('ended', (m) => m.id === 'late1', 90000);
@@ -607,6 +608,7 @@ for (const width of [480, 800]) {
   const twins = (await t.live.evaluate(() => window.mock.openedIds)).filter((id) => id === 700500 || id === 700501);
   check('the right record is the one left open', twins[twins.length - 1] === 700501, twins);
   check('an only lead from another source is still refused', got[3].lead === null && got[3].outcome === 'LEAD_VALIDATION_FAILED', got[3]);
+  check('two leads from the same source: sent to review, not assumed', got[4].lead === '1386601' && got[4].outcome === 'CLASSIFICATION_REVIEW_REQUIRED' && /Check this is the right lead/.test(got[4].warnings.join(' ')), got[4]);
   check('no page errors', t.errors.length === 0, t.errors);
   await t.close();
 }

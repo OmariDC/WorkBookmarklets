@@ -29,6 +29,8 @@ nav { background: #222; height: 50px; }
      - A search containing "twinley" finds two records called Alex Twinley,
        each with one lead: the first with an old call, the second with a
        call on 12 Nov 2026 at 10:04.
+     - A search containing "pairwell" finds Robin Pairwell, with two leads
+       from the same source and a call on the newer one.
      - Any other search finds one customer whose timeline has no sales leads.
      window.mock.logOut() swaps the page for the login form; pressing Login
      brings it back. -->
@@ -76,6 +78,11 @@ nav { background: #222; height: 50px; }
       { kind: 'call', id: 1386502, shown: '12 Nov 2026 10:04', iso: '2026-11-12T10:04:00', title: 'Agent A called the customer' },
       lead(1386502, '12 Nov 2026 01:00', '2026-11-12T01:00:00', 'Customer First', 'Enquiry - New', 'Test Drive', 'Would like to test drive a 2008 this coming Saturday.')
     ] } },
+    pairwell: { id: 700600, name: 'Robin Pairwell', phone: '07700 900325', reg: 'JK90LMN', entries: [
+      { kind: 'call', id: 1386601, shown: '12 Nov 2026 10:04', iso: '2026-11-12T10:04:00', title: 'Agent A called the customer' },
+      lead(1386601, '12 Nov 2026 08:00', '2026-11-12T08:00:00', 'Customer First', 'Enquiry - New', 'Test Drive', 'Would like to test drive a 2008 this coming Saturday.'),
+      lead(1386602, '5 Nov 2026 14:00', '2026-11-05T14:00:00', 'Customer First', 'Enquiry - New', 'Test Drive', 'Would like to test drive a 208 next week.')
+    ] },
     tavistock: { id: 700300, name: 'Jo Tavistock', phone: '07700 900322', reg: 'CD34EFG', entries: [
       lead(1386400, '8 Nov 2026 11:30', '2026-11-08T11:30:00', 'Robins & Day Website', 'Peugeot - Enquiry - New', '', 'Can I come in on Saturday at 10am to see it? Also I need to ask about my warranty on the old car')
     ] }

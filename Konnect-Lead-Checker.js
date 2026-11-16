@@ -2229,28 +2229,43 @@ return { status: 'OK', candidate: { row: leadRow, rawTimestamp, parsed, leadId: 
 // window before it names the lead.
 const LATE_FINISH_TOLERANCE_MINUTES = 180;
 
+// The source in a lead entry's heading ("New Sales Lead from Customer
+// First"), or '' when the heading names none.
+function leadEntrySource(entry) {
+const text = entry.querySelector('.connected-customer-title-pink')?.textContent.replace(/\s+/g, ' ').trim() || '';
+const match = text.match(/\bSales Lead from\s+(.+)$/i);
+return match ? match[1].trim() : '';
+}
+
 // The lead for a time that matched nothing exactly: the lead of the last
-// call before it, else the only lead on the timeline. Only reads what is
-// loaded, so callers load older entries first. The lead window still has to
-// validate (its own date and the source) before it is used.
-function findLooseLeadCandidate(targetCreatedText, referenceDate, allowOnlyLead = true) {
+// call before it, else the only lead on the timeline. Only reads what is loaded, so callers load older
+// entries first. The lead window still has to validate (its own date and
+// the source) before it is used. With several leads, the result is only
+// trusted when the source singles the lead out; otherwise needsReview is
+// set and the owner decides. callOnly keeps to the call rule.
+function findLooseLeadCandidate(targetCreatedText, referenceDate, callOnly = false, source = '') {
 const referenceNow = referenceDate || new Date();
+const entries = getLoadedLeadEntries();
+const wanted = normalizeForCompare(source);
+const sameSource = wanted ? entries.filter((e) => normalizeForCompare(leadEntrySource(e)) === wanted) : [];
 const late = findMatchingCallLeadId(targetCreatedText, referenceNow, LATE_FINISH_TOLERANCE_MINUTES, true);
 let entry = late.status === 'OK' ? findLeadEntryByLeadId(late.leadId) : null;
 let looseMatch = entry ? 'lateCall' : '';
-if (!entry && allowOnlyLead) {
-const entries = getLoadedLeadEntries();
+let needsReview = false;
+if (entry && entries.length > 1) needsReview = !(sameSource.length === 1 && sameSource[0] === entry);
+if (!entry && !callOnly) {
 if (entries.length === 1) { entry = entries[0]; looseMatch = 'onlyLead'; }
 }
 if (!entry) return null;
 const rawTimestamp = extractTimelineTimestamp(entry);
-return { row: entry, rawTimestamp, parsed: rawTimestamp ? parseTimelineTimestamp(rawTimestamp, referenceNow) : null, leadId: extractVisibleLeadId(entry), looseMatch };
+return { row: entry, rawTimestamp, parsed: rawTimestamp ? parseTimelineTimestamp(rawTimestamp, referenceNow) : null, leadId: extractVisibleLeadId(entry), looseMatch, needsReview };
 }
 
 const LOOSE_MATCH_WARNINGS = {
 lateCall: 'The time given matched no lead or call exactly: matched to the lead of the last call before it.',
 onlyLead: 'The time given matched no lead or call: matched as the only lead on the timeline.'
 };
+const LOOSE_REVIEW_NOTE = 'Check this is the right lead: the time matched nothing exactly and the source does not single it out.';
 
 function findLeadClickTarget(row) {
 return row.querySelector('a.connected-customer-timeline-centre-pink > i[ng-click^="showDetails("]');
@@ -4111,7 +4126,7 @@ const now = new Date();
 if (findMatchingLeadCandidates(row.created, now).candidates.length > 0) return true;
 // A Pending lead carries Last Actioned, which only a call can match. The
 // only-lead rule is no proof here: every record could have just one lead.
-return !!findLooseLeadCandidate(row.created, now, false);
+return !!findLooseLeadCandidate(row.created, now, true);
 }
 
 // Email first, then phone, then the name as a last resort. An attempt that
@@ -4197,7 +4212,7 @@ if (workingCandidates.length === 0) {
 // fallback. SLA rows always match above, so no row type is needed.
 const callFallback = await findLeadCandidateViaCallFallback(row.created, session, referenceNow);
 if (callFallback.status === 'CANCELLED') return finalizeResult(result, { status: 'EXCEPTION', exception: 'CANCELLED' });
-const loose = callFallback.status === 'OK' || String(row.source || '').toLowerCase() === 'post closure processing' ? null : findLooseLeadCandidate(row.created, referenceNow);
+const loose = callFallback.status === 'OK' || String(row.source || '').toLowerCase() === 'post closure processing' ? null : findLooseLeadCandidate(row.created, referenceNow, false, row.source);
 if (callFallback.status === 'OK') {
 workingCandidates = [callFallback.candidate];
 } else if (loose) {
@@ -4292,7 +4307,7 @@ if (isPostClosureEntry(row, panelFields, candidate.row)) {
 followUp = await readModalList(modalState.modal, 'Follow Up', 'item in surveyDetailData');
 }
 const looseWarning = LOOSE_MATCH_WARNINGS[candidate.looseMatch];
-validated.push({ candidate, panelFields, initialNotes, followUp, warnings: (looseWarning ? [looseWarning] : []).concat(validation.warnings || []) });
+validated.push({ candidate, panelFields, initialNotes, followUp, warnings: (looseWarning ? [looseWarning] : []).concat(candidate.needsReview ? [LOOSE_REVIEW_NOTE] : [], validation.warnings || []) });
 } else {
 debugLog('[KonnectLeadChecker] validation rejected candidate:', validation.reason);
 candidateFailures.push('LEAD_VALIDATION_FAILED');
@@ -4358,7 +4373,7 @@ const decision = isPostClosureLead
 : { reason: '', evidence: '' };
 const alreadyEngagedCallEntry = !!decision.reason;
 const classification = classifyLead(initialNotes, { campaign: row.campaign, source: resolvedSource, hasAlreadyEngagedCallEntry: alreadyEngagedCallEntry, leadRequest: panelFields.campaign && panelFields.campaign.parenthetical });
-if (classification.confidence === 'low') {
+if (classification.confidence === 'low' || candidate.needsReview) {
 // Tentative tier and reasoning are kept on an EXCEPTION so a reviewer can
 // see them; it is never auto-applied, and the export leaves the tier blank
 // until it is reviewed.
@@ -4369,7 +4384,7 @@ tier: classification.tier, tierName: classification.tierName, subCategory: class
 flags: classification.flags, dedupeKey: classification.dedupeKey, postClosureAction: classification.postClosureAction,
 postClosureReason: classification.postClosureAction === 'send back through' ? decision.reason : '',
 postClosureEvidence: classification.postClosureAction === 'send back through' ? decision.evidence : '',
-reason: classification.reason, confidence: classification.confidence, alternative: classification.alternative || null, ...auditPatch
+reason: candidate.needsReview ? `${LOOSE_REVIEW_NOTE} ${classification.reason || ''}`.trim() : classification.reason, confidence: candidate.needsReview ? 'low' : classification.confidence, alternative: classification.alternative || null, ...auditPatch
 });
 }
 
@@ -4498,7 +4513,7 @@ if (callFallback.status === 'OK') candidates = [callFallback.candidate];
 }
 const postClosure = /post closure processing/i.test(String(row.source || ''));
 if (candidates.length === 0 && row.mode !== 'postClosureList' && !postClosure) {
-const loose = findLooseLeadCandidate(row.created, referenceNow);
+const loose = findLooseLeadCandidate(row.created, referenceNow, false, row.source);
 if (loose) candidates = [loose];
 }
 const byHeading = () => {
