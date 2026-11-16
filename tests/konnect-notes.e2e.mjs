@@ -962,25 +962,6 @@ async function ownerHelpers() {
       check('row: title taken off the name, the lead says New although the car has a reg', copied[0] === `\tJo Example\t${sheetDate}\tFace to Face\tOutbound lead\tNew\t\tN`, copied);
     }
   }
-  // A National Reservation on a National dealer keeps its own message.
-  page = await fresh({ booking: true, owner: true, before: addLeadDetails('National', 'New') });
-  await openBuilder(page);
-  await fillBooking(page, 'national');
-  await page.evaluate(() => { KonnectNotes.state.booking.data.vehicles[0].reg = 'AB12CDE'; KonnectNotes.openBooking(); });
-  await page.click('.kn-bk-actions .kn-button:has-text("Diary only")');
-  await sleep(300);
-  let national = await page.evaluate(() => document.querySelector('.kn-bk-status-error')?.textContent || '');
-  check('guard: a National Reservation on National still asks for the dealer to be changed', /The lead's dealer is "National"\. Change it in the lead's dealer drop down first/.test(national), national);
-  await page.evaluate(() => { const o = document.querySelector('#paneA select[ng-model*="Dealer"] option[selected]'); o.textContent = 'Stellantis &You Brentford'; });
-  await page.click('.kn-bk-actions .kn-button:has-text("Diary only")');
-  await sleep(300);
-  national = await page.evaluate(() => document.querySelector('.kn-bk-status')?.textContent || '');
-  check('guard: a National Reservation moved to Brentford is stopped, not offered for confirmation', /Brentford is service only/.test(national) && !/Press again to confirm/.test(national), national);
-  await page.evaluate(() => { const o = document.querySelector('#paneA select[ng-model*="Dealer"] option[selected]'); o.textContent = 'Stellantis &You Preston'; });
-  await page.click('.kn-bk-actions .kn-button:has-text("Diary only")');
-  await sleep(300);
-  national = await page.evaluate(() => document.querySelector('.kn-bk-status')?.textContent || '');
-  check('guard: a National Reservation moved to a real dealer goes on to its confirmation', /National Reservation: book it at Stellantis &You Preston/.test(national), national);
   // An inbound call carried on in a lead the customer already had: the
   // builder was opened on the inbound screen, then an existing lead opened.
   page = await fresh({ booking: true, owner: true, hash: '#!/present-inbound-call', before: `(() => {
@@ -1099,6 +1080,33 @@ async function ownerHelpers() {
 
   const checkFailures = await page.evaluate(() => KonnectNotes.bookingCheckSelfTest());
   check('the booking check self-test passes', Array.isArray(checkFailures) && checkFailures.length === 0, checkFailures);
+
+  // A National Reservation: the lead's dealer goes to National before the
+  // diary opens, the outcome is National's own, and the dealer goes back.
+  page = await fresh({ booking: true, owner: true, before: addDiary });
+  await page.evaluate(() => {
+    const dealer = document.querySelector('#paneA select[ng-model="theActivity.SalesLead.DealerID"]');
+    dealer.insertAdjacentHTML('beforeend', '<option>National</option>');
+    const lists = document.querySelectorAll('#paneA select[ng-model^="theActivity.SelectedOutcomeLevel"]');
+    [['National Used Stock'], ['Reserve Appointment'], ['Test Drive - National UCS', 'Face to Face - National UCS']].forEach((names, i) => names.forEach((n) => lists[i].insertAdjacentHTML('beforeend', '<option>' + n + '</option>')));
+    window.dealerAtOpen = '';
+    document.querySelector('#openDiary').addEventListener('click', () => { window.dealerAtOpen = dealer.selectedOptions[0].textContent; });
+  });
+  await openBuilder(page);
+  await fillBooking(page, 'national');
+  await page.evaluate(() => { KonnectNotes.state.booking.data.vehicles[0].reg = 'AB12CDE'; KonnectNotes.openBooking(); });
+  await page.click('.kn-bk-actions .kn-button:has-text("Diary only")');
+  await booked(page, 1);
+  await sleep(400);
+  const nat = await page.evaluate(() => ({
+    atOpen: window.dealerAtOpen,
+    after: document.querySelector('#paneA select[ng-model="theActivity.SalesLead.DealerID"]').selectedOptions[0].textContent,
+    outcome: Array.from(document.querySelectorAll('#paneA select[ng-model^="theActivity.SelectedOutcomeLevel"]')).map((x) => x.selectedOptions[0].textContent).join(' > '),
+    status: document.querySelector('.kn-bk-status')?.textContent || ''
+  }));
+  check('national: the dealer is National when the diary opens', nat.atOpen === 'National', nat);
+  check('national: the outcome is National Used Stock > Reserve Appointment > Face to Face - National UCS', nat.outcome === 'National Used Stock > Reserve Appointment > Face to Face - National UCS' && /Outcome set to National Used Stock, Reserve Appointment, Face to Face - National UCS/.test(nat.status), nat);
+  check('national: the dealer is put back afterwards', nat.after === 'Stellantis &You Preston', nat);
 
   page = await fresh({ booking: true, owner: true, before: addDiary });
   // Another booking SLA Manager has already checked, with a field this tool does not know.

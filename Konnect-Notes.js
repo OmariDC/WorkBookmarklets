@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.27.0'
+    version: '1.28.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2756,13 +2756,20 @@
     return null;
   }
 
+  function leadDealerSelect() {
+    const pane = callNotesBox()?.closest('.tab-pane') || document.querySelector('.tab-pane.active');
+    if (!pane) return null;
+    const activity = leadScopeActivity(pane.querySelector('button[ng-click^="manageSalesEventBookings"]') || callNotesBox());
+    return Array.from(pane.querySelectorAll('select[ng-model]')).find((node) =>
+      /dealer/i.test(node.getAttribute('ng-model')) && !/badge|brand/i.test(node.getAttribute('ng-model')) &&
+      (!activity || leadScopeActivity(node) === activity)) || null;
+  }
+
   function leadDealer() {
     const pane = callNotesBox()?.closest('.tab-pane') || document.querySelector('.tab-pane.active');
     if (!pane) return '';
     const activity = leadScopeActivity(pane.querySelector('button[ng-click^="manageSalesEventBookings"]') || callNotesBox());
-    const select = Array.from(pane.querySelectorAll('select[ng-model]')).find((node) =>
-      /dealer/i.test(node.getAttribute('ng-model')) && !/badge|brand/i.test(node.getAttribute('ng-model')) &&
-      (!activity || leadScopeActivity(node) === activity));
+    const select = leadDealerSelect();
     const chosen = select ? normaliseText(select.options[select.selectedIndex]?.textContent) : '';
     if (chosen && !/^\(?select/i.test(chosen)) return chosen;
     return normaliseText(activity?.SalesLead?.DealerName || '');
@@ -2943,6 +2950,15 @@
     engaged: 'No Answer - No Message Left',
     email: 'Update Outcomes (No Call Made)'
   };
+  /* A National Reservation has its own outcomes, and its diary is the one
+     the lead's dealer drop down shows when set to this. */
+  const NATIONAL_DIARY_DEALER = 'National';
+  const NATIONAL_OUTCOME = ['National Used Stock', 'Reserve Appointment'];
+  function leadOutcomePath(draft, plan) {
+    if (draft.data.type === 'national') return NATIONAL_OUTCOME.concat(plan.type === 'Test Drive' ? 'Test Drive - National UCS' : 'Face to Face - National UCS');
+    return ['Customer Hub Team', 'Appointment', plan.type];
+  }
+
   async function setLeadOutcome(draft, plan) {
     const callOutcome = Array.from(document.querySelectorAll('select[ng-model="selected.CallOutcome"]')).find(isVisible);
     if (!callOutcome) return 'the call outcome box was not found';
@@ -2956,7 +2972,7 @@
       if (!setLeadControl(callOutcome, wantedCall)) return `could not choose the call outcome "${wantedCall}"`;
     }
     const pane = callNotesBox()?.closest('.tab-pane') || document.querySelector('.tab-pane.active') || document;
-    const path = ['Customer Hub Team', 'Appointment', plan.type];
+    const path = leadOutcomePath(draft, plan);
     // The Outcomes section may be folded shut, which hides the lists.
     const outcomeLists = () => Array.from(pane.querySelectorAll('select[ng-model^="theActivity.SelectedOutcomeLevel"]')).filter(isVisible);
     if (!outcomeLists().length) {
@@ -2988,32 +3004,14 @@
       return false;
     }
     if (diaryRun) return false;
-    if (draft.data.type === 'national') {
-      const dealer = leadDealer();
-      if (!dealer || /national/i.test(dealer)) {
-        state.bookingStatus = { kind: 'error', text: `The lead's dealer is ${dealer ? `"${dealer}"` : 'not set'}. Change it in the lead's dealer drop down first (the diary follows it), then press again.` };
-        draft.nationalDealerOk = '';
-        renderPalette();
-        return false;
-      }
-    }
-    // A National Reservation still on a National dealer has had its own
-    // message above; every other booking at a dealer that takes none stops here.
-    const blocked = blockedDiaryDealer(leadDealer());
+    const national = draft.data.type === 'national';
+    // A National Reservation goes in National's own diary, so the lead's
+    // dealer is not checked: it is switched to National for the booking.
+    const blocked = national ? '' : blockedDiaryDealer(leadDealer());
     if (blocked) {
       state.bookingStatus = { kind: 'error', text: `${blocked} Nothing was put in the diary.` };
-      draft.nationalDealerOk = '';
       renderPalette();
       return false;
-    }
-    if (draft.data.type === 'national') {
-      const dealer = leadDealer();
-      if (draft.nationalDealerOk !== dealer) {
-        draft.nationalDealerOk = dealer;
-        state.bookingStatus = { kind: 'warn', text: `National Reservation: book it at ${dealer} on ${plan.label}? Press again to confirm.` };
-        renderPalette();
-        return false;
-      }
     }
     if (diaryAlreadyBooked(draft, plan) && !draft.diaryRepeat) {
       draft.diaryRepeat = true;
@@ -3034,9 +3032,21 @@
       say('error', `Diary booking stopped: ${text}. Finish it by hand in the diary.`);
       showToast(`Diary booking stopped: ${text}`);
     };
+    // The dealer the lead was on, put back once the booking is over.
+    let dealerBefore = '';
     try {
       say('ok', `Booking the diary for ${plan.label}...`);
       let modal = diaryModal();
+      if (national && !modal) {
+        const dealerBox = leadDealerSelect();
+        if (!dealerBox) return fail('the lead\'s dealer drop down was not found, so the National diary could not be chosen');
+        const now = normaliseText(dealerBox.options[dealerBox.selectedIndex]?.textContent);
+        if (now.toLowerCase() !== NATIONAL_DIARY_DEALER.toLowerCase()) {
+          if (!setLeadControl(dealerBox, NATIONAL_DIARY_DEALER)) return fail(`"${NATIONAL_DIARY_DEALER}" was not offered in the lead's dealer drop down`);
+          dealerBefore = now;
+          await new Promise((resolve) => setTimeout(resolve, 400));
+        }
+      }
       if (!modal) {
         const open = await leadDiaryButton();
         if (!open) return fail('the Manage Appointments button for this lead was not found');
@@ -3094,11 +3104,8 @@
       saveDraftNow();
       const toCheck = recordBookingCheck(draft, plan)
         ? ' Konnect Live will be checked in a few minutes (see Bookings in SLA Manager).' : '';
-      // Which outcome a National Reservation takes is not confirmed yet, so it is left to the agent.
       say('ok', 'In the diary. Setting the outcome...');
-      const outcomeProblem = !closed ? 'the diary did not close'
-        : draft.data.type === 'national' ? 'National Reservations have their outcome set by hand for now'
-          : await setLeadOutcome(draft, plan);
+      const outcomeProblem = !closed ? 'the diary did not close' : await setLeadOutcome(draft, plan);
       // Only what is left of the watch is waited for, and only when the
       // tick has still not shown by the time the outcome is set.
       const unconfirmed = (await inDiaryLater) ? '' : ' The green tick has not shown on the lead\'s tab yet: check it is in the diary.';
@@ -3107,10 +3114,16 @@
         showToast(`Diary booked. Set the outcome by hand: ${outcomeProblem}${toCheck && '.'}${toCheck}`);
         return false;
       }
-      say(moved || unconfirmed ? 'warn' : 'ok', `Diary booked: ${plan.label}, ${plan.type}, ${plan.length}${who}. Outcome set to Customer Hub Team, Appointment, ${plan.type}.${moved}${unconfirmed}`);
+      say(moved || unconfirmed ? 'warn' : 'ok', `Diary booked: ${plan.label}, ${plan.type}, ${plan.length}${who}. Outcome set to ${leadOutcomePath(draft, plan).join(', ')}.${moved}${unconfirmed}`);
       showToast(`Diary booked and outcome set: ${plan.type}${who}${toCheck && '.'}${toCheck}`);
       return !moved;
     } finally {
+      // Back to the dealer the lead was on, unless the page or the agent
+      // has already changed it.
+      if (dealerBefore && !/^\(?select/i.test(dealerBefore) && !diaryModal()) {
+        const dealerBox = leadDealerSelect();
+        if (dealerBox && normaliseText(dealerBox.options[dealerBox.selectedIndex]?.textContent).toLowerCase() === NATIONAL_DIARY_DEALER.toLowerCase()) setLeadControl(dealerBox, dealerBefore);
+      }
       if (diaryRun === run) diaryRun = null;
     }
   }
