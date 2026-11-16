@@ -402,7 +402,7 @@ function inferSource(text, source) {
 if (source) return source;
 if (/Lead ID:\s*00Qa/i.test(text)) return 'Customer First';
 if (/Comment Line #1:|Sourced from Robins & Day Website/i.test(text)) return 'Robins & Day Website';
-if (/Misc:.*UniqueID/i.test(text)) return 'Autofunnel';
+if (/Misc:[\s\S]*UniqueID/i.test(text)) return 'Autofunnel';
 if (/Message from Consumer at/i.test(text)) return 'Autotrader';
 if (/\(CarGurus (IMV|deal rating)/i.test(text)) return 'Cargurus';
 return source;
@@ -812,8 +812,9 @@ return classifyVehicleUrlComment(text, lowered, flagCtx);
 }
 
 // 7.6: system feeds.
-if (/Misc:.*UniqueID\s*=/i.test(text)) return autofunnelResult(text, lowered, flagCtx);
-if (/FindOutMore\s*=|Purchase\s*=/i.test(text) && !/Misc:.*UniqueID/i.test(text)) return mbMailResult(text, lowered, flagCtx);
+// The real notes put each field on its own line.
+if (/Misc:[\s\S]*UniqueID\s*=/i.test(text)) return autofunnelResult(text, lowered, flagCtx);
+if (/FindOutMore\s*=|Purchase\s*=/i.test(text) && !/Misc:[\s\S]*UniqueID/i.test(text)) return mbMailResult(text, lowered, flagCtx);
 if (/Annual Mileage:.*Customer Number:/is.test(text)) {
 if (COMPLAINT_RE.test(lowered)) return R(6, 'Complaint', 6, 'high', 'MB Mail aftersales with complaint wording (Section 7.6).');
 return R(6, 'Aftersales', 8, 'high', 'MB Mail aftersales template (Section 7.6).');
@@ -885,7 +886,7 @@ if (/^\/(dealers\/[a-z-]+|(peugeot|citroen|ds|vauxhall|fiat|abarth|alfa-romeo|je
 return R(5, 'Valuation Only / Sell Only', 6, 'medium', 'Dealer page (Section 7.2).');
 }
 if (/^\/[a-z-]+\/new$/i.test(path)) return R(5, 'Valuation Only / Sell Only', 6, 'medium', 'Bare /[brand]/new landing page, nothing after it (Section 7.2, v1.10).');
-if (/mbmail/i.test(rawUrl)) return R(5, 'Valuation Only / Sell Only', 6, 'low', 'MB Mail valuation campaign - bottom of Nurture (Section 7.2).');
+if (/mbmail/i.test(rawUrl)) return R(5, 'Valuation Only / Sell Only', 6, 'medium', 'MB Mail valuation campaign - bottom of Nurture (Section 7.2, confirmed by manual review).');
 return R(5, 'Valuation Only / Sell Only', 6, 'medium', 'Generic/car-valuation/home/brand/stock-listing page (Section 7.2).');
 }
 
@@ -961,10 +962,20 @@ return R(5, 'MB Mail Enquiry Form', 11, 'low', 'MB Mail form (Section 7.6, botto
 
 function marketplaceTemplates(text, lowered, camp, src, flagCtx) {
 if (src === 'autotrader' || src.startsWith('autotrader')) {
-const tsMatch = text.match(/Message from Consumer at \w{3}, \w{3} \d{1,2}, \d{4} \d{1,2}:\d{2}\s*[AP]M:/i);
+// Two shapes of the same thing: "Message from Consumer at Mon, Nov 9,
+// 2026 2:15 PM:" and "The Consumer sent this message on 2026-11-15
+// 18:46:00:".
+const tsMatch = text.match(/Message from Consumer at \w{3}, \w{3} \d{1,2}, \d{4} \d{1,2}:\d{2}\s*[AP]M:/i)
+|| text.match(/The Consumer sent this message on \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}(?::\d{2})?:/i);
 if (tsMatch) {
 const msg = text.slice(tsMatch.index + tsMatch[0].length);
 const msgLower = msg.toLowerCase();
+// Autotrader's own stock wording and nothing else, in the second shape:
+// the car is in the lead, the customer has said no more (manual review:
+// Warm). The first shape stays Likely Booking, as the spec has it.
+if (/^the consumer sent/i.test(tsMatch[0]) && /^\s*(hi,?\s*)?i'?m interested in this [^.]{2,60}\.\s*please could you contact me back\.?\s*$/i.test(msg)) {
+return R(4, 'Used Enquiry: Vehicle in Lead', 9, 'medium', 'Autotrader stock message naming the car, nothing more said (manual review).');
+}
 if (/i'?m interested in finance for this/i.test(msgLower)) { flagCtx.finance = true; return R(3, 'Autotrader Enquiry', 8, 'high', 'Autotrader finance button (Section 7.13).'); }
 if (/i can offer £/i.test(msgLower) && /ready to purchase|do not have a px/i.test(msgLower)) {
 return R(4, 'Offer Made: Price Offer', 5, 'medium', 'Autotrader firm price offer (Section 5, Tier 4 rank 5).');
@@ -992,7 +1003,7 @@ const msg = msgMatch[1];
 const msgLower = msg.toLowerCase();
 if (/are you able to transfer this to|transfer this to/i.test(msgLower)) { return R(3, 'Used Enquiry: Specific Car', 7, 'medium', 'CarGurus transfer + view request (Section 5, Tier 3 rank 7).'); }
 if (/i'?m interested in this.*and i'?d like to know if it'?s still available|i am interested in your.*you can reach me by/i.test(msgLower)) {
-return R(4, 'Marketplace Enquiry (non-Autotrader)', 8, 'low', 'CarGurus bare enquiry template (Section 7.13, bottom).');
+return R(4, 'Marketplace Enquiry (non-Autotrader)', 8, 'medium', 'CarGurus bare enquiry template (Section 7.13, bottom, confirmed by manual review).');
 }
 return R(4, 'Marketplace Enquiry (non-Autotrader)', 8, 'medium', 'CarGurus message (Section 7.13).');
 }
@@ -1205,6 +1216,11 @@ function campaignRules(text, lowered, camp, src, flagCtx, leadRequest) {
 if (isMotabilityText(low(leadRequest)) && /^sourced from [^.]*\.?$/i.test(text.trim())) {
 flagCtx.motab = true;
 return R(3, 'Motability: Information Only', 6, 'medium', 'Bare website lead with a Motability lead request (manual review).');
+}
+// A bare website lead on a used enquiry: the notes say nothing, but the
+// car the customer picked is in the lead (manual review: Warm).
+if (/^sourced from robins & day website\.?$/i.test(text.trim()) && /\benquiry\s*-?\s*used\b/i.test(camp) && !/autotrader/i.test(camp)) {
+return R(4, 'Used Enquiry: Vehicle in Lead', 9, 'medium', 'Bare website lead on a used enquiry: the car is in the lead (manual review).');
 }
 // A finance or monthly price question about a car in stock or in the
 // lead: Warm (manual review), below the Spoticar and template rules.
@@ -3678,6 +3694,15 @@ const cases = [
 ['T132', 'Lead ID: 00Qa200000EXAMPLE4 | Marketing Code: PCH Offers Pages | First Desired Schedule: 00:00 | Customer Comments: -', 'Fiat - Offer Request - New', 'Customer First', 4, 'medium'],
 ['T133', 'Lead ID: 00Qa200000EXAMPLE5 | Marketing Code: Google-DemandGen-Model | Customer Comments: -', 'Peugeot - Enquiry - New', 'Customer First', 5, 'medium'],
 ['T134', 'Comment Line #1: The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/citroen/service/offers/citroen-we-care', 'PX Valuation - Used', 'Robins & Day Website', 5, 'medium'],
+// Review decisions of 16 Nov: confirmed tiers no longer need review, a bare
+// used website lead and Autotrader's stock message are Warm, and Autofunnel
+// notes are recognised with each field on its own line.
+['T136', 'Sourced from Robins & Day Website.', 'Enquiry - Used', 'Robins & Day Website', 4, 'medium'],
+['T137', "Customer message #1: The Consumer sent this message on 2026-11-15 18:46:00: Hi, I'm interested in this Citroen C5 Aircross. Please could you contact me back.", 'Autotrader - Enquiry - Used', 'Autotrader - Online Store', 4, 'medium'],
+['T138', 'Customer message #1: The Consumer sent this message on 2026-11-15 18:46:00: Could I come and see it on Saturday at 11am?', 'Autotrader - Enquiry - Used', 'Autotrader - Online Store', 1],
+['T139', 'Misc: The following information was present in the lead:\nFranchise = DS\nMobile = 07700900101\nUniqueID = abcdef\nBatch = 929874', 'Enquiry - Used', 'Autofunnel', 5, 'medium'],
+['T140', 'Message from customer: I am interested in your 2018 Peugeot 5008 1.2 Puretech Gt Line 5dr. You can reach me by email at jo@example.com or phone at 07700 900102. Thank you! (CarGurus IMV: £11,155 / Deal rating: Good Deal)', 'Enquiry - Used', 'Cargurus', 4, 'medium'],
+['T141', 'Comment Line #1: The customer was on the following website page, before completing the valuation: https://www.stellantisandyou.co.uk/car-valuation?utm_source=mbmail&utm_medium=email&utm_campaign=VALUATION+UPGRADE+EMAIL', 'PX Valuation - Used', 'Robins & Day Website', 5, 'medium'],
 // A service-history question on a used car stays a sales lead.
 ['T135', 'Comment Line #1: Does this car come with a full service history? Could I view it this Saturday at 11am?', 'Enquiry - Used', 'Robins & Day Website', 1]
 ];
