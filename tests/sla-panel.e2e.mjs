@@ -597,6 +597,14 @@ async function reloadedPage() {
   const peekText = await t.page.evaluate(() => (document.getElementById('_slaLinkToast') || {}).textContent || '');
   check('reload during a read of the other list: said so and that reading is turned off', /while SLA Manager was reading the other list/.test(peekText) && await t.page.evaluate(() => sessionStorage.getItem('_slaPeekOff')) === '1', peekText);
   check('the note is used up, so it is only said once', await t.page.evaluate(() => sessionStorage.getItem('_slaUnloadNote')) === null);
+  // The browser put the tab to sleep: no unload is seen, only that the
+  // tool was running and is now not on the page.
+  const s2 = await open();
+  await s2.page.evaluate(() => { window.__slaAliveTimer && clearInterval(window.__slaAliveTimer); window.__slaAliveTimer = null; sessionStorage.setItem('_slaAliveNote', String(Date.now() - 60000)); });
+  await s2.page.addScriptTag({ content: slaScript });
+  const asleep = await s2.page.evaluate(() => (document.getElementById('_slaLinkToast') || {}).textContent || '');
+  check('a page replaced with no unload seen is explained, with how to stop it', /loaded again without warning; SLA Manager was last running at \d\d:\d\d/.test(asleep) && /Always keep these sites active/.test(asleep), asleep);
+  await s2.context.close();
   check('no page errors', t.errors.length === 0, t.errors);
   await t.context.close();
 }

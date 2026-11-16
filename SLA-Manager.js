@@ -252,6 +252,8 @@ let lastFailedPageType = null;
 let currentPageType = null;
 let currentCustomers = [];
 let currentPendingCustomers = [];
+// When the lead table on this tab was last known to be fresh from Konnect.
+let listInViewFreshAt = 0;
 // The last real +N/-N diff, so a redraw that is not a new scan can show it
 // again instead of 0/0.
 let lastSlaDiffCounts = { newCount: 0, removedCount: 0 };
@@ -585,7 +587,8 @@ const icon = findNativeLeadsRefreshIcon();
 if (icon) {
 icon.click();
 await waitForRefreshIconSpinState(icon, true, 2000);
-await waitForRefreshIconSpinState(icon, false, 15000);
+// Only a refresh seen to finish counts as a fresh table for the warning.
+if (await waitForRefreshIconSpinState(icon, false, 15000)) listInViewFreshAt = Date.now();
 }
 if (!quiet || (panelElement && !document.hidden && localStorage.getItem(PANEL_STATE_KEY) !== 'hidden')) await runExtraction();
 } finally {
@@ -4326,7 +4329,7 @@ return currentPageType === PAGE_PENDING
 }
 
 // For one-off events only. What the link is doing now is on the status line.
-function showToast(text) {
+function showToast(text, ms) {
 const previous = document.getElementById('_slaLinkToast');
 if (previous) previous.remove();
 const toast = document.createElement('div');
@@ -4335,7 +4338,7 @@ toast.setAttribute('role', 'status');
 toast.textContent = text;
 toast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#1c1c1e;color:#fff;padding:10px 16px;border-radius:10px;font:600 13px -apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.25);max-width:90vw;';
 document.body.appendChild(toast);
-setTimeout(() => toast.remove(), 5000);
+setTimeout(() => toast.remove(), ms || 5000);
 }
 
 // Pure. The same wording as the Lead Checker and Lead Re setup panels.
@@ -7816,6 +7819,8 @@ window.__workToolsOnDeskRequest = null;
 window.__slaOnTodayStorage = null;
 // A reload after Clear & Stop is nothing to report.
 window.__slaNoteUnload = null;
+if (window.__slaAliveTimer) { clearInterval(window.__slaAliveTimer); window.__slaAliveTimer = null; }
+try { sessionStorage.removeItem(ALIVE_NOTE_KEY); } catch (error) { /* ignore */ }
 liveLink.queue = liveLink.queue.filter((b) => b.from !== 'manager');
 if (liveLink.sent && liveLink.sent.batch.from === 'manager') liveLink.sent = null;
 // Bookings still to be checked are kept for next time; the checked go.
@@ -8739,8 +8744,19 @@ if (el.textContent !== text) el.textContent = text;
 function readPageInView() {
 if (busyReason()) return;
 const pageType = detectPageType();
-if (pageType === PAGE_SLA) watchSnapshots.sla = { leads: collectAssignableLeads().map((l) => watchLead(l, PAGE_SLA)), at: Date.now() };
-else if (pageType === PAGE_PENDING) watchSnapshots.pending = { leads: collectPendingCustomers().map((l) => watchLead(l, PAGE_PENDING)), at: Date.now() };
+// at: when Konnect last gave this table, not when it was last looked at,
+// so a table that has stopped refreshing shows its age.
+const at = listInViewFreshAt || Date.now();
+if (pageType === PAGE_SLA) watchSnapshots.sla = { leads: collectAssignableLeads().map((l) => watchLead(l, PAGE_SLA)), at };
+else if (pageType === PAGE_PENDING) watchSnapshots.pending = { leads: collectPendingCustomers().map((l) => watchLead(l, PAGE_PENDING)), at };
+}
+
+// A list read longer ago than this is too old to notify from: its leads
+// may have been dealt with since, and time alone would call them missed.
+const WATCH_FRESH_MS = 5 * 60 * 1000;
+// Pure. True when every list read is recent enough to trust.
+function watchReadsFresh(snapshots, now, maxAgeMs) {
+return ['sla', 'pending'].every((k) => !snapshots[k] || now - snapshots[k].at <= maxAgeMs);
 }
 
 // Both lists: each page's last table read, or the leads from the last scan
@@ -8765,6 +8781,9 @@ if (!isMissedWarningOn()) return;
 const leads = watchedLeads();
 const keys = missedWarningKeys(leads, Date.now());
 setTitlePrefix(missedTitlePrefix(keys.missed.length, keys.soon.length, keys.due.length));
+// From an old read nothing is notified or marked as told: it waits for
+// the next fresh one. The footer shows how old each read is.
+if (!watchReadsFresh(watchSnapshots, Date.now(), watchTiming().freshMs || WATCH_FRESH_MS)) { updateWatchReadLine(); return; }
 const fresh = newMissedWarnings(keys, missedWarned);
 missedWarned.due = fresh.due;
 missedWarned.soon = fresh.soon;
@@ -8787,7 +8806,8 @@ if (busyReason() || dayRun.running || rescue.running || currentPanelMode === 'mo
 if (findDetailModal()) return false;
 if (liveLink.sent || liveLink.queue.some((b) => b.from === 'manager')) return false;
 const menu = document.getElementById('_slaMoreMenu');
-return !((menu && !menu.hidden) || isHoldingPanelInput());
+const here = !document.hidden && (typeof document.hasFocus !== 'function' || document.hasFocus());
+return !(here && ((menu && !menu.hidden) || isHoldingPanelInput()));
 }
 function canWatchScan() {
 return canWatchWork() && !!detectPageType();
@@ -8823,13 +8843,41 @@ if (note.peeking) return `This page reloaded at ${when} while SLA Manager was re
 if (note.refreshing) return `This page reloaded at ${when} while SLA Manager was refreshing the leads. Please report it.`;
 return `This page reloaded at ${when} with SLA Manager idle${note.hidden ? ' and the tab in the background' : ''}, so it was not SLA Manager that reloaded it.`;
 }
+// The browser can put a background tab to sleep and load it again when it
+// is next opened. No unload is seen then, so the tool also notes that it is
+// alive every few seconds: a start that finds that note, with the tool not
+// on the page, knows the page was replaced without warning.
+const ALIVE_NOTE_KEY = '_slaAliveNote';
+const SLEEP_HELP = 'To stop it: Chrome Settings > Performance > "Always keep these sites active", and add konnectonlineservices.co.uk.';
+function noteAlive() {
+try { sessionStorage.setItem(ALIVE_NOTE_KEY, String(Date.now())); } catch (error) { /* nothing to note it in */ }
+}
+// Pure. What to say when the page was replaced with no unload seen, or ''.
+function silentEndText(aliveAt, discarded, now) {
+const recent = aliveAt > 0 && now - aliveAt < 12 * 60 * 60 * 1000;
+if (discarded) return `Chrome put this tab to sleep while it was in the background${recent ? ` (SLA Manager was last running at ${formatTimeForInput(new Date(aliveAt))})` : ''}, which reloads the page and takes SLA Manager with it. ${SLEEP_HELP}`;
+if (recent) return `This page was loaded again without warning; SLA Manager was last running at ${formatTimeForInput(new Date(aliveAt))}. The browser may have put the tab to sleep. ${SLEEP_HELP}`;
+return '';
+}
 function reportLastUnload() {
 let note = null;
 try { note = JSON.parse(sessionStorage.getItem(UNLOAD_NOTE_KEY) || 'null'); sessionStorage.removeItem(UNLOAD_NOTE_KEY); } catch (error) { note = null; }
+// Only a start on a page the tool was not already on can have lost it.
+const firstOnPage = !window.__slaAliveTimer;
+let aliveAt = 0;
+try { aliveAt = Number(sessionStorage.getItem(ALIVE_NOTE_KEY)) || 0; } catch (error) { aliveAt = 0; }
+if (window.__slaAliveTimer) clearInterval(window.__slaAliveTimer);
+window.__slaAliveTimer = setInterval(noteAlive, 5000);
+noteAlive();
+if (firstOnPage && !note) {
+const silent = silentEndText(aliveAt, document.wasDiscarded === true, Date.now());
+if (silent) { showToast(silent, 30000); console.info(`[SLA Manager] ${silent}`); }
+return;
+}
 const text = unloadNoteText(note, Date.now());
 if (!text) return;
 if (note.peeking) { try { sessionStorage.setItem(PEEK_OFF_KEY, '1'); } catch (error) { /* said all the same */ } }
-showToast(text);
+showToast(text, 30000);
 console.info(`[SLA Manager] ${text}`);
 }
 
@@ -8991,7 +9039,7 @@ try {
 // themselves, and that is where they stay.
 if (window.location.hash === awayHash) {
 goToHashQuietly(homeHash);
-await waitForListTable(home, Date.now() + 8000, true);
+if (await waitForListTable(home, Date.now() + 8000, true)) listInViewFreshAt = Date.now();
 if (typeof window.scrollTo === 'function') window.scrollTo(scroll[0], scroll[1]);
 }
 // Anything the panel drew while away was drawn from the wrong table.
@@ -9113,6 +9161,8 @@ lead('f', 3, { assigned: true }), lead('g', -30, { status: 'Missed', assigned: t
 const keys = missedWarningKeys(leads, now);
 check('missed is marked Missed or past its time; then within 5 minutes; then within 15; assigned leads count too, and waiting lists the ones nobody holds', { missed: keys.missed, soon: keys.soon, due: keys.due, waiting: keys.waiting }, { missed: ['a', 'b', 'g'], soon: ['c', 'f'], due: ['d', 'i'], waiting: ['a', 'b', 'c', 'd', 'i'] });
 const none = { missed: 0, soon: 0, due: 0 };
+check('a read is fresh enough to notify from only while every list read is recent', [watchReadsFresh({ sla: { at: 1000 }, pending: null }, 1000 + 60000, 300000), watchReadsFresh({ sla: { at: 1000 }, pending: { at: 1000 } }, 1000 + 300001, 300000), watchReadsFresh({ sla: { at: 400000 }, pending: { at: 1000 } }, 400000, 300000)], [true, false, false]);
+check('a page replaced without warning: the sleep is named when the browser says so, else it is described; nothing with no trace', [/^Chrome put this tab to sleep/.test(silentEndText(0, true, 5000)), /^This page was loaded again without warning/.test(silentEndText(4000, false, 5000)), silentEndText(0, false, 5000)], [true, true, '']);
 check('the notification: totals in the title with missed first, then who holds them, then agents free', warningNotification({ unassigned: { missed: 1, soon: 2, due: 0 }, assigned: { missed: 1, soon: 1, due: 0 } }, 2), { title: '2 MISSED · 3 due in 5 mins', body: 'Unassigned: 1 missed, 2 due in 5 mins\nAssigned: 1 missed, 1 due in 5 mins\nAgents free: 2' });
 check('an empty line says none, and no agents free says none', warningNotification({ unassigned: none, assigned: { missed: 0, soon: 1, due: 2 } }, 0), { title: '1 due in 5 mins · 2 due in 15 mins', body: 'Unassigned: none\nAssigned: 1 due in 5 mins, 2 due in 15 mins\nAgents free: none' });
 check('agents not read: that line is left out; nothing urgent: no notification', [warningNotification({ unassigned: { missed: 0, soon: 0, due: 1 }, assigned: none }, null).body, warningNotification({ unassigned: none, assigned: none }, 3)], ['Unassigned: 1 due in 15 mins\nAssigned: none', null]);
@@ -9431,6 +9481,7 @@ if (pageType === lastKnownPageType) { pendingPageType = null; return; }
 if (pageType === pendingPageType) {
 lastKnownPageType = pageType;
 pendingPageType = null;
+listInViewFreshAt = Date.now();
 runExtraction();
 } else {
 pendingPageType = pageType;
