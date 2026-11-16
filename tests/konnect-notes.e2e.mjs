@@ -1512,6 +1512,29 @@ async function pxOnAnotherLead() {
   const folded = await page.evaluate(() => ({ notes: !!document.querySelector('#call-77000002').offsetParent, key: KonnectNotes.state.booking.key }));
   check('folded Part Exchange: the section is opened, the switch pressed and the boxes filled', now.booking.pxOn === true && now.booking.px.Reg === 'AB12CDE' && now.booking.px.Brand === 'Ford' && now.booking.px.Mileage === '45000', now.booking);
   check('folded Part Exchange: Details is open again and the booking is still on its lead', folded.notes && folded.key === 'lead-77000002', folded);
+  // "No PX" in the builder turns the lead's switch off, and a fuel type the
+  // owner typed replaces the one the lead had. "Not mentioned" leaves the
+  // switch alone.
+  const noPxRun = async (status) => {
+    const p = await fresh({ owner: true, page: 'two-leads.html', before: `window.mockOptions = { oneOpen: true }; window.buildLeads(${JSON.stringify([bookingLead({ px: { on: true, make: 'Ford', model: 'Fiesta', reg: 'AB12CDE' } })])})` });
+    await p.evaluate(() => { const fuel = document.querySelector('[data-lead-id="77000002"] input[placeholder="Fuel Type"]'); fuel.value = 'Petrol'; fuel.dispatchEvent(new Event('input', { bubbles: true })); });
+    await p.click('#call-77000002');
+    await p.keyboard.press('Alt+b');
+    await p.waitForFunction(() => window.KonnectBookingEngine && document.querySelector('.kn-bk-actions'), null, { timeout: 5000 });
+    await p.evaluate(async (st) => {
+      const draft = KonnectNotes.state.booking;
+      draft.data.vehicles[0] = { make: 'Peugeot', model: '208', reg: '', descriptor: 'diesel', condition: 'used' };
+      draft.fromLead['v.descriptor'] = false;
+      draft.data.px.status = st;
+      await KonnectNotes.writeBookingToLead(draft);
+    }, status);
+    await sleep(300);
+    return p.evaluate(() => ({ pxOn: window.leadState(77000002).pxOn, fuel: document.querySelector('[data-lead-id="77000002"] input[placeholder="Fuel Type"]').value, notes: !!document.querySelector('#call-77000002').offsetParent }));
+  };
+  const saidNoPx = await noPxRun('none');
+  check('No PX: the lead\'s switch is turned off, Details is open again, and the typed fuel type replaces the lead\'s', saidNoPx.pxOn === false && saidNoPx.notes && saidNoPx.fuel === 'Diesel', saidNoPx);
+  const notSaid = await noPxRun('unmentioned');
+  check('PX not mentioned: the lead\'s switch is left on', notSaid.pxOn === true, notSaid);
   check('no page errors on the part exchange runs', page.errors.length === 0, page.errors);
 }
 

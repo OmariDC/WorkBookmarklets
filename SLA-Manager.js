@@ -4898,6 +4898,9 @@ const clean = (value) => String(value == null ? '' : value).toLowerCase().replac
 const column = (wanted) => header.find((h) => h.toLowerCase() === wanted);
 const name = column('name'); const created = column('created');
 if (name && created && (cells[name] || cells[created])) return `${clean(stripTitle(cells[name] || ''))}|${clean(cells[created])}`;
+// No name (the Lead Checker leaves the customer out): the lead's own time
+// tells two leads with the same notes apart.
+if (created && cells[created]) return `${clean(cells[header[0]])}|${clean(cells[created])}`;
 return header.slice(0, 3).map((h) => clean(cells[h])).join('|');
 }
 
@@ -4936,12 +4939,28 @@ const stored = readStoredJson(DESK_DECISIONS_KEY);
 return stored && Array.isArray(stored.rows) ? stored.rows.filter((r) => r && isStoredTimeFresh(r.at)) : [];
 }
 
+// Pure. A value for the review copy with emails and phone numbers taken out.
+function withoutContact(value) {
+return String(value == null ? '' : value)
+.replace(/[^\s@|<>()]+@[^\s@|<>()]+\.[a-z]{2,}/gi, '[email]')
+.replace(/(^|[^\w])((?:\+44|0044|0)(?:[\s().-]*\d){9,10})(?!\d)/g, '$1[phone]');
+}
+
 // Pure. The Lead Checker's block, a blank line, then the desk's block; a
-// side with nothing to copy is left out.
+// side with nothing to copy is left out. The copy is for working on the
+// rules, so the customer is left out of it: no name, phone or email
+// columns, and no contact details inside the other values. The desk's
+// leads are numbered in place of their names.
 function combinedDecisionsText(store, deskRows) {
 const blocks = [];
-if (store.rows.length) blocks.push(reviewDecisionsTsv(store));
-if (deskRows.length) blocks.push(['Run\tCustomer\tDetail\tOutcome\tStep\tWhy\tAt'].concat(deskRows.map((r) => [r.run, r.name, r.detail, r.outcome, r.step, r.why, r.at].map(tsvClean).join('\t'))).join('\n'));
+const personal = /^(name|customer|customer ?name|phone|mobile|landline|email)$/i;
+const header = store.header.filter((h) => !personal.test(h));
+if (store.rows.length) blocks.push([header.join('\t')].concat(store.rows.map((r) => header.map((h) => tsvClean(withoutContact(r.cells[h]))).join('\t'))).join('\n'));
+if (deskRows.length) {
+const numbers = new Map();
+const leadNumber = (name) => { const key = String(name || '').trim().toLowerCase(); if (!numbers.has(key)) numbers.set(key, numbers.size + 1); return `Lead ${numbers.get(key)}`; };
+blocks.push(['Run\tLead\tDetail\tOutcome\tStep\tWhy\tAt'].concat(deskRows.map((r) => [r.run, leadNumber(r.name), r.detail, r.outcome, r.step, withoutContact(r.why), r.at].map(tsvClean).join('\t'))).join('\n'));
+}
 return blocks.join('\n\n');
 }
 
@@ -5417,10 +5436,13 @@ const second = mergeReviewDecisions(first, parseReviewTsv(`${reviewHeader}\nMr j
 check('review decisions merge by name and created; newer replaces older in place', second.rows.map((r) => [r.cells.Name, r.cells.Decision]), [['Mr jo  example', 'Tier 1'], ['Al Sample', 'Tier 4'], ['Jo Example', 'Tier 5']]);
 check('review decisions copy with the same header', reviewDecisionsTsv(second).split('\n')[0] + '|' + reviewDecisionsTsv(second).split('\n').length, reviewHeader + '|4');
 const deskRow = { at: '2026-11-11T10:05:00.000Z', run: 'Post Closure', name: 'Jo Example', detail: 'Citroen - Enquiry - New', outcome: 'Skipped', step: 'Update Outcomes', why: 'already\tworked' };
-const deskBlock = 'Run\tCustomer\tDetail\tOutcome\tStep\tWhy\tAt\nPost Closure\tJo Example\tCitroen - Enquiry - New\tSkipped\tUpdate Outcomes\talready worked\t2026-11-11T10:05:00.000Z';
-check('both kinds of decision copy as two blocks with a blank line between', combinedDecisionsText(second, [deskRow]), `${reviewDecisionsTsv(second)}\n\n${deskBlock}`);
-check('desk decisions alone copy as just their block', combinedDecisionsText({ header: [], rows: [] }, [deskRow]), deskBlock);
-check('Lead Checker decisions alone copy as before', combinedDecisionsText(second, []), reviewDecisionsTsv(second));
+const deskBlock = 'Run\tLead\tDetail\tOutcome\tStep\tWhy\tAt\nPost Closure\tLead 1\tCitroen - Enquiry - New\tSkipped\tUpdate Outcomes\talready worked\t2026-11-11T10:05:00.000Z';
+const checkerBlock = 'Created\tDecision\tNote\nWed, 11 Nov 2026 09:00\tTier 1\tgave a time\nWed, 11 Nov 2026 08:00\tTier 4\tasked for a quote\nWed, 11 Nov 2026 10:30\tTier 5\t';
+check('both kinds of decision copy as two blocks with a blank line between, the customer left out', combinedDecisionsText(second, [deskRow]), `${checkerBlock}\n\n${deskBlock}`);
+check('desk decisions alone copy as just their block, leads numbered in place of names', combinedDecisionsText({ header: [], rows: [] }, [deskRow, { ...deskRow, name: 'Al Sample' }, { ...deskRow, name: 'jo example ' }]).split('\n').slice(1).map((line) => line.split('\t')[1]), ['Lead 1', 'Lead 2', 'Lead 1']);
+check('Lead Checker decisions alone copy with no name column', combinedDecisionsText(second, []), checkerBlock);
+check('contact details inside a value are taken out of the copy', combinedDecisionsText({ header: ['InitialNotes', 'Email'], rows: [{ at: '2026-11-11T10:00:00.000Z', cells: { InitialNotes: 'Ring 07700 900101 or jo@example.com about the 208, price 10419.0', Email: 'jo@example.com' } }] }, []), 'InitialNotes\nRing [phone] or [email] about the 208, price 10419.0');
+check('with no name, two leads with the same notes are told apart by their time', mergeReviewDecisions(null, parseReviewTsv('InitialNotes\tTier\tTierName\tCreated\nSourced from the website.\t4\tWARM\tT1\nSourced from the website.\t4\tWARM\tT2'), '2026-11-11T10:00:00.000Z').rows.length, 2);
 check('review decisions a shift old are dropped', mergeReviewDecisions(first, parseReviewTsv(`${reviewHeader}\nEve Evans\tx\tTier 3\t`), '2026-11-12T09:00:00.000Z').rows.map((r) => r.cells.Name), ['Eve Evans']);
 check('with no Name or Created the first columns are the identity', mergeReviewDecisions(mergeReviewDecisions(null, parseReviewTsv('Lead\tDecision\nA1\tValid'), '2026-11-11T09:00:00.000Z'), parseReviewTsv('Lead\tDecision\nA1\tValid\nA2\tValid'), '2026-11-11T09:05:00.000Z').rows.length, 2);
 if (failures.length > 0) {

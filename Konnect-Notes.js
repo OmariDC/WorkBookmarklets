@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.26.1'
+    version: '1.27.0'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -3261,9 +3261,9 @@
   /* Turns the switch on the way a person does, by pressing it, so Konnect's
      own handler runs and draws the PX boxes. Setting the value directly is
      the fallback where there is nothing to press. */
-  function turnPxSwitchOn(panel) {
+  function turnPxSwitch(panel, on) {
     const toggle = pxSwitchNode(panel);
-    if (!toggle || pxSwitchOn(panel) === true) return false;
+    if (!toggle || pxSwitchOn(panel) === on) return false;
     const press = toggle.matches('[ng-click^="onSwitch"]') ? toggle : toggle.querySelector('[ng-click^="onSwitch"]');
     if (press) {
       press.click();
@@ -3274,7 +3274,7 @@
       const model = toggle.getAttribute('ng-model');
       const scope = ng && model ? ng.element(toggle).scope() : null;
       if (scope) {
-        scope.$apply(`${model} = true`);
+        scope.$apply(`${model} = ${on ? 'true' : 'false'}`);
         return true;
       }
     } catch (error) {
@@ -3283,6 +3283,13 @@
     (toggle.querySelector('.toggle') || toggle).click();
     return true;
   }
+
+  function turnPxSwitchOn(panel) {
+    return turnPxSwitch(panel, true);
+  }
+
+  // The part exchange answers that mean there is none.
+  const NO_PX_LINES_KEYS = { none: 1, private: 1, elsewhere: 1, taking: 1, leaseReturn: 1 };
 
   /* Copies the booking's vehicle of interest and PX into the lead's boxes.
      Only fills or corrects: an empty booking value never clears a lead box.
@@ -3313,7 +3320,9 @@
       put(voi, 'Reg Number', engine.normaliseReg(realText(vehicle.reg)), 'Reg');
       put(voi, 'Vehicle Brand', names.make, 'Brand');
       put(voi, 'Vehicle Model', names.model, 'Model');
-      put(voi, 'Fuel Type', fuelFromDescriptor(vehicle.descriptor), 'Fuel Type', true);
+      // A fuel type the owner typed or changed replaces the lead's; one that
+      // only came from the lead in the first place fills an empty box.
+      put(voi, 'Fuel Type', fuelFromDescriptor(vehicle.descriptor), 'Fuel Type', !!draft.fromLead['v.descriptor']);
       const select = voi.querySelector('select');
       const current = selectedText(select);
       let purchase = '';
@@ -3327,7 +3336,10 @@
     const item = d.px.items[0];
     const wantPx = (d.type === 'valuation' || d.px.status === 'yes') && item &&
       (realText(item.make) || realText(item.model) || realText(item.reg) || realText(item.mileage));
-    if (!wantPx) {
+    // The owner has said there is no part exchange: the lead's switch is
+    // turned off to match. "Not mentioned" leaves the lead as it is.
+    const noPx = !wantPx && d.type !== 'valuation' && Object.prototype.hasOwnProperty.call(NO_PX_LINES_KEYS, d.px.status) && readLead().pxOn !== false;
+    if (!wantPx && !noPx) {
       saveDraftSoon();
       return Promise.resolve(updated);
     }
@@ -3349,6 +3361,19 @@
         if (!shownSwitch() && !pxBox()) {
           opened = await openLeadSection(livePane(), 'part exchange');
           if (opened) await waitFor(() => shownSwitch() || pxBox(), 2500);
+        }
+        if (noPx) {
+          if (pxSwitchOn(panelNow()) === true && turnPxSwitch(panelNow(), false)) {
+            updated.push('PX switch off');
+            await waitFor(() => pxSwitchOn(panelNow()) === false, 1500);
+            draft.leadSeen['px.on'] = 'off';
+          }
+          if (opened && state.target && !isVisible(state.target)) {
+            await openLeadSection(livePane(), 'details');
+            await waitFor(() => isVisible(state.target), 2000);
+          }
+          saveDraftSoon();
+          return updated;
         }
         const switched = turnPxSwitchOn(panelNow());
         if (switched) updated.push('PX switch on');
@@ -6205,6 +6230,7 @@
   KN.findTopEmail = findTopEmail;
   KN.state = state;
   KN.currentDraft = currentDraft;
+  KN.writeBookingToLead = writeBookingToLead;
   KN.openBooking = openBooking;
   KN.readLead = readLead;
   /* Pure builders, exposed for the tests. */

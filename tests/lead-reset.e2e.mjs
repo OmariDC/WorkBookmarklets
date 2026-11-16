@@ -438,9 +438,17 @@ async function regCheck() {
     await selectText(text);
     await page.keyboard.press('Alt+r');
   }
-  check('anything that is not a registration opens nothing', (await page.evaluate(() => window.opened.length)) === 1 && /does not look like a registration/.test(await notice()), await notice());
+  check('anything that is not a registration opens nothing', (await page.evaluate(() => window.opened.length)) === 1 && /highlight just the registration, or part of it/.test(await notice()), await notice());
   for (const reg of ['A123 BCD', 'ABC 123D', 'AZ 1234', '1 AB']) { await selectText(reg); await page.keyboard.press('Alt+r'); }
   check('older and dateless plates are accepted', (await page.evaluate(() => window.opened.length)) === 5, await page.evaluate(() => window.opened));
+  // Part of a registration is searched as it stands, and so is text
+  // highlighted inside a box.
+  await selectText('ab12');
+  await page.keyboard.press('Alt+r');
+  await page.evaluate(() => { const box = document.createElement('input'); box.id = 'regBox'; box.value = 'Reg is AB12 CDE today'; document.body.appendChild(box); getSelection().removeAllRanges(); box.focus(); box.setSelectionRange(12, 15); });
+  await page.keyboard.press('Alt+r');
+  check('part of a registration is searched, from the page or from inside a box', JSON.stringify((await page.evaluate(() => window.opened)).slice(5).map((u) => u.split('registration=')[1])) === '["AB12","CDE"]', await page.evaluate(() => window.opened));
+  await page.evaluate(() => document.getElementById('regBox').remove());
   await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { altKey: true })));
   await page.evaluate(() => { const e = new Event('keydown', { bubbles: true }); e.altKey = true; document.dispatchEvent(e); });
   check('a key event with no key does not throw', errors.length === 0, errors);
