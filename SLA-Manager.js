@@ -8778,13 +8778,16 @@ if (inControl && (!document.hidden || !(panelElement && panelElement.contains(ac
 return !!document.querySelector('.dropdown.open, .btn-group.open, .dropdown-menu.show, .modal-backdrop, [role="dialog"]');
 }
 
-// The other page is only visited where the owner will not see it happen:
-// the tab is hidden, or the panel is and the tab has been left alone.
+// The other page is only visited where the owner is not using this tab:
+// the tab is hidden, or it has been left alone and either the owner is in
+// another window (panel open or not) or the panel is hidden.
 function canPeekOtherPage() {
 if (!canWatchWork() || isOwnerMidAction() || !detectPageType()) return false;
 if (document.hidden) return true;
+if (Date.now() - lastOwnerActivityAt < watchTiming().idleMs) return false;
 const panelShowing = !!panelElement && localStorage.getItem(PANEL_STATE_KEY) !== 'hidden';
-return !panelShowing && Date.now() - lastOwnerActivityAt >= watchTiming().idleMs;
+const elsewhere = typeof document.hasFocus === 'function' && !document.hasFocus();
+return elsewhere || !panelShowing;
 }
 
 function endPeekEarly() {

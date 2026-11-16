@@ -613,6 +613,14 @@ async function bothLists() {
   check('the footer says the Pending list has not been read yet', /^ · watch: SLA \d\d:\d\d, Pending not read yet$/.test(await footer()), await footer());
   check('the title counts the SLA list alone until then', (await title()) === `(2 missed, 1 in 15) ${OWN_TITLE}`, await title());
 
+  // The owner is in another window with the panel left open: the Pending
+  // page is read all the same and they are notified.
+  await t.page.evaluate(() => { document.hasFocus = () => false; });
+  check('panel left open, owner in another window: the Pending page is read', await waitFor(t.page, () => /Pending \d\d:\d\d$/.test((document.getElementById('_slaWatchRead') || {}).textContent || ''), null, 8000), await footer());
+  await home(SLA_HASH);
+  check('and a notification is shown with the panel still open', (await notes()).length === 1 && await t.page.evaluate(() => localStorage.getItem('_slaPanelState') !== 'hidden'), await notes());
+  await t.page.evaluate(() => { document.hasFocus = () => true; });
+
   // Panel hidden: the Pending page is visited and the tab comes back.
   await t.page.evaluate(() => window._toggleMinimizePanel());
   check('with the panel hidden the Pending page is read', await waitFor(t.page, () => /Pending \d\d:\d\d$/.test((document.getElementById('_slaWatchRead') || {}).textContent || ''), null, 8000), await footer());
