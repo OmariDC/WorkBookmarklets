@@ -4715,6 +4715,10 @@ const pcResult = { inputIndex: 0, status: 'CLASSIFIED', tier: 5, postClosureActi
 const decidedPc = applyPostClosureDecision(pcResult, 'send back through', 'Email only', 'email only in follow up');
 check('a hand Post Closure decision', [decidedPc.postClosureAction, decidedPc.postClosureReason, decidedPc.manualOverride, decidedPc.tentative.postClosureAction], ['send back through', 'Email only', true, 'check: needs contact?']);
 check('undo restores the checker decision', undoManualReviewDecision(decidedPc).postClosureAction, 'check: needs contact?');
+check('the review copy leaves the customer out and keeps the wording',
+withoutCustomer("Misc: Franchise = DS | Mobile = 07700900101 | Full Dealer Name = Stellantis &You X | UniqueID = abcdef | EmailLink = https://ds.example.com/?id=abcdef&Tle=Mr&Snme=Example | Batch = 929874 | Message: I am Jo Example, call me on 07700 900 102 or +44 7700 900103, jo.example@example.com. Price 10419.0. Thanks, Jo", 'Mr Jo Example'),
+"Misc: Franchise = DS | Mobile = [removed] | Full Dealer Name = Stellantis &You X | UniqueID = abcdef | EmailLink = https://ds.example.com/?id=abcdef&Tle=[removed]&Snme=[removed] | Batch = 929874 | Message: I am [name], call me on [phone] or [phone], [email]. Price 10419.0. Thanks, [name]");
+check('a name that is also an everyday word or a make is left in the wording', withoutCustomer('Ford Fiesta in Green, will call', 'Will Green'), 'Ford Fiesta in Green, will call');
 check('reason shown with the action', postClosureLabel({ postClosureAction: 'send back through', postClosureReason: 'Email only' }), 'send back through: Email only (CAH)');
 check('dealer reason shows CAD', postClosureLabel({ postClosureAction: 'send back through', postClosureReason: 'Actioned by dealership' }), 'send back through: Actioned by dealership (CAD)');
 check('SLA and Pending batches told apart', [
@@ -5548,6 +5552,31 @@ return String(value == null ? '' : value).replace(/\t/g, ' ').replace(/\r?\n/g, 
 }
 
 // No personal details: only what a future rule would match on.
+// Pure. Text for the review decisions copy with the customer taken out:
+// emails, phone numbers, name and contact fields, name parts of a link, and
+// the customer's own name where the lead gives it. The copy is for working
+// on the rules, which need the wording and not the person.
+function withoutCustomer(text, name) {
+// Titles, makes and everyday words that are also names stay in the wording.
+const NOT_A_NAME = /^(mr|mrs|ms|miss|dr|sir|peugeot|citroen|vauxhall|fiat|abarth|jeep|alfa|romeo|leapmotor|ford|kia|seat|mini|black|white|green|grey|gray|brown|silver|rose|may|june|april|august|will|mark|bill|grant|chase|rich|young|long|day|price|park|hill|lane|street|van|best|good|new|used)$/i;
+let out = String(text == null ? '' : text);
+// Name and contact fields first, while their values are still whole. Only
+// a short value is a field's; a long one is the customer's own wording.
+out = out.replace(/((?<!dealer\s)\b(?:mobile|phone|telephone|tel|landline|e-?mail(?: address)?|(?:first|last|full|customer|contact)\s*name|name|forename|surname)\s*[=:])[^\S\n]*[^|\n]{1,60}?(?=[^\S\n]*(?:\||\n|$))/gi, '$1 [removed]');
+out = out.replace(/[^\s@|<>()]+@[^\s@|<>()]+\.[a-z]{2,}/gi, '[email]');
+out = out.replace(/([?&](?:tle|title|fnme|snme|fname|sname|lname|name|firstname|lastname|surname|forename|email|phone|mobile|tel)=)[^&\s|]*/gi, '$1[removed]');
+out = out.replace(/(^|[^\w])((?:\+44|0044|0)(?:[\s().-]*\d){9,10})(?!\d)/g, '$1[phone]');
+const parts = String(name || '').split(/\s+/).map((part) => part.replace(/[^A-Za-z'-]/g, '')).filter((part) => part.length >= 2 && !NOT_A_NAME.test(part));
+const escape = (part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+if (parts.length >= 2) out = out.replace(new RegExp(parts.map(escape).join('\\s+'), 'gi'), '[name]');
+// A lone name part only as it is written as a name: with its capital.
+parts.forEach((part) => {
+const written = part[0].toUpperCase() + part.slice(1).toLowerCase();
+out = out.replace(new RegExp(`\\b${escape(written)}\\b`, 'g'), '[name]');
+});
+return out;
+}
+
 function buildManualReviewDecisionsExport(session) {
 const rows = orderedResults(session).filter((r) => r.manualOverride);
 const header = ['InitialNotes', 'Tier', 'TierName', 'SubCategory', 'Reason', 'Campaign', 'Source', 'Created', 'Flags', 'ClassifierTier', 'ClassifierSubCategory', 'ClassifierConfidence', 'ClassifierReason', 'Conflict', 'PostClosureDecision', 'ClassifierPostClosure', 'ClassifierPostClosureWhy'].join('\t');
@@ -5557,17 +5586,18 @@ const t = r.tentative || {};
 const conflicts = rows
 .map((other, j) => (j !== i && fingerprints[j] === fingerprints[i] && other.tier !== r.tier ? `row ${j + 1} (Tier ${other.tier})` : null))
 .filter(Boolean);
+const safe = (value) => tsvCell(withoutCustomer(value, r.name));
 return [
-tsvCell(r.initialNotes),
+safe(r.initialNotes),
 String(r.tier || ''), r.tierName || '', tsvCell(r.subCategory),
-tsvCell(r.manualNote),
+safe(r.manualNote),
 r.campaign || '', r.source || '', r.created || '',
 (r.flags || []).join(', '),
 t.tier != null ? String(t.tier) : '', tsvCell(t.subCategory), t.confidence || '', tsvCell(t.reason),
 conflicts.join('; '),
 r.postClosureAction ? postClosureLabel(r) : '',
 t.postClosureAction ? (t.postClosureReason ? `${t.postClosureAction}: ${t.postClosureReason}` : t.postClosureAction) : '',
-tsvCell(t.postClosureEvidence)
+safe(t.postClosureEvidence)
 ].join('\t');
 });
 return [header, ...lines].join('\n');
@@ -5611,6 +5641,7 @@ window.KonnectLeadChecker.applyManualReviewDecision = applyManualReviewDecision;
 window.KonnectLeadChecker.undoManualReviewDecision = undoManualReviewDecision;
 window.KonnectLeadChecker.exceptionLabel = exceptionLabel;
 window.KonnectLeadChecker.buildManualReviewDecisionsExport = buildManualReviewDecisionsExport;
+window.KonnectLeadChecker.withoutCustomer = withoutCustomer;
 window.KonnectLeadChecker.stepOnce = stepOnce;
 window.KonnectLeadChecker.runLoop = runLoop;
 window.KonnectLeadChecker.orderedResults = orderedResults;
