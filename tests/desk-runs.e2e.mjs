@@ -85,6 +85,9 @@ async function openDesk(setup, storage, options = {}) {
     window.mock.setup(setup);
     const now = new Date().toISOString();
     Object.entries(storage).forEach(([key, value]) => localStorage.setItem(key, JSON.stringify({ savedAt: now, ...value })));
+    // The seeded Post Closure results count as this desk's own (as if its
+    // Parked Calls had been read), unless a test says who was parked.
+    if (storage._workToolsDeskResults && !storage._leadResetParkedSeen) localStorage.setItem('_leadResetParkedSeen', JSON.stringify({ savedAt: now, people: (storage._workToolsDeskResults.results || []).map((r) => ({ name: r.name, email: r.email, phone: r.phone })) }));
   }, { setup, storage });
   if (!options.noScript) {
     await page.addScriptTag({ content: script });
@@ -895,6 +898,11 @@ async function deskWaitsItsTurn() {
   check('desk: done, routed by the batch id', await waitForState(desk, ['done', 'ended']), await stored(desk, '_workToolsLiveStatus'));
   const merged = await stored(desk, '_workToolsDeskResults');
   check('the desk results now hold both customers', merged && ['jo.example@example.com', 'sam.buyer@example.com'].every((e) => merged.results.some((r) => r.email === e)), merged);
+  // Sam came from SLA Manager's own batch and is not in this desk's Parked
+  // Calls: listed apart and not counted.
+  await desk.waitForFunction(() => /^1\s*to send back/.test((document.querySelector('#_leadResetPanel').shadowRoot.querySelector('.big-count') || {}).textContent || ''), null, { timeout: 8000 }).catch(() => {});
+  const apart = await desk.evaluate(() => { const r = document.querySelector('#_leadResetPanel').shadowRoot; const d = r.querySelector('details.not-mine'); return { count: (r.querySelector('.big-count') || {}).textContent.replace(/\s+/g, ' ').trim(), others: d ? d.textContent : '', open: d ? d.open : null }; });
+  check('only the parked customer is counted; the other is listed apart, folded away', /^1 ?to send back/.test(apart.count) && /Checked in SLA Manager, not in your queue or Parked Calls 1/.test(apart.others) && /Sam Buyer/.test(apart.others) && !/Jo Example/.test(apart.others) && apart.open === false, apart);
   check('no page errors', errors.length === 0 && managerErrors.length === 0, errors.concat(managerErrors));
   await context.close();
 }

@@ -167,6 +167,30 @@ async function endedReasons() {
   await context.close();
 }
 
+// One lead the desk asked about: it jumps the queue and its answer goes
+// back by itself, with no customer details.
+async function oneLead() {
+  console.log('\nOne lead from the desk');
+  const { context, manager, desk, errors } = await open();
+  await ready(manager, { state: 'running', batchId: null });
+  await deskAsks(desk, 'desk-1');
+  await waitStatus(desk, 'desk-1', 'waiting');
+  await send(manager);
+  await deskAsks(desk, 'desk-lead-1', { one: true, ref: '77000001' });
+  await waitStatus(desk, 'desk-lead-1', 'waiting');
+  check('the one lead goes to the front of the queue', (await link(manager)).queue[0] === 'desk-lead-1', await link(manager));
+  await ready(manager);
+  const sent = await waitSent(manager, 1);
+  check('and is sent first', sent.length === 1 && sent[0].id === 'desk-lead-1', sent.map((m) => m.id));
+  await fromLive(manager, { type: 'workTools:received', id: 'desk-lead-1', rows: 1 });
+  await fromLive(manager, { type: 'workTools:results', id: 'desk-lead-1', kind: 'leads', tsv: resultsTsv([{ name: 'Sam Buyer', email: 'sam.buyer@example.com' }]) });
+  const answer = await waitFor(() => stored(desk, '_workToolsDeskLeadCheck'), (r) => !!r);
+  check('its answer is saved for the desk with the lead it was for', answer && answer.id === 'desk-lead-1' && answer.ref === '77000001' && answer.tier === 2 && answer.tierName === 'DATE ONLY', answer);
+  check('with no customer details', answer && !/Sam|example\.com/.test(JSON.stringify(answer)), answer);
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
 async function lostBatch() {
   console.log('\nLost: the Live tab reloads mid-batch');
   const { context, manager, desk, errors } = await open();
@@ -617,6 +641,7 @@ try {
   await idsAreRouted();
   await endedReasons();
   await lostBatch();
+  await oneLead();
   await linkDown();
   await resend();
   await queueAndRequests();

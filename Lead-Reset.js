@@ -267,6 +267,10 @@ const LIVE_REQUEST_KEY = '_workToolsLiveRequest';
 const LIVE_STATUS_KEY = '_workToolsLiveStatus';
 const DESK_RESULTS_KEY = '_workToolsDeskResults';
 const LIVE_LINK_KEY = '_workToolsLinkState';
+// The Lead Checker's answer for the one lead the desk asked about.
+const LEAD_CHECK_KEY = '_workToolsDeskLeadCheck';
+// Who was in this desk's Parked Calls when they were last read.
+const PARKED_SEEN_KEY = '_leadResetParkedSeen';
 // How long SLA Manager has to say it took a request before the panel says
 // it is not answering.
 const HUB_ANSWER_MS = 6000;
@@ -321,7 +325,46 @@ return normalise(person.email) || digitsOf(person.phone) || normalise(stripNameT
 function sendBackLeadsFrom(results) {
 return (results || [])
 .filter((r) => r && normalise(r.postClosureAction) === 'send back through' && SEND_BACK_STEPS[r.postClosureReason])
-.map((r) => ({ key: personKey(r), name: r.name || '', email: r.email || '', phone: r.phone || '', reason: r.postClosureReason, checkedAt: r.checkedAt || '', ...SEND_BACK_STEPS[r.postClosureReason] }));
+.map((r) => ({ key: personKey(r), name: r.name || '', email: r.email || '', phone: r.phone || '', agent: r.agent || '', reason: r.postClosureReason, checkedAt: r.checkedAt || '', ...SEND_BACK_STEPS[r.postClosureReason] }));
+}
+
+// Pure. Leads split into the agent's own and the rest. Own: SLA Manager
+// recorded the lead as assigned to this agent, or the customer was in this
+// desk's Parked Calls when they were last read. Anything else was only
+// checked from SLA Manager and is not this desk's to work.
+function splitMine(leads, parkedPeople, me) {
+const mine = [];
+const others = [];
+(leads || []).forEach((l) => ((me && l.agent === me) || matchPerson(parkedPeople || [], l) ? mine : others).push(l));
+return { mine, others };
+}
+
+// Pure. One 'YYYY-MM-DD HH:MM' in local time, as the Lead Checker reads a
+// created time. '' when the date is not one.
+function leadCheckCreated(value) {
+const d = new Date(value);
+if (!value || Number.isNaN(d.getTime())) return '';
+const two = (n) => String(n).padStart(2, '0');
+return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+}
+
+const LEAD_CHECK_HEADER = ['Name', 'Phone', 'Email', 'Source', 'Campaign', 'Created'];
+
+// Pure. One open lead as a one row batch for the Lead Checker.
+function leadCheckTsv(activity) {
+const lead = (activity && activity.SalesLead) || {};
+const clean = (v) => String(v == null ? '' : v).replace(/[\t\r\n]+/g, ' ').trim();
+const phoneKey = Object.keys(lead).find((k) => /phone|mobile|tel/i.test(k) && /^(string|number)$/.test(typeof lead[k]) && digitsOf(lead[k]).length >= 10);
+const row = [lead.CustomerName, phoneKey ? lead[phoneKey] : '', lead.EmailAddress, lead.SourceName, activity && activity.CampaignName, leadCheckCreated(activity && activity.CreatedDate)];
+return `${LEAD_CHECK_HEADER.join('\t')}\n${row.map(clean).join('\t')}`;
+}
+
+// Pure. What the Lead Checker said about one lead, in a line or two.
+function leadCheckText(result) {
+if (!result) return '';
+if (result.postClosureAction) return `Post Closure: ${result.postClosureAction}${result.postClosureReason ? ` (${result.postClosureReason})` : ''}`;
+if (result.tier) return [`Tier ${result.tier}${result.tierName ? ` ${result.tierName}` : ''}`, result.subCategory, result.reason].filter(Boolean).join(' · ');
+return `Needs a look on the Lead Checker${result.reason ? `: ${result.reason}` : ''}`;
 }
 
 // Pure. The entry for a person: by email, then phone, then a name only
@@ -642,6 +685,11 @@ check('presented lead matched by email', matchEmailOnly(assigned, { name: 'Someo
 check('a lead whose email is not assigned is not worked', matchEmailOnly(assigned, { name: 'Dan Davis', emails: ['dan.other@example.com'] }), null);
 check('name only when no email was read', matchEmailOnly(assigned, { name: 'Mr Dan Davis', emails: [] }), assigned[0]);
 check('shorthand goes on a line of its own', [shorthandInsertion('', 'cad'), shorthandInsertion('Notes', 'cad'), shorthandInsertion('Notes ', 'cad'), shorthandInsertion('Notes\n', 'eo')], ['cad', '\ncad', '\ncad', 'eo']);
+const split = splitMine([{ name: 'Ann Able', email: 'ann.able@example.com', agent: '' }, { name: 'Bo Baker', email: 'bo.baker@example.com', agent: 'Agent One' }, { name: 'Cy Cole', email: 'cy.cole@example.com', agent: 'Agent Two' }], [{ name: 'Ann Able', email: 'ann.able@example.com' }], 'Agent One');
+check('mine: in my Parked Calls or assigned to me; the rest were only checked', [split.mine.map((l) => l.name), split.others.map((l) => l.name)], [['Ann Able', 'Bo Baker'], ['Cy Cole']]);
+check('mine: nothing read and nobody remembered leaves all of them as not mine', splitMine([{ name: 'Ann Able', agent: 'Agent One' }], null, '').others.length, 1);
+check('one lead batch: header and the lead\'s own details', leadCheckTsv({ CampaignName: 'Peugeot - Enquiry - New', CreatedDate: new Date(2026, 10, 12, 9, 5).toISOString(), SalesLead: { CustomerName: 'Ann\tAble', MobileNumber: '07700 900123', EmailAddress: 'ann.able@example.com', SourceName: 'Customer First' } }), 'Name\tPhone\tEmail\tSource\tCampaign\tCreated\nAnn Able\t07700 900123\tann.able@example.com\tCustomer First\tPeugeot - Enquiry - New\t2026-11-12 09:05');
+check('one lead answer: a tier, a Post Closure action, and neither', [leadCheckText({ tier: 3, tierName: 'CALL', subCategory: 'Stock Enquiry', reason: 'Asked about a car.' }), leadCheckText({ postClosureAction: 'send back through', postClosureReason: 'Email only' }), leadCheckText({ reason: 'SEARCH_NO_RESULTS' })], ['Tier 3 CALL · Stock Enquiry · Asked about a car.', 'Post Closure: send back through (Email only)', 'Needs a look on the Lead Checker: SEARCH_NO_RESULTS']);
 const batch = parkedBatchTsv([{ cells: { name: 'Jo Example', vehicles: 'AB12CDE', 'magic num': '9', dealer: 'Preston', brand: 'Peugeot', campaign: 'Enquiry - Used', 'best number': '07700900123', email: 'jo@example.com', address: 'AB1 2CD', confirm: 'Open', details: 'ViewHide' } }]).split('\n');
 check('parked calls batch header', batch[0].split('\t')[0] === 'Name' && batch[0].includes('Magic Num') && batch[0].includes('Best Number'), true);
 check('parked calls batch row', batch[1].split('\t'), ['Jo Example', '', 'AB12CDE', '9', 'Preston', 'Peugeot', 'Enquiry - Used', '07700900123', 'jo@example.com', 'AB1 2CD', '']);
@@ -2286,6 +2334,48 @@ if (pendingRequest()) writeJson(LIVE_REQUEST_KEY, { id: request.id, at: new Date
 else { try { localStorage.removeItem(LIVE_REQUEST_KEY); } catch (error) { /* ignore */ } }
 }
 
+// Who is in Parked Calls, noted each time the table is read, so the lists
+// can tell this desk's own leads from ones only checked in SLA Manager.
+function rememberParked(rows) {
+writeJson(PARKED_SEEN_KEY, { savedAt: new Date().toISOString(), people: (rows || []).map((r) => ({ name: r.name || '', email: r.email || '', phone: r.phone || '' })) });
+}
+function parkedSeen() {
+const saved = readJson(PARKED_SEEN_KEY);
+return saved && isFresh(saved.savedAt) && Array.isArray(saved.people) ? saved : null;
+}
+// The agent's own name, as answered once for Email Only and Send through.
+function deskMe() {
+return sendThroughMe() || emailOnlyMe();
+}
+function splitMineNow(leads) {
+const seen = parkedSeen();
+return splitMine(leads, seen ? seen.people : [], deskMe());
+}
+
+// Asks SLA Manager to put one open lead through the Lead Checker now,
+// ahead of anything waiting.
+function checkLeadOnLive(activityId) {
+const entry = liveActivities().find(({ activity }) => String(activity.ID) === String(activityId));
+if (!entry) { addLog('Open the lead to check first'); return; }
+const request = { id: `desk-lead-${Date.now()}`, at: new Date().toISOString(), rows: 1, one: true, ref: String(activityId), tsv: leadCheckTsv(entry.activity) };
+if (!writeJson(LIVE_REQUEST_KEY, request)) { addLog('Could not pass the lead to SLA Manager (browser storage full)'); return; }
+addLog('Asked SLA Manager to check this lead');
+clearTimeout(hubTimer);
+hubTimer = setTimeout(() => { if (ui && !state.running) render(); }, HUB_ANSWER_MS + 200);
+render();
+}
+
+// The Lead Checker's answer for this lead, or what is happening to the
+// request for it. '' when it has not been asked about.
+function leadCheckLine(activityId) {
+const request = pendingRequest();
+const result = readJson(LEAD_CHECK_KEY);
+const mine = result && isFresh(result.at) && String(result.ref) === String(activityId) ? result : null;
+if (mine && (!request || !request.one || request.id === mine.id)) return leadCheckText(mine);
+if (request && request.one && String(request.ref) === String(activityId)) return hubStatusLine() || 'Passing this lead to SLA Manager.';
+return mine ? leadCheckText(mine) : '';
+}
+
 // Asks SLA Manager (open in its own tab) to check the Parked Calls on the
 // Lead Checker. No Konnect Live tab is opened from here.
 async function checkParkedOnLive() {
@@ -2295,6 +2385,7 @@ state.checking = true;
 try {
 await goToParked();
 rows = readSearchRows().rows;
+rememberParked(rows);
 } catch (error) {
 // Said in the panel, not only the log: a press that did nothing looked
 // like the button was broken.
@@ -2319,7 +2410,7 @@ const status = readJson(LIVE_STATUS_KEY);
 if (status && status.id === request.id) return status.text || '';
 return Date.now() - new Date(request.at).getTime() > HUB_ANSWER_MS
 ? 'SLA Manager has not picked this up. Open the Konnect Manager tab and click Work Tools there; it then takes the request by itself.'
-: 'Passing your Parked Calls to SLA Manager.';
+: request.one ? 'Passing this lead to SLA Manager.' : 'Passing your Parked Calls to SLA Manager.';
 }
 
 function emailOnlySaved() {
@@ -2392,6 +2483,7 @@ try {
 const settings = loadSettings();
 const progress = loadDeskProgress();
 if (!await outsideLead(goToParked, true)) return;
+rememberParked(readSearchRows().rows);
 const { items, missing } = parkedWorkList(sendBackLeads(), sendThroughLeads(), progress, readSearchRows().rows);
 if (missing.pc) addLog(`${missing.pc} not in your Parked Calls, left alone`);
 if (missing.st) addLog(`${missing.st} send through lead${missing.st === 1 ? '' : 's'} not in your Parked Calls, left for when ${missing.st === 1 ? 'it presents' : 'they present'}`);
@@ -2777,6 +2869,8 @@ return `<div class="card">
 <div class="muted small" style="margin:2px 0 6px;">The lead in view is ticked; tick another to set that one up again instead. It stops in the new lead.</div>
 ${rows}
 <div style="margin-top:10px;">${chosen ? btn('here', 'Set up the ticked lead again', 'primary', 'wide') : '<div class="muted small">Tick the lead to set up again.</div>'}</div>
+${chosen ? `<div style="margin-top:6px;">${btn('checkLead', 'Check the ticked lead on the Lead Checker', 'sec', 'wide')}</div>` : ''}
+${chosen && leadCheckLine(chosen) ? `<div class="muted small lead-check" role="status" style="margin-top:6px;">${escapeHtml(leadCheckLine(chosen))}</div>` : ''}
 </div>`;
 }
 
@@ -2785,7 +2879,7 @@ function runCounts(leads, progress) {
 const desk = loadDeskProgress();
 return {
 re: leads.filter((l) => !progress.byActivity[l.activityId]).length,
-pc: sendBackLeads().filter((l) => !desk.pc[l.key]).length,
+pc: splitMineNow(sendBackLeads()).mine.filter((l) => !desk.pc[l.key]).length,
 eo: emailOnlyLeads().filter((l) => !desk.eo[l.key]).length,
 st: sendThroughLeads().filter((l) => !desk.st[l.key]).length
 };
@@ -2860,10 +2954,11 @@ return state.notice ? btn(action, `${label} again`, 'sec', 'wide') : btn(action,
 }
 
 function renderSendBackView() {
-const leads = sendBackLeads();
+const { mine: leads, others } = splitMineNow(sendBackLeads());
 const done = loadDeskProgress().pc;
 const left = leads.filter((l) => !done[l.key]).length;
-const checks = postClosureResults().filter((r) => normalise(r.postClosureAction) !== 'send back through').length;
+// Only this desk's own customers count as needing a call here.
+const checks = splitMineNow(postClosureResults().filter((r) => normalise(r.postClosureAction) !== 'send back through')).mine.length;
 const needCall = checks ? chip(`${checks} need${checks === 1 ? 's' : ''} a call`, 'warn') : '';
 const hubLine = hubStatusLine();
 const requestLine = hubLine ? `<div class="muted small hub-status" role="status">${escapeHtml(hubLine)}</div>` : '';
@@ -2872,17 +2967,21 @@ const ageChip = age ? chip(age, '', 'results-age') : '';
 const through = sendThroughLeads();
 const throughDone = loadDeskProgress().st;
 const throughLeft = through.filter((l) => !throughDone[l.key]).length;
-const how = `${SEND_BACK_HOW}${checks ? ` The ${checks} that need${checks === 1 ? 's' : ''} contact ${checks === 1 ? 'is' : 'are'} left for you to call.` : ''}${through.length ? SEND_BACK_ALSO_HOW : ''}`;
-if (!leads.length && !through.length) {
-return [`<div class="card col empty"><strong>No send backs yet</strong><div class="muted small">Check your Parked Calls on the Lead Checker. The ones marked "send back through" show here.</div><div class="cf">${needCall}${ageChip}${howLink()}</div>${howText(how)}${btn('checkParked', 'Check my Parked Calls', 'primary', 'wide')}${requestLine}</div>`];
-}
 const now = Date.now();
-const statuses = withNext(leads, (l) => done[l.key] || 'Waiting');
-const rows = leads.map((l, i) => listRow('pc', l.key, l.name, `${l.shorthand.toUpperCase()} · ${l.reason}`, statuses[i], [
+const sendBackRow = (l, status) => listRow('pc', l.key, l.name, `${l.shorthand.toUpperCase()} · ${l.reason}`, status, [
 ['Checked', l.checkedAt ? ageText(l.checkedAt, now) : ''],
 ['Result', `Send back through: ${l.reason} (${l.shorthand.toUpperCase()})`],
 ['Phone', l.phone], ['Email', l.email]
-]));
+]);
+// Checked from SLA Manager but not held here: listed apart, folded away,
+// and never counted.
+const notMine = others.length ? `<details class="g not-mine"><summary class="grp">Checked in SLA Manager, not in your queue or Parked Calls <span>${others.length}</span></summary><div class="muted small" style="margin:4px 0;">${parkedSeen() ? 'These are not yours to work from here.' : 'Press Check my Parked Calls to see which of these are yours.'}</div><div class="list">${others.map((l) => sendBackRow(l, done[l.key] || 'Waiting')).join('')}</div></details>` : '';
+const how = `${SEND_BACK_HOW}${checks ? ` The ${checks} that need${checks === 1 ? 's' : ''} contact ${checks === 1 ? 'is' : 'are'} left for you to call.` : ''}${through.length ? SEND_BACK_ALSO_HOW : ''}`;
+if (!leads.length && !through.length) {
+return [`<div class="card col empty"><strong>No send backs yet</strong><div class="muted small">Check your Parked Calls on the Lead Checker. The ones marked "send back through" show here.</div><div class="cf">${needCall}${ageChip}${howLink()}</div>${howText(how)}${btn('checkParked', 'Check my Parked Calls', 'primary', 'wide')}${requestLine}</div>`, notMine];
+}
+const statuses = withNext(leads, (l) => done[l.key] || 'Waiting');
+const rows = leads.map((l, i) => sendBackRow(l, statuses[i]));
 return [`<div class="card col">
 <div class="big-count"><strong>${left}</strong><span>to send back</span></div>
 <div class="cf">${needCall}${throughLeft ? chip(`${throughLeft} to send through`, 'acc', 'through-chip') : ''}${ageChip}${howLink()}</div>
@@ -2890,7 +2989,7 @@ ${howText(how)}
 ${left || throughLeft ? `${startButton('startPc', 'Start')}<span class="quiet-line shift-line">Sets Shift Start before opening Parked Calls, every time.</span>` : '<div class="muted small">All done.</div>'}
 ${btn('checkParked', 'Check my Parked Calls', 'sec', 'wide')}${requestLine}
 </div>`, leads.length ? listGroup('Send backs', leads.length - left, rows) : '',
-through.length ? listGroup('Send through, if in Parked Calls', through.length - throughLeft, sendThroughRows(through, throughDone, false)) : ''];
+through.length ? listGroup('Send through, if in Parked Calls', through.length - throughLeft, sendThroughRows(through, throughDone, false)) : '', notMine];
 }
 
 // Only ever this agent's own leads. With several agents recorded and no
@@ -3565,7 +3664,7 @@ addLog(`Pasted ${resetLeadsFrom(parsed.results).length} Re setup leads`);
 // older goes when the tool loads.
 function purgeExpired() {
 try {
-[PROGRESS_KEY, PASTED_RESULTS_KEY, DESK_PROGRESS_KEY, DESK_RESULTS_KEY].forEach((key) => {
+[PROGRESS_KEY, PASTED_RESULTS_KEY, DESK_PROGRESS_KEY, DESK_RESULTS_KEY, PARKED_SEEN_KEY].forEach((key) => {
 const saved = readJson(key);
 if (saved && !isFresh(saved.savedAt)) localStorage.removeItem(key);
 });
@@ -3642,7 +3741,7 @@ const available = wasRunning && isAvailable();
 halted = true;
 state.stopRequested = true;
 if (resolvePause) answerPause('stop');
-try { [PROGRESS_KEY, PASTED_RESULTS_KEY, DESK_PROGRESS_KEY, DESK_RESULTS_KEY, DESK_DECISIONS_KEY].forEach((key) => localStorage.removeItem(key)); } catch (error) { /* ignore */ }
+try { [PROGRESS_KEY, PASTED_RESULTS_KEY, DESK_PROGRESS_KEY, DESK_RESULTS_KEY, DESK_DECISIONS_KEY, PARKED_SEEN_KEY, LEAD_CHECK_KEY].forEach((key) => localStorage.removeItem(key)); } catch (error) { /* ignore */ }
 withdrawRequest();
 unload();
 window._leadResetState = null;
@@ -3752,6 +3851,11 @@ if (action === 'start') { runAll(); return; }
 if (action === 'startPc') { runSendBack(); return; }
 if (action === 'startEo') { runEmailOnly(); return; }
 if (action === 'checkParked') { checkParkedOnLive(); return; }
+if (action === 'checkLead') {
+const chosen = hereChoice();
+if (chosen) checkLeadOnLive(chosen);
+return;
+}
 if (action === 'openParked') {
 const lead = listLead(run || 'pc', key);
 if (lead) openFromParked(lead);
@@ -3837,7 +3941,7 @@ if (ui && ui.menu && !(event.composedPath && event.composedPath().includes(ui.ho
 ui.onStorage = (event) => {
 if (!ui) return;
 if (event.key === LIVE_LINK_KEY) renderLinkLine();
-else if (!state.running && [EMAIL_ONLY_ASSIGNED_KEY, SEND_THROUGH_KEY, NATIONAL_RESULTS_KEY, DESK_RESULTS_KEY, LIVE_STATUS_KEY].includes(event.key)) render();
+else if (!state.running && [EMAIL_ONLY_ASSIGNED_KEY, SEND_THROUGH_KEY, NATIONAL_RESULTS_KEY, DESK_RESULTS_KEY, LIVE_STATUS_KEY, LEAD_CHECK_KEY].includes(event.key)) render();
 };
 // The button follows the page as leads open and close. The page is only
 // watched, never reloaded, and a burst of changes is answered once.

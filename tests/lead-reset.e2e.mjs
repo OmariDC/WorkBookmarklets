@@ -165,6 +165,19 @@ async function thisCustomer() {
   await page.waitForTimeout(2500);
   check('a manual tick holds', await ticked() === '77000001', await ticked());
 
+  // The ticked lead can be put through the Lead Checker by itself.
+  await page.click('#_leadResetPanel [data-action=checkLead]');
+  const asked = await page.evaluate(() => JSON.parse(localStorage.getItem('_workToolsLiveRequest') || 'null'));
+  check('Check the ticked lead asks SLA Manager for that one lead', asked && asked.one === true && asked.ref === '77000001' && /^desk-lead-/.test(asked.id) && asked.tsv.split('\n').length === 2 && asked.tsv.startsWith('Name\tPhone\tEmail\tSource\tCampaign\tCreated\nSam Buyer\t'), asked);
+  check('and says it is being passed on', /Passing this lead to SLA Manager/.test(await shadowText(page, '.lead-check') || ''), await shadowText(page, '.lead-check'));
+  await page.evaluate((id) => {
+    localStorage.setItem('_workToolsDeskLeadCheck', JSON.stringify({ id, ref: '77000001', at: new Date().toISOString(), tier: 3, tierName: 'CALL', subCategory: 'Stock Enquiry', reason: 'Asked about a car.' }));
+    window.dispatchEvent(new StorageEvent('storage', { key: '_workToolsDeskLeadCheck' }));
+  }, asked && asked.id);
+  await page.waitForFunction(() => /Tier 3/.test((document.querySelector('#_leadResetPanel').shadowRoot.querySelector('.lead-check') || {}).textContent || ''), null, { timeout: 5000 }).catch(() => {});
+  check('the answer shows on the card', (await shadowText(page, '.lead-check')) === 'Tier 3 CALL · Stock Enquiry · Asked about a car.', await shadowText(page, '.lead-check'));
+  await page.evaluate(() => localStorage.removeItem('_workToolsLiveRequest'));
+
   await page.click('#_leadResetPanel [data-action=here]');
   await page.waitForFunction(() => window._leadResetState && !window._leadResetState.running && window._leadResetState.log.some((l) => /You are in the new lead|stopped|failed/i.test(l)), null, { timeout: 30000 }).catch(() => {});
   const out = await page.evaluate(() => ({
@@ -393,6 +406,7 @@ async function panelPlaceAndFocus() {
   await page.evaluate((r) => {
     localStorage.setItem('_slaNationalCheckResults', JSON.stringify({ savedAt: new Date().toISOString(), results: [r] }));
     localStorage.setItem('_workToolsDeskResults', JSON.stringify({ savedAt: new Date().toISOString(), results: [{ name: 'Jo Example', email: 'jo.example@example.com', postClosureAction: 'send back through', postClosureReason: 'Email only', checkedAt: new Date().toISOString() }] }));
+    localStorage.setItem('_leadResetParkedSeen', JSON.stringify({ savedAt: new Date().toISOString(), people: [{ name: 'Jo Example', email: 'jo.example@example.com' }] }));
     window.dispatchEvent(new StorageEvent('storage', { key: '_workToolsDeskResults' }));
   }, SAM);
   check('no redraw while the mouse is down', await page.evaluate((el) => el.isConnected, held) && !/to send back/.test(await shadowText(page, '.body') || ''));

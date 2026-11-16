@@ -4273,6 +4273,8 @@ const LIVE_REQUEST_KEY = '_workToolsLiveRequest';
 const LIVE_STATUS_KEY = '_workToolsLiveStatus';
 const LIVE_LINK_KEY = '_workToolsLinkState';
 const DESK_RESULTS_KEY = '_workToolsDeskResults';
+// The Lead Checker's answer for the one lead the desk asked about.
+const LEAD_CHECK_KEY = '_workToolsDeskLeadCheck';
 const REVIEW_DECISIONS_KEY = '_slaReviewDecisions';
 // Written by Lead Re setup on the agent desktop; only read here.
 const DESK_DECISIONS_KEY = '_workToolsDeskDecisions';
@@ -4348,7 +4350,9 @@ return 'Konnect Live: not open. Press Open Konnect Live in SLA Manager.';
 // Pure. A new batch replaces a waiting one only when it comes from the same
 // page and is the same kind.
 function addToLiveQueue(queue, batch) {
-return queue.filter((b) => !(b.from === batch.from && b.kind === batch.kind)).concat(batch);
+const rest = queue.filter((b) => !(b.from === batch.from && b.kind === batch.kind));
+// one: a single lead the desk is waiting on goes ahead of the rest.
+return batch.one ? [batch].concat(rest) : rest.concat(batch);
 }
 
 // Pure. What to post next, if anything. A new batch goes only when the Lead
@@ -4569,9 +4573,10 @@ if (!(Date.now() - at < DESK_REQUEST_MAX_AGE_MS)) return;
 const status = readStoredJson(LIVE_STATUS_KEY);
 if (status && status.id === request.id && status.state !== 'waiting') return;
 liveLink.handledRequest = request.id;
-queueLiveBatch({ from: 'desk', id: request.id, kind: 'leads', tsv: request.tsv, at });
+const what = request.one === true ? 'this lead' : 'your Parked Calls';
+queueLiveBatch({ from: 'desk', id: request.id, kind: 'leads', tsv: request.tsv, at, one: request.one === true });
 if (!liveLink.queue.some((b) => b.id === request.id)) return;
-if (!isLiveLinked()) writeDeskStatus(request.id, 'waiting', 'SLA Manager has your Parked Calls, but Konnect Live is not linked yet: press Open Konnect Live in SLA Manager, then click Work Tools in the Konnect Live tab.');
+if (!isLiveLinked()) writeDeskStatus(request.id, 'waiting', `SLA Manager has ${what}, but Konnect Live is not linked yet: press Open Konnect Live in SLA Manager, then click Work Tools in the Konnect Live tab.`);
 else writeDeskStatus(request.id, 'waiting', 'The Lead Checker is finishing another batch; yours goes next.');
 }
 
@@ -4604,8 +4609,9 @@ byKey.set(deskResultKey(r), r);
 (incoming || []).forEach((r) => {
 const key = deskResultKey(r);
 // Deleted first so a rechecked customer moves to the end, newest last.
+const old = byKey.get(key);
 byKey.delete(key);
-byKey.set(key, r);
+byKey.set(key, { ...r, agent: r.agent || (old && old.agent) || '' });
 });
 return Array.from(byKey.values());
 }
@@ -4686,6 +4692,12 @@ if (!stored || !Array.isArray(stored.leads) || !stored.leads.length) return;
 const { leads, changed } = stampSendThroughAgents(stored.leads, currentCustomers, knownAgentNames());
 if (changed) localStorage.setItem(SEND_THROUGH_KEY, JSON.stringify({ ...stored, leads }));
 } catch (error) { /* The desk keeps the last agents recorded. */ }
+try {
+const desk = readStoredJson(DESK_RESULTS_KEY);
+if (!desk || !Array.isArray(desk.results) || !desk.results.length) return;
+const stamped = stampSendThroughAgents(desk.results, currentCustomers.concat(currentPendingCustomers), knownAgentNames());
+if (stamped.changed) localStorage.setItem(DESK_RESULTS_KEY, JSON.stringify({ ...desk, results: stamped.leads }));
+} catch (error) { /* The desk keeps the last agents recorded. */ }
 }
 
 // Every Post Closure row from any results that arrive (this page's batches,
@@ -4700,7 +4712,9 @@ const existing = stored && Array.isArray(stored.results)
 ? stored.results.map((r) => (r && !r.checkedAt ? { ...r, checkedAt: stored.savedAt } : r))
 : [];
 try {
-localStorage.setItem(DESK_RESULTS_KEY, JSON.stringify({ savedAt: nowIso, results: mergeDeskResults(existing, fresh, nowIso) }));
+// Who holds each one, so the desk can tell its own from the rest.
+const merged = stampSendThroughAgents(mergeDeskResults(existing, fresh, nowIso), currentCustomers.concat(currentPendingCustomers), knownAgentNames()).leads;
+localStorage.setItem(DESK_RESULTS_KEY, JSON.stringify({ savedAt: nowIso, results: merged }));
 return true;
 } catch (error) {
 console.warn('[SLA Manager] Could not save the Post Closure results for the agent desktop (browser storage full or blocked).');
@@ -4717,6 +4731,15 @@ const held = loadLeadCheckerImportState().results;
 if (held && held.length) {
 saveLeadCheckerImportState({ rawInput: '', results: classifyLeadCheckerImportRows(refreshPostClosureResults(held, parsed.rows, new Date().toISOString())) });
 if (currentPanelMode === 'normal') redrawWhenNotTyping(redrawLeadsPanel);
+}
+// One lead the desk asked about: its answer goes back by itself, with the
+// lead it was for. No customer details are kept with it.
+if (/^desk-lead-/.test(String(id)) && parsed.rows[0]) {
+const r = parsed.rows[0];
+const request = readStoredJson(LIVE_REQUEST_KEY);
+try {
+localStorage.setItem(LEAD_CHECK_KEY, JSON.stringify({ id, ref: request && request.id === id ? request.ref || '' : '', at: new Date().toISOString(), tier: r.tier, tierName: r.tierName, subCategory: r.subCategory, confidence: r.confidence, reason: r.reason, postClosureAction: r.postClosureAction, postClosureReason: r.postClosureReason }));
+} catch (error) { writeDeskStatus(id, 'failed', 'The result could not be saved (browser storage full).'); return; }
 }
 saveSendThroughForDesk(parsed.rows);
 if (!savePostClosureForDesk(parsed.rows)) { writeDeskStatus(id, 'failed', 'The results could not be saved (browser storage full).'); return; }
