@@ -743,7 +743,23 @@ return null;
 
 // Step 9: free-text date/time. Also used by the reschedule check to see
 // if the request itself carries a new day/time.
+// A valuation's own details carry dates (first registered, MOT due, valued
+// on, valid until). Those are data about the car, not a day the customer
+// asked for. Pure. The notes with every date that follows a field label
+// taken out, or null when the notes are not valuation details.
+function valuationNotesWithoutFieldDates(text) {
+const valuation = /\bvaluation\b|\bvalued\b|part[- ]?exchange|\bpx\b|trade[- ]?in/i.test(text);
+const carFields = /\b(mileage|registration(?: number| no\.?)?|reg(?: number| no\.?)?|vrm)\s*[:=]/i.test(text);
+if (!valuation || !carFields) return null;
+const LABELLED_DATE_RE = /[A-Za-z][\w /&#'()-]{1,40}[:=]\s*(?:\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}|\d{4}-\d{2}-\d{2}|\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\s+\d{4})(?:[ T,]+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?)?/gi;
+return text.replace(LABELLED_DATE_RE, ' ');
+}
+
 function freeTextDateTime(text) {
+const withoutFieldDates = valuationNotesWithoutFieldDates(text);
+if (withoutFieldDates !== null && hasDayMention(text) && !hasDayMention(withoutFieldDates)) {
+return R(5, 'Valuation Only / Sell Only', 6, 'medium', 'Valuation details: the only date is in a field about the car, not a day the customer asked for.');
+}
 const hasTime = hasClockTime(text);
 const hasDay = hasDayMention(text);
 if (hasDay && hasTime) {
@@ -3742,6 +3758,11 @@ const cases = [
 // its first, and Autofunnel
 // notes are recognised with each field on its own line.
 ['T136', 'Sourced from Robins & Day Website.', 'Enquiry - Used', 'Robins & Day Website', 4, 'medium'],
+// Dates in a valuation's own fields are not a day the customer asked for;
+// a day the customer wrote still counts.
+['T142', 'Part Exchange Valuation | Registration: AB12CDE | Mileage: 42000 | First Registered: 14/03/2019 | Valuation Date: 17/11/2026 06:50 | Valid Until: 24/11/2026', 'Enquiry - Used', 'CF', 5, 'medium'],
+['T143', 'Part Exchange Valuation | Registration: AB12CDE | Mileage: 42000 | First Registered: 14/03/2019 | Customer Comments: can I bring it in on Saturday?', 'Enquiry - Used', 'CF', 2],
+['T144', 'PX Valuation. Reg: AB12CDE, Mileage: 42000, Registered: 3rd March 2019', 'Enquiry - Used', 'CF', 5, 'medium'],
 ['T137', "Customer message #1: The Consumer sent this message on 2026-11-15 18:46:00: Hi, I'm interested in this Citroen C5 Aircross. Please could you contact me back.", 'Autotrader - Enquiry - Used', 'Autotrader - Online Store', 3, 'medium'],
 ['T138', 'Customer message #1: The Consumer sent this message on 2026-11-15 18:46:00: Could I come and see it on Saturday at 11am?', 'Autotrader - Enquiry - Used', 'Autotrader - Online Store', 1],
 ['T139', 'Misc: The following information was present in the lead:\nFranchise = DS\nMobile = 07700900101\nUniqueID = abcdef\nBatch = 929874', 'Enquiry - Used', 'Autofunnel', 5, 'medium'],
@@ -3885,7 +3906,7 @@ const SESSION_STORAGE_KEY = 'konnectLeadChecker:session:v1';
 // Bump CLASSIFIER_VERSION whenever classifyLead's rules change: results
 // from an older version are re-checked rather than carried into a new
 // paste. SESSION_SCHEMA changes when the stored session shape changes.
-const CLASSIFIER_VERSION = '2026-11-11a';
+const CLASSIFIER_VERSION = '2026-11-17a';
 const SESSION_SCHEMA = 2;
 // The stored batch holds customer details, so it is dropped after a shift.
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
