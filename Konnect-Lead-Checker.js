@@ -3426,10 +3426,25 @@ const current = nationalVerdictOf(r);
 const buttons = [RE_SETUP, 'Check', 'OK'].filter((v) => v !== current)
 .map((v) => `<button type="button" class="btn" data-verdict="${escapeHtmlForUi(v)}">${escapeHtmlForUi(v === 'OK' ? 'It is OK' : v === RE_SETUP ? 'Needs Re setup' : 'Needs a check')}</button>`).join('');
 const undo = r.verdictChange ? `<button type="button" class="btn" data-verdict-undo="1">Undo my change</button>` : '';
-return `<details class="disagree national-change" data-key="${r.inputIndex}"><summary>${r.verdictChange ? 'Changed by you' : 'Wrong? Change it'}</summary>
+// Shown open, with the reason first, so it is plain that a result can be
+// changed and that the why is typed before the choice is pressed.
+return `<details class="disagree national-change" data-key="${r.inputIndex}" open><summary>${r.verdictChange ? 'Changed by you: change it again or undo' : 'Result wrong? Say why, then pick the right one'}</summary>
+<input type="text" class="review-reason" aria-label="Why the result is wrong" placeholder="Why it is wrong (kept with the change, for a new rule)">
 <div class="review-actions" role="group" aria-label="Change the result for ${escapeHtmlForUi(r.name)}">${buttons}${undo}</div>
-<input type="text" class="review-reason" aria-label="Why (optional)" placeholder="Why (optional): helps me add a rule">
 </details>`;
+}
+
+// Pure. The National results changed by hand, with no customer details:
+// what the check said, what it was changed to and why.
+function buildNationalChangesExport(session) {
+const changed = orderedResults(session).filter((r) => r.verdictChange);
+const header = ['Lead', 'CheckSaid', 'CheckReason', 'ChangedTo', 'Why', 'FinalOutcome', 'Attempts', 'EnquiryMax', 'Campaign'].join('\t');
+const lines = changed.map((r, i) => {
+const why = (String(r.verdictReason || '').match(/^Changed by you from [^:.]+: (.*?)\. The check said:/) || [])[1] || '';
+return [`Lead ${i + 1}`, r.verdictChange.verdict, withoutCustomer(r.verdictChange.reason, r.name), r.verdict, withoutCustomer(why, r.name),
+r.finalOutcome, r.attempts != null ? String(r.attempts) : '', r.enquiryMaxDealer, r.campaign].map(tsvCell).join('\t');
+});
+return [header, ...lines].join('\n');
 }
 
 function buildNationalResultsExport(session) {
@@ -3507,6 +3522,7 @@ window.KonnectLeadChecker.evaluateNationalLead = evaluateNationalLead;
 window.KonnectLeadChecker.applyNationalVerdictChange = applyNationalVerdictChange;
 window.KonnectLeadChecker.undoNationalVerdictChange = undoNationalVerdictChange;
 window.KonnectLeadChecker.buildNationalResultsExport = buildNationalResultsExport;
+window.KonnectLeadChecker.buildNationalChangesExport = buildNationalChangesExport;
 
 window.KonnectLeadChecker.timelineEntryKey = timelineEntryKey;
 window.KonnectLeadChecker.reLogin = reLogin;
@@ -6337,6 +6353,8 @@ const changed = applyNationalVerdictChange({ inputIndex: 0, status: 'CLASSIFIED'
 check('a verdict changed by hand keeps what the check said', [changed.verdict, changed.resetCampaign, /already done/.test(changed.verdictReason), /nowhere/.test(changed.verdictReason)], ['OK', '', true, true]);
 const undone = undoNationalVerdictChange(changed);
 check('undo puts the check\'s verdict back', [undone.verdict, undone.verdictReason, undone.resetCampaign, undone.verdictChange], [RE_SETUP, 'nowhere', 'Vauxhall - Enquiry - Used', undefined]);
+const changeRows = buildNationalChangesExport({ rows: [{ inputIndex: 0 }], results: { 0: applyNationalVerdictChange({ inputIndex: 0, name: 'Alex Sample', status: 'CLASSIFIED', verdict: RE_SETUP, verdictReason: 'Closed as Defer to Site without being sent to a dealership', finalOutcome: 'Defer to Site', attempts: 2, campaign: 'Enquiry - Used' }, 'OK', 'Alex Sample was rung by the dealership') } }).split('\n');
+check('the changes copy says what the check said, the change and why, without the customer', changeRows[1], ['Lead 1', RE_SETUP, 'Closed as Defer to Site without being sent to a dealership', 'OK', '[name] was rung by the dealership', 'Defer to Site', '2', '', 'Enquiry - Used'].join('\t'));
 check('changing to Re setup fills the campaign', applyNationalVerdictChange({ status: 'CLASSIFIED', verdict: 'OK', verdictReason: 'x', campaign: 'Vauxhall - Enquiry - Used' }, RE_SETUP, '').resetCampaign, 'Vauxhall - Enquiry - Used');
 
 const notInterested = [created(1400040, '10T09:00'), call(1400040, '10T09:30', 'Spoke to Customer', `Sales -> Customer Hub Team -> No Appointment -> Not Interested at ${NAT}`)];
@@ -6657,6 +6675,8 @@ button.chip[aria-pressed="true"] { border-color: var(--wb-text); box-shadow: ins
 .undo-review { margin-top: 8px; }
 .disagree { margin-top: 8px; }
 .disagree > summary { cursor: pointer; font-size: 11.5px; color: var(--wb-muted); }
+.national-change > summary { font-size: 12px; font-weight: 700; color: var(--wb-text, #1c1c1e); }
+.national-change .review-reason { margin-top: 6px; }
 .disagree .review-actions { margin: 6px 0; }
 .footer { flex-shrink: 0; padding: 6px 14px; background: var(--wb-surface); border-top: 1px solid var(--wb-border); display: flex; justify-content: space-between; gap: 10px; font-size: 11.5px; color: var(--wb-muted); white-space: nowrap; }
 .footer #modeBanner { overflow: hidden; text-overflow: ellipsis; }
@@ -8273,12 +8293,13 @@ root.getElementById('btnCopyNationalResults').addEventListener('click', (event) 
 
 root.getElementById('btnCopyReviewDecisions').addEventListener('click', (event) => {
 const btn = event.currentTarget; // read before any await: it is null afterwards
-const count = session ? orderedResults(session).filter((r) => r.manualOverride).length : 0;
+const national = !!session && session.mode === 'national';
+const count = session ? orderedResults(session).filter((r) => (national ? r.verdictChange : r.manualOverride)).length : 0;
 if (count === 0) {
-showButtonFeedback(btn, 'No manual reviews yet', true);
+showButtonFeedback(btn, national ? 'No results changed yet' : 'No manual reviews yet', true);
 return;
 }
-copyTextToClipboard(buildManualReviewDecisionsExport(session))
+copyTextToClipboard(national ? buildNationalChangesExport(session) : buildManualReviewDecisionsExport(session))
 .then(() => showButtonFeedback(btn, `✓ Copied ${count}`, false))
 .catch(() => showButtonFeedback(btn, '✗ Copy failed', true));
 });
