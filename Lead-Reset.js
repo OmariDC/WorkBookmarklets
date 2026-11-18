@@ -3442,7 +3442,35 @@ function whoMenuHtml(run, key) {
 const lead = listLead(run, key);
 if (!lead) return '';
 const attrs = `data-run="${run}" data-key="${escapeHtml(key)}"`;
-return `<div class="mh">${escapeHtml(lead.name)}</div>${run === 'pc' || run === 'st' ? menuItem('openParked', 'phone', 'Open from Parked Calls', attrs) : ''}${menuItem('copyDetails', 'copy', 'Copy details', attrs)}`;
+// A lead dealt with outside the tool can be ticked off by hand, and put back.
+const tick = listMark(run, lead) ? menuItem('unmark', 'reset', 'Put back on the list', attrs) : menuItem('markDone', 'ok', run === 're' ? 'Already set up: tick it off' : 'Already done: tick it off', attrs);
+return `<div class="mh">${escapeHtml(lead.name)}</div>${tick}${run === 'pc' || run === 'st' ? menuItem('openParked', 'phone', 'Open from Parked Calls', attrs) : ''}${menuItem('copyDetails', 'copy', 'Copy details', attrs)}`;
+}
+
+// What a list lead is marked as (Done, Skipped) or '' when still to do.
+function listMark(run, lead) {
+if (run === 're') return loadProgress().byActivity[lead.activityId] || '';
+return (loadDeskProgress()[run] || {})[lead.key] || '';
+}
+
+// Ticks a lead off by hand, or puts it back. Noted with the decisions, so
+// the review copy shows it was not the tool that did the lead.
+function setListMark(run, lead, done) {
+if (state.running) { addLog('Not while a run is going: stop it first'); return; }
+if (run === 're') {
+const progress = loadProgress();
+if (done) progress.byActivity[lead.activityId] = 'Done'; else delete progress.byActivity[lead.activityId];
+saveProgress(progress);
+} else {
+const progress = loadDeskProgress();
+if (done) progress[run][lead.key] = 'Done'; else delete progress[run][lead.key];
+saveDeskProgress(progress);
+}
+const rows = loadDecisions();
+rows.push(decisionRow(run === 're' ? 'batch' : run, lead, done ? 'Done' : 'Put back', '', [done ? 'Ticked off by hand as already done' : 'Put back on the list by hand'], '', new Date().toISOString()));
+saveDecisions(freshDecisions(rows, Date.now()));
+addLog(`${done ? 'Ticked off' : 'Put back on the list'}: ${lead.name}`);
+render();
 }
 
 function detailsForClipboard(run, lead) {
@@ -3844,6 +3872,11 @@ render();
 return;
 }
 if (action === 'how') { ui.howOpen = !ui.howOpen; render(); return; }
+if (action === 'markDone' || action === 'unmark') {
+const lead = listLead(run, key);
+if (lead) setListMark(run, lead, action === 'markDone');
+return;
+}
 if (action === 'copyDetails') {
 const lead = listLead(run, key);
 if (lead) navigator.clipboard.writeText(detailsForClipboard(run, lead)).then(() => addLog('Details copied'), () => addLog('Could not copy the details'));

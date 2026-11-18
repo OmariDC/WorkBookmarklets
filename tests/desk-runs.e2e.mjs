@@ -531,6 +531,15 @@ async function emailOnlyAlreadyOpen() {
     _workToolsEmailOnlyAssigned: { leads: [{ name: 'Eve Evans', email: 'eve.evans@example.com', campaign: 'Vauxhall - Email Only', agent: 'Agent One' }] },
     _leadResetSettings: { reviewBeforeFinish: false }
   });
+  // A lead dealt with outside the tool can be ticked off by hand, and put back.
+  await page.click('#_leadResetPanel [data-action=view][data-view=eo]');
+  await page.click('#_leadResetPanel [data-action=who][data-run=eo]');
+  await page.click('#_leadResetPanel [data-action=markDone]');
+  const ticked = { count: await shadowText(page, '.big-count'), saved: ((await stored(page, '_leadResetDeskProgress')) || { eo: {} }).eo['eve.evans@example.com'], rows: await decisionRows(page) };
+  check('ticked off by hand: counted as done and noted with the decisions', /^0/.test(ticked.count || '') && ticked.saved === 'Done' && ticked.rows.some((r) => r.name === 'Eve Evans' && r.outcome === 'Done' && /Ticked off by hand/.test(r.why)), ticked);
+  await page.click('#_leadResetPanel [data-action=who][data-run=eo]');
+  await page.click('#_leadResetPanel [data-action=unmark]');
+  check('put back: it is to do again', /^1/.test(await shadowText(page, '.big-count') || '') && !((await stored(page, '_leadResetDeskProgress')) || { eo: {} }).eo['eve.evans@example.com'], await shadowText(page, '.big-count'));
   await page.click('#navParked');
   await page.waitForSelector('#parkedRows button[data-id="eve"]', { timeout: 8000 });
   await page.click('#parkedRows button[data-id="eve"]');

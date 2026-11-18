@@ -3121,6 +3121,11 @@ return Number(item.TimelineItemType) === 3 && item.IsContactCentreAgent !== fals
 && /called the customer with an outcome of/i.test(String(item.BelowLineTitle || ''));
 }
 
+// The dealership's own calls on a lead it has been sent.
+function isDealershipCallItem(item) {
+return Number(item.TimelineItemType) === 3 && /\b(scheduled|completed) a call\b/i.test(String(item.BelowLineTitle || ''));
+}
+
 function formatShortTime(ms) {
 if (ms == null) return '';
 const d = new Date(ms);
@@ -3144,7 +3149,14 @@ const attempts = Number.isFinite(exportAttempts) && exportAttempts > 0 ? exportA
 // (sent once, came back and was worked again) does not cover a later
 // closure.
 const exportLastCallMs = parsedToMs(parseNationalCreated(batchRow.lastContact));
-const lastAttemptMs = exportLastCallMs || own.filter(isAttemptItem).reduce((max, i) => Math.max(max, eventTimeMs(i.EventTime) || 0), 0);
+// "Scheduled a call" and "Completed a call" are the dealership's own
+// calls, never the hub's. When the export's last call is one of those, the
+// dealership already has the lead, so it is the hub's own last call that a
+// send has to follow. The call can be filed under another of the leads.
+const dealerCallTimes = (allItems || []).filter(isDealershipCallItem).map((i) => eventTimeMs(i.EventTime) || 0);
+const exportIsDealerCall = !!exportLastCallMs && dealerCallTimes.some((at) => Math.abs(at - exportLastCallMs) <= 3 * 60 * 1000);
+const ownLastAttemptMs = own.filter(isAttemptItem).reduce((max, i) => Math.max(max, eventTimeMs(i.EventTime) || 0), 0);
+const lastAttemptMs = exportLastCallMs && !exportIsDealerCall ? exportLastCallMs : ownLastAttemptMs;
 const sendItems = own.filter((i) => Number(i.TimelineItemType) === 2 && emDealerOf(i));
 const currentSends = sendItems.filter((i) => (eventTimeMs(i.EventTime) || 0) >= lastAttemptMs - 2 * 60 * 1000).map(emDealerOf);
 const earlierDealerSend = sendItems.filter((i) => (eventTimeMs(i.EventTime) || 0) < lastAttemptMs - 2 * 60 * 1000)
@@ -6271,6 +6283,15 @@ check('Email Only is still Reset when a newer lead exists', run(1400003, emailOn
 const sentThenClosed = [created(1400012, '02T07:10'), call(1400012, '02T09:52', 'Update Outcomes (No Call Made)', 'New Enquiry at Walton'), sent(1400012, '02T09:53', 'Walton'),
 call(1400012, '07T09:00', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400012, '07T13:07', 'No Answer - No Message Left', `Sales -> Customer Hub Team -> Ongoing -> Email Only Lead at ${NAT}`)];
 const r12 = run(1400012, sentThenClosed, {});
+// Sent to a dealership, whose own calls ("Completed a call", "Scheduled a
+// call") came after and are the export's last call: the send still stands.
+const dealerRang = [created(1400030, '12T14:55'), call(1400030, '12T14:56', 'Update Outcomes (No Call Made)', 'Sales -> ART -> Ongoing -> Defer to Site at Crawley'), sent(1400030, '12T14:59', 'Crawley'),
+it(3, 1400030, '14T09:52', 'Dealer Person Completed a call', 'Unknown reason for call at Crawley', false), it(3, 1400030, '14T15:21', 'Dealer Person Scheduled a call', 'Unknown reason for call at Crawley', false)];
+const rDealer = run(1400030, dealerRang, { exportOutcome: 'Defer to Site', lastContact: '14/11/2026 15:21' });
+check('a dealership call after the send does not undo it', [rDealer.verdict, rDealer.enquiryMaxDealer], ['OK', 'Crawley']);
+// A hub call after the send still does.
+const rHubAfter = run(1400030, dealerRang.concat([call(1400030, '15T10:00', 'No Answer - No Message Left', `No Activity Outcome at ${NAT}`)]), { exportOutcome: 'Defer to Site', lastContact: '15/11/2026 10:00' });
+check('a hub call after the send still makes it a Re setup', rHubAfter.verdict, RE_SETUP);
 check('an earlier send does not cover a later dead-end closure', [r12.verdict, /Walton earlier/.test(r12.reason)], [RE_SETUP, true]);
 
 // A call covering two leads is filed under one of them and lists both
