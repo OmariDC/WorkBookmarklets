@@ -1890,6 +1890,21 @@ const main = document.querySelector('[ng-view], .main-content, main') || documen
 return { name: name.trim(), emails: Array.from(emails), phones: Array.from(phones) };
 }
 
+// Who the customer already open on the call page is, in the same shape:
+// the emails, numbers and name on their leads.
+function openPerson() {
+const emails = new Set();
+const phones = new Set();
+let name = '';
+liveActivities().forEach(({ activity }) => {
+const lead = (activity && activity.SalesLead) || {};
+if (lead.EmailAddress) emails.add(String(lead.EmailAddress).trim());
+[lead.MobileNumber, lead.LandlineNumber].forEach((n) => { if (digitsOf(n).length >= 10) phones.add(String(n)); });
+if (!name && lead.CustomerName) name = String(lead.CustomerName);
+});
+return { name: name.trim(), emails: Array.from(emails), phones: Array.from(phones) };
+}
+
 // yours: the leads the agent is going Available for, as the messages name them.
 async function ensureAvailable(yours) {
 const what = yours || 'Email Only leads';
@@ -2553,12 +2568,19 @@ if (!await askToCarryOn('You are on Shift Start, as Stay Available between leads
 if (!await outsideLead(() => ensureAvailable(run.yours), false)) break;
 }
 if (!onPresentPage() && !onCallPage() && !await waitForPresentedLead()) break;
-if (onCallPage() && !onPresentPage()) {
-if (!await askToCarryOn(`A call is already open. Finish it yourself; your next ${run.one} will be picked up after.`, 'Done, wait for the next')) break;
+// A customer already open (the lead was taken by hand, or opened from
+// a search) is worked the same way when they are on the list.
+const alreadyOpen = onCallPage() && !onPresentPage();
+if (alreadyOpen) await settledLeads();
+const openLead = alreadyOpen ? run.match(left(), openPerson()) : null;
+if (alreadyOpen && !openLead) {
+if (!await askToCarryOn(`The customer open now is not one of ${run.listed}. Finish it yourself; your next ${run.one} will be picked up after.`, 'Done, wait for the next')) break;
+// Still the same customer: wait for them to go before looking again.
+if (onCallPage() && !await waitFor(() => state.stopRequested || !onCallPage(), 180000, 500)) continue;
 continue;
 }
-const presented = presentedPerson();
-const lead = run.match(left(), presented);
+const presented = alreadyOpen ? openPerson() : presentedPerson();
+const lead = alreadyOpen ? openLead : run.match(left(), presented);
 if (!lead) {
 // Rejected and reset all the same, so it cannot dial unnoticed, then
 // left for the agent: nothing else on it is changed.
@@ -2992,6 +3014,14 @@ ${btn('checkParked', 'Check my Parked Calls', 'sec', 'wide')}${requestLine}
 through.length ? listGroup('Send through, if in Parked Calls', through.length - throughLeft, sendThroughRows(through, throughDone, false)) : '', notMine];
 }
 
+// Says when the customer open now is on the list, so Start is known to
+// take them first.
+function hereOnList(left, match) {
+if (!onCallPage() || onPresentPage() || !liveActivities().length) return '';
+const lead = match(left, openPerson());
+return lead ? `<div class="muted small here-on-list" role="status"><strong>${escapeHtml(lead.name || 'This customer')}</strong> is open now and on this list. Start does them first.</div>` : '';
+}
+
 // Only ever this agent's own leads. With several agents recorded and no
 // name remembered, the one question comes first.
 function renderEmailOnlyView() {
@@ -3012,6 +3042,7 @@ return [`<div class="card col">
 <div class="big-count"><strong>${left}</strong><span>${words}</span></div>
 <div class="cf">${chip('Sets you Available', 'info')}${doneCount ? chip(`${doneCount} done`, 'ok') : ''}${howLink()}</div>
 ${howText(EMAIL_ONLY_HOW)}
+${hereOnList(leads.filter((l) => !done[l.key]), matchEmailOnly)}
 ${left ? startButton('startEo', 'Start') : '<div class="muted small">All done.</div>'}
 </div>`, listGroup('Email Only leads', doneCount, rows)];
 }
@@ -3049,6 +3080,7 @@ return [`<div class="card col">
 ${howText(SEND_THROUGH_HOW)}
 <button type="button" class="sw" role="switch" aria-checked="${stay}" data-action="stayAvailable"><span>Stay Available between leads</span><span class="knob" aria-hidden="true"></span></button>
 <span class="quiet-line stay-line">${stay ? 'You stay Available until the last one, then Shift Start.' : 'Shift Start after each one. It asks before going Available for the next.'}</span>
+${hereOnList(leads.filter((l) => !done[l.key]), matchPresented)}
 ${left ? startButton('startSt', 'Start') : '<div class="muted small">All done.</div>'}
 ${left ? btn('startPc', 'Do the ones in my Parked Calls', 'sec', 'wide') : ''}
 </div>`, listGroup('Send through', doneCount, sendThroughRows(leads, done, true))];

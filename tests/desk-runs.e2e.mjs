@@ -516,6 +516,40 @@ async function notesPutBack() {
 // The email in the EO note is checked against the assigned lead, the lead
 // is picked by campaign among several open ones, and an agent left
 // Available is told and offered Shift Start.
+// A customer on the Email Only list who is already open (taken by hand, or
+// opened from a search) is recognised and worked without presenting.
+async function emailOnlyAlreadyOpen() {
+  console.log('\nEmail Only: the customer is already open');
+  const eoLead = (id) => ({ ID: `${id}-2`, CampaignName: 'Vauxhall - Email Only', OutcomeFullHierarchy: 'None', SourceName: 'AA Cars', notes: '' });
+  const { context, page, errors } = await openDesk({
+    status: 'Shift Start',
+    customers: [
+      { id: 'eve', name: 'Eve Evans', email: 'eve.evans@example.com', phone: '07700 900141', parked: true, leads: [eoLead('eve')] },
+      { id: 'pat', name: 'Pat Other', email: 'pat.other@example.com', phone: '07700 900142', parked: true, leads: [eoLead('pat')] }
+    ]
+  }, {
+    _workToolsEmailOnlyAssigned: { leads: [{ name: 'Eve Evans', email: 'eve.evans@example.com', campaign: 'Vauxhall - Email Only', agent: 'Agent One' }] },
+    _leadResetSettings: { reviewBeforeFinish: false }
+  });
+  await page.click('#navParked');
+  await page.waitForSelector('#parkedRows button[data-id="eve"]', { timeout: 8000 });
+  await page.click('#parkedRows button[data-id="eve"]');
+  await page.waitForFunction(() => /#!\/call\//.test(location.hash), null, { timeout: 8000 });
+  await page.click('#_leadResetPanel [data-action=view][data-view=eo]');
+  await page.waitForFunction(() => !!document.querySelector('#_leadResetPanel').shadowRoot.querySelector('.here-on-list'), null, { timeout: 8000 }).catch(() => {});
+  check('the tab says the open customer is on the list', /Eve Evans is open now and on this list/.test(await shadowText(page, '.here-on-list') || ''), await shadowText(page, '.here-on-list'));
+  await page.click('#_leadResetPanel [data-action=startEo]');
+  const out = await settle(page);
+  const ev = out.events;
+  check('the open customer is worked without being rejected or presented', !ev.some((e) => /^reject:|^presented:|^status:Available/.test(e)) && ev.includes('konnect-notes:eo') && ev.filter((e) => e === 'FINISHED:eve').length === 1, { ev, paused: out.paused, log: out.log });
+  const eve = (out.snapshots.find((x) => x.customer === 'eve') || { leads: [] });
+  const lead = eve.leads.find((l) => l.ID === 'eve-2') || {};
+  check('EO note, Update Outcomes and the Email Only outcome at Finished', lead.callNotes === 'EMAIL ONLY LEAD: eve.evans@example.com' && (lead.levels || []).join(' > ') === 'Customer Hub Team > Ongoing > Email Only Lead' && eve.callOutcome === 'Update Outcomes (No Call Made)', eve);
+  check('it is marked done', ((await stored(page, '_leadResetDeskProgress')) || { eo: {} }).eo['eve.evans@example.com'] === 'Done', await stored(page, '_leadResetDeskProgress'));
+  check('no page errors', errors.length === 0, errors);
+  await context.close();
+}
+
 async function emailOnlyChecks() {
   console.log('\nEmail Only: note email, lead picked by campaign, status at the end');
   const call = (forename, surname, email) => ({ CallID: 1, Customer: { Forename: forename, Surname: surname, EmailAddress: email } });
@@ -1288,7 +1322,7 @@ async function parkedMixedPass() {
   await context.close();
 }
 
-const tests = [postClosureNoReview, postClosureWithReview, postClosureAcrossLeads, postClosureOtherEmail, emailOnly, secondLoadSkipAndStop, slowPage, notesPutBack, emailOnlyChecks,
+const tests = [postClosureNoReview, postClosureWithReview, postClosureAcrossLeads, postClosureOtherEmail, emailOnly, emailOnlyAlreadyOpen, secondLoadSkipAndStop, slowPage, notesPutBack, emailOnlyChecks,
   emailOnlyClearAndStop, pauseReopensThePanel, buttonBesideKonnectNotes, sharedStorage, realKonnectNotes, parkedCallsThroughManager, deskWaitsItsTurn, deskBeforeManager,
   sendThroughPresents, sendThroughStop, sendThroughStayAvailable, sendThroughTwoOpenLeads, parkedMixedPass];
 const only = process.argv.slice(2);
