@@ -2697,6 +2697,8 @@ const NATIONAL_DEAD_END_OUTCOMES = /email only|in market|not interested|just bro
 
 const NATIONAL_BOOKED_OUTCOMES = /face to face|test drive|phone call|appointment/i;
 const NATIONAL_FULL_RUN_ATTEMPTS = 4;
+// Fewer attempts than this and a Max Attempts closure was picked too early.
+const NATIONAL_MIN_MAX_ATTEMPTS = 2;
 
 function isNationalDealer(name) {
 return /national/i.test(String(name || ''));
@@ -3203,18 +3205,30 @@ const verdict = (v, reason) => Object.assign({}, base, { verdict: v, reason });
 // 1. Sent to a dealership.
 if (dealerSend) return verdict('OK', `Sent to ${dealerSend} via Enquiry Max`);
 const open = /in progress/i.test(String(batchRow.state || ''));
-// 3 and 4. Acceptable closing outcomes.
-if (!open && /max attempts/i.test(finalOutcome)) return verdict('OK', `Closed as ${finalOutcome} after ${attempts || batchRow.attempts || '?'} attempts`);
+// 3 and 4. Acceptable closing outcomes. Max Attempts is only that after
+// the attempts have been made: picked on an early call it closed the lead
+// with nowhere to go.
+const ownEnding = leadEndingFrom(own);
+// A newer lead can still cover it (checked below).
+const earlyMaxAttempts = !open && (/max attempts/i.test(finalOutcome) || ownEnding.maxAttempts) && attempts > 0 && attempts < NATIONAL_MIN_MAX_ATTEMPTS;
+if (!earlyMaxAttempts && !open && /max attempts/i.test(finalOutcome)) return verdict('OK', `Closed as ${finalOutcome} after ${attempts || batchRow.attempts || '?'} attempts`);
 if (!open && NATIONAL_ADMIN_OUTCOMES.test(finalOutcome)) return verdict('OK', `Closed as ${finalOutcome}`);
 // The export's outcome can lag behind the lead: when the last call on its
 // own timeline lists only Max Attempts, that is how it ended.
-const ownEnding = leadEndingFrom(own);
-if (!open && ownEnding.maxAttempts) return verdict('OK', `Closed as ${ownEnding.outcomes[0]} on its last call`);
+if (!earlyMaxAttempts && !open && ownEnding.maxAttempts) return verdict('OK', `Closed as ${ownEnding.outcomes[0]} on its last call`);
 // 5. Still being worked.
 if (open) {
 // By the last attempt there is no next call to schedule by hand.
 if (String(batchRow.exportHint || '') === 'open-auto' && attempts >= NATIONAL_FULL_RUN_ATTEMPTS) return verdict('OK', `On attempt ${attempts}, the last one`);
 if (String(batchRow.exportHint || '') === 'open-auto') return verdict('Check', 'Automatic reschedule, should be manual');
+// Called but never rescheduled by hand: the export can show no automatic
+// reschedule yet, but the hub's last call was not a Manual Reschedule.
+const manual = parseInt(batchRow.manualReschedules, 10);
+const hubCalls = own.filter(isAttemptItem);
+const lastHubCall = hubCalls[hubCalls.length - 1];
+if (lastHubCall && attempts < NATIONAL_FULL_RUN_ATTEMPTS && !(manual > 0) && !/outcome of manual reschedule/i.test(String(lastHubCall.BelowLineTitle || ''))) {
+return verdict('Check', `On attempt ${attempts || hubCalls.length} and not manually rescheduled after the last call`);
+}
 return verdict('OK', 'Still being worked');
 }
 // 6. A hand-over closure whose enquiry a newer lead already carries.
@@ -3281,6 +3295,7 @@ if (/sent direct to enquiry max|email only/i.test(finalOutcome) && fullRun >= NA
 if (/misdirected/i.test(finalOutcome)) return verdict('Check', 'Misdirected: check the lead was not for sales');
 // 2. Sent, but only to National.
 if (nationalSend) return verdict(RE_SETUP, 'Sent to Enquiry Max at National, went nowhere');
+if (earlyMaxAttempts) return verdict(RE_SETUP, `Closed as Max Attempts after only ${attempts} attempt${attempts === 1 ? '' : 's'}`);
 // 7. Closed with nowhere to go.
 if (finalOutcome && NATIONAL_DEAD_END_OUTCOMES.test(finalOutcome)) {
 const earlier = earlierDealerSend ? ` (it was sent to ${earlierDealerSend} earlier, but not after the last call)` : '';
@@ -3969,7 +3984,7 @@ const SESSION_STORAGE_KEY = 'konnectLeadChecker:session:v1';
 // Bump CLASSIFIER_VERSION whenever classifyLead's rules change: results
 // from an older version are re-checked rather than carried into a new
 // paste. SESSION_SCHEMA changes when the stored session shape changes.
-const CLASSIFIER_VERSION = '2026-11-24a';
+const CLASSIFIER_VERSION = '2026-11-24b';
 const SESSION_SCHEMA = 2;
 // The stored batch holds customer details, so it is dropped after a shift.
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
@@ -6315,6 +6330,16 @@ return evaluateNationalLead(lead, items.filter((i) => i.LeadID === leadId), item
 const sys = [created(1400001, '04T15:32'), call(1400001, '04T15:36', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400001, '05T10:34', 'Manual Reschedule', `No Activity Outcome at ${NAT}`),
 call(1400001, '05T15:37', 'Update Outcomes (No Call Made)', `Sales -> National Used Stock -> No Opportunity -> Max Attempts Reached -  No Answer at ${NAT}`)];
 const r1 = run(1400001, sys, {});
+// Max Attempts picked on the first call: closed with nowhere to go.
+const earlyMax = [created(1400050, '23T21:40'), call(1400050, '24T09:11', 'No Answer - No Message Left', `Sales -> Max Attempts Reached - Sent to Dealer at ${NAT}`)];
+const rEarly = run(1400050, earlyMax, { exportOutcome: 'Max Attempts Reached - Sent to Dealer', attempts: '1' });
+check('Max Attempts on the first attempt is a Re setup', [rEarly.verdict, rEarly.verdictReason || rEarly.reason], [RE_SETUP, 'Closed as Max Attempts after only 1 attempt']);
+// Open, called once, not rescheduled by hand and no automatic reschedule yet.
+const notResched = [created(1400051, '23T20:27'), call(1400051, '24T09:04', 'No Answer - No Message Left', `No Activity Outcome at ${NAT}`)];
+const rNot = run(1400051, notResched, { state: 'In Progress', exportHint: 'open', attempts: '1', manualReschedules: '0' });
+check('open, called once and not rescheduled by hand is a Check', [rNot.verdict, rNot.reason], ['Check', 'On attempt 1 and not manually rescheduled after the last call']);
+const resched = [created(1400052, '23T20:27'), call(1400052, '24T09:04', 'Manual Reschedule', `No Activity Outcome at ${NAT}`)];
+check('open and rescheduled by hand is still being worked', run(1400052, resched, { state: 'In Progress', exportHint: 'open', attempts: '1', manualReschedules: '1' }).verdict, 'OK');
 check('system close at 3 with Max Attempts is OK', [r1.verdict, r1.attempts], ['OK', 3]);
 
 // In Market, but sent to Liverpool.
