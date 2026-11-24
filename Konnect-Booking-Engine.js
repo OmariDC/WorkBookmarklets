@@ -748,7 +748,7 @@
     };
 
     if (type === 'testdrive') {
-      return `to test drive ${needVoi(voiPhrase(vehicles, null, warnings))}${andVal}`;
+      return `to test drive ${needVoi(voiPhrase(vehicles, input.category, warnings))}${andVal}`;
     }
     if (type === 'view') {
       return `to view ${needVoi(voiPhrase(vehicles, input.category, warnings))}${andVal}`;

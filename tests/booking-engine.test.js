@@ -150,6 +150,12 @@ test('Viewing: vehicle or category, never "vehicle(s)"', () => {
   assert.strictEqual(sentence({ ...D, type: 'view', category: 'used petrol hybrid SUVs' }),
     'Customer is booked in on 10/11 at 10:00 to view used petrol hybrid SUVs');
   assert.ok(build({ ...D, type: 'view' }).errors.includes('Add the vehicle of interest'));
+  // A test drive with no one car in mind takes the category too.
+  assert.strictEqual(sentence({ ...D, type: 'testdrive', category: 'used cars' }),
+    'Customer is booked in on 10/11 at 10:00 to test drive used cars');
+  // A car named wins over the category.
+  assert.strictEqual(sentence({ ...D, type: 'testdrive', vehicles: USED_MM, category: 'used cars' }),
+    'Customer is booked in on 10/11 at 10:00 to test drive a used Peugeot 208 (AB12CDE)');
 });
 
 test('Motability: test drive, view, onsite discuss, call (sheet wording)', () => {

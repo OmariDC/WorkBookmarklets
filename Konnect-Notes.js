@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.29.4'
+    version: '1.29.5'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2417,6 +2417,10 @@
     const leadType = normaliseText(facts.leadType).toLowerCase();
     if (leadType === 'used') return 'Used';
     if (leadType === 'new') return 'New';
+    // A category with no one car ("used cars").
+    const category = normaliseText(facts.category).toLowerCase();
+    if (/\bused\b/.test(category)) return 'Used';
+    if (/\bnew\b/.test(category)) return 'New';
     if (/\bused\b/.test(campaign)) return 'Used';
     if (/\bnew\b/.test(campaign)) return 'New';
     // The Vehicle step shows New until Used is picked, and the lead's
@@ -2476,6 +2480,7 @@
       namedCar: !!(realText(vehicle.make) || realText(vehicle.model)),
       purchaseType: lead.fields['v.condition'],
       leadType: selectedText(activeLeadPane()?.querySelector('select[ng-model$="LeadDetails.LeadTypeID"]')),
+      category: input.category,
       campaign: `${lead.leadRequest} ${lead.source}`,
       inDiary: diaryAlreadyBooked(draft, plan)
     };
@@ -2577,6 +2582,7 @@
     check('a title alone is kept', buildSheetRow({ ...base, name: 'Mr' }).split('\t')[1], 'Mr');
     check('pre-registered counts as New', sheetLeadType({ purchaseType: 'Pre-Registered' }), 'New');
     check('the lead\'s Lead Type is used when nothing else says', [sheetLeadType({ leadType: 'New' }), sheetLeadType({ leadType: 'Used', campaign: 'Enquiry - New' }), sheetLeadType({ leadType: 'Not Known' })].join('|'), 'New|Used|');
+    check('a category with no one car says new or used', [sheetLeadType({ category: 'used cars' }), sheetLeadType({ category: 'new cars' }), sheetLeadType({ category: 'SUVs' })].join('|'), 'Used|New|');
     check('a named car with nothing picked is New, as the Vehicle step shows it', [sheetLeadType({ namedCar: true }), sheetLeadType({ namedCar: true, campaign: 'Enquiry - Used' }), sheetLeadType({})].join('|'), 'New|Used|');
     check('campaign wording last', sheetLeadType({ campaign: 'Used Car Enquiry Website' }), 'Used');
     check('cannot be told', sheetLeadType({ campaign: 'Website' }), '');
@@ -4102,9 +4108,18 @@
         changed(draft, true);
       }));
     }
-    if (d.type === 'view' || d.type === 'call' || !d.type) {
-      body.appendChild(bkInput('Or browsing a category', d.category, (value) => { d.category = value; changed(draft); },
+    // No one car: a category instead. Every type but the ones that are
+    // about one car (valuation, online store, National reservation).
+    if (!['valuation', 'onlinestore', 'national'].includes(d.type)) {
+      const wrap = element('div', 'kn-bk-gap');
+      wrap.appendChild(element('div', 'kn-bk-label', 'No one car in mind?'));
+      wrap.appendChild(bkChips([
+        { value: 'used cars', label: 'General used cars' },
+        { value: 'new cars', label: 'General new cars' }
+      ], d.category, (value) => { d.category = d.category === value ? '' : value; changed(draft, true); }, 'kn-bk-sub'));
+      wrap.appendChild(bkInput('Or browsing a category', d.category, (value) => { d.category = value; changed(draft); },
         { placeholder: 'used petrol hybrid SUVs' }));
+      body.appendChild(wrap);
     }
   }
 
