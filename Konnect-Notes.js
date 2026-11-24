@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.29.3'
+    version: '1.29.4'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2069,6 +2069,10 @@
       if (!engine || !fields[makePath] || !fields[modelPath]) return;
       const split = engine.splitMakeModel(fields[makePath], fields[modelPath]);
       if (split.model) fields[modelPath] = split.model;
+      // "New Leapmotor B10": the word in front says new or used, unless the
+      // lead's Purchase Type already does.
+      const conditionPath = makePath.replace(/make$/, 'condition');
+      if (split.condition && makePath === 'v.make' && !fields[conditionPath] && fields.type !== 'motability') fields[conditionPath] = split.condition;
     };
     withoutBrand(lead.fields, 'v.make', 'v.model');
     withoutBrand(lead.pxFields, 'px.make', 'px.model');

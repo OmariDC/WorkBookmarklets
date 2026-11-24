@@ -144,7 +144,29 @@
   /* Removes a make repeated at the start of the model ("Alfa Romeo" +
      "Alfa Romeo Junior" -> "Junior"), and pulls the make out of the model
      when the make box is empty. Returns { make, model } as raw text. */
+  /* A condition written before the car ("New Leapmotor B10", "Used Peugeot
+     2008"), taken off and given back as the car's condition. */
+  const LEADING_CONDITION = /^(brand[\s-]+new|nearly[\s-]+new|pre[\s-]*reg(?:istered)?|new|used)\b[\s:,-]*/i;
+  function leadingCondition(value) {
+    const text = clean(value);
+    const match = text.match(LEADING_CONDITION);
+    if (!match || !text.slice(match[0].length).trim()) return { condition: '', rest: text };
+    const word = match[1].toLowerCase().replace(/[\s-]+/g, ' ');
+    const condition = word === 'used' || word === 'nearly new' ? 'used' : word.startsWith('pre') ? 'pre-registered' : 'new';
+    return { condition, rest: text.slice(match[0].length).trim() };
+  }
+
   function splitMakeModel(makeRaw, modelRaw) {
+    const lead = leadingCondition(modelRaw);
+    // Only when the make follows the word: "New Beetle" is a model name.
+    if (lead.condition) {
+      const split = splitMakeModelOnly(makeRaw, lead.rest);
+      if (split.model !== clean(lead.rest)) return { ...split, condition: lead.condition };
+    }
+    return splitMakeModelOnly(makeRaw, modelRaw);
+  }
+
+  function splitMakeModelOnly(makeRaw, modelRaw) {
     let make = clean(makeRaw);
     const modelText = clean(modelRaw);
     const modelWords = modelText.split(' ').filter(Boolean);

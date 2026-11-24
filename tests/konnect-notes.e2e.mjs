@@ -1583,6 +1583,19 @@ async function pxOnAnotherLead() {
   check('No PX: the lead\'s switch is turned off, Details is open again, and the typed fuel type replaces the lead\'s', saidNoPx.pxOn === false && saidNoPx.notes && saidNoPx.fuel === 'Diesel', saidNoPx);
   const notSaid = await noPxRun('unmentioned');
   check('PX not mentioned: the lead\'s switch is left on', notSaid.pxOn === true, notSaid);
+  // The lead's Model box can say "New Leapmotor B10": the builder takes
+  // the model alone and the condition from the word in front.
+  const leap = await fresh({ owner: true, page: 'two-leads.html', before: `window.mockOptions = { oneOpen: true }; window.buildLeads(${JSON.stringify([bookingLead()])})` });
+  await leap.evaluate(() => {
+    const set = (ph, v) => { const box = document.querySelector(`[data-lead-id="77000002"] input[placeholder="${ph}"]`); box.value = v; box.dispatchEvent(new Event('input', { bubbles: true })); };
+    set('Vehicle Brand', 'Leapmotor'); set('Vehicle Model', 'New Leapmotor B10'); set('Fuel Type', 'Electric');
+  });
+  await leap.click('#call-77000002');
+  await leap.keyboard.press('Alt+b');
+  await leap.waitForFunction(() => window.KonnectBookingEngine && document.querySelector('.kn-bk-actions'), null, { timeout: 5000 });
+  await sleep(300);
+  const car = await leap.evaluate(() => KonnectNotes.state.booking.data.vehicles[0]);
+  check('a lead model of "New Leapmotor B10" becomes Leapmotor, B10, New', car.make === 'Leapmotor' && car.model === 'B10' && car.condition === 'new', car);
   check('no page errors on the part exchange runs', page.errors.length === 0, page.errors);
 }
 

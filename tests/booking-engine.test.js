@@ -455,6 +455,14 @@ test('Make repeated in the model is removed', () => {
   assert.strictEqual(mm('Peugeot', 'Peugeot'), 'Peugeot|Peugeot');
   assert.strictEqual(mm('Mini', 'Countryman'), 'Mini|Countryman');
   assert.strictEqual(mm('Land Rover', 'Range Rover Evoque'), 'Land Rover|Range Rover Evoque');
+  // A condition word before the make is taken off and kept as the condition.
+  const mmc = (make, model) => { const r = E.splitMakeModel(make, model); return `${r.make}|${r.model}|${r.condition || ''}`; };
+  assert.strictEqual(mmc('Leapmotor', 'New Leapmotor B10'), 'Leapmotor|B10|new');
+  assert.strictEqual(mmc('Peugeot', 'Used Peugeot 2008'), 'Peugeot|2008|used');
+  assert.strictEqual(mmc('Vauxhall', 'Brand new Vauxhall Frontera'), 'Vauxhall|Frontera|new');
+  assert.strictEqual(mmc('', 'New Leapmotor T03'), 'Leapmotor|T03|new');
+  assert.strictEqual(mmc('VW', 'New Beetle'), 'VW|New Beetle|');
+  assert.strictEqual(mmc('Leapmotor', 'New'), 'Leapmotor|New|');
   assert.strictEqual(sentence({ ...D, type: 'testdrive', vehicles: [{ make: 'aLFA rOMEO', model: 'ALFA ROMEO JUNIOR' }] }),
     'Customer is booked in on 10/11 at 10:00 to test drive a new Alfa Romeo Junior');
   const r = build({ ...D, type: 'testdrive', vehicles: NEW_MM, px: { status: 'yes', items: [{ make: 'FORD', model: 'ford fiesta', reg: 'ab12cde', mileage: '40000' }] } });
