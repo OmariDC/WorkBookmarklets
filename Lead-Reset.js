@@ -29,6 +29,10 @@ return;
 const PANEL_ID = '_leadResetPanel';
 const NATIONAL_RESULT_HEADER = ['NationalResult', 'Customer', 'ActivityID', 'LeadID', 'Verdict', 'Reason', 'Attempts', 'FinalOutcome', 'EnquiryMaxDealer', 'FollowUpNotes', 'ResetCampaign', 'Reg'];
 const NATIONAL_RESULTS_KEY = '_slaNationalCheckResults';
+// Leads set up again, by lead number, kept a month and shared with SLA
+// Manager so a later day's check does not list them again.
+const RESET_DONE_KEY = '_workToolsResetDone';
+const RESET_DONE_MAX_AGE_MS = 31 * 24 * 60 * 60 * 1000;
 const PASTED_RESULTS_KEY = '_leadResetPastedResults';
 const PROGRESS_KEY = '_leadResetProgress';
 const SETTINGS_KEY = '_leadResetSettings';
@@ -789,6 +793,16 @@ const sources = [readJson(PASTED_RESULTS_KEY), readJson(NATIONAL_RESULTS_KEY)]
 .filter((s) => s && Array.isArray(s.results) && isFresh(s.savedAt))
 .sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt));
 return sources[0] || null;
+}
+
+function markResetDone(activityId, done) {
+if (!activityId) return;
+const stored = readJson(RESET_DONE_KEY);
+const ids = {};
+const now = Date.now();
+Object.entries((stored && stored.ids) || {}).forEach(([id, at]) => { if (new Date(at).getTime() >= now - RESET_DONE_MAX_AGE_MS) ids[id] = at; });
+if (done) ids[activityId] = ids[activityId] || new Date().toISOString(); else delete ids[activityId];
+writeJson(RESET_DONE_KEY, { ids });
 }
 
 function loadProgress() {
@@ -2290,6 +2304,7 @@ addLog(`Started ${lead.name}`);
 const outcome = await runLeadSteps(lead, STEPS);
 if (!outcome) break;
 progress.byActivity[lead.activityId] = outcome;
+if (outcome === 'Done') markResetDone(lead.activityId, true);
 saveProgress(progress);
 addLog(`${outcome}: ${lead.name}`);
 if (outcome === 'Skipped' && onCallPage() && !await askToCarryOn(skippedMessage('the next lead can start'), 'Done, next lead')) break;
@@ -3460,6 +3475,7 @@ if (state.running) { addLog('Not while a run is going: stop it first'); return; 
 if (run === 're') {
 const progress = loadProgress();
 if (done) progress.byActivity[lead.activityId] = 'Done'; else delete progress.byActivity[lead.activityId];
+markResetDone(lead.activityId, done);
 saveProgress(progress);
 } else {
 const progress = loadDeskProgress();

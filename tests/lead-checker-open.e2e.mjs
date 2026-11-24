@@ -419,6 +419,15 @@ let finishedOutcomes = null;
   await t.panel('#resultsBody .customer[data-key="0"] .customer-summary').click();
   await t.avatar(1).click();
   check('National: no lead at that time, timeline only', await t.waitState(/^Morgan Reedwell is open, timeline only: the lead for 07\/11\/2026 08:00 was not found\.$/) && (await t.page()).modals === 0, await t.state());
+  // A Re setup lead can be marked as already set up again: it goes OK now
+  // and stays OK when the same batch is checked again.
+  await t.panel('#resultsBody button[data-already-set-up]').first().click();
+  const marked = await t.live.evaluate(() => { const s = window.__konnectLeadChecker.getSession(); return { verdict: s.results[s.rows[0].inputIndex].verdict, reason: s.results[s.rows[0].inputIndex].verdictReason, kept: Object.keys(JSON.parse(localStorage.getItem('_klcResetDone') || '{}').ids || {}) }; });
+  check('National: "Already set up again" makes the lead OK and is kept by its lead number only', marked.verdict === 'OK' && /Already set up again/.test(marked.reason) && marked.kept.join() === '70000001SALES', marked);
+  await t.send({ type: 'workTools:batch', id: 'n2', kind: 'national', tsv: national });
+  await t.waitFor('ended', (m) => m.id === 'n2', 60000);
+  const again = await t.live.evaluate(() => { const s = window.__konnectLeadChecker.getSession(); return { verdict: s.results[s.rows[0].inputIndex].verdict, reason: s.results[s.rows[0].inputIndex].verdictReason }; });
+  check('National: checked again, it stays OK, saying when it was marked', again.verdict === 'OK' && /Already set up again \(marked on \d\d\/\d\d\)/.test(again.reason), again);
   check('no page errors', t.errors.length === 0, t.errors);
   await t.close();
 }

@@ -1781,9 +1781,42 @@ results.forEach((r) => { counts[r.Verdict] = (counts[r.Verdict] || 0) + 1; });
 return counts;
 }
 
+// Leads already set up again, by their lead number only (no customer
+// details), kept for a month so a later day's check does not ask again.
+// Shared with Lead Re setup, which writes to it when a lead is set up.
+const RESET_DONE_KEY = '_workToolsResetDone';
+const RESET_DONE_MAX_AGE_MS = 31 * 24 * 60 * 60 * 1000;
+const ALREADY_SET_UP = 'Already set up again';
+// Pure. The marks still inside the month.
+function freshResetDone(marks, now) {
+const kept = {};
+Object.entries(marks || {}).forEach(([id, at]) => { const t = new Date(at).getTime(); if (id && t >= now - RESET_DONE_MAX_AGE_MS && t <= now + 60000) kept[id] = at; });
+return kept;
+}
+function loadResetDone() {
+const stored = readStoredJson(RESET_DONE_KEY);
+return freshResetDone(stored && stored.ids, Date.now());
+}
+function markResetDone(activityId, done) {
+if (!activityId) return;
+const ids = loadResetDone();
+if (done) ids[activityId] = ids[activityId] || new Date().toISOString(); else delete ids[activityId];
+try { localStorage.setItem(RESET_DONE_KEY, JSON.stringify({ ids })); } catch (error) { /* this check still shows it */ }
+}
+// Pure. A Re setup or Check lead already set up again becomes OK, saying when.
+function withResetDone(results, ids) {
+return (results || []).map((r) => {
+const at = r && ids[r.ActivityID];
+if (!at || r.Decision || (r.Verdict !== RE_SETUP && r.Verdict !== 'Check')) return r;
+return applyNationalDecision(r, ALREADY_SET_UP, `marked on ${new Date(at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' })}`);
+});
+}
+
 function saveNationalResults(results) {
 try {
-localStorage.setItem(NATIONAL_RESULTS_KEY, JSON.stringify({ savedAt: new Date().toISOString(), results }));
+// A lead the Lead Checker was told was already set up again is noted.
+(results || []).forEach((r) => { if (r && /already set up again/i.test(String(r.Reason || ''))) markResetDone(r.ActivityID, true); });
+localStorage.setItem(NATIONAL_RESULTS_KEY, JSON.stringify({ savedAt: new Date().toISOString(), results: withResetDone(results, loadResetDone()) }));
 return true;
 } catch (error) {
 console.warn('SLA Manager: could not save National results.');
@@ -1798,7 +1831,7 @@ if (!raw || !isStoredTimeFresh(raw.savedAt) || !Array.isArray(raw.results)) {
 removeStoredKey(NATIONAL_RESULTS_KEY);
 return null;
 }
-return raw.results;
+return withResetDone(raw.results, loadResetDone());
 } catch (error) {
 return null;
 }
@@ -2055,7 +2088,7 @@ const tag = status === 'Done' ? '<span class="sla-tag done">Set up again</span>'
 const progress = status
 ? `${status === 'Done' ? 'Set up again' : 'Skipped'} in Lead Re setup`
 : `Not set up again yet: use Lead Re setup on the agent desktop${r.ResetCampaign ? ` (${escapeHtml(r.ResetCampaign)})` : ''}.`;
-return row(r, tag, progress);
+return row(r, tag, progress).replace('<dl class="contact-details"', `<button type="button" class="sla-sec tight sla-set-up" data-activity="${escapeHtml(r.ActivityID)}" onclick="window._decideNational(this.dataset.activity, '${ALREADY_SET_UP}')" title="Takes it off the list, today and on later checks">Already set up again</button><dl class="contact-details"`);
 });
 const toDecide = flagged.filter((r) => r.Verdict === 'Check' && !r.Decision).map((r) => {
 const activity = escapeHtml(r.ActivityID);
@@ -2071,7 +2104,7 @@ ${notesText(r) ? `<div class="sla-quote">${escapeHtml(notesText(r))}</div>` : ''
 </div>
 </div>`;
 });
-const decidedValid = flagged.filter((r) => r.Decision && r.Verdict !== RE_SETUP && r.Verdict !== 'Check').map((r) => row(r, '<span class="sla-tag done">Valid</span>', ''));
+const decidedValid = flagged.filter((r) => r.Decision && r.Verdict !== RE_SETUP && r.Verdict !== 'Check').map((r) => row(r, `<span class="sla-tag done">${r.Decision === ALREADY_SET_UP ? 'Set up already' : 'Valid'}</span>`, ''));
 const group = (key, title, count, inner) => (count ? `<div class="sla-g" data-ng="${key}"><div class="sla-grp">${title} <span>${count}</span></div>${inner}</div>` : '');
 const decisions = results.filter((r) => r.Decision).length;
 
@@ -2157,6 +2190,7 @@ const index = results.findIndex((r) => r.ActivityID === activityId);
 if (index < 0) return;
 const noteEl = Array.from(document.querySelectorAll('input[data-national-note]')).find((el) => el.dataset.nationalNote === activityId);
 results[index] = applyNationalDecision(results[index], decision, noteEl ? noteEl.value : '');
+if (decision === ALREADY_SET_UP) markResetDone(activityId, true);
 if (noteEl) noteEl.value = '';
 saveNationalResults(results);
 displayMorningChecks();
@@ -2166,6 +2200,7 @@ window._undoNationalDecision = function(activityId) {
 const results = loadNationalResults() || [];
 const index = results.findIndex((r) => r.ActivityID === activityId);
 if (index < 0) return;
+if (results[index].Decision === ALREADY_SET_UP) markResetDone(activityId, false);
 results[index] = undoNationalDecision(results[index]);
 saveNationalResults(results);
 displayMorningChecks();
@@ -2273,6 +2308,9 @@ const checkRow = { ActivityID: '70000004', Verdict: 'Check', Reason: 'Misdirecte
 const decided = applyNationalDecision(checkRow, RE_SETUP, ' dealer never got it ');
 check('a hand decision of re setup joins the Lead Re setup list', [decided.Verdict, decided.Decision, decided.DecisionNote, decided.OriginalVerdict], [RE_SETUP, RE_SETUP, 'dealer never got it', 'Check']);
 check('a valid decision closes it', applyNationalDecision(checkRow, 'Valid', '').Verdict, 'OK');
+const marked = withResetDone([{ ActivityID: '70000001', Verdict: RE_SETUP, Reason: 'x' }, { ActivityID: '70000002', Verdict: RE_SETUP, Reason: 'y' }, { ActivityID: '70000003', Verdict: 'OK', Reason: 'z' }], { 70000001: '2026-11-20T10:00:00Z', 70000003: '2026-11-20T10:00:00Z' });
+check('a lead already set up again is OK on a later check, the rest are not touched', marked.map((r) => [r.Verdict, r.Decision || ''].join(':')).join(), 'OK:Already set up again,Re setup:,OK:');
+check('marks older than a month go', Object.keys(freshResetDone({ a: '2026-01-01T00:00:00Z', b: '2026-11-20T00:00:00Z' }, Date.parse('2026-11-24T00:00:00Z'))).join(), 'b');
 check('undo restores the checker verdict', [undoNationalDecision(decided).Verdict, 'Decision' in undoNationalDecision(decided)], ['Check', false]);
 check('decisions export carries no names', buildNationalDecisionsTsv([{ ...decided, Customer: 'Alex Sample' }]).includes('Alex Sample'), false);
 check('an export missing a needed column is refused', parseNationalResultsTsv('NationalResult\tCustomer\nnational\tAlex').ok, false);
@@ -3580,6 +3618,7 @@ ${P} button.sla-grp[aria-expanded="false"] { opacity: 0.7; }
 ${P} .sla-list { background: var(--wb-surface); border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); }
 ${P} .sla-r { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 9px; align-items: center; padding: 8px 10px; }
 ${P} .sla-r + .sla-r { border-top: 1px solid var(--wb-border); }
+${P} .sla-r .sla-set-up { grid-column: 2; justify-self: start; margin-top: 6px; }
 ${P} .sla-rmain { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; min-width: 0; width: 100%; border-radius: 6px; cursor: pointer; }
 ${P} .sla-nm { font-weight: 600; white-space: nowrap; overflow: hidden; display: flex; gap: 6px; align-items: center; min-width: 0; }
 ${P} .sla-nm i { font-style: normal; overflow: hidden; text-overflow: ellipsis; cursor: copy; }

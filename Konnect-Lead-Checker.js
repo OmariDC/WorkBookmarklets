@@ -3444,7 +3444,33 @@ patch.resetCampaign = row.campaign || details.campaign;
 }
 }
 }
+// A lead marked as already set up again (here, or on an earlier check)
+// stays off the Re setup list.
+const doneAt = (patch.verdict === RE_SETUP || patch.verdict === 'Check') ? loadResetDone()[row.activityId] : '';
+if (doneAt) return applyNationalVerdictChange(finalizeResult(result, patch), 'OK', `${ALREADY_SET_UP} (marked on ${new Date(doneAt).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit' })})`);
 return finalizeResult(result, patch);
+}
+
+// Leads already set up again, by lead number only, kept a month on this
+// page so a later check does not list them again. SLA Manager keeps its
+// own list on its site and learns of these from the reason sent back.
+const RESET_DONE_KEY = '_klcResetDone';
+const RESET_DONE_MAX_AGE_MS = 31 * 24 * 60 * 60 * 1000;
+const ALREADY_SET_UP = 'Already set up again';
+function loadResetDone() {
+try {
+const stored = JSON.parse(localStorage.getItem(RESET_DONE_KEY) || 'null');
+const now = Date.now();
+const kept = {};
+Object.entries((stored && stored.ids) || {}).forEach(([id, at]) => { if (new Date(at).getTime() >= now - RESET_DONE_MAX_AGE_MS) kept[id] = at; });
+return kept;
+} catch (error) { return {}; }
+}
+function markResetDone(activityId, done) {
+if (!activityId) return;
+const ids = loadResetDone();
+if (done) ids[activityId] = ids[activityId] || new Date().toISOString(); else delete ids[activityId];
+try { localStorage.setItem(RESET_DONE_KEY, JSON.stringify({ ids })); } catch (error) { /* this check still shows it */ }
 }
 
 // Pure. The owner's own verdict for a lead the check got wrong. The first
@@ -3473,11 +3499,12 @@ const current = nationalVerdictOf(r);
 const buttons = [RE_SETUP, 'Check', 'OK'].filter((v) => v !== current)
 .map((v) => `<button type="button" class="btn" data-verdict="${escapeHtmlForUi(v)}">${escapeHtmlForUi(v === 'OK' ? 'It is OK' : v === RE_SETUP ? 'Needs Re setup' : 'Needs a check')}</button>`).join('');
 const undo = r.verdictChange ? `<button type="button" class="btn" data-verdict-undo="1">Undo my change</button>` : '';
+const setUp = current === RE_SETUP ? `<button type="button" class="btn" data-already-set-up="1" title="Takes it off the list, today and on later checks">Already set up again</button>` : '';
 // Shown open, with the reason first, so it is plain that a result can be
 // changed and that the why is typed before the choice is pressed.
 return `<details class="disagree national-change" data-key="${r.inputIndex}" open><summary>${r.verdictChange ? 'Changed by you: change it again or undo' : 'Result wrong? Say why, then pick the right one'}</summary>
 <input type="text" class="review-reason" aria-label="Why the result is wrong" placeholder="Why it is wrong (kept with the change, for a new rule)">
-<div class="review-actions" role="group" aria-label="Change the result for ${escapeHtmlForUi(r.name)}">${buttons}${undo}</div>
+<div class="review-actions" role="group" aria-label="Change the result for ${escapeHtmlForUi(r.name)}">${setUp}${buttons}${undo}</div>
 </details>`;
 }
 
@@ -7711,7 +7738,14 @@ linkResendAfterDecision();
 render();
 };
 box.querySelectorAll('button[data-verdict]').forEach((btn) => btn.addEventListener('click', () => changeVerdict((r) => applyNationalVerdictChange(r, btn.dataset.verdict, note()))));
-box.querySelectorAll('button[data-verdict-undo]').forEach((btn) => btn.addEventListener('click', () => changeVerdict(undoNationalVerdictChange)));
+box.querySelectorAll('button[data-verdict-undo]').forEach((btn) => btn.addEventListener('click', () => changeVerdict((r) => {
+if (/^Changed by you from [^:.]+: Already set up again/.test(String(r.verdictReason || ''))) markResetDone(r.activityId, false);
+return undoNationalVerdictChange(r);
+})));
+box.querySelectorAll('button[data-already-set-up]').forEach((btn) => btn.addEventListener('click', () => changeVerdict((r) => {
+markResetDone(r.activityId, true);
+return applyNationalVerdictChange(r, 'OK', ALREADY_SET_UP);
+})));
 box.querySelectorAll('button[data-tier]').forEach((btn) => btn.addEventListener('click', () => {
 decideReview(key, Number(btn.dataset.tier), '', note());
 render();
