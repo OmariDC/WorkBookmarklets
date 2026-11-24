@@ -1469,12 +1469,15 @@ const rightText = isSettled ? (row.summary || '') : (isRunning ? (row.progress |
 const hasDetails = isSettled && Array.isArray(row.details) && row.details.length > 0;
 const detailsId = `_mcDetails_${row.key}`;
 const chevronId = `_mcChevron_${row.key}`;
+// A long answer goes on its own line under the name, so it never squeezes
+// the name off the row.
+const long = String(rightText).length > 40;
 const valueClass = isSettled && row.ok === true ? 'sla-tag done' : (isSettled && row.ok === false ? 'sla-tag bad' : 'sla-due mut');
 return `
 <div class="sla-check ${row.status === 'pending' ? 'pending' : ''}" ${hasDetails ? `style="cursor: pointer;" title="Show or hide the details" onclick="window._toggleMorningCheckDetails('${row.key}')"` : ''}>
 <span class="sla-dot" style="background: ${color};"></span>
 <b>${escapeHtml(MORNING_CHECK_DISPLAY_NAMES[row.key] || row.label)}</b>
-<span class="${valueClass}" style="white-space: normal; text-align: right;">${escapeHtml(rightText)}</span>
+<span class="${valueClass}${long ? ' sla-check-long' : ''}" style="white-space: normal; text-align: ${long ? 'left' : 'right'};">${escapeHtml(rightText)}</span>
 ${hasDetails ? chevronIcon(true, chevronId) : '<span></span>'}
 ${hasDetails ? `<div id="${detailsId}" class="sla-details" style="display: none;">
 ${row.details.map(d => `<div>${escapeHtml(d)}</div>`).join('')}
@@ -3606,6 +3609,7 @@ ${P} .sla-check { display: grid; grid-template-columns: auto minmax(0, 1fr) auto
 ${P} .sla-check + .sla-check { border-top: 1px solid var(--wb-border); }
 ${P} .sla-check.pending { opacity: 0.6; }
 ${P} .sla-check b { font-weight: 600; }
+${P} .sla-check .sla-check-long { grid-column: 2 / 4; grid-row: 2; justify-self: start; margin-top: 3px; font-weight: 500; line-height: 1.45; }
 ${P} .sla-check .sla-details { grid-column: 2 / 5; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--wb-border); font-size: 11.5px; color: var(--wb-muted); line-height: 1.6; }
 ${P} .sla-review { background: #fffbe8; border: 1px solid #f1d98a; border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
 ${P} .sla-review.decided { background: var(--sla-ok-t); border-color: #9fdcc4; }
@@ -8833,14 +8837,21 @@ function peekTurnedOff() {
 try { return sessionStorage.getItem(PEEK_OFF_KEY) === '1'; } catch (error) { return false; }
 }
 function noteUnload() {
-try { sessionStorage.setItem(UNLOAD_NOTE_KEY, JSON.stringify({ at: Date.now(), peeking, refreshing: refreshingLeads, hidden: document.hidden })); } catch (error) { /* nothing to note it in */ }
+// quietMs: how long since Konnect last gave this tab a fresh lead table
+// (or since the page loaded, if it never has).
+const since = listInViewFreshAt || (typeof performance !== 'undefined' && performance.timeOrigin) || Date.now();
+try { sessionStorage.setItem(UNLOAD_NOTE_KEY, JSON.stringify({ at: Date.now(), peeking, refreshing: refreshingLeads, hidden: document.hidden, quietMs: Math.max(0, Date.now() - since), startDay: !!dayRun.running })); } catch (error) { /* nothing to note it in */ }
 }
 // Pure. What to say about the last time this page went, or ''.
 function unloadNoteText(note, now) {
 if (!note || !(now - note.at >= 0 && now - note.at < 12 * 60 * 60 * 1000)) return '';
 const when = formatTimeForInput(new Date(note.at));
 if (note.peeking) return `This page reloaded at ${when} while SLA Manager was reading the other list for the warning. That reading is now off in this tab so it cannot happen again. Please report it.`;
-if (note.refreshing) return `This page reloaded at ${when} while SLA Manager was refreshing the leads. Please report it.`;
+// The first refresh after hours left alone (overnight, say) is when
+// Konnect finds its own login has run out and loads the page again.
+const again = note.startDay ? ' Nothing was lost: press Start my day again.' : ' Nothing was lost.';
+if (note.refreshing && note.quietMs >= 60 * 60 * 1000) return `Konnect reloaded this page at ${when}, on the first refresh of the leads after ${Math.round(note.quietMs / 3600000)} h left alone. That is most likely Konnect's own login running out, not SLA Manager.${again}`;
+if (note.refreshing) return `This page reloaded at ${when} while SLA Manager was refreshing the leads.${note.startDay ? ' Press Start my day again.' : ''} Please report it.`;
 return `This page reloaded at ${when} with SLA Manager idle${note.hidden ? ' and the tab in the background' : ''}, so it was not SLA Manager that reloaded it.`;
 }
 // The browser can put a background tab to sleep and load it again when it
@@ -9162,6 +9173,7 @@ const keys = missedWarningKeys(leads, now);
 check('missed is marked Missed or past its time; then within 5 minutes; then within 15; assigned leads count too, and waiting lists the ones nobody holds', { missed: keys.missed, soon: keys.soon, due: keys.due, waiting: keys.waiting }, { missed: ['a', 'b', 'g'], soon: ['c', 'f'], due: ['d', 'i'], waiting: ['a', 'b', 'c', 'd', 'i'] });
 const none = { missed: 0, soon: 0, due: 0 };
 check('a read is fresh enough to notify from only while every list read is recent', [watchReadsFresh({ sla: { at: 1000 }, pending: null }, 1000 + 60000, 300000), watchReadsFresh({ sla: { at: 1000 }, pending: { at: 1000 } }, 1000 + 300001, 300000), watchReadsFresh({ sla: { at: 400000 }, pending: { at: 1000 } }, 400000, 300000)], [true, false, false]);
+check('a reload on the first refresh after hours alone is put down to Konnect\'s login, and Start my day is offered again', [/most likely Konnect's own login running out/.test(unloadNoteText({ at: 1000, refreshing: true, quietMs: 15 * 3600000, startDay: true }, 2000)), /press Start my day again/.test(unloadNoteText({ at: 1000, refreshing: true, quietMs: 15 * 3600000, startDay: true }, 2000)), /Please report it/.test(unloadNoteText({ at: 1000, refreshing: true, quietMs: 60000 }, 2000))], [true, true, true]);
 check('a page replaced without warning: the sleep is named when the browser says so, else it is described; nothing with no trace', [/^Chrome put this tab to sleep/.test(silentEndText(0, true, 5000)), /^This page was loaded again without warning/.test(silentEndText(4000, false, 5000)), silentEndText(0, false, 5000)], [true, true, '']);
 check('the notification: totals in the title with missed first, then who holds them, then agents free', warningNotification({ unassigned: { missed: 1, soon: 2, due: 0 }, assigned: { missed: 1, soon: 1, due: 0 } }, 2), { title: '2 MISSED · 3 due in 5 mins', body: 'Unassigned: 1 missed, 2 due in 5 mins\nAssigned: 1 missed, 1 due in 5 mins\nAgents free: 2' });
 check('an empty line says none, and no agents free says none', warningNotification({ unassigned: none, assigned: { missed: 0, soon: 1, due: 2 } }, 0), { title: '1 due in 5 mins · 2 due in 15 mins', body: 'Unassigned: none\nAssigned: 1 due in 5 mins, 2 due in 15 mins\nAgents free: none' });

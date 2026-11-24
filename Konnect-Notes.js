@@ -9,7 +9,7 @@
   }
 
   const KN = window.KonnectNotes = {
-    version: '1.29.2'
+    version: '1.29.3'
   };
 
   /* Where the phrases and booking engine are fetched from. A test
@@ -2409,8 +2409,15 @@
     if (purchase === 'new' || purchase === 'pre-registered') return 'New';
     if (facts.hasReg || condition === 'used') return 'Used';
     if (condition === 'new' || condition === 'pre-registered') return 'New';
+    // The lead's own Lead Type, in its Lead section.
+    const leadType = normaliseText(facts.leadType).toLowerCase();
+    if (leadType === 'used') return 'Used';
+    if (leadType === 'new') return 'New';
     if (/\bused\b/.test(campaign)) return 'Used';
     if (/\bnew\b/.test(campaign)) return 'New';
+    // The Vehicle step shows New until Used is picked, and the lead's
+    // Purchase Type is written as New for it, so the sheet says the same.
+    if (facts.namedCar) return 'New';
     return '';
   }
 
@@ -2462,7 +2469,9 @@
       motability: input.type === 'motability' || lead.fields.type === 'motability',
       hasReg: !!realText(vehicle.reg),
       condition: vehicle.condition,
+      namedCar: !!(realText(vehicle.make) || realText(vehicle.model)),
       purchaseType: lead.fields['v.condition'],
+      leadType: selectedText(activeLeadPane()?.querySelector('select[ng-model$="LeadDetails.LeadTypeID"]')),
       campaign: `${lead.leadRequest} ${lead.source}`,
       inDiary: diaryAlreadyBooked(draft, plan)
     };
@@ -2563,6 +2572,8 @@
     check('a name that starts like a title', buildSheetRow({ ...base, name: 'Drew Missen' }).split('\t')[1], 'Drew Missen');
     check('a title alone is kept', buildSheetRow({ ...base, name: 'Mr' }).split('\t')[1], 'Mr');
     check('pre-registered counts as New', sheetLeadType({ purchaseType: 'Pre-Registered' }), 'New');
+    check('the lead\'s Lead Type is used when nothing else says', [sheetLeadType({ leadType: 'New' }), sheetLeadType({ leadType: 'Used', campaign: 'Enquiry - New' }), sheetLeadType({ leadType: 'Not Known' })].join('|'), 'New|Used|');
+    check('a named car with nothing picked is New, as the Vehicle step shows it', [sheetLeadType({ namedCar: true }), sheetLeadType({ namedCar: true, campaign: 'Enquiry - Used' }), sheetLeadType({})].join('|'), 'New|Used|');
     check('campaign wording last', sheetLeadType({ campaign: 'Used Car Enquiry Website' }), 'Used');
     check('cannot be told', sheetLeadType({ campaign: 'Website' }), '');
     check('vm is message left', CALL_OUTCOME_FOR_PHRASE['vm-left'], 'No Answer Message Left');

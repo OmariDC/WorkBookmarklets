@@ -298,17 +298,49 @@ if (WRITTEN_TIME_RE.test(lowered) && /\b(morning|afternoon|evening|am|pm|visit|v
 return false;
 }
 
-function hasDayMention(text) {
+// A date written with its year is only a day the customer could be asking
+// for when it is near: a registration, MOT or valuation date is years off.
+function nearYear(year) {
+if (!year) return true;
+const y = Number(year.length === 2 ? `20${year}` : year);
+const now = new Date().getFullYear();
+return y >= now - 1 && y <= now + 1;
+}
+function nearDate(day, month, year) {
+if (!year) return true;
+const y = Number(year.length === 2 ? `20${year}` : year);
+const at = new Date(y, month - 1, day).getTime();
+const now = Date.now();
+return at >= now - 45 * 86400000 && at <= now + 120 * 86400000;
+}
+
+// The words or date taken as a day, or '' when there is none.
+function dayMentionOf(text) {
 const lowered = low(text);
-if (WEEKDAYS.some((d) => lowered.includes(d))) return true;
-if (WEEKDAY_ABBR_RE.test(lowered)) return true;
-if (/\btoday\b|\btonight\b|\btomorrow\b|\bthis morning\b|\bthis afternoon\b|\bthis weekend\b|\bnext week\b/i.test(lowered)) return true;
-if (new RegExp('\\b\\d{1,2}(st|nd|rd|th)?\\s+(of\\s+)?(' + MONTHS.join('|') + ')\\b', 'i').test(lowered)) return true;
+const weekday = WEEKDAYS.find((d) => lowered.includes(d));
+if (weekday) return weekday;
+const abbr = lowered.match(WEEKDAY_ABBR_RE);
+if (abbr) return abbr[0];
+const relative = lowered.match(/\btoday\b|\btonight\b|\btomorrow\b|\bthis morning\b|\bthis afternoon\b|\bthis weekend\b|\bnext week\b/i);
+if (relative) return relative[0];
+const named = Array.from(lowered.matchAll(new RegExp('\\b(\\d{1,2})(st|nd|rd|th)?\\s+(of\\s+)?(' + MONTHS.join('|') + ')\\b(?:,?\\s+(\\d{4}))?', 'gi')))
+.find((m) => nearDate(Number(m[1]), MONTHS.indexOf(m[4]) + 1, m[5]) && nearYear(m[5]));
+if (named) return named[0];
 // A numeric date needs a real day and month: "50/50 finance" and "24/7"
 // are not dates.
-const numeric = lowered.match(/\b\d{1,2}\/\d{1,2}\b/g) || [];
-if (numeric.some((d) => { const [day, month] = d.split('/').map(Number); return day >= 1 && day <= 31 && month >= 1 && month <= 12 && d !== '24/7'; })) return true;
-return false;
+const numeric = Array.from(lowered.matchAll(/\b(\d{1,2})[\/.](\d{1,2})(?:[\/.](\d{2,4}))?\b/g)).find((m) => {
+const day = Number(m[1]);
+const month = Number(m[2]);
+if (m[0] === '24/7' || !(day >= 1 && day <= 31 && month >= 1 && month <= 12)) return false;
+// "1.2" and the like are engine sizes, not dates, unless a year follows.
+if (m[0].includes('.') && !m[3]) return false;
+return nearDate(day, month, m[3]);
+});
+return numeric ? numeric[0] : '';
+}
+
+function hasDayMention(text) {
+return !!dayMentionOf(text);
 }
 
 // Section 6: flags, attached to every result. ctx carries signals the
@@ -766,7 +798,7 @@ if (hasDay && hasTime) {
 return R(1, 'Customer-Stated Slot', 3, 'medium', 'Free text contains a specific/relative day AND a clock time (Section 5, Tier 1 rank 3).');
 }
 if (hasDay) {
-return R(2, 'Customer-Stated Day', 3, 'medium', 'Free text contains a specific/relative day, no clock time (Section 5, Tier 2 rank 3).');
+return R(2, 'Customer-Stated Day', 3, 'medium', `Free text contains a specific/relative day ("${dayMentionOf(text)}"), no clock time (Section 5, Tier 2 rank 3).`);
 }
 return null;
 }
@@ -3786,11 +3818,14 @@ const cases = [
 // its first, and Autofunnel
 // notes are recognised with each field on its own line.
 ['T136', 'Sourced from Robins & Day Website.', 'Enquiry - Used', 'Robins & Day Website', 4, 'medium'],
+// A date with a year far from now (registered, MOT due) is not a day asked for.
+['T145', 'Customer Comments: - | Part Exchange: Ford Fiesta 1.0 Zetec 5dr, Mileage 45000, First Registered 14/03/2019', 'Enquiry - Used', 'CF', 5],
+['T146', 'Customer Comments: can I come in on 3rd March? | Part Exchange: Ford Fiesta, First Registered 14/03/2019', 'Enquiry - Used', 'CF', 2],
 // Dates in a valuation's own fields are not a day the customer asked for;
 // a day the customer wrote still counts.
 ['T142', 'Part Exchange Valuation | Registration: AB12CDE | Mileage: 42000 | First Registered: 14/03/2019 | Valuation Date: 17/11/2026 06:50 | Valid Until: 24/11/2026', 'Enquiry - Used', 'CF', 5, 'medium'],
 ['T143', 'Part Exchange Valuation | Registration: AB12CDE | Mileage: 42000 | First Registered: 14/03/2019 | Customer Comments: can I bring it in on Saturday?', 'Enquiry - Used', 'CF', 2],
-['T144', 'PX Valuation. Reg: AB12CDE, Mileage: 42000, Registered: 3rd March 2019', 'Enquiry - Used', 'CF', 5, 'medium'],
+['T144', 'PX Valuation. Reg: AB12CDE, Mileage: 42000, Registered: 3rd March 2019', 'Enquiry - Used', 'CF', 5],
 ['T137', "Customer message #1: The Consumer sent this message on 2026-11-15 18:46:00: Hi, I'm interested in this Citroen C5 Aircross. Please could you contact me back.", 'Autotrader - Enquiry - Used', 'Autotrader - Online Store', 3, 'medium'],
 ['T138', 'Customer message #1: The Consumer sent this message on 2026-11-15 18:46:00: Could I come and see it on Saturday at 11am?', 'Autotrader - Enquiry - Used', 'Autotrader - Online Store', 1],
 ['T139', 'Misc: The following information was present in the lead:\nFranchise = DS\nMobile = 07700900101\nUniqueID = abcdef\nBatch = 929874', 'Enquiry - Used', 'Autofunnel', 5, 'medium'],
@@ -3934,7 +3969,7 @@ const SESSION_STORAGE_KEY = 'konnectLeadChecker:session:v1';
 // Bump CLASSIFIER_VERSION whenever classifyLead's rules change: results
 // from an older version are re-checked rather than carried into a new
 // paste. SESSION_SCHEMA changes when the stored session shape changes.
-const CLASSIFIER_VERSION = '2026-11-17a';
+const CLASSIFIER_VERSION = '2026-11-24a';
 const SESSION_SCHEMA = 2;
 // The stored batch holds customer details, so it is dropped after a shift.
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
