@@ -3216,6 +3216,9 @@ if (otherSend) return verdict('OK', `Sent to ${emDealerOf(otherSend)} via Enquir
 // Sent to a dealership, and nothing after it but the outcome being
 // updated (no call made): the send stands.
 if (earlierDealerSend) {
+// Sent to a dealership and closed as Sent Direct to Enquiry Max: the
+// outcome says where it went, whatever calls came between.
+if (/sent direct to enquiry max/i.test(finalOutcome)) return verdict('OK', `Sent to ${earlierDealerSend} via Enquiry Max, closed as ${finalOutcome}`);
 const sentAt = Math.max(...sendItems.filter((i) => emDealerOf(i) === earlierDealerSend).map((i) => eventTimeMs(i.EventTime) || 0));
 const callsAfter = own.filter((i) => isAttemptItem(i) && (eventTimeMs(i.EventTime) || 0) > sentAt + 2 * 60 * 1000);
 // Only when the timeline shows the last call: one known only from the
@@ -3226,6 +3229,16 @@ return verdict('OK', `Sent to ${earlierDealerSend} via Enquiry Max`);
 }
 }
 const open = /in progress/i.test(String(batchRow.state || ''));
+// Closed because the customer's other lead went to a dealership: right
+// when another lead was sent (or Sent Direct to Enquiry Max), or after
+// several calls on this one.
+if (!open && /other activity sent to dealer/i.test(finalOutcome)) {
+const otherSent = (allItems || []).some((i) => String(i.LeadID) !== String(lead.leadId) && Number(i.LeadID)
+&& ((Number(i.TimelineItemType) === 2 && emDealerOf(i) && !isNationalDealer(emDealerOf(i)))
+|| (Number(i.TimelineItemType) === 3 && /sent direct to enquiry max/i.test(String(i.Description || '')))));
+if (otherSent) return verdict('OK', `Closed as ${finalOutcome}: the customer's other lead was sent on`);
+if (attempts >= 3) return verdict('OK', `Closed as ${finalOutcome} after ${attempts} attempts`);
+}
 // 3 and 4. Acceptable closing outcomes. Max Attempts is only that after
 // the attempts have been made: picked on an early call it closed the lead
 // with nowhere to go.
@@ -4045,7 +4058,7 @@ const SESSION_STORAGE_KEY = 'konnectLeadChecker:session:v1';
 // Bump CLASSIFIER_VERSION whenever classifyLead's rules change: results
 // from an older version are re-checked rather than carried into a new
 // paste. SESSION_SCHEMA changes when the stored session shape changes.
-const CLASSIFIER_VERSION = '2026-11-28b';
+const CLASSIFIER_VERSION = '2026-11-28c';
 const SESSION_SCHEMA = 2;
 // The stored batch holds customer details, so it is dropped after a shift.
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
@@ -6403,6 +6416,14 @@ call(1400073, '25T11:39', 'No Answer - No Message Left', `Sales -> National Used
 check('Max Attempts with another outcome on the last call is OK', run(1400073, maxPlus, { exportOutcome: 'Closed - Other Activity Sent To Dealer', attempts: '3' }).verdict, 'OK');
 const sentThenUpdate = [created(1400074, '20T10:00'), call(1400074, '20T10:05', 'Spoke to Customer', 'New Enquiry at Liverpool'), sent(1400074, '20T10:08', 'Liverpool'),
 call(1400074, '20T10:20', 'Update Outcomes (No Call Made)', `Sales -> Sent Direct to Enquiry Max at ${NAT}`)];
+const sentThenCalled = [created(1400075, '26T21:18'), sent(1400075, '26T21:18', 'Liverpool'), call(1400075, '27T10:14', 'Manual Reschedule', `No Activity Outcome at ${NAT}`),
+call(1400075, '27T10:23', 'Update Outcomes (No Call Made)', `Sales -> Sent Direct to Enquiry Max at ${NAT}`)];
+check('sent to a dealership and closed as Sent Direct to Enquiry Max is OK, whatever calls came between', run(1400075, sentThenCalled, { exportOutcome: 'Sent Direct to Enquiry Max', attempts: '2', lastContact: '27/11/2026 10:23' }).verdict, 'OK');
+const otherActivity = [created(1400076, '20T16:57'), created(1400077, '23T16:22'), call(1400077, '23T16:22', 'No Answer - No Message Left', `No Activity Outcome at ${NAT}`),
+call(1400077, '24T12:16', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400076, '24T16:17', 'Update Outcomes (No Call Made)', `Sales -> Sent Direct to Enquiry Max at ${NAT}`),
+call(1400077, '25T11:39', 'No Answer - No Message Left', `Sales -> Closed - Other Activity Sent To Dealer at ${NAT}`)];
+check('Closed - Other Activity Sent To Dealer when the other lead was sent direct is OK', run(1400077, otherActivity, { exportOutcome: 'Closed - Other Activity Sent To Dealer', attempts: '3' }).verdict, 'OK');
+check('Closed - Other Activity Sent To Dealer on the first call with nothing else sent stays a Re setup', run(1400077, otherActivity.filter((i) => i.LeadID !== 1400076).slice(0, 2).concat([otherActivity[5]]), { exportOutcome: 'Closed - Other Activity Sent To Dealer', attempts: '1' }).verdict, RE_SETUP);
 check('sent, then the outcome updated with no call, is OK', run(1400074, sentThenUpdate, { exportOutcome: 'Sent Direct to Enquiry Max', lastContact: '20/11/2026 10:20' }).verdict, 'OK');
 // Max Attempts picked on the first call: closed with nowhere to go.
 const earlyMax = [created(1400050, '23T21:40'), call(1400050, '24T09:11', 'No Answer - No Message Left', `Sales -> Max Attempts Reached - Sent to Dealer at ${NAT}`)];
