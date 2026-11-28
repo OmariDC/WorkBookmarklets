@@ -3315,9 +3315,14 @@ const fullRun = Math.max(Number.isFinite(exportAttempts) && exportAttempts > 0 ?
 // The same goes for Email Only: rung the full number of times with no
 // answer, the customer is left to email and there is nothing to set up.
 if (/sent direct to enquiry max|email only/i.test(finalOutcome) && fullRun >= NATIONAL_FULL_RUN_ATTEMPTS) return verdict('OK', `Closed as ${finalOutcome} after ${fullRun} attempts`);
-// Not interested after the full run of calls: the customer was reached
-// in the end, or the attempts were used up.
-if (/not interested/i.test(finalOutcome) && fullRun >= NATIONAL_FULL_RUN_ATTEMPTS) return verdict('OK', `Closed as ${finalOutcome} after ${fullRun} attempts`);
+// Not interested, set with Update Outcomes (no call made): nothing shows
+// the customer said so, so it is for a person to check, not set up again.
+if (/not interested/i.test(finalOutcome)) {
+const closing = own.filter((i) => Number(i.TimelineItemType) === 3 && /not interested/i.test(String(i.Description || ''))).pop();
+if (closing && /outcome of update outcomes/i.test(String(closing.BelowLineTitle || ''))) {
+return verdict('Check', `Closed as ${finalOutcome} with no call made (Update Outcomes) after ${fullRun} attempt${fullRun === 1 ? '' : 's'}: check the customer said so`);
+}
+}
 // Misdirected: the agent decided it was not a sales lead. Right only if
 // the lead itself confirms that, which needs its window read (see
 // resolveMisdirected), so it starts as Check.
@@ -4040,7 +4045,7 @@ const SESSION_STORAGE_KEY = 'konnectLeadChecker:session:v1';
 // Bump CLASSIFIER_VERSION whenever classifyLead's rules change: results
 // from an older version are re-checked rather than carried into a new
 // paste. SESSION_SCHEMA changes when the stored session shape changes.
-const CLASSIFIER_VERSION = '2026-11-28a';
+const CLASSIFIER_VERSION = '2026-11-28b';
 const SESSION_SCHEMA = 2;
 // The stored batch holds customer details, so it is dropped after a shift.
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
@@ -6390,7 +6395,7 @@ const r1 = run(1400001, sys, {});
 const notInt = [created(1400070, '24T06:00'), call(1400070, '24T09:14', 'Manual Reschedule', 'No Activity Outcome at Leicester'), call(1400070, '24T13:00', 'Manual Reschedule', 'No Activity Outcome at Leicester'),
 call(1400070, '24T17:11', 'Manual Reschedule', 'No Activity Outcome at Leicester'), call(1400070, '25T11:41', 'No Answer - No Message Left', 'No Activity Outcome at Leicester'),
 call(1400070, '26T13:03', 'Update Outcomes (No Call Made)', 'Sales -> Customer Hub Team -> No Appointment -> Not Interested at Leicester')];
-check('Not Interested after the full run of calls is OK', run(1400070, notInt, { exportOutcome: 'Not Interested', attempts: '5' }).verdict, 'OK');
+check('Not Interested set with no call made is a Check', run(1400070, notInt, { exportOutcome: 'Not Interested', attempts: '5' }).verdict, 'Check');
 const otherLead = [created(1400071, '27T00:17'), created(1400072, '27T10:16'), call(1400071, '27T10:16', 'Update Outcomes (No Call Made)', `Sales -> Sent Direct to Enquiry Max at ${NAT}`), sent(1400072, '27T10:23', 'Walton')];
 check('a send filed under the lead the outcome made is OK', run(1400071, otherLead, { exportOutcome: 'Sent Direct to Enquiry Max', attempts: '1' }).verdict, 'OK');
 const maxPlus = [created(1400073, '23T16:22'), call(1400073, '23T16:22', 'No Answer - No Message Left', `No Activity Outcome at ${NAT}`), call(1400073, '24T12:16', 'Manual Reschedule', `No Activity Outcome at ${NAT}`),
@@ -6489,7 +6494,7 @@ check('changing to Re setup fills the campaign', applyNationalVerdictChange({ st
 const notInterested = [created(1400040, '10T09:00'), call(1400040, '10T09:30', 'Spoke to Customer', `Sales -> Customer Hub Team -> No Appointment -> Not Interested at ${NAT}`)];
 check('spoken to and not interested is OK with no send', run(1400040, notInterested, { exportOutcome: 'Not Interested', attempts: '1', lastContact: '10/11/2026 09:30' }).verdict, 'OK');
 const notSpoken = [created(1400041, '10T09:00'), call(1400041, '10T09:30', 'Update Outcomes (No Call Made)', `Sales -> Customer Hub Team -> No Appointment -> Not Interested at ${NAT}`)];
-check('not interested without a conversation is still Re setup', run(1400041, notSpoken, { exportOutcome: 'Not Interested', attempts: '1', lastContact: '10/11/2026 09:30' }).verdict, RE_SETUP);
+check('not interested set with no call made is a Check, not a Re setup', run(1400041, notSpoken, { exportOutcome: 'Not Interested', attempts: '1', lastContact: '10/11/2026 09:30' }).verdict, 'Check');
 check('an automatic reschedule on the fourth attempt is OK, earlier is a Check', [run(1400040, notInterested, { state: 'In Progress', exportHint: 'open-auto', exportOutcome: 'In Market - wont commit to appointment yet', attempts: '4' }).verdict, run(1400040, notInterested, { state: 'In Progress', exportHint: 'open-auto', attempts: '2' }).verdict], ['OK', 'Check']);
 const emailOnlyRun = [created(1400050, '09T16:01'), call(1400050, '09T16:01', 'Update Outcomes (No Call Made)', `No Activity Outcome at ${NAT}`), call(1400050, '10T16:03', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400050, '11T12:34', 'Manual Reschedule', `No Activity Outcome at ${NAT}`),
 call(1400050, '12T09:48', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400050, '12T10:35', 'No Answer - No Message Left', `Sales -> Customer Hub Team -> Ongoing -> Email Only Lead at ${NAT}`)];
