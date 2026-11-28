@@ -3204,6 +3204,27 @@ const verdict = (v, reason) => Object.assign({}, base, { verdict: v, reason });
 
 // 1. Sent to a dealership.
 if (dealerSend) return verdict('OK', `Sent to ${dealerSend} via Enquiry Max`);
+// Sent, but filed under another of the customer's leads: "Sent Direct to
+// Enquiry Max" can make a new lead that carries the send. Only a send
+// within a few hours of this lead's last call counts.
+if (lastAttemptMs) {
+const otherSend = (allItems || []).find((i) => Number(i.TimelineItemType) === 2 && String(i.LeadID) !== String(lead.leadId)
+&& emDealerOf(i) && !isNationalDealer(emDealerOf(i))
+&& (eventTimeMs(i.EventTime) || 0) >= lastAttemptMs - 2 * 60 * 1000 && (eventTimeMs(i.EventTime) || 0) <= lastAttemptMs + 3 * 60 * 60 * 1000);
+if (otherSend) return verdict('OK', `Sent to ${emDealerOf(otherSend)} via Enquiry Max (filed under the customer's other lead)`);
+}
+// Sent to a dealership, and nothing after it but the outcome being
+// updated (no call made): the send stands.
+if (earlierDealerSend) {
+const sentAt = Math.max(...sendItems.filter((i) => emDealerOf(i) === earlierDealerSend).map((i) => eventTimeMs(i.EventTime) || 0));
+const callsAfter = own.filter((i) => isAttemptItem(i) && (eventTimeMs(i.EventTime) || 0) > sentAt + 2 * 60 * 1000);
+// Only when the timeline shows the last call: one known only from the
+// export may have been a real call.
+const timelineHasLastCall = !!ownLastAttemptMs && ownLastAttemptMs >= lastAttemptMs - 2 * 60 * 1000;
+if (timelineHasLastCall && callsAfter.every((i) => /outcome of update outcomes/i.test(String(i.BelowLineTitle || '')))) {
+return verdict('OK', `Sent to ${earlierDealerSend} via Enquiry Max`);
+}
+}
 const open = /in progress/i.test(String(batchRow.state || ''));
 // 3 and 4. Acceptable closing outcomes. Max Attempts is only that after
 // the attempts have been made: picked on an early call it closed the lead
@@ -3216,6 +3237,11 @@ if (!open && NATIONAL_ADMIN_OUTCOMES.test(finalOutcome)) return verdict('OK', `C
 // The export's outcome can lag behind the lead: when the last call on its
 // own timeline lists only Max Attempts, that is how it ended.
 if (!earlyMaxAttempts && !open && ownEnding.maxAttempts) return verdict('OK', `Closed as ${ownEnding.outcomes[0]} on its last call`);
+// Max Attempts alongside another outcome on the last call (Closed - Other
+// Activity Sent To Dealer, say): the attempts were made.
+if (!earlyMaxAttempts && !open && ownEnding.anyMaxAttempts && attempts >= NATIONAL_MIN_MAX_ATTEMPTS) {
+return verdict('OK', `Closed on Max Attempts after ${attempts} attempts (${finalOutcome || ownEnding.outcomes.join(', ')})`);
+}
 // 5. Still being worked.
 if (open) {
 // By the last attempt there is no next call to schedule by hand.
@@ -3289,6 +3315,9 @@ const fullRun = Math.max(Number.isFinite(exportAttempts) && exportAttempts > 0 ?
 // The same goes for Email Only: rung the full number of times with no
 // answer, the customer is left to email and there is nothing to set up.
 if (/sent direct to enquiry max|email only/i.test(finalOutcome) && fullRun >= NATIONAL_FULL_RUN_ATTEMPTS) return verdict('OK', `Closed as ${finalOutcome} after ${fullRun} attempts`);
+// Not interested after the full run of calls: the customer was reached
+// in the end, or the attempts were used up.
+if (/not interested/i.test(finalOutcome) && fullRun >= NATIONAL_FULL_RUN_ATTEMPTS) return verdict('OK', `Closed as ${finalOutcome} after ${fullRun} attempts`);
 // Misdirected: the agent decided it was not a sales lead. Right only if
 // the lead itself confirms that, which needs its window read (see
 // resolveMisdirected), so it starts as Check.
@@ -4011,7 +4040,7 @@ const SESSION_STORAGE_KEY = 'konnectLeadChecker:session:v1';
 // Bump CLASSIFIER_VERSION whenever classifyLead's rules change: results
 // from an older version are re-checked rather than carried into a new
 // paste. SESSION_SCHEMA changes when the stored session shape changes.
-const CLASSIFIER_VERSION = '2026-11-24b';
+const CLASSIFIER_VERSION = '2026-11-28a';
 const SESSION_SCHEMA = 2;
 // The stored batch holds customer details, so it is dropped after a shift.
 const SESSION_MAX_AGE_MS = 12 * 60 * 60 * 1000;
@@ -6357,6 +6386,19 @@ return evaluateNationalLead(lead, items.filter((i) => i.LeadID === leadId), item
 const sys = [created(1400001, '04T15:32'), call(1400001, '04T15:36', 'Manual Reschedule', `No Activity Outcome at ${NAT}`), call(1400001, '05T10:34', 'Manual Reschedule', `No Activity Outcome at ${NAT}`),
 call(1400001, '05T15:37', 'Update Outcomes (No Call Made)', `Sales -> National Used Stock -> No Opportunity -> Max Attempts Reached -  No Answer at ${NAT}`)];
 const r1 = run(1400001, sys, {});
+// 28 Nov reviews.
+const notInt = [created(1400070, '24T06:00'), call(1400070, '24T09:14', 'Manual Reschedule', 'No Activity Outcome at Leicester'), call(1400070, '24T13:00', 'Manual Reschedule', 'No Activity Outcome at Leicester'),
+call(1400070, '24T17:11', 'Manual Reschedule', 'No Activity Outcome at Leicester'), call(1400070, '25T11:41', 'No Answer - No Message Left', 'No Activity Outcome at Leicester'),
+call(1400070, '26T13:03', 'Update Outcomes (No Call Made)', 'Sales -> Customer Hub Team -> No Appointment -> Not Interested at Leicester')];
+check('Not Interested after the full run of calls is OK', run(1400070, notInt, { exportOutcome: 'Not Interested', attempts: '5' }).verdict, 'OK');
+const otherLead = [created(1400071, '27T00:17'), created(1400072, '27T10:16'), call(1400071, '27T10:16', 'Update Outcomes (No Call Made)', `Sales -> Sent Direct to Enquiry Max at ${NAT}`), sent(1400072, '27T10:23', 'Walton')];
+check('a send filed under the lead the outcome made is OK', run(1400071, otherLead, { exportOutcome: 'Sent Direct to Enquiry Max', attempts: '1' }).verdict, 'OK');
+const maxPlus = [created(1400073, '23T16:22'), call(1400073, '23T16:22', 'No Answer - No Message Left', `No Activity Outcome at ${NAT}`), call(1400073, '24T12:16', 'Manual Reschedule', `No Activity Outcome at ${NAT}`),
+call(1400073, '25T11:39', 'No Answer - No Message Left', `Sales -> National Used Stock -> No Opportunity -> Max Attempts Reached -  No Answer at ${NAT}\r\nSales -> Closed - Other Activity Sent To Dealer at ${NAT}`)];
+check('Max Attempts with another outcome on the last call is OK', run(1400073, maxPlus, { exportOutcome: 'Closed - Other Activity Sent To Dealer', attempts: '3' }).verdict, 'OK');
+const sentThenUpdate = [created(1400074, '20T10:00'), call(1400074, '20T10:05', 'Spoke to Customer', 'New Enquiry at Liverpool'), sent(1400074, '20T10:08', 'Liverpool'),
+call(1400074, '20T10:20', 'Update Outcomes (No Call Made)', `Sales -> Sent Direct to Enquiry Max at ${NAT}`)];
+check('sent, then the outcome updated with no call, is OK', run(1400074, sentThenUpdate, { exportOutcome: 'Sent Direct to Enquiry Max', lastContact: '20/11/2026 10:20' }).verdict, 'OK');
 // Max Attempts picked on the first call: closed with nowhere to go.
 const earlyMax = [created(1400050, '23T21:40'), call(1400050, '24T09:11', 'No Answer - No Message Left', `Sales -> Max Attempts Reached - Sent to Dealer at ${NAT}`)];
 const rEarly = run(1400050, earlyMax, { exportOutcome: 'Max Attempts Reached - Sent to Dealer', attempts: '1' });
